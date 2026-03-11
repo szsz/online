@@ -441,6 +441,7 @@ std::string LocalStorage::downloadStorageFileToLocal(const Authorization& /*auth
 
     // In the mobile app we use no jail
     setRootFilePath(getUri().getPath());
+    setDownloaded(true);
 
     return getRootFilePath();
 #endif
