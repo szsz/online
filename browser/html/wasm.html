@@ -49,9 +49,15 @@
             border-radius: 6px;
             text-decoration: none;
             font-size: 1em;
+            cursor: pointer;
         }
         #upload-overlay .links a:hover { background: #0256b9; }
-        #upload-overlay .share-box { margin-top: 1em; width: 100%; }
+        #upload-overlay .links a.disabled {
+            background: #999;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+        #upload-overlay .share-box { width: 100%; }
         #upload-overlay .share-box label { display: block; margin-bottom: 0.4em; color: #555; font-size: 0.9em; background: none; padding: 0; cursor: default; }
         #upload-overlay .share-row { display: flex; gap: 0; }
         #upload-overlay .share-row input[type="text"] {
@@ -75,6 +81,26 @@
             white-space: nowrap;
         }
         #upload-overlay .share-row button:hover { background: #22863a; }
+        #upload-overlay .progress-box { width: 100%; margin-top: 0.5em; }
+        #upload-overlay .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #ddd;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        #upload-overlay .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: #0366d6;
+            border-radius: 3px;
+            transition: width 0.3s;
+        }
+        #upload-overlay .progress-text {
+            font-size: 0.8em;
+            color: #888;
+            margin-top: 0.3em;
+        }
     </style>
     <script src="/config.js"></script>
 </head>
@@ -93,6 +119,14 @@
     <iframe id="coolframe" name="coolframe" style="width:100%;height:100%;position:absolute;" title="Collabora Online">
     </iframe>
     <script>
+        // Generate encryption key if none provided
+        if (!window.location.hash || window.location.hash === '#') {
+            var array = new Uint8Array(16);
+            crypto.getRandomValues(array);
+            var key = Array.from(array, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+            window.location.hash = '#' + key;
+        }
+
         function constructWopiUrl(filePath) {
             var localServer = window.location.protocol + "//" + window.location.host;
             var localUrl = localServer + window.location.pathname + "?";
@@ -114,6 +148,66 @@
             }
             return localUrl + params.toString() + (params.size === 0 ? '' : '&') + "WOPISrc="
                 + encodeURIComponent(wopiSrc);
+        }
+
+        // Preload large WASM files, returns a promise. Calls onProgress(loaded, total).
+        function preloadWasmFiles(onProgress) {
+            var files = ['online.wasm', 'soffice.data', 'online.js'];
+            var sizes = {};
+            var loaded = {};
+            var totalSize = 0;
+            var done = 0;
+
+            return new Promise(function(resolve) {
+                files.forEach(function(file) {
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('HEAD', '/' + file);
+                    xhr.onload = function() {
+                        var size = parseInt(xhr.getResponseHeader('Content-Length')) || 0;
+                        sizes[file] = size;
+                        totalSize += size;
+                        loaded[file] = 0;
+                        done++;
+                        if (done === files.length) startDownloads();
+                    };
+                    xhr.onerror = function() {
+                        sizes[file] = 0;
+                        loaded[file] = 0;
+                        done++;
+                        if (done === files.length) startDownloads();
+                    };
+                    xhr.send();
+                });
+
+                function startDownloads() {
+                    var completed = 0;
+                    if (totalSize === 0) { resolve(); return; }
+                    files.forEach(function(file) {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', '/' + file);
+                        xhr.responseType = 'arraybuffer';
+                        xhr.onprogress = function(e) {
+                            loaded[file] = e.loaded;
+                            var sum = 0;
+                            for (var f in loaded) sum += loaded[f];
+                            onProgress(sum, totalSize);
+                        };
+                        xhr.onload = function() {
+                            loaded[file] = sizes[file];
+                            completed++;
+                            var sum = 0;
+                            for (var f in loaded) sum += loaded[f];
+                            onProgress(sum, totalSize);
+                            if (completed === files.length) resolve();
+                        };
+                        xhr.onerror = function() {
+                            completed++;
+                            if (completed === files.length) resolve();
+                        };
+                        xhr.send();
+                    });
+                }
+            });
         }
 
         var params = new URLSearchParams(window.location.search);
@@ -165,26 +259,12 @@
                         + '&relayRoom=' + encodeURIComponent(relayRoom)
                         + fragment;
 
-                    // Show open button + share link
+                    // Show share link + open button + progress
                     status.textContent = 'File ready: ' + file.name;
                     var linksDiv = document.createElement('div');
                     linksDiv.className = 'links';
 
-                    var hostLink = document.createElement('a');
-                    hostLink.href = '#';
-                    hostLink.textContent = 'Open as Host';
-                    hostLink.addEventListener('click', function(ev) {
-                        ev.preventDefault();
-                        document.getElementById('upload-overlay').classList.add('hidden');
-                        var form = document.getElementById('form');
-                        form.style.display = '';
-                        form.action = constructWopiUrl('upload/' + safeName)
-                            + '&relay=' + encodeURIComponent(relayServer + '/host')
-                            + fragment;
-                        form.submit();
-                    });
-                    linksDiv.appendChild(hostLink);
-
+                    // Share link first
                     var shareBox = document.createElement('div');
                     shareBox.className = 'share-box';
                     shareBox.innerHTML =
@@ -195,6 +275,33 @@
                         '</div>';
                     linksDiv.appendChild(shareBox);
 
+                    // Open as Host button (disabled until preload completes)
+                    var hostLink = document.createElement('a');
+                    hostLink.href = '#';
+                    hostLink.id = 'host-link';
+                    hostLink.className = 'disabled';
+                    hostLink.textContent = 'Downloading WASM...';
+                    hostLink.addEventListener('click', function(ev) {
+                        ev.preventDefault();
+                        if (hostLink.classList.contains('disabled')) return;
+                        document.getElementById('upload-overlay').classList.add('hidden');
+                        var form = document.getElementById('form');
+                        form.style.display = '';
+                        form.action = constructWopiUrl('upload/' + safeName)
+                            + '&relay=' + encodeURIComponent(relayServer + '/host')
+                            + fragment;
+                        form.submit();
+                    });
+                    linksDiv.appendChild(hostLink);
+
+                    // Progress bar
+                    var progressBox = document.createElement('div');
+                    progressBox.className = 'progress-box';
+                    progressBox.innerHTML =
+                        '<div class="progress-bar"><div class="progress-bar-fill" id="preload-fill"></div></div>' +
+                        '<div class="progress-text" id="preload-text">Preparing...</div>';
+                    linksDiv.appendChild(progressBox);
+
                     document.getElementById('upload-overlay').appendChild(linksDiv);
 
                     document.getElementById('copy-btn').addEventListener('click', function() {
@@ -203,6 +310,19 @@
                             document.getElementById('copy-btn').textContent = 'Copied!';
                             setTimeout(function() { document.getElementById('copy-btn').textContent = 'Copy'; }, 2000);
                         });
+                    });
+
+                    // Start preloading WASM files
+                    preloadWasmFiles(function(loaded, total) {
+                        var pct = Math.round((loaded / total) * 100);
+                        var mb = function(n) { return (n / 1048576).toFixed(1); };
+                        document.getElementById('preload-fill').style.width = pct + '%';
+                        document.getElementById('preload-text').textContent = mb(loaded) + ' / ' + mb(total) + ' MB (' + pct + '%)';
+                    }).then(function() {
+                        hostLink.classList.remove('disabled');
+                        hostLink.textContent = 'Open as Host';
+                        document.getElementById('preload-fill').style.width = '100%';
+                        document.getElementById('preload-text').textContent = 'Ready';
                     });
                 };
                 reader.readAsArrayBuffer(file);
