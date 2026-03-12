@@ -8,11 +8,47 @@
     var params = new URLSearchParams(window.location.search);
     var relayServer = params.get('relayServer') || 'ws://localhost:9090';
     var relayRoom = params.get('relayRoom') || 'default';
-    var relayUrl = relayServer + '/client?room=' + relayRoom;
+    var relayUrl = relayServer + '/client?room=' + encodeURIComponent(relayRoom);
 
     var relayWs = null;
     var relayConnected = false;
     var pendingMessages = [];
+    var socketOpened = false;
+    var earlyMessages = []; // Messages received before socket is opened
+    // Document URL derived from relay room name (room = file path)
+    var hostDocUrl = 'file:///' + relayRoom;
+
+    function decodeRelayData(data) {
+        if (data instanceof ArrayBuffer) {
+            var bytes = new Uint8Array(data);
+            var hasNewline = false;
+            for (var i = 0; i < bytes.length; i++) {
+                if (bytes[i] === 0x0A) { hasNewline = true; break; }
+            }
+            return hasNewline ? bytes : new TextDecoder().decode(bytes);
+        }
+        return data;
+    }
+
+    function tryOpenSocket() {
+        if (socketOpened) return;
+        socketOpened = true;
+
+        var sock = window.TheFakeWebSocket;
+        if (sock) {
+            sock.readyState = 1; // OPEN
+            console.log('RelayClient: triggering socket.onopen (status received)');
+            if (sock.onopen) sock.onopen();
+
+            // Deliver any messages that arrived before socket was opened
+            for (var i = 0; i < earlyMessages.length; i++) {
+                if (sock.onmessage) {
+                    sock.onmessage({ data: earlyMessages[i] });
+                }
+            }
+            earlyMessages = [];
+        }
+    }
 
     function connectRelay() {
         console.log('RelayClient: connecting to ' + relayUrl);
@@ -29,18 +65,36 @@
         };
 
         relayWs.onmessage = function(event) {
-            if (window.TheFakeWebSocket && window.TheFakeWebSocket.onmessage) {
-                var data = event.data;
-                if (data instanceof ArrayBuffer) {
-                    var bytes = new Uint8Array(data);
-                    // Match send2JS logic: single-line (no newline) = text string,
-                    // multi-line (has newline) = binary Uint8Array (tiles, deltas, etc.)
-                    var hasNewline = false;
-                    for (var i = 0; i < bytes.length; i++) {
-                        if (bytes[i] === 0x0A) { hasNewline = true; break; }
+            var data = decodeRelayData(event.data);
+
+            if (!socketOpened) {
+                // Check for 'status:' which means doc is loaded for our session
+                if (typeof data === 'string' && data.startsWith('status:')) {
+                    console.log('RelayClient: received status, opening socket');
+                    tryOpenSocket();
+                    if (window.TheFakeWebSocket && window.TheFakeWebSocket.onmessage) {
+                        window.TheFakeWebSocket.onmessage({ data: data });
                     }
-                    data = hasNewline ? bytes : new TextDecoder().decode(bytes);
+                    return;
                 }
+                // Queue messages that arrive before socket is opened,
+                // but drop nodocloaded errors (race between load and commands)
+                if (typeof data === 'string' && data.indexOf('nodocloaded') !== -1) {
+                    return;
+                }
+                earlyMessages.push(data);
+                return;
+            }
+
+            // Suppress transient 'nodocloaded' errors — these are a race condition
+            // where commands arrive at COOLWSD before the Kit's "loaded" message is
+            // fully processed. The commands will succeed on subsequent requests.
+            if (typeof data === 'string' && data.indexOf('nodocloaded') !== -1) {
+                console.log('RelayClient: suppressing nodocloaded error:', data.substring(0, 60));
+                return;
+            }
+
+            if (window.TheFakeWebSocket && window.TheFakeWebSocket.onmessage) {
                 window.TheFakeWebSocket.onmessage({ data: data });
             }
         };
@@ -59,7 +113,18 @@
     }
 
     // Override postMobileMessage: send through relay instead of WASM Module.
+    // We track whether coolclient+load were already sent manually (before onopen)
+    // to avoid sending duplicates when the COOL JS client fires them again.
+    var initSent = false;
     window.postMobileMessage = function(msg) {
+        if (initSent) {
+            // Drop duplicate coolclient/load that the COOL JS client sends on onopen
+            if (typeof msg === 'string' &&
+                (msg.startsWith('coolclient ') || msg.startsWith('load url='))) {
+                console.log('RelayClient: dropping duplicate init message:', msg.substring(0, 60));
+                return;
+            }
+        }
         if (relayConnected && relayWs && relayWs.readyState === WebSocket.OPEN) {
             relayWs.send(msg);
         } else {
@@ -77,25 +142,52 @@
         };
     };
 
-    // createOnlineModule: connect relay, then trigger COOL initialization.
+    // Send coolclient + load url via relay. The document URL is derived
+    // from the relay room name (room = file path on the WASM host).
+    function sendInitMessages() {
+        if (initSent) return;
+        initSent = true;
+
+        var now = Date.now();
+        var perf = performance.now();
+        var coolclient = 'coolclient 0.1 ' + now + ' ' + perf;
+        var loadMsg = 'load url=' + encodeURIComponent(hostDocUrl)
+            + ' lang=en-US deviceFormFactor=desktop'
+            + ' accessibilityState=false';
+
+        console.log('RelayClient: sending coolclient + load via relay (url=' + hostDocUrl + ')');
+
+        if (relayConnected) {
+            relayWs.send(coolclient);
+            relayWs.send(loadMsg);
+        } else {
+            pendingMessages.push(coolclient);
+            pendingMessages.push(loadMsg);
+        }
+    }
+
+    // createOnlineModule: connect relay, send initial handshake, wait for
+    // 'status:' from COOLWSD before opening the socket to the COOL JS client.
     window.createOnlineModule = function(module) {
         connectRelay();
 
-        // Give the relay time to connect and the Kit time to create the view.
-        // The C++ create_remote_client sends fileURL to COOLWSD which starts
-        // session creation. We need the Kit to finish before we send commands.
+        // Trigger onRuntimeInitialized to set up the map/socket objects.
         setTimeout(function() {
             console.log('RelayClient: triggering onRuntimeInitialized');
             if (module.onRuntimeInitialized) {
                 module.onRuntimeInitialized();
             }
 
-            var sock = window.TheFakeWebSocket;
-            if (sock) {
-                sock.readyState = 1; // OPEN
-                console.log('RelayClient: triggering socket.onopen');
-                if (sock.onopen) sock.onopen();
-            }
-        }, 2000); // 2 second delay for Kit to finish view creation
+            // Send coolclient + load with URL derived from room name
+            sendInitMessages();
+
+            // Fallback: if no status message arrives within 30s, open anyway
+            setTimeout(function() {
+                if (!socketOpened) {
+                    console.warn('RelayClient: no status received after 30s, opening socket anyway');
+                    tryOpenSocket();
+                }
+            }, 30000);
+        }, 500);
     };
 })();
