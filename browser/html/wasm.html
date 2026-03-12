@@ -351,12 +351,14 @@
             statusEl.textContent = 'Connecting to session...';
             var relayUrl = relayServer + '/client?room=' + encodeURIComponent(docId);
             var ws = new WebSocket(relayUrl);
+            ws.binaryType = 'arraybuffer';
             var settled = false;
 
             ws.onopen = function() {
                 // Connected to relay — but this doesn't mean a host is present.
                 // If no host, the relay closes us with code 4000 almost immediately.
-                // Wait briefly: if still connected, host is present.
+                // During grace period (host recently left), relay sends type=3.
+                // Wait briefly: if still connected and no host-lost, host is present.
                 setTimeout(function() {
                     if (settled) return;
                     settled = true;
@@ -364,6 +366,30 @@
                     statusEl.textContent = 'Host found, joining as collaborator...';
                     openAsClient(docId);
                 }, 500);
+            };
+
+            ws.onmessage = function(event) {
+                // Check for control messages during probe (5 bytes)
+                if (event.data instanceof ArrayBuffer && event.data.byteLength === 5) {
+                    var ctrl = new Uint8Array(event.data);
+                    if (ctrl[0] === 3) {
+                        // type=3: you are the failover candidate — become host
+                        if (settled) return;
+                        settled = true;
+                        ws.close();
+                        statusEl.textContent = 'Host recently disconnected.';
+                        onMustBeHost();
+                    }
+                    if (ctrl[0] === 5) {
+                        // type=5: another client is taking over, wait for new host
+                        if (settled) return;
+                        settled = true;
+                        ws.close();
+                        statusEl.textContent = 'Waiting for new host...';
+                        // Poll until new host is ready, then join as client
+                        setTimeout(function() { tryClientThenHost(docId, statusEl, onMustBeHost); }, 3000);
+                    }
+                }
             };
 
             ws.onclose = function(ev) {
@@ -389,6 +415,45 @@
                 onMustBeHost();
             }, 5000);
         }
+
+        // --- Failover message listeners ---
+        // Listen for messages from iframe (cool.html or relay-client.html)
+
+        window.addEventListener('message', function(event) {
+            if (!event.data || !event.data.type) return;
+
+            if (event.data.type === 'relay-host-rejected') {
+                // Tried to be host but room already has one — switch to client
+                console.log('wasm.html: host rejected (room has host), switching to client');
+                hashKey(encKey).then(function(docId) {
+                    openAsClient(docId);
+                });
+            }
+
+            if (event.data.type === 'relay-host-lost') {
+                // Host disconnected, you are the failover candidate — reload to become host
+                console.log('wasm.html: host lost, reloading for failover');
+                sessionStorage.setItem('failover', '1');
+                window.location.reload();
+            }
+
+            if (event.data.type === 'relay-wait-for-host') {
+                // Host disconnected but another client is taking over — show waiting overlay
+                console.log('wasm.html: waiting for new host (another client is failing over)');
+                var overlay = document.getElementById('upload-overlay');
+                overlay.classList.remove('hidden');
+                overlay.innerHTML =
+                    '<h1>Collabora Online (WASM)</h1>' +
+                    '<div class="status">Host disconnected. Another collaborator is taking over...</div>' +
+                    '<div class="status" style="font-size:0.85em;color:#999;margin-top:0.5em;">You will be reconnected automatically.</div>';
+            }
+
+            if (event.data.type === 'relay-host-restored') {
+                // New host is ready — reload as client to reconnect
+                console.log('wasm.html: new host restored, reloading as client');
+                window.location.reload();
+            }
+        });
 
         // --- Show ready UI (after upload or when returning to existing doc) ---
 
@@ -525,8 +590,19 @@
 
                         function startAutoRole(docId, originalName) {
                             document.getElementById('init-progress').style.display = 'none';
+                            // Check if this is a failover reload — auto-open as host
+                            var isFailover = sessionStorage.getItem('failover') === '1';
+                            if (isFailover) {
+                                sessionStorage.removeItem('failover');
+                            }
                             tryClientThenHost(docId, status, function() {
-                                // No host — become the host
+                                if (isFailover) {
+                                    // Failover: skip UI, open as host immediately
+                                    status.textContent = 'Taking over as host...';
+                                    openAsHost(docId);
+                                    return;
+                                }
+                                // Normal: show ready UI with download + host button
                                 showReadyUI(docId, originalName);
                             });
                         }

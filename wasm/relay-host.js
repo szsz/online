@@ -8,6 +8,17 @@
         relaySocket: null,
         // Maps relay clientId -> { wasmClientId, ready, queue }
         clientMap: new Map(),
+        _deferReady: false, // When true, don't send type=6 on connect
+
+        // Send type=6 (host-ready) to relay — call after document is loaded
+        sendReady: function() {
+            if (!this.relaySocket || this.relaySocket.readyState !== WebSocket.OPEN) return;
+            console.log('RelayHost: sending ready signal (type=6)');
+            var readyMsg = new ArrayBuffer(5);
+            var view = new Uint8Array(readyMsg);
+            view[0] = 6;
+            this.relaySocket.send(readyMsg);
+        },
 
         connect: function(relayUrl) {
             console.log('RelayHost: connecting to ' + relayUrl);
@@ -19,6 +30,12 @@
             this._recvChain = Promise.resolve();
             this.relaySocket.onopen = function() {
                 console.log('RelayHost: connected to relay server');
+                if (!self._deferReady) {
+                    // Immediate mode (no emscripten-module.js orchestration)
+                    self.sendReady();
+                }
+                // If _deferReady, emscripten-module.js will call sendReady()
+                // after the document is loaded (status: received).
             };
 
             this.relaySocket.onmessage = function(event) {
@@ -28,8 +45,16 @@
                 });
             };
 
-            this.relaySocket.onclose = function() {
-                console.log('RelayHost: disconnected from relay server');
+            this.relaySocket.onclose = function(event) {
+                console.log('RelayHost: disconnected from relay server (code=' + event.code + ')');
+                if (event.code === 4001) {
+                    // Room already has a host — tell parent to switch to client mode
+                    console.log('RelayHost: room already has a host, notifying parent');
+                    try {
+                        window.parent.postMessage({ type: 'relay-host-rejected' }, '*');
+                    } catch(e) {}
+                    return;
+                }
                 for (var [relayId, info] of self.clientMap) {
                     if (info.ready) {
                         Module._close_remote_client(info.wasmClientId);

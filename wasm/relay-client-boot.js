@@ -34,6 +34,7 @@
     var pendingMessages = [];
     var socketOpened = false;
     var earlyMessages = []; // Messages received before socket is opened
+    var failoverInProgress = false; // Set when host-lost triggers failover
     // In server mode, COOLWSD always writes the fetched document to /tempdoc
     // (see wasmapp.cpp), so the fileURL is always file:///tempdoc regardless
     // of the original blob name.
@@ -117,6 +118,43 @@
             relayUrl = finalUrl;
             _doConnect(finalUrl);
         });
+
+        // Background preload WASM files for fast failover to host
+        backgroundPreloadWasm();
+    }
+
+    function backgroundPreloadWasm() {
+        if (!('caches' in window)) return;
+        var cdn = (window.__CONFIG__ && window.__CONFIG__.cdnUrl) || '';
+        var cdnBase = cdn ? cdn.replace(/\/+$/, '') + '/' : '/';
+        var files = ['online.wasm', 'soffice.data', 'online.js'];
+        var CACHE_NAME = 'cool-wasm-assets';
+
+        caches.open(CACHE_NAME).then(function(cache) {
+            files.forEach(function(file) {
+                cache.match(cdnBase + file).then(function(resp) {
+                    if (!resp) {
+                        console.log('RelayClient: background preloading ' + file);
+                        fetch(cdnBase + file).then(function(r) {
+                            if (r.ok) {
+                                var ct = file.endsWith('.wasm') ? 'application/wasm'
+                                       : file.endsWith('.js') ? 'application/javascript'
+                                       : 'application/octet-stream';
+                                r.arrayBuffer().then(function(buf) {
+                                    var cached = new Response(buf, {
+                                        headers: { 'Content-Type': ct, 'Content-Length': buf.byteLength.toString() }
+                                    });
+                                    cache.put(cdnBase + file, cached);
+                                    console.log('RelayClient: preloaded ' + file + ' (' + buf.byteLength + ' bytes)');
+                                });
+                            }
+                        }).catch(function() {});
+                    } else {
+                        console.log('RelayClient: ' + file + ' already cached');
+                    }
+                });
+            });
+        }).catch(function() {});
     }
 
     function _doConnect(url) {
@@ -139,6 +177,38 @@
             var eventData = event.data;
             var seq = recvSeq++;
             recvChain = recvChain.then(async function() {
+            // Check for server control messages (exactly 5 bytes, type 3 or 4)
+            if (eventData instanceof ArrayBuffer && eventData.byteLength === 5) {
+                var ctrl = new Uint8Array(eventData);
+                if (ctrl[0] === 3) {
+                    console.log('RelayClient: host lost, triggering failover');
+                    failoverInProgress = true;
+                    // Close relay WS — onclose will be suppressed by failover flag
+                    try { relayWs.close(); } catch(e) {}
+                    // Notify parent to reload and re-run role selection
+                    try {
+                        window.parent.postMessage({ type: 'relay-host-lost' }, '*');
+                    } catch(e) {}
+                    return;
+                }
+                if (ctrl[0] === 4) {
+                    console.log('RelayClient: host restored, notifying parent to reconnect');
+                    // New host connected — tell parent to reload as client
+                    try { relayWs.close(); } catch(e) {}
+                    try {
+                        window.parent.postMessage({ type: 'relay-host-restored' }, '*');
+                    } catch(e) {}
+                    return;
+                }
+                if (ctrl[0] === 5) {
+                    console.log('RelayClient: wait-for-new-host (another client is taking over)');
+                    // Stay connected, wait for type=4 (host-restored) which will trigger reload
+                    try {
+                        window.parent.postMessage({ type: 'relay-wait-for-host' }, '*');
+                    } catch(e) {}
+                    return;
+                }
+            }
             // Decrypt incoming data
             var raw = await decryptMsg(eventData);
             var data = decodeRelayData(raw);
@@ -177,8 +247,12 @@
         };
 
         relayWs.onclose = function() {
-            console.log('RelayClient: relay connection closed');
+            console.log('RelayClient: relay connection closed (failover=' + failoverInProgress + ')');
             relayConnected = false;
+            if (failoverInProgress) {
+                // Don't trigger COOL's reconnect — parent is reloading for failover
+                return;
+            }
             if (window.TheFakeWebSocket && window.TheFakeWebSocket.onclose) {
                 window.TheFakeWebSocket.onclose();
             }

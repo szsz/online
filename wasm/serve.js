@@ -224,9 +224,9 @@ const server = http.createServer(async (req, res) => {
     function streamFile(fp, stats) {
         const ext = path.extname(fp).toLowerCase();
         const contentType = MIME[ext] || 'application/octet-stream';
-        const cacheControl = (ext === '.html' || ext === '.json')
-            ? 'no-cache'
-            : 'public, max-age=31536000, immutable';
+        const cacheControl = (ext === '.wasm' || ext === '.data')
+            ? 'public, max-age=31536000, immutable'
+            : 'no-cache';
         res.writeHead(200, {
             'Content-Type': contentType,
             'Content-Length': stats.size,
