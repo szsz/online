@@ -18,6 +18,32 @@
     // Document URL derived from relay room name (room = file path)
     var hostDocUrl = 'file:///' + relayRoom;
 
+    // Encrypt a message via RelayCrypto (if loaded and enabled)
+    async function encryptMsg(msg) {
+        if (globalThis.RelayCrypto) {
+            return await globalThis.RelayCrypto.encrypt(msg);
+        }
+        return msg;
+    }
+
+    // Decrypt a message via RelayCrypto (if loaded and enabled)
+    async function decryptMsg(data) {
+        if (globalThis.RelayCrypto) {
+            return await globalThis.RelayCrypto.decrypt(data);
+        }
+        return data;
+    }
+
+    // Send a message through the relay, encrypting if enabled
+    async function relaySend(msg) {
+        var encrypted = await encryptMsg(msg);
+        if (relayConnected && relayWs && relayWs.readyState === WebSocket.OPEN) {
+            relayWs.send(encrypted);
+        } else {
+            pendingMessages.push(encrypted);
+        }
+    }
+
     function decodeRelayData(data) {
         if (data instanceof ArrayBuffer) {
             var bytes = new Uint8Array(data);
@@ -51,6 +77,11 @@
     }
 
     function connectRelay() {
+        // Initialize encryption (no-op if no URL fragment)
+        if (globalThis.RelayCrypto) {
+            globalThis.RelayCrypto.init();
+        }
+
         console.log('RelayClient: connecting to ' + relayUrl);
         relayWs = new WebSocket(relayUrl);
         relayWs.binaryType = 'arraybuffer';
@@ -64,8 +95,10 @@
             pendingMessages = [];
         };
 
-        relayWs.onmessage = function(event) {
-            var data = decodeRelayData(event.data);
+        relayWs.onmessage = async function(event) {
+            // Decrypt incoming data
+            var raw = await decryptMsg(event.data);
+            var data = decodeRelayData(raw);
 
             if (!socketOpened) {
                 // Check for 'status:' which means doc is loaded for our session
@@ -125,12 +158,7 @@
                 return;
             }
         }
-        if (relayConnected && relayWs && relayWs.readyState === WebSocket.OPEN) {
-            relayWs.send(msg);
-        } else {
-            console.log('RelayClient: queuing message (relay not ready):', msg.substring(0, 80));
-            pendingMessages.push(msg);
-        }
+        relaySend(msg);
     };
     window.postMobileCall = window.postMobileMessage;
 
@@ -157,13 +185,8 @@
 
         console.log('RelayClient: sending coolclient + load via relay (url=' + hostDocUrl + ')');
 
-        if (relayConnected) {
-            relayWs.send(coolclient);
-            relayWs.send(loadMsg);
-        } else {
-            pendingMessages.push(coolclient);
-            pendingMessages.push(loadMsg);
-        }
+        relaySend(coolclient);
+        relaySend(loadMsg);
     }
 
     // createOnlineModule: connect relay, send initial handshake, wait for

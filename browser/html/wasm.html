@@ -39,7 +39,7 @@
         #upload-overlay label:hover { background: #0256b9; }
         #upload-overlay input[type="file"] { display: none; }
         #upload-overlay .status { margin-top: 1em; color: #666; }
-        #upload-overlay .links { margin-top: 1.5em; text-align: center; }
+        #upload-overlay .links { margin-top: 1.5em; text-align: center; width: 100%; max-width: 500px; }
         #upload-overlay .links a {
             display: block;
             margin: 0.5em 0;
@@ -51,8 +51,30 @@
             font-size: 1em;
         }
         #upload-overlay .links a:hover { background: #0256b9; }
-        #upload-overlay .links a.secondary { background: #28a745; }
-        #upload-overlay .links a.secondary:hover { background: #22863a; }
+        #upload-overlay .share-box { margin-top: 1em; width: 100%; }
+        #upload-overlay .share-box label { display: block; margin-bottom: 0.4em; color: #555; font-size: 0.9em; background: none; padding: 0; cursor: default; }
+        #upload-overlay .share-row { display: flex; gap: 0; }
+        #upload-overlay .share-row input[type="text"] {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px 0 0 6px;
+            font-size: 0.85em;
+            font-family: monospace;
+            outline: none;
+        }
+        #upload-overlay .share-row input[type="text"]:focus { border-color: #0366d6; }
+        #upload-overlay .share-row button {
+            padding: 10px 16px;
+            background: #28a745;
+            color: white;
+            border: 1px solid #28a745;
+            border-radius: 0 6px 6px 0;
+            cursor: pointer;
+            font-size: 0.85em;
+            white-space: nowrap;
+        }
+        #upload-overlay .share-row button:hover { background: #22863a; }
     </style>
 </head>
 
@@ -132,40 +154,53 @@
                     var relayRoom = 'upload/' + safeName;
                     var relayServer = params.get('relayServer') || 'ws://localhost:9090';
 
-                    // Build Browser B URL: relay-client.html with room name
+                    // Build Browser B URL: relay-client.html with room name + encryption fragment
                     var localServer = window.location.protocol + '//' + window.location.host;
+                    var fragment = window.location.hash || '';
                     var browserBUrl = localServer + '/relay-client.html'
                         + '?relayServer=' + encodeURIComponent(relayServer)
-                        + '&relayRoom=' + encodeURIComponent(relayRoom);
+                        + '&relayRoom=' + encodeURIComponent(relayRoom)
+                        + fragment;
 
-                    // Show links
+                    // Show open button + share link
                     status.textContent = 'File ready: ' + file.name;
                     var linksDiv = document.createElement('div');
                     linksDiv.className = 'links';
 
                     var hostLink = document.createElement('a');
                     hostLink.href = '#';
-                    hostLink.textContent = 'Open as Host (Browser A)';
+                    hostLink.textContent = 'Open as Host';
                     hostLink.addEventListener('click', function(ev) {
                         ev.preventDefault();
                         document.getElementById('upload-overlay').classList.add('hidden');
-                        // Load in current page's iframe (file data is in window._uploadedFileData)
                         var form = document.getElementById('form');
                         form.style.display = '';
                         form.action = constructWopiUrl('upload/' + safeName)
-                            + '&relay=' + encodeURIComponent(relayServer + '/host');
+                            + '&relay=' + encodeURIComponent(relayServer + '/host')
+                            + fragment;
                         form.submit();
                     });
-
-                    var clientLink = document.createElement('a');
-                    clientLink.href = browserBUrl;
-                    clientLink.target = '_blank';
-                    clientLink.className = 'secondary';
-                    clientLink.textContent = 'Open as Client (Browser B)';
-
                     linksDiv.appendChild(hostLink);
-                    linksDiv.appendChild(clientLink);
+
+                    var shareBox = document.createElement('div');
+                    shareBox.className = 'share-box';
+                    shareBox.innerHTML =
+                        '<label>Share this link with collaborators:</label>' +
+                        '<div class="share-row">' +
+                            '<input type="text" id="share-url" value="' + browserBUrl.replace(/"/g, '&quot;') + '" readonly />' +
+                            '<button id="copy-btn">Copy</button>' +
+                        '</div>';
+                    linksDiv.appendChild(shareBox);
+
                     document.getElementById('upload-overlay').appendChild(linksDiv);
+
+                    document.getElementById('copy-btn').addEventListener('click', function() {
+                        var input = document.getElementById('share-url');
+                        navigator.clipboard.writeText(input.value).then(function() {
+                            document.getElementById('copy-btn').textContent = 'Copied!';
+                            setTimeout(function() { document.getElementById('copy-btn').textContent = 'Copy'; }, 2000);
+                        });
+                    });
                 };
                 reader.readAsArrayBuffer(file);
             });

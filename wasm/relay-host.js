@@ -38,7 +38,7 @@
             };
         },
 
-        _handleRelayMessage: function(data) {
+        _handleRelayMessage: async function(data) {
             var buf = new Uint8Array(data);
             if (buf.length < 5) return;
 
@@ -71,7 +71,7 @@
             }
 
             if (type === 0) {
-                // Data from remote client
+                // Data from remote client — decrypt if encryption enabled
                 var info = this.clientMap.get(relayClientId);
                 if (!info) {
                     console.warn('RelayHost: unknown relay client ' + relayClientId);
@@ -79,7 +79,13 @@
                 }
 
                 var payload = buf.slice(5);
-                var msg = new TextDecoder().decode(payload);
+                var decrypted = await globalThis.RelayCrypto.decrypt(payload.buffer);
+                var msg;
+                if (typeof decrypted === 'string') {
+                    msg = decrypted;
+                } else {
+                    msg = new TextDecoder().decode(new Uint8Array(decrypted));
+                }
 
                 if (!info.ready) {
                     // Client not yet connected to COOLWSD, queue the message
@@ -112,7 +118,7 @@
         },
 
         // Send data from COOLWSD back to a remote client via relay
-        sendToRelay: function(wasmClientId, data) {
+        sendToRelay: async function(wasmClientId, data) {
             if (!this.relaySocket || this.relaySocket.readyState !== WebSocket.OPEN) return;
 
             var relayClientId = null;
@@ -124,11 +130,15 @@
             }
             if (relayClientId === null) return;
 
+            // Encrypt payload if encryption is enabled
+            var encrypted = await globalThis.RelayCrypto.encrypt(data);
             var payload;
-            if (typeof data === 'string') {
-                payload = new TextEncoder().encode(data);
+            if (encrypted instanceof ArrayBuffer) {
+                payload = new Uint8Array(encrypted);
+            } else if (typeof encrypted === 'string') {
+                payload = new TextEncoder().encode(encrypted);
             } else {
-                payload = new Uint8Array(data);
+                payload = new Uint8Array(encrypted);
             }
 
             var frame = new Uint8Array(5 + payload.length);
