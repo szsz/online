@@ -76,6 +76,7 @@
         }
         #upload-overlay .share-row button:hover { background: #22863a; }
     </style>
+    <script src="/config.js"></script>
 </head>
 
 <body>
@@ -152,7 +153,9 @@
                     // Build the relay room name (sanitized upload path)
                     var safeName = uploadName.replace(/[^a-zA-Z0-9._-]/g, '_');
                     var relayRoom = 'upload/' + safeName;
-                    var relayServer = params.get('relayServer') || 'ws://localhost:9090';
+                    var configRelay = (window.__CONFIG__ && window.__CONFIG__.relayUrl) || '';
+                    var defaultRelay = configRelay || 'ws://localhost:9090';
+                    var relayServer = params.get('relayServer') || defaultRelay;
 
                     // Build Browser B URL: relay-client.html with room name + encryption fragment
                     var localServer = window.location.protocol + '//' + window.location.host;

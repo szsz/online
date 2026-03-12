@@ -6,7 +6,9 @@
     'use strict';
 
     var params = new URLSearchParams(window.location.search);
-    var relayServer = params.get('relayServer') || 'ws://localhost:9090';
+    var configRelay = (window.__CONFIG__ && window.__CONFIG__.relayUrl) || '';
+    var defaultRelay = configRelay || 'ws://localhost:9090';
+    var relayServer = params.get('relayServer') || defaultRelay;
     var relayRoom = params.get('relayRoom') || 'default';
     var relayUrl = relayServer + '/client?room=' + encodeURIComponent(relayRoom);
 

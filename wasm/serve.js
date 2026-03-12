@@ -41,6 +41,15 @@ const server = http.createServer((req, res) => {
     }
     if (urlPath === '/') urlPath = '/wasm.html';
 
+    // Serve runtime config from environment variables
+    if (urlPath === '/config.js') {
+        const relayUrl = process.env.RELAY_URL || '';
+        const body = `window.__CONFIG__=${JSON.stringify({ relayUrl })};`;
+        res.writeHead(200, { 'Content-Type': 'application/javascript', 'Content-Length': Buffer.byteLength(body) });
+        res.end(body);
+        return;
+    }
+
     const filePath = path.join(ROOT, urlPath);
 
     // Prevent directory traversal
