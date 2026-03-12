@@ -104,7 +104,7 @@ const MIME = {
 const server = http.createServer(async (req, res) => {
     // COOP/COEP headers required for SharedArrayBuffer
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
 
     let urlPath;
     try {
@@ -117,7 +117,8 @@ const server = http.createServer(async (req, res) => {
     // Serve runtime config from environment variables
     if (urlPath === '/config.js') {
         const relayUrl = process.env.RELAY_URL || '';
-        const body = `window.__CONFIG__=${JSON.stringify({ relayUrl })};`;
+        const cdnUrl = process.env.CDN_URL || '';
+        const body = `window.__CONFIG__=${JSON.stringify({ relayUrl, cdnUrl })};`;
         res.writeHead(200, { 'Content-Type': 'application/javascript', 'Content-Length': Buffer.byteLength(body) });
         res.end(body);
         return;
@@ -223,9 +224,13 @@ const server = http.createServer(async (req, res) => {
     function streamFile(fp, stats) {
         const ext = path.extname(fp).toLowerCase();
         const contentType = MIME[ext] || 'application/octet-stream';
+        const cacheControl = (ext === '.html' || ext === '.json')
+            ? 'no-cache'
+            : 'public, max-age=31536000, immutable';
         res.writeHead(200, {
             'Content-Type': contentType,
             'Content-Length': stats.size,
+            'Cache-Control': cacheControl,
         });
         fs.createReadStream(fp).pipe(res);
     }

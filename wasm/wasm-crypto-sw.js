@@ -60,8 +60,42 @@ async function decryptData(data) {
     return crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, encryptionKey, ciphertext);
 }
 
+var ASSET_CACHE = 'cool-wasm-assets';
+
 self.addEventListener('fetch', function(event) {
     var url = new URL(event.request.url);
+
+    // Serve cached WASM/data assets from Cache API (populated by preloadWasmFiles).
+    // Match specific large files by name, regardless of origin (CDN or local).
+    var basename = url.pathname.split('/').pop();
+    var cachedAssets = { 'online.wasm': true, 'soffice.data': true, 'online.js': true, 'soffice.data.js.metadata': true };
+    if (event.request.method === 'GET' && cachedAssets[basename]) {
+        event.respondWith(
+            caches.open(ASSET_CACHE).then(function(cache) {
+                // Try exact URL first, then try just by iterating cache keys
+                return cache.match(event.request.url).then(function(cached) {
+                    if (cached) {
+                        console.log('CryptoSW: serving from cache: ' + basename);
+                        return cached;
+                    }
+                    // Try matching by basename (in case CDN vs origin URL differs)
+                    return cache.keys().then(function(keys) {
+                        for (var i = 0; i < keys.length; i++) {
+                            if (keys[i].url.endsWith('/' + basename)) {
+                                return cache.match(keys[i]);
+                            }
+                        }
+                        return null;
+                    });
+                }).then(function(cached) {
+                    if (cached) return cached;
+                    // Not in cache — fetch normally
+                    return fetch(event.request);
+                });
+            })
+        );
+        return;
+    }
 
     // Only intercept /wasm/<hash> document requests (not /wasm/meta/*)
     if (!url.pathname.startsWith('/wasm/') || url.pathname.startsWith('/wasm/meta/')) {

@@ -55,14 +55,24 @@
         return data;
     }
 
-    // Send a message through the relay, encrypting if enabled
-    async function relaySend(msg) {
-        var encrypted = await encryptMsg(msg);
-        if (relayConnected && relayWs && relayWs.readyState === WebSocket.OPEN) {
-            relayWs.send(encrypted);
-        } else {
-            pendingMessages.push(encrypted);
-        }
+    // Send a message through the relay, encrypting if enabled.
+    // Serialized via promise chain to preserve message ordering.
+    var sendChain = Promise.resolve();
+    var sendSeq = 0;
+    function relaySend(msg) {
+        var seq = sendSeq++;
+        var preview = typeof msg === 'string' ? msg.substring(0, 60) : '[binary ' + msg.byteLength + 'B]';
+        console.log('RelayClient SEND #' + seq + ': ' + preview);
+        sendChain = sendChain.then(function() {
+            return encryptMsg(msg);
+        }).then(function(encrypted) {
+            console.log('RelayClient SEND #' + seq + ' encrypted, dispatching');
+            if (relayConnected && relayWs && relayWs.readyState === WebSocket.OPEN) {
+                relayWs.send(encrypted);
+            } else {
+                pendingMessages.push(encrypted);
+            }
+        });
     }
 
     function decodeRelayData(data) {
@@ -123,9 +133,14 @@
             pendingMessages = [];
         };
 
-        relayWs.onmessage = async function(event) {
+        var recvChain = Promise.resolve();
+        var recvSeq = 0;
+        relayWs.onmessage = function(event) {
+            var eventData = event.data;
+            var seq = recvSeq++;
+            recvChain = recvChain.then(async function() {
             // Decrypt incoming data
-            var raw = await decryptMsg(event.data);
+            var raw = await decryptMsg(eventData);
             var data = decodeRelayData(raw);
 
             if (!socketOpened) {
@@ -158,6 +173,7 @@
             if (window.TheFakeWebSocket && window.TheFakeWebSocket.onmessage) {
                 window.TheFakeWebSocket.onmessage({ data: data });
             }
+            }); // end recvChain
         };
 
         relayWs.onclose = function() {

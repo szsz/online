@@ -111,7 +111,11 @@
         <label for="file-input">Choose a document to open</label>
         <input type="file" id="file-input"
             accept=".odt,.ods,.odp,.odg,.docx,.xlsx,.pptx,.doc,.xls,.ppt,.pdf,.txt,.csv,.rtf" />
-        <div class="status" id="upload-status"></div>
+        <div class="status" id="upload-status">Initializing...</div>
+        <div class="progress-box" id="init-progress" style="width:80%;max-width:500px;margin-top:1em;">
+            <div class="progress-bar"><div class="progress-bar-fill" id="init-fill" style="width:0%"></div></div>
+            <div class="progress-text" id="init-text">Loading...</div>
+        </div>
     </div>
     <form id="form" action enctype="multipart/form-data" target="coolframe" method="post" style="display:none;">
         <input name="access_token" value="test" type="hidden" />
@@ -233,62 +237,87 @@
         }
 
         // Preload large WASM files, returns a promise. Calls onProgress(loaded, total).
+        // Preload large WASM files into the Cache API so they persist across
+        // page loads and can be served by the Service Worker to Emscripten.
         function preloadWasmFiles(onProgress) {
+            var cdn = (window.__CONFIG__ && window.__CONFIG__.cdnUrl) || '';
+            var cdnBase = cdn ? cdn.replace(/\/+$/, '') + '/' : '/';
             var files = ['online.wasm', 'soffice.data', 'online.js'];
-            var sizes = {};
-            var loaded = {};
-            var totalSize = 0;
-            var done = 0;
+            var CACHE_NAME = 'cool-wasm-assets';
 
-            return new Promise(function(resolve) {
-                files.forEach(function(file) {
-                    var xhr = new XMLHttpRequest();
-                    xhr.open('HEAD', '/' + file);
-                    xhr.onload = function() {
-                        var size = parseInt(xhr.getResponseHeader('Content-Length')) || 0;
-                        sizes[file] = size;
-                        totalSize += size;
-                        loaded[file] = 0;
-                        done++;
-                        if (done === files.length) startDownloads();
-                    };
-                    xhr.onerror = function() {
-                        sizes[file] = 0;
-                        loaded[file] = 0;
-                        done++;
-                        if (done === files.length) startDownloads();
-                    };
-                    xhr.send();
-                });
-
-                function startDownloads() {
-                    var completed = 0;
-                    if (totalSize === 0) { resolve(); return; }
-                    files.forEach(function(file) {
-                        var xhr = new XMLHttpRequest();
-                        xhr.open('GET', '/' + file);
-                        xhr.responseType = 'arraybuffer';
-                        xhr.onprogress = function(e) {
-                            loaded[file] = e.loaded;
-                            var sum = 0;
-                            for (var f in loaded) sum += loaded[f];
-                            onProgress(sum, totalSize);
-                        };
-                        xhr.onload = function() {
-                            loaded[file] = sizes[file];
-                            completed++;
-                            var sum = 0;
-                            for (var f in loaded) sum += loaded[f];
-                            onProgress(sum, totalSize);
-                            if (completed === files.length) resolve();
-                        };
-                        xhr.onerror = function() {
-                            completed++;
-                            if (completed === files.length) resolve();
-                        };
-                        xhr.send();
+            return caches.open(CACHE_NAME).then(function(cache) {
+                // Check which files are already cached
+                return Promise.all(files.map(function(file) {
+                    return cache.match(cdnBase + file).then(function(resp) {
+                        return { file: file, cached: !!resp, size: resp ? parseInt(resp.headers.get('Content-Length')) || 0 : 0 };
                     });
-                }
+                })).then(function(results) {
+                    var toDownload = [];
+                    var totalSize = 0;
+                    var alreadyCached = 0;
+                    results.forEach(function(r) {
+                        if (r.cached) {
+                            console.log('preload: ' + r.file + ' already cached (' + r.size + ' bytes)');
+                            alreadyCached += r.size;
+                        } else {
+                            toDownload.push(r.file);
+                        }
+                    });
+
+                    if (toDownload.length === 0) {
+                        console.log('preload: all files cached');
+                        onProgress(1, 1);
+                        return;
+                    }
+
+                    // HEAD requests for sizes of files we need to download
+                    var sizes = {};
+                    var loaded = {};
+                    return Promise.all(toDownload.map(function(file) {
+                        return fetch(cdnBase + file, { method: 'HEAD' }).then(function(resp) {
+                            sizes[file] = parseInt(resp.headers.get('Content-Length')) || 0;
+                            totalSize += sizes[file];
+                            loaded[file] = 0;
+                        }).catch(function() { sizes[file] = 0; loaded[file] = 0; });
+                    })).then(function() {
+                        totalSize += alreadyCached;
+                        var currentLoaded = alreadyCached;
+
+                        // Download missing files with progress via XHR, then store in Cache API
+                        return Promise.all(toDownload.map(function(file) {
+                            return new Promise(function(resolve) {
+                                var xhr = new XMLHttpRequest();
+                                xhr.open('GET', cdnBase + file);
+                                xhr.responseType = 'arraybuffer';
+                                xhr.onprogress = function(e) {
+                                    loaded[file] = e.loaded;
+                                    var sum = alreadyCached;
+                                    for (var f in loaded) sum += loaded[f];
+                                    onProgress(sum, totalSize);
+                                };
+                                xhr.onload = function() {
+                                    loaded[file] = sizes[file];
+                                    var sum = alreadyCached;
+                                    for (var f in loaded) sum += loaded[f];
+                                    onProgress(sum, totalSize);
+                                    // Store in Cache API with correct content type
+                                    var ct = file.endsWith('.wasm') ? 'application/wasm'
+                                           : file.endsWith('.js') ? 'application/javascript'
+                                           : 'application/octet-stream';
+                                    var resp = new Response(xhr.response, {
+                                        headers: {
+                                            'Content-Type': ct,
+                                            'Content-Length': xhr.response.byteLength.toString()
+                                        }
+                                    });
+                                    cache.put(cdnBase + file, resp).then(resolve).catch(resolve);
+                                };
+                                xhr.onerror = function() { resolve(); };
+                                xhr.send();
+                            });
+                        }));
+                    });
+                });
             });
         }
 
@@ -448,10 +477,15 @@
             form.action = constructWopiUrl(params.get('WOPISrc') || params.get('file_path'));
             form.submit();
         } else {
-            // Wait for Service Worker + compute file hash before making any /wasm/ requests
-            Promise.all([swReady, hashKey(encKey)]).then(function(results) {
-                var docId = results[1];
+            var initFill = document.getElementById('init-fill');
+            var initText = document.getElementById('init-text');
+            initFill.style.width = '20%';
+            initText.textContent = 'Checking for existing document...';
+
+            // Compute doc ID immediately (HMAC is fast), don't wait for SW
+            hashKey(encKey).then(function(docId) {
                 var status = document.getElementById('upload-status');
+                initFill.style.width = '50%';
 
                 // Check if a document already exists for this key
                 var xhr = new XMLHttpRequest();
@@ -490,6 +524,7 @@
                         metaXhr.send();
 
                         function startAutoRole(docId, originalName) {
+                            document.getElementById('init-progress').style.display = 'none';
                             tryClientThenHost(docId, status, function() {
                                 // No host — become the host
                                 showReadyUI(docId, originalName);
@@ -506,23 +541,39 @@
                 xhr.send();
 
                 function showUploadForm(docId) {
+                    document.getElementById('init-progress').style.display = 'none';
                     status.textContent = 'No document found for this link. Please upload a file to get started.';
                     document.getElementById('file-input').addEventListener('change', function(e) {
                         var file = e.target.files[0];
                         if (!file) return;
 
+                        status.textContent = 'Preparing upload...';
+                        // Ensure Service Worker is ready before uploading (it encrypts the POST)
+                        swReady.then(function() {
                         status.textContent = 'Uploading ' + file.name + '...';
+                        console.log('Upload started:', file.name, file.size, 'bytes');
 
                         var reader = new FileReader();
                         reader.onload = function(ev) {
+                            var data = new Uint8Array(ev.target.result);
+                            console.log('File read complete:', data.length, 'bytes. POSTing to /wasm/' + docId);
+
                             // Upload file to blob storage using docId as blob name
                             var uploadXhr = new XMLHttpRequest();
                             uploadXhr.open('POST', '/wasm/' + encodeURIComponent(docId));
+                            uploadXhr.upload.onprogress = function(pe) {
+                                if (pe.lengthComputable) {
+                                    var pct = Math.round((pe.loaded / pe.total) * 100);
+                                    status.textContent = 'Uploading ' + file.name + '... ' + pct + '%';
+                                }
+                            };
                             uploadXhr.onload = function() {
+                                console.log('Upload response:', uploadXhr.status, uploadXhr.statusText);
                                 if (uploadXhr.status !== 200) {
-                                    status.textContent = 'Upload failed: ' + uploadXhr.statusText;
+                                    status.textContent = 'Upload failed: ' + uploadXhr.status + ' ' + uploadXhr.statusText;
                                     return;
                                 }
+                                status.textContent = 'Upload complete. Saving metadata...';
                                 // Store encrypted filename as metadata
                                 deriveAesKey(encKey).then(function(aesKey) {
                                     return encryptString(aesKey, file.name);
@@ -530,20 +581,38 @@
                                     var metaXhr2 = new XMLHttpRequest();
                                     metaXhr2.open('POST', '/wasm/meta/' + encodeURIComponent(docId));
                                     metaXhr2.setRequestHeader('Content-Type', 'application/json');
+                                    metaXhr2.onload = function() {
+                                        console.log('Metadata saved');
+                                        document.title = file.name + ' - Online';
+                                        showReadyUI(docId, file.name);
+                                    };
+                                    metaXhr2.onerror = function() {
+                                        console.warn('Metadata save failed, continuing anyway');
+                                        document.title = file.name + ' - Online';
+                                        showReadyUI(docId, file.name);
+                                    };
                                     metaXhr2.send(JSON.stringify({ encryptedName: encName }));
                                 }).catch(function(err) {
-                                    console.warn('Failed to save metadata:', err);
+                                    console.warn('Failed to encrypt metadata:', err);
+                                    document.title = file.name + ' - Online';
+                                    showReadyUI(docId, file.name);
                                 });
-
-                                document.title = file.name + ' - Online';
-                                showReadyUI(docId, file.name);
                             };
                             uploadXhr.onerror = function() {
+                                console.error('Upload XHR error');
                                 status.textContent = 'Upload failed: network error';
                             };
-                            uploadXhr.send(new Uint8Array(ev.target.result));
+                            uploadXhr.ontimeout = function() {
+                                console.error('Upload timed out');
+                                status.textContent = 'Upload timed out';
+                            };
+                            uploadXhr.send(data);
+                        };
+                        reader.onerror = function() {
+                            status.textContent = 'Failed to read file';
                         };
                         reader.readAsArrayBuffer(file);
+                        }); // end swReady.then
                     });
                 }
             });

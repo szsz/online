@@ -15,12 +15,17 @@
             this.relaySocket.binaryType = 'arraybuffer';
 
             var self = this;
+            // Serialized promise chain to preserve message ordering across async decrypt
+            this._recvChain = Promise.resolve();
             this.relaySocket.onopen = function() {
                 console.log('RelayHost: connected to relay server');
             };
 
             this.relaySocket.onmessage = function(event) {
-                self._handleRelayMessage(event.data);
+                var data = event.data;
+                self._recvChain = self._recvChain.then(function() {
+                    return self._handleRelayMessage(data);
+                });
             };
 
             this.relaySocket.onclose = function() {
@@ -87,6 +92,9 @@
                     msg = new TextDecoder().decode(new Uint8Array(decrypted));
                 }
 
+                var preview = typeof msg === 'string' ? msg.substring(0, 80) : '[binary]';
+                console.log('RelayHost RECV client ' + relayClientId + ': ' + preview);
+
                 if (!info.ready) {
                     // Client not yet connected to COOLWSD, queue the message
                     info.queue.push(msg);
@@ -117,8 +125,17 @@
             }
         },
 
+        _sendChain: Promise.resolve(),
+
         // Send data from COOLWSD back to a remote client via relay
-        sendToRelay: async function(wasmClientId, data) {
+        sendToRelay: function(wasmClientId, data) {
+            var self = this;
+            this._sendChain = this._sendChain.then(function() {
+                return self._doSendToRelay(wasmClientId, data);
+            });
+        },
+
+        _doSendToRelay: async function(wasmClientId, data) {
             if (!this.relaySocket || this.relaySocket.readyState !== WebSocket.OPEN) return;
 
             var relayClientId = null;
