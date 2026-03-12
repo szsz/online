@@ -9,16 +9,35 @@
     var configRelay = (window.__CONFIG__ && window.__CONFIG__.relayUrl) || '';
     var defaultRelay = configRelay || 'ws://localhost:9090';
     var relayServer = params.get('relayServer') || defaultRelay;
+    // Room can be passed directly or derived from URL fragment hash
     var relayRoom = params.get('relayRoom') || 'default';
     var relayUrl = relayServer + '/client?room=' + encodeURIComponent(relayRoom);
+
+    // Derive relay room from URL fragment via HMAC (same derivation as wasm.html)
+    var relayUrlReady = Promise.resolve(relayUrl);
+    var urlFragment = window.location.hash ? window.location.hash.substring(1) : '';
+    if (urlFragment && relayRoom === 'default') {
+        var enc = new TextEncoder();
+        relayUrlReady = crypto.subtle.importKey(
+            'raw', enc.encode(urlFragment), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+        ).then(function(hmacKey) {
+            return crypto.subtle.sign('HMAC', hmacKey, enc.encode('cool-blob'));
+        }).then(function(buf) {
+            var hash = Array.from(new Uint8Array(buf), function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+            relayRoom = hash;
+            return relayServer + '/client?room=' + encodeURIComponent(hash);
+        });
+    }
 
     var relayWs = null;
     var relayConnected = false;
     var pendingMessages = [];
     var socketOpened = false;
     var earlyMessages = []; // Messages received before socket is opened
-    // Document URL derived from relay room name (room = file path)
-    var hostDocUrl = 'file:///' + relayRoom;
+    // In server mode, COOLWSD always writes the fetched document to /tempdoc
+    // (see wasmapp.cpp), so the fileURL is always file:///tempdoc regardless
+    // of the original blob name.
+    var hostDocUrl = 'file:///tempdoc';
 
     // Encrypt a message via RelayCrypto (if loaded and enabled)
     async function encryptMsg(msg) {
@@ -84,8 +103,15 @@
             globalThis.RelayCrypto.init();
         }
 
-        console.log('RelayClient: connecting to ' + relayUrl);
-        relayWs = new WebSocket(relayUrl);
+        relayUrlReady.then(function(finalUrl) {
+            relayUrl = finalUrl;
+            _doConnect(finalUrl);
+        });
+    }
+
+    function _doConnect(url) {
+        console.log('RelayClient: connecting to ' + url);
+        relayWs = new WebSocket(url);
         relayWs.binaryType = 'arraybuffer';
 
         relayWs.onopen = function() {

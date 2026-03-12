@@ -6,7 +6,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_DIR"
 
 echo "Deploying files to browser/dist..."
-for f in relay-host.js relay-client-boot.js relay-client.html relay-server.js relay-crypto.js emscripten-module.js; do
+for f in relay-host.js relay-client-boot.js relay-client.html relay-server.js relay-crypto.js emscripten-module.js wasm-crypto-sw.js; do
     cp "wasm/$f" "browser/dist/$f"
     echo "  $f"
 done

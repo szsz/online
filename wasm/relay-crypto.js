@@ -1,12 +1,9 @@
 // relay-crypto.js: End-to-end encryption for relay messages.
-// Key is derived from the URL fragment (#...) using PBKDF2 + AES-256-GCM.
+// Key is derived from the URL fragment (#...) using HMAC-SHA256 + AES-256-GCM.
 // The relay server only sees ciphertext.
 
 (function() {
     'use strict';
-
-    var SALT = new TextEncoder().encode('cool-wasm-relay-e2ee');
-    var ITERATIONS = 100000;
 
     var RelayCrypto = {
         _key: null,
@@ -23,17 +20,7 @@
                 return this._ready;
             }
             this._ready = (async function() {
-                var enc = new TextEncoder();
-                var keyMaterial = await crypto.subtle.importKey(
-                    'raw', enc.encode(fragment), 'PBKDF2', false, ['deriveKey']
-                );
-                self._key = await crypto.subtle.deriveKey(
-                    { name: 'PBKDF2', salt: SALT, iterations: ITERATIONS, hash: 'SHA-256' },
-                    keyMaterial,
-                    { name: 'AES-GCM', length: 256 },
-                    false,
-                    ['encrypt', 'decrypt']
-                );
+                self._key = await hmacDeriveAesKey(fragment, 'cool-relay');
                 self._enabled = true;
                 console.log('RelayCrypto: encryption enabled (key derived from URL fragment)');
             })();
@@ -108,6 +95,18 @@
             }
         }
     };
+
+    // HMAC-SHA256(key=secret, message=salt) → AES-256-GCM CryptoKey
+    async function hmacDeriveAesKey(secret, salt) {
+        var enc = new TextEncoder();
+        var hmacKey = await crypto.subtle.importKey(
+            'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+        );
+        var derived = await crypto.subtle.sign('HMAC', hmacKey, enc.encode(salt));
+        return crypto.subtle.importKey(
+            'raw', derived, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+        );
+    }
 
     globalThis.RelayCrypto = RelayCrypto;
 })();

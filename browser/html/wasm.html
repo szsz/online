@@ -119,6 +119,8 @@
     <iframe id="coolframe" name="coolframe" style="width:100%;height:100%;position:absolute;" title="Collabora Online">
     </iframe>
     <script>
+        // --- Crypto helpers ---
+
         // Generate encryption key if none provided
         if (!window.location.hash || window.location.hash === '#') {
             var array = new Uint8Array(16);
@@ -127,27 +129,107 @@
             window.location.hash = '#' + key;
         }
 
+        var encKey = window.location.hash.substring(1);
+        var fragment = window.location.hash;
+
+        // Register the crypto Service Worker (encrypts/decrypts /wasm/* at the network layer)
+        var swReady = Promise.resolve();
+        if ('serviceWorker' in navigator) {
+            swReady = navigator.serviceWorker.register('/wasm-crypto-sw.js', { scope: '/' })
+                .then(function(reg) {
+                    // Wait for the SW to be active and controlling this page
+                    var sw = reg.active || reg.installing || reg.waiting;
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({ type: 'setKey', key: encKey });
+                        return;
+                    }
+                    return new Promise(function(resolve) {
+                        navigator.serviceWorker.addEventListener('controllerchange', function() {
+                            navigator.serviceWorker.controller.postMessage({ type: 'setKey', key: encKey });
+                            resolve();
+                        });
+                        // If already active but not controlling, claim should fix it
+                        if (sw && sw.state === 'activated') {
+                            sw.postMessage({ type: 'setKey', key: encKey });
+                            resolve();
+                        }
+                    });
+                })
+                .catch(function(err) {
+                    console.error('Service Worker registration failed:', err);
+                });
+        }
+
+        // HMAC-SHA256(key=secret, message=salt) → hex string
+        function hmacHex(secret, salt) {
+            var enc = new TextEncoder();
+            return crypto.subtle.importKey(
+                'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+            ).then(function(hmacKey) {
+                return crypto.subtle.sign('HMAC', hmacKey, enc.encode(salt));
+            }).then(function(buf) {
+                var arr = new Uint8Array(buf);
+                return Array.from(arr, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+            });
+        }
+
+        // HMAC-SHA256(key=secret, message=salt) → AES-256-GCM CryptoKey
+        function hmacDeriveAesKey(secret, salt) {
+            var enc = new TextEncoder();
+            return crypto.subtle.importKey(
+                'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+            ).then(function(hmacKey) {
+                return crypto.subtle.sign('HMAC', hmacKey, enc.encode(salt));
+            }).then(function(derived) {
+                return crypto.subtle.importKey(
+                    'raw', derived, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+                );
+            });
+        }
+
+        // Blob name / relay room: HMAC(key, "cool-blob") → hex
+        function hashKey(key) {
+            return hmacHex(key, 'cool-blob');
+        }
+
+        // Metadata encryption key: HMAC(key, "cool-meta") → AES key
+        function deriveAesKey(keyStr) {
+            return hmacDeriveAesKey(keyStr, 'cool-meta');
+        }
+
+        function encryptString(aesKey, plaintext) {
+            var iv = crypto.getRandomValues(new Uint8Array(12));
+            var data = new TextEncoder().encode(plaintext);
+            return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, aesKey, data).then(function(ct) {
+                // Return base64( iv + ciphertext )
+                var out = new Uint8Array(iv.length + ct.byteLength);
+                out.set(iv);
+                out.set(new Uint8Array(ct), iv.length);
+                return btoa(String.fromCharCode.apply(null, out));
+            });
+        }
+
+        function decryptString(aesKey, b64) {
+            var raw = Uint8Array.from(atob(b64), function(c) { return c.charCodeAt(0); });
+            var iv = raw.slice(0, 12);
+            var ct = raw.slice(12);
+            return crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, aesKey, ct).then(function(pt) {
+                return new TextDecoder().decode(pt);
+            });
+        }
+
+        // --- URL / config helpers ---
+
+        var configRelay = (window.__CONFIG__ && window.__CONFIG__.relayUrl) || '';
+        var defaultRelay = configRelay || 'ws://localhost:9090';
+        var params = new URLSearchParams(window.location.search);
+        var relayServer = params.get('relayServer') || defaultRelay;
+
         function constructWopiUrl(filePath) {
             var localServer = window.location.protocol + "//" + window.location.host;
-            var localUrl = localServer + window.location.pathname + "?";
-            localUrl = localUrl.replace("/wasm.html", "/cool.html");
-            var params = new URLSearchParams(window.location.search);
-            var wopiSrc = params.get('WOPISrc');
-            if (wopiSrc) {
-                params.delete('WOPISrc');
-            }
-            else {
-                if (!filePath) {
-                    filePath = params.get('file_path');
-                }
-                if (filePath) {
-                    filePath = filePath.replace(/^\//, '');
-                }
-                params.delete('file_path');
-                wopiSrc = localServer + "/wopi/files/" + filePath;
-            }
-            return localUrl + params.toString() + (params.size === 0 ? '' : '&') + "WOPISrc="
-                + encodeURIComponent(wopiSrc);
+            var localUrl = localServer + "/cool.html?";
+            var wopiSrc = filePath;
+            return localUrl + "WOPISrc=" + encodeURIComponent(wopiSrc);
         }
 
         // Preload large WASM files, returns a promise. Calls onProgress(loaded, total).
@@ -210,122 +292,260 @@
             });
         }
 
-        var params = new URLSearchParams(window.location.search);
+        // --- Open as Browser A (WASM host) ---
 
-        // If file_path or WOPISrc is already provided, skip upload dialog
+        function openAsHost(docId) {
+            document.getElementById('upload-overlay').classList.add('hidden');
+            var form = document.getElementById('form');
+            form.style.display = '';
+            form.action = constructWopiUrl(docId)
+                + '&relay=' + encodeURIComponent(relayServer + '/host')
+                + fragment;
+            form.submit();
+        }
+
+        // --- Open as Browser B (thin client via relay) ---
+
+        function openAsClient(docId) {
+            document.getElementById('upload-overlay').classList.add('hidden');
+            // Load relay-client.html in the iframe with the room = docId
+            var clientUrl = '/relay-client.html'
+                + '?relayServer=' + encodeURIComponent(relayServer)
+                + '&relayRoom=' + encodeURIComponent(docId)
+                + fragment;
+            document.getElementById('coolframe').src = clientUrl;
+        }
+
+        // --- Try Browser B, fall back to Browser A ---
+
+        function tryClientThenHost(docId, statusEl, onMustBeHost) {
+            statusEl.textContent = 'Connecting to session...';
+            var relayUrl = relayServer + '/client?room=' + encodeURIComponent(docId);
+            var ws = new WebSocket(relayUrl);
+            var settled = false;
+
+            ws.onopen = function() {
+                // Connected to relay — but this doesn't mean a host is present.
+                // If no host, the relay closes us with code 4000 almost immediately.
+                // Wait briefly: if still connected, host is present.
+                setTimeout(function() {
+                    if (settled) return;
+                    settled = true;
+                    ws.close();
+                    statusEl.textContent = 'Host found, joining as collaborator...';
+                    openAsClient(docId);
+                }, 500);
+            };
+
+            ws.onclose = function(ev) {
+                if (settled) return;
+                settled = true;
+                statusEl.textContent = 'No active host found.';
+                onMustBeHost();
+            };
+
+            ws.onerror = function() {
+                if (settled) return;
+                settled = true;
+                statusEl.textContent = 'Relay unavailable.';
+                onMustBeHost();
+            };
+
+            // Timeout after 5 seconds
+            setTimeout(function() {
+                if (settled) return;
+                settled = true;
+                try { ws.close(); } catch(e) {}
+                statusEl.textContent = 'Connection timed out.';
+                onMustBeHost();
+            }, 5000);
+        }
+
+        // --- Show ready UI (after upload or when returning to existing doc) ---
+
+        function showReadyUI(docId, originalName) {
+            var status = document.getElementById('upload-status');
+            if (originalName) {
+                status.textContent = 'File ready: ' + originalName;
+            }
+
+            var localServer = window.location.protocol + '//' + window.location.host;
+            var shareUrl = localServer + '/wasm.html' + fragment;
+
+            var overlay = document.getElementById('upload-overlay');
+
+            // Remove upload controls if present
+            var fileLabel = document.querySelector('label[for="file-input"]');
+            if (fileLabel) fileLabel.remove();
+            var fileInput = document.getElementById('file-input');
+            if (fileInput) fileInput.remove();
+
+            var linksDiv = document.createElement('div');
+            linksDiv.className = 'links';
+
+            // Share link
+            var shareBox = document.createElement('div');
+            shareBox.className = 'share-box';
+            shareBox.innerHTML =
+                '<label>Share this link with collaborators:</label>' +
+                '<div class="share-row">' +
+                    '<input type="text" id="share-url" value="' + shareUrl.replace(/"/g, '&quot;') + '" readonly />' +
+                    '<button id="copy-btn">Copy</button>' +
+                '</div>';
+            linksDiv.appendChild(shareBox);
+
+            // Open as Host button (disabled until preload completes)
+            var hostLink = document.createElement('a');
+            hostLink.href = '#';
+            hostLink.id = 'host-link';
+            hostLink.className = 'disabled';
+            hostLink.textContent = 'Downloading WASM...';
+            hostLink.addEventListener('click', function(ev) {
+                ev.preventDefault();
+                if (hostLink.classList.contains('disabled')) return;
+                openAsHost(docId);
+            });
+            linksDiv.appendChild(hostLink);
+
+            // Progress bar
+            var progressBox = document.createElement('div');
+            progressBox.className = 'progress-box';
+            progressBox.innerHTML =
+                '<div class="progress-bar"><div class="progress-bar-fill" id="preload-fill"></div></div>' +
+                '<div class="progress-text" id="preload-text">Preparing...</div>';
+            linksDiv.appendChild(progressBox);
+
+            overlay.appendChild(linksDiv);
+
+            document.getElementById('copy-btn').addEventListener('click', function() {
+                navigator.clipboard.writeText(document.getElementById('share-url').value).then(function() {
+                    document.getElementById('copy-btn').textContent = 'Copied!';
+                    setTimeout(function() { document.getElementById('copy-btn').textContent = 'Copy'; }, 2000);
+                });
+            });
+
+            // Preload WASM files
+            preloadWasmFiles(function(loaded, total) {
+                var pct = Math.round((loaded / total) * 100);
+                var mb = function(n) { return (n / 1048576).toFixed(1); };
+                document.getElementById('preload-fill').style.width = pct + '%';
+                document.getElementById('preload-text').textContent = mb(loaded) + ' / ' + mb(total) + ' MB (' + pct + '%)';
+            }).then(function() {
+                hostLink.classList.remove('disabled');
+                hostLink.textContent = 'Open as Host';
+                document.getElementById('preload-fill').style.width = '100%';
+                document.getElementById('preload-text').textContent = 'Ready';
+            });
+        }
+
+        // --- Main flow ---
+
+        // If file_path or WOPISrc is already provided (direct open), skip everything
         if (params.get('file_path') || params.get('WOPISrc')) {
             document.getElementById('upload-overlay').classList.add('hidden');
             var form = document.getElementById("form");
             form.style.display = '';
-            form.action = constructWopiUrl();
+            form.action = constructWopiUrl(params.get('WOPISrc') || params.get('file_path'));
             form.submit();
         } else {
-            // Show upload dialog
-            document.getElementById('file-input').addEventListener('change', function(e) {
-                var file = e.target.files[0];
-                if (!file) return;
-
+            // Wait for Service Worker + compute file hash before making any /wasm/ requests
+            Promise.all([swReady, hashKey(encKey)]).then(function(results) {
+                var docId = results[1];
                 var status = document.getElementById('upload-status');
-                status.textContent = 'Loading ' + file.name + '...';
 
-                var reader = new FileReader();
-                reader.onload = function(ev) {
-                    // If a room name is specified, rename the file to <room>.<ext>
-                    // so the Emscripten FS path matches the relay room name.
-                    var uploadName = file.name;
-                    var room = params.get('room');
-                    if (room) {
-                        var ext = file.name.substring(file.name.lastIndexOf('.'));
-                        uploadName = room + ext;
+                // Check if a document already exists for this key
+                var xhr = new XMLHttpRequest();
+                xhr.open('HEAD', '/wasm/' + encodeURIComponent(docId));
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        // Document exists — try to join as Browser B, else become Host
+                        status.textContent = 'Found existing document...';
+
+                        // Try to decrypt the original filename from metadata
+                        var metaXhr = new XMLHttpRequest();
+                        metaXhr.open('GET', '/wasm/meta/' + encodeURIComponent(docId));
+                        metaXhr.onload = function() {
+                            var originalName = null;
+                            if (metaXhr.status === 200) {
+                                try {
+                                    var meta = JSON.parse(metaXhr.responseText);
+                                    if (meta.encryptedName) {
+                                        deriveAesKey(encKey).then(function(aesKey) {
+                                            return decryptString(aesKey, meta.encryptedName);
+                                        }).then(function(name) {
+                                            document.title = name + ' - Online';
+                                            startAutoRole(docId, name);
+                                        }).catch(function() {
+                                            startAutoRole(docId, null);
+                                        });
+                                        return;
+                                    }
+                                } catch(e) {}
+                            }
+                            startAutoRole(docId, null);
+                        };
+                        metaXhr.onerror = function() {
+                            startAutoRole(docId, null);
+                        };
+                        metaXhr.send();
+
+                        function startAutoRole(docId, originalName) {
+                            tryClientThenHost(docId, status, function() {
+                                // No host — become the host
+                                showReadyUI(docId, originalName);
+                            });
+                        }
+                    } else {
+                        // No document — show upload form
+                        showUploadForm(docId);
                     }
-
-                    // Store the file data globally so the Emscripten module's preRun
-                    // can write it into the virtual filesystem before main() runs
-                    window._uploadedFileData = new Uint8Array(ev.target.result);
-                    window._uploadedFileName = uploadName;
-
-                    // Build the relay room name (sanitized upload path)
-                    var safeName = uploadName.replace(/[^a-zA-Z0-9._-]/g, '_');
-                    var relayRoom = 'upload/' + safeName;
-                    var configRelay = (window.__CONFIG__ && window.__CONFIG__.relayUrl) || '';
-                    var defaultRelay = configRelay || 'ws://localhost:9090';
-                    var relayServer = params.get('relayServer') || defaultRelay;
-
-                    // Build Browser B URL: relay-client.html with room name + encryption fragment
-                    var localServer = window.location.protocol + '//' + window.location.host;
-                    var fragment = window.location.hash || '';
-                    var browserBUrl = localServer + '/relay-client.html'
-                        + '?relayServer=' + encodeURIComponent(relayServer)
-                        + '&relayRoom=' + encodeURIComponent(relayRoom)
-                        + fragment;
-
-                    // Show share link + open button + progress
-                    status.textContent = 'File ready: ' + file.name;
-                    var linksDiv = document.createElement('div');
-                    linksDiv.className = 'links';
-
-                    // Share link first
-                    var shareBox = document.createElement('div');
-                    shareBox.className = 'share-box';
-                    shareBox.innerHTML =
-                        '<label>Share this link with collaborators:</label>' +
-                        '<div class="share-row">' +
-                            '<input type="text" id="share-url" value="' + browserBUrl.replace(/"/g, '&quot;') + '" readonly />' +
-                            '<button id="copy-btn">Copy</button>' +
-                        '</div>';
-                    linksDiv.appendChild(shareBox);
-
-                    // Open as Host button (disabled until preload completes)
-                    var hostLink = document.createElement('a');
-                    hostLink.href = '#';
-                    hostLink.id = 'host-link';
-                    hostLink.className = 'disabled';
-                    hostLink.textContent = 'Downloading WASM...';
-                    hostLink.addEventListener('click', function(ev) {
-                        ev.preventDefault();
-                        if (hostLink.classList.contains('disabled')) return;
-                        document.getElementById('upload-overlay').classList.add('hidden');
-                        var form = document.getElementById('form');
-                        form.style.display = '';
-                        form.action = constructWopiUrl('upload/' + safeName)
-                            + '&relay=' + encodeURIComponent(relayServer + '/host')
-                            + fragment;
-                        form.submit();
-                    });
-                    linksDiv.appendChild(hostLink);
-
-                    // Progress bar
-                    var progressBox = document.createElement('div');
-                    progressBox.className = 'progress-box';
-                    progressBox.innerHTML =
-                        '<div class="progress-bar"><div class="progress-bar-fill" id="preload-fill"></div></div>' +
-                        '<div class="progress-text" id="preload-text">Preparing...</div>';
-                    linksDiv.appendChild(progressBox);
-
-                    document.getElementById('upload-overlay').appendChild(linksDiv);
-
-                    document.getElementById('copy-btn').addEventListener('click', function() {
-                        var input = document.getElementById('share-url');
-                        navigator.clipboard.writeText(input.value).then(function() {
-                            document.getElementById('copy-btn').textContent = 'Copied!';
-                            setTimeout(function() { document.getElementById('copy-btn').textContent = 'Copy'; }, 2000);
-                        });
-                    });
-
-                    // Start preloading WASM files
-                    preloadWasmFiles(function(loaded, total) {
-                        var pct = Math.round((loaded / total) * 100);
-                        var mb = function(n) { return (n / 1048576).toFixed(1); };
-                        document.getElementById('preload-fill').style.width = pct + '%';
-                        document.getElementById('preload-text').textContent = mb(loaded) + ' / ' + mb(total) + ' MB (' + pct + '%)';
-                    }).then(function() {
-                        hostLink.classList.remove('disabled');
-                        hostLink.textContent = 'Open as Host';
-                        document.getElementById('preload-fill').style.width = '100%';
-                        document.getElementById('preload-text').textContent = 'Ready';
-                    });
                 };
-                reader.readAsArrayBuffer(file);
+                xhr.onerror = function() {
+                    showUploadForm(docId);
+                };
+                xhr.send();
+
+                function showUploadForm(docId) {
+                    status.textContent = 'No document found for this link. Please upload a file to get started.';
+                    document.getElementById('file-input').addEventListener('change', function(e) {
+                        var file = e.target.files[0];
+                        if (!file) return;
+
+                        status.textContent = 'Uploading ' + file.name + '...';
+
+                        var reader = new FileReader();
+                        reader.onload = function(ev) {
+                            // Upload file to blob storage using docId as blob name
+                            var uploadXhr = new XMLHttpRequest();
+                            uploadXhr.open('POST', '/wasm/' + encodeURIComponent(docId));
+                            uploadXhr.onload = function() {
+                                if (uploadXhr.status !== 200) {
+                                    status.textContent = 'Upload failed: ' + uploadXhr.statusText;
+                                    return;
+                                }
+                                // Store encrypted filename as metadata
+                                deriveAesKey(encKey).then(function(aesKey) {
+                                    return encryptString(aesKey, file.name);
+                                }).then(function(encName) {
+                                    var metaXhr2 = new XMLHttpRequest();
+                                    metaXhr2.open('POST', '/wasm/meta/' + encodeURIComponent(docId));
+                                    metaXhr2.setRequestHeader('Content-Type', 'application/json');
+                                    metaXhr2.send(JSON.stringify({ encryptedName: encName }));
+                                }).catch(function(err) {
+                                    console.warn('Failed to save metadata:', err);
+                                });
+
+                                document.title = file.name + ' - Online';
+                                showReadyUI(docId, file.name);
+                            };
+                            uploadXhr.onerror = function() {
+                                status.textContent = 'Upload failed: network error';
+                            };
+                            uploadXhr.send(new Uint8Array(ev.target.result));
+                        };
+                        reader.readAsArrayBuffer(file);
+                    });
+                }
             });
         }
     </script>
