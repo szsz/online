@@ -191,18 +191,19 @@
                     } catch(e) {}
                     return;
                 }
+                if (ctrl[0] === 4 || ctrl[0] === 5) {
+                    failoverInProgress = true; // Suppress COOL reconnect on close
+                }
                 if (ctrl[0] === 4) {
                     console.log('RelayClient: host restored, notifying parent to reconnect');
-                    // New host connected — tell parent to reload as client
-                    try { relayWs.close(); } catch(e) {}
                     try {
                         window.parent.postMessage({ type: 'relay-host-restored' }, '*');
                     } catch(e) {}
+                    try { relayWs.close(); } catch(e) {}
                     return;
                 }
                 if (ctrl[0] === 5) {
                     console.log('RelayClient: wait-for-new-host (another client is taking over)');
-                    // Stay connected, wait for type=4 (host-restored) which will trigger reload
                     try {
                         window.parent.postMessage({ type: 'relay-wait-for-host' }, '*');
                     } catch(e) {}
@@ -246,9 +247,17 @@
             }); // end recvChain
         };
 
-        relayWs.onclose = function() {
-            console.log('RelayClient: relay connection closed (failover=' + failoverInProgress + ')');
+        relayWs.onclose = function(event) {
+            console.log('RelayClient: relay connection closed (failover=' + failoverInProgress + ', code=' + event.code + ')');
             relayConnected = false;
+            // Code 4004 = server kicked us for reconnection to new host
+            if (event.code === 4004) {
+                failoverInProgress = true;
+                try {
+                    window.parent.postMessage({ type: 'relay-host-restored' }, '*');
+                } catch(e) {}
+                return;
+            }
             if (failoverInProgress) {
                 // Don't trigger COOL's reconnect — parent is reloading for failover
                 return;

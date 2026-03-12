@@ -61,18 +61,16 @@ wss.on('connection', (ws, req) => {
             if (room.hostReady) return;
             room.hostReady = true;
             if (room._readyTimer) { clearTimeout(room._readyTimer); room._readyTimer = null; }
-            console.log(`Host ready in room [${roomId}] (signal=${signal}), announcing ${room.clients.size} clients`);
+            console.log(`Host ready in room [${roomId}] (signal=${signal}), disconnecting ${room.clients.size} stale clients to reconnect fresh`);
 
-            // Now notify existing clients: host restored (type=4)
+            // Disconnect all existing (stale) clients — they were from the
+            // old host session. Send type=4 first so they know to reconnect,
+            // then close. They'll reload and join as fresh clients.
             for (const [cid, client] of room.clients) {
                 sendControl(client, 4, cid);
+                client.close(4004, 'Reconnect to new host');
             }
-            // Notify host about all existing connected clients (type=1)
-            for (const [cid, client] of room.clients) {
-                if (client.readyState === WebSocket.OPEN) {
-                    sendControl(ws, 1, cid);
-                }
-            }
+            room.clients.clear();
         }
 
         // If host doesn't send type=6 within 15s, it's unresponsive — disconnect and failover
