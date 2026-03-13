@@ -101,6 +101,32 @@
             color: #888;
             margin-top: 0.3em;
         }
+        #upload-overlay .name-row {
+            display: flex;
+            gap: 0;
+            margin-bottom: 1em;
+            width: 80%;
+            max-width: 300px;
+        }
+        #upload-overlay .name-row input[type="text"] {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px 0 0 6px;
+            font-size: 0.9em;
+            outline: none;
+        }
+        #upload-overlay .name-row input[type="text"]:focus { border-color: #0366d6; }
+        #upload-overlay .name-row button {
+            padding: 8px 12px;
+            background: #28a745;
+            color: white;
+            border: 1px solid #28a745;
+            border-radius: 0 6px 6px 0;
+            cursor: pointer;
+            font-size: 0.85em;
+        }
+        #upload-overlay .name-row button:hover { background: #22863a; }
     </style>
     <script src="/config.js"></script>
 </head>
@@ -108,6 +134,9 @@
 <body>
     <div id="upload-overlay">
         <h1>Collabora Online (WASM)</h1>
+        <div class="name-row" style="border-radius:6px;">
+            <input type="text" id="name-input" placeholder="Your name" style="border-radius:6px;" />
+        </div>
         <label for="file-input">Choose a document to open</label>
         <input type="file" id="file-input"
             accept=".odt,.ods,.odp,.odg,.docx,.xlsx,.pptx,.doc,.xls,.ppt,.pdf,.txt,.csv,.rtf" />
@@ -222,6 +251,37 @@
             });
         }
 
+        // --- User name helpers ---
+
+        // Generate a pronounceable nonsensical name
+        function generateName() {
+            var starts = ['Blo','Cri','Dra','Flu','Gri','Jum','Kla','Mox','Pli','Quo','Sna','Tri','Vex','Whi','Zep',
+                          'Bri','Cha','Fro','Glu','Hix','Jol','Kru','Lum','Nib','Pra','Rix','Spo','Twa','Vul','Yak'];
+            var mids = ['ndo','ber','sto','ple','mba','nki','fto','rgi','lta','nze',
+                        'bbi','cci','dge','ffe','ggo','kka','llo','mmi','nno','ppo'];
+            var ends = ['ax','en','is','or','us','ek','il','om','ur','az',
+                        'ix','ot','un','ep','al','im','os','ub','er','an'];
+            var s = starts[Math.floor(Math.random() * starts.length)];
+            var m = mids[Math.floor(Math.random() * mids.length)];
+            var e = ends[Math.floor(Math.random() * ends.length)];
+            return s + m + e;
+        }
+
+        // Generate a unique name per browser (localStorage)
+        var userName = localStorage.getItem('cool-username') || '';
+        if (!userName) {
+            userName = generateName();
+            localStorage.setItem('cool-username', userName);
+        }
+
+        // Populate the name input — updates userName on change
+        var nameInput = document.getElementById('name-input');
+        nameInput.value = userName;
+        nameInput.addEventListener('input', function() {
+            userName = nameInput.value.trim() || userName;
+            localStorage.setItem('cool-username', userName);
+        });
+
         // --- URL / config helpers ---
 
         var configRelay = (window.__CONFIG__ && window.__CONFIG__.relayUrl) || '';
@@ -329,6 +389,7 @@
             form.style.display = '';
             form.action = constructWopiUrl(docId)
                 + '&relay=' + encodeURIComponent(relayServer + '/host')
+                + '&userName=' + encodeURIComponent(userName)
                 + fragment;
             form.submit();
         }
@@ -341,13 +402,14 @@
             var clientUrl = '/relay-client.html'
                 + '?relayServer=' + encodeURIComponent(relayServer)
                 + '&relayRoom=' + encodeURIComponent(docId)
+                + '&userName=' + encodeURIComponent(userName)
                 + fragment;
             document.getElementById('coolframe').src = clientUrl;
         }
 
         // --- Try Browser B, fall back to Browser A ---
 
-        function tryClientThenHost(docId, statusEl, onMustBeHost) {
+        function tryClientThenHost(docId, statusEl, onMustBeHost, onHostFound) {
             statusEl.textContent = 'Connecting to session...';
             var relayUrl = relayServer + '/client?room=' + encodeURIComponent(docId);
             var ws = new WebSocket(relayUrl);
@@ -363,14 +425,14 @@
                     if (settled) return;
                     settled = true;
                     ws.close();
-                    statusEl.textContent = 'Host found, joining as collaborator...';
-                    openAsClient(docId);
+                    statusEl.textContent = 'Host found — ready to join as collaborator.';
+                    if (onHostFound) onHostFound();
                 }, 500);
             };
 
             ws.onmessage = function(event) {
-                // Check for control messages during probe (5 bytes)
-                if (event.data instanceof ArrayBuffer && event.data.byteLength === 5) {
+                // Check for control messages during probe (5+ bytes binary)
+                if (event.data instanceof ArrayBuffer && event.data.byteLength >= 5) {
                     var ctrl = new Uint8Array(event.data);
                     if (ctrl[0] === 3) {
                         // type=3: you are the failover candidate — become host
@@ -385,7 +447,10 @@
                         if (settled) return;
                         settled = true;
                         ws.close();
-                        statusEl.textContent = 'Waiting for new host...';
+                        var taker = event.data.byteLength > 5
+                            ? new TextDecoder().decode(new Uint8Array(event.data).slice(5))
+                            : 'Another collaborator';
+                        statusEl.innerHTML = '<b>' + taker.replace(/</g, '&lt;') + '</b> is taking over as host...';
                         // Poll until new host is ready, then join as client
                         setTimeout(function() { tryClientThenHost(docId, statusEl, onMustBeHost); }, 3000);
                     }
@@ -439,21 +504,68 @@
 
             if (event.data.type === 'relay-wait-for-host') {
                 // Host disconnected but another client is taking over — show waiting overlay
-                console.log('wasm.html: waiting for new host (another client is failing over)');
+                var takerName = event.data.name || 'Another collaborator';
+                console.log('wasm.html: waiting for new host (' + takerName + ' is failing over)');
                 var overlay = document.getElementById('upload-overlay');
                 overlay.classList.remove('hidden');
                 overlay.innerHTML =
                     '<h1>Collabora Online (WASM)</h1>' +
-                    '<div class="status">Host disconnected. Another collaborator is taking over...</div>' +
+                    '<div class="status"><b>' + takerName.replace(/</g, '&lt;') + '</b> is taking over as host...</div>' +
                     '<div class="status" style="font-size:0.85em;color:#999;margin-top:0.5em;">You will be reconnected automatically.</div>';
             }
 
             if (event.data.type === 'relay-host-restored') {
                 // New host is ready — reload as client to reconnect
                 console.log('wasm.html: new host restored, reloading as client');
+                sessionStorage.setItem('rejoin', '1');
                 window.location.reload();
             }
         });
+
+        // --- Show "Open" button before joining (lets user change name first) ---
+
+        function showOpenButton(docId, originalName, role) {
+            var status = document.getElementById('upload-status');
+            if (originalName) {
+                status.textContent = 'File ready: ' + originalName;
+            } else {
+                status.textContent = role === 'collaborator'
+                    ? 'Host found — ready to join.'
+                    : 'Ready to open as host.';
+            }
+
+            document.getElementById('init-progress').style.display = 'none';
+
+            // Remove upload controls if present
+            var fileLabel = document.querySelector('label[for="file-input"]');
+            if (fileLabel) fileLabel.remove();
+            var fileInput = document.getElementById('file-input');
+            if (fileInput) fileInput.remove();
+
+            var overlay = document.getElementById('upload-overlay');
+
+            // Remove any existing links div (in case of re-render)
+            var existing = overlay.querySelector('.links');
+            if (existing) existing.remove();
+
+            var linksDiv = document.createElement('div');
+            linksDiv.className = 'links';
+
+            var openBtn = document.createElement('a');
+            openBtn.href = '#';
+            openBtn.textContent = role === 'collaborator' ? 'Open as Collaborator' : 'Open as Host';
+            openBtn.addEventListener('click', function(ev) {
+                ev.preventDefault();
+                if (role === 'collaborator') {
+                    openAsClient(docId);
+                } else {
+                    openAsHost(docId);
+                }
+            });
+            linksDiv.appendChild(openBtn);
+
+            overlay.appendChild(linksDiv);
+        }
 
         // --- Show ready UI (after upload or when returning to existing doc) ---
 
@@ -595,6 +707,11 @@
                             if (isFailover) {
                                 sessionStorage.removeItem('failover');
                             }
+                            // Check if this is a rejoin after host-restored — auto-open as client
+                            var isRejoin = sessionStorage.getItem('rejoin') === '1';
+                            if (isRejoin) {
+                                sessionStorage.removeItem('rejoin');
+                            }
                             tryClientThenHost(docId, status, function() {
                                 if (isFailover) {
                                     // Failover: skip UI, open as host immediately
@@ -604,6 +721,14 @@
                                 }
                                 // Normal: show ready UI with download + host button
                                 showReadyUI(docId, originalName);
+                            }, function() {
+                                if (isRejoin || isFailover) {
+                                    // Auto-rejoin after failover — open immediately
+                                    openAsClient(docId);
+                                    return;
+                                }
+                                // Normal: show "Open" button so user can change name first
+                                showOpenButton(docId, originalName, 'collaborator');
                             });
                         }
                     } else {

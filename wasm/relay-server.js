@@ -119,12 +119,24 @@ wss.on('connection', (ws, req) => {
                     }
                 }
             }
+            // Get the failover candidate's name
+            const failoverClient = failoverCid !== null ? room.clients.get(failoverCid) : null;
+            const failoverName = failoverClient ? (failoverClient._userName || 'someone') : 'someone';
+
             for (const [cid, client] of room.clients) {
                 if (cid === failoverCid) {
-                    console.log(`Room [${roomId}]: selected client ${cid} for failover`);
+                    console.log(`Room [${roomId}]: selected client ${cid} (${failoverName}) for failover`);
                     sendControl(client, 3, 0); // take over as host
                 } else {
-                    sendControl(client, 5, 0); // wait for new host
+                    // Send type=5 with failover candidate's name appended
+                    const nameBytes = Buffer.from(failoverName, 'utf8');
+                    const msg = Buffer.alloc(5 + nameBytes.length);
+                    msg[0] = 5;
+                    msg.writeUInt32BE(0, 1);
+                    nameBytes.copy(msg, 5);
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(msg);
+                    }
                 }
             }
 
@@ -147,8 +159,10 @@ wss.on('connection', (ws, req) => {
         }
 
         const clientId = nextClientId++;
+        const clientName = parsed.query.name || 'Guest';
         room.clients.set(clientId, ws);
-        console.log(`Client ${clientId} connected to room [${roomId}]`);
+        ws._userName = clientName;
+        console.log(`Client ${clientId} (${clientName}) connected to room [${roomId}]`);
 
         // If host is present and ready, notify it about the new client
         if (room.host && room.host.readyState === WebSocket.OPEN && room.hostReady) {

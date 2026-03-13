@@ -17,7 +17,7 @@ cd "$REPO_DIR"
 step_rebuild() {
     echo "=== Step 1: Syncing changed source files to container ==="
     # Sync files that may have changed on host
-    for f in wasm/wasmapp.cpp wasm/wasmapp.hpp wsd/Storage.cpp wasm/Makefile.am; do
+    for f in wasm/wasmapp.cpp wasm/wasmapp.hpp wsd/Storage.cpp wasm/Makefile.am kit/ChildSession.cpp; do
         if [ -f "$f" ]; then
             docker cp "$f" "$CONTAINER:/lo/online/$f"
             echo "  Copied $f"

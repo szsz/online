@@ -30,6 +30,12 @@ self.addEventListener('message', function(event) {
             if (keyResolve) keyResolve();
         });
     }
+    // Clear cached WASM assets when version changes (forces re-download from CDN)
+    if (event.data && event.data.type === 'clearAssetCache') {
+        caches.delete(ASSET_CACHE).then(function() {
+            console.log('CryptoSW: asset cache cleared for new version');
+        });
+    }
 });
 
 // HMAC-SHA256(key=secret, message=salt) → AES-256-GCM CryptoKey

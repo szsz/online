@@ -11,7 +11,8 @@
     var relayServer = params.get('relayServer') || defaultRelay;
     // Room can be passed directly or derived from URL fragment hash
     var relayRoom = params.get('relayRoom') || 'default';
-    var relayUrl = relayServer + '/client?room=' + encodeURIComponent(relayRoom);
+    var relayUrl = relayServer + '/client?room=' + encodeURIComponent(relayRoom)
+        + '&name=' + encodeURIComponent(params.get('userName') || 'Guest');
 
     // Derive relay room from URL fragment via HMAC (same derivation as wasm.html)
     var relayUrlReady = Promise.resolve(relayUrl);
@@ -73,6 +74,8 @@
             } else {
                 pendingMessages.push(encrypted);
             }
+        }).catch(function(err) {
+            console.error('RelayClient: send chain error, recovering:', err);
         });
     }
 
@@ -177,37 +180,40 @@
             var eventData = event.data;
             var seq = recvSeq++;
             recvChain = recvChain.then(async function() {
-            // Check for server control messages (exactly 5 bytes, type 3 or 4)
-            if (eventData instanceof ArrayBuffer && eventData.byteLength === 5) {
+            // Check for server control messages (type 3/4/5)
+            if (eventData instanceof ArrayBuffer && eventData.byteLength >= 5) {
                 var ctrl = new Uint8Array(eventData);
-                if (ctrl[0] === 3) {
-                    console.log('RelayClient: host lost, triggering failover');
-                    failoverInProgress = true;
-                    // Close relay WS — onclose will be suppressed by failover flag
-                    try { relayWs.close(); } catch(e) {}
-                    // Notify parent to reload and re-run role selection
-                    try {
-                        window.parent.postMessage({ type: 'relay-host-lost' }, '*');
-                    } catch(e) {}
-                    return;
-                }
-                if (ctrl[0] === 4 || ctrl[0] === 5) {
-                    failoverInProgress = true; // Suppress COOL reconnect on close
-                }
-                if (ctrl[0] === 4) {
-                    console.log('RelayClient: host restored, notifying parent to reconnect');
-                    try {
-                        window.parent.postMessage({ type: 'relay-host-restored' }, '*');
-                    } catch(e) {}
-                    try { relayWs.close(); } catch(e) {}
-                    return;
-                }
-                if (ctrl[0] === 5) {
-                    console.log('RelayClient: wait-for-new-host (another client is taking over)');
-                    try {
-                        window.parent.postMessage({ type: 'relay-wait-for-host' }, '*');
-                    } catch(e) {}
-                    return;
+                var isControl = (ctrl[0] >= 3 && ctrl[0] <= 5) &&
+                    ctrl[1] === 0 && ctrl[2] === 0 && ctrl[3] === 0 && ctrl[4] === 0;
+                if (isControl) {
+                    failoverInProgress = true; // Suppress COOL reconnect on any control close
+                    if (ctrl[0] === 3) {
+                        console.log('RelayClient: host lost, triggering failover');
+                        try { relayWs.close(); } catch(e) {}
+                        try {
+                            window.parent.postMessage({ type: 'relay-host-lost' }, '*');
+                        } catch(e) {}
+                        return;
+                    }
+                    if (ctrl[0] === 4) {
+                        console.log('RelayClient: host restored, notifying parent to reconnect');
+                        try {
+                            window.parent.postMessage({ type: 'relay-host-restored' }, '*');
+                        } catch(e) {}
+                        try { relayWs.close(); } catch(e) {}
+                        return;
+                    }
+                    if (ctrl[0] === 5) {
+                        var failoverName = 'someone';
+                        if (eventData.byteLength > 5) {
+                            failoverName = new TextDecoder().decode(new Uint8Array(eventData).slice(5));
+                        }
+                        console.log('RelayClient: wait-for-new-host (' + failoverName + ' is taking over)');
+                        try {
+                            window.parent.postMessage({ type: 'relay-wait-for-host', name: failoverName }, '*');
+                        } catch(e) {}
+                        return;
+                    }
                 }
             }
             // Decrypt incoming data
@@ -241,9 +247,17 @@
                 return;
             }
 
+            // Log cursor-related messages from host
+            if (typeof data === 'string' &&
+                (data.startsWith('invalidatecursor:') ||
+                 data.startsWith('invalidateviewcursor:'))) {
+                console.log('CLIENT RECV FULL: ' + data);
+            }
             if (window.TheFakeWebSocket && window.TheFakeWebSocket.onmessage) {
                 window.TheFakeWebSocket.onmessage({ data: data });
             }
+            }).catch(function(err) {
+                console.error('RelayClient: recv chain error, recovering:', err);
             }); // end recvChain
         };
 
@@ -299,6 +313,8 @@
 
     // Send coolclient + load url via relay. The document URL is derived
     // from the relay room name (room = file path on the WASM host).
+    var relayUserName = params.get('userName') || 'Guest';
+
     function sendInitMessages() {
         if (initSent) return;
         initSent = true;
@@ -308,7 +324,8 @@
         var coolclient = 'coolclient 0.1 ' + now + ' ' + perf;
         var loadMsg = 'load url=' + encodeURIComponent(hostDocUrl)
             + ' lang=en-US deviceFormFactor=desktop'
-            + ' accessibilityState=false';
+            + ' accessibilityState=false'
+            + ' author=' + encodeURIComponent(relayUserName);
 
         console.log('RelayClient: sending coolclient + load via relay (url=' + hostDocUrl + ')');
 
