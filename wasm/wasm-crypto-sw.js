@@ -74,7 +74,9 @@ self.addEventListener('fetch', function(event) {
     // Serve cached WASM/data assets from Cache API (populated by preloadWasmFiles).
     // Match specific large files by name, regardless of origin (CDN or local).
     var basename = url.pathname.split('/').pop();
-    var cachedAssets = { 'online.wasm': true, 'soffice.data': true, 'online.js': true, 'soffice.data.js.metadata': true };
+    // Don't cache online.js — it's loaded as a Worker script for pthreads,
+    // and SW-cached responses break Worker instantiation.
+    var cachedAssets = { 'online.wasm': true, 'soffice.data': true, 'soffice.data.js.metadata': true };
     if (event.request.method === 'GET' && cachedAssets[basename]) {
         event.respondWith(
             caches.open(ASSET_CACHE).then(function(cache) {

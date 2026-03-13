@@ -127,6 +127,24 @@
             font-size: 0.85em;
         }
         #upload-overlay .name-row button:hover { background: #22863a; }
+        #upload-overlay .recent-files { width: 80%; max-width: 500px; margin-top: 1.5em; text-align: left; }
+        #upload-overlay .recent-files h2 { font-size: 1em; color: #555; margin: 0 0 0.5em 0; }
+        #upload-overlay .recent-files ul { list-style: none; padding: 0; margin: 0; }
+        #upload-overlay .recent-files li {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 14px; margin: 4px 0;
+            background: white; border: 1px solid #ddd; border-radius: 6px;
+            cursor: pointer; transition: background 0.15s;
+        }
+        #upload-overlay .recent-files li:hover { background: #e8f0fe; border-color: #0366d6; }
+        #upload-overlay .recent-files .file-name { font-weight: 500; color: #333; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #upload-overlay .recent-files .file-date { font-size: 0.8em; color: #999; margin-left: 1em; white-space: nowrap; }
+        #upload-overlay .recent-files .file-remove {
+            margin-left: 0.5em; color: #ccc; cursor: pointer; font-size: 1.1em;
+            padding: 0 4px; border-radius: 3px;
+        }
+        #upload-overlay .recent-files .file-remove:hover { color: #e33; background: #fee; }
+        #upload-overlay .or-divider { margin: 1.2em 0 0.5em; color: #aaa; font-size: 0.9em; }
     </style>
     <script src="/config.js"></script>
 </head>
@@ -154,16 +172,36 @@
     <script>
         // --- Crypto helpers ---
 
-        // Generate encryption key if none provided
-        if (!window.location.hash || window.location.hash === '#') {
+        // Recent files: stored as JSON array in localStorage
+        // Each entry: { key: string, name: string, time: number }
+        var RECENT_KEY = 'cool-recent-files';
+        function getRecentFiles() {
+            try { return JSON.parse(localStorage.getItem(RECENT_KEY)) || []; }
+            catch(e) { return []; }
+        }
+        function saveRecentFile(key, name) {
+            var files = getRecentFiles().filter(function(f) { return f.key !== key; });
+            files.unshift({ key: key, name: name, time: Date.now() });
+            if (files.length > 20) files = files.slice(0, 20);
+            localStorage.setItem(RECENT_KEY, JSON.stringify(files));
+        }
+        function removeRecentFile(key) {
+            var files = getRecentFiles().filter(function(f) { return f.key !== key; });
+            localStorage.setItem(RECENT_KEY, JSON.stringify(files));
+        }
+
+        var _hasHash = window.location.hash && window.location.hash !== '#';
+
+        // Generate encryption key if none provided (deferred if we show recent files)
+        if (!_hasHash) {
             var array = new Uint8Array(16);
             crypto.getRandomValues(array);
             var key = Array.from(array, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
-            window.location.hash = '#' + key;
+            // Don't set hash yet — we'll set it when user picks upload
         }
 
-        var encKey = window.location.hash.substring(1);
-        var fragment = window.location.hash;
+        var encKey = _hasHash ? window.location.hash.substring(1) : key;
+        var fragment = _hasHash ? window.location.hash : '#' + key;
 
         // Register the crypto Service Worker (encrypts/decrypts /wasm/* at the network layer)
         var swReady = Promise.resolve();
@@ -630,21 +668,43 @@
                 });
             });
 
-            // Preload WASM files
-            preloadWasmFiles(function(loaded, total) {
-                var pct = Math.round((loaded / total) * 100);
-                var mb = function(n) { return (n / 1048576).toFixed(1); };
-                document.getElementById('preload-fill').style.width = pct + '%';
-                document.getElementById('preload-text').textContent = mb(loaded) + ' / ' + mb(total) + ' MB (' + pct + '%)';
-            }).then(function() {
+            // Wait for the early preload that started on page load
+            if (_preloadDone) {
                 hostLink.classList.remove('disabled');
                 hostLink.textContent = 'Open as Host';
-                document.getElementById('preload-fill').style.width = '100%';
-                document.getElementById('preload-text').textContent = 'Ready';
-            });
+                var fill = document.getElementById('preload-fill');
+                var text = document.getElementById('preload-text');
+                if (fill) fill.style.width = '100%';
+                if (text) text.textContent = 'Ready';
+            } else {
+                _preloadPromise.then(function() {
+                    hostLink.classList.remove('disabled');
+                    hostLink.textContent = 'Open as Host';
+                    var fill = document.getElementById('preload-fill');
+                    var text = document.getElementById('preload-text');
+                    if (fill) fill.style.width = '100%';
+                    if (text) text.textContent = 'Ready';
+                });
+            }
         }
 
         // --- Main flow ---
+
+        // Start CDN preload immediately — runs in parallel with doc check / role detection
+        var _preloadDone = false;
+        var _preloadResolve;
+        var _preloadPromise = new Promise(function(r) { _preloadResolve = r; });
+        preloadWasmFiles(function(loaded, total) {
+            var pct = Math.round((loaded / total) * 100);
+            var mb = function(n) { return (n / 1048576).toFixed(1); };
+            var fill = document.getElementById('preload-fill') || document.getElementById('init-fill');
+            var text = document.getElementById('preload-text') || document.getElementById('init-text');
+            if (fill) fill.style.width = pct + '%';
+            if (text) text.textContent = mb(loaded) + ' / ' + mb(total) + ' MB (' + pct + '%)';
+        }).then(function() {
+            _preloadDone = true;
+            _preloadResolve();
+        });
 
         // If file_path or WOPISrc is already provided (direct open), skip everything
         if (params.get('file_path') || params.get('WOPISrc')) {
@@ -653,7 +713,140 @@
             form.style.display = '';
             form.action = constructWopiUrl(params.get('WOPISrc') || params.get('file_path'));
             form.submit();
+        } else if (!_hasHash && getRecentFiles().length > 0) {
+            // No key in URL and we have recent files — show the file picker
+            (function showRecentFilesUI() {
+                var status = document.getElementById('upload-status');
+                status.textContent = 'Choose a recent document or upload a new one.';
+                document.getElementById('init-progress').style.display = 'none';
+
+                var overlay = document.getElementById('upload-overlay');
+                var recentDiv = document.createElement('div');
+                recentDiv.className = 'recent-files';
+                recentDiv.innerHTML = '<h2>Recent documents</h2><ul id="recent-list"></ul>';
+                // Insert before the file input label
+                var fileLabel = document.querySelector('label[for="file-input"]');
+                overlay.insertBefore(recentDiv, fileLabel);
+
+                // Add "or" divider before upload
+                var orDiv = document.createElement('div');
+                orDiv.className = 'or-divider';
+                orDiv.textContent = '— or —';
+                overlay.insertBefore(orDiv, fileLabel);
+
+                function renderList() {
+                    var ul = document.getElementById('recent-list');
+                    ul.innerHTML = '';
+                    var files = getRecentFiles();
+                    if (files.length === 0) {
+                        recentDiv.style.display = 'none';
+                        orDiv.style.display = 'none';
+                        return;
+                    }
+                    files.forEach(function(f) {
+                        var li = document.createElement('li');
+                        var nameSpan = document.createElement('span');
+                        nameSpan.className = 'file-name';
+                        nameSpan.textContent = f.name;
+                        var dateSpan = document.createElement('span');
+                        dateSpan.className = 'file-date';
+                        dateSpan.textContent = new Date(f.time).toLocaleDateString();
+                        var removeBtn = document.createElement('span');
+                        removeBtn.className = 'file-remove';
+                        removeBtn.textContent = '\u00d7';
+                        removeBtn.title = 'Remove';
+                        removeBtn.addEventListener('click', function(ev) {
+                            ev.stopPropagation();
+                            removeRecentFile(f.key);
+                            renderList();
+                        });
+                        li.appendChild(nameSpan);
+                        li.appendChild(dateSpan);
+                        li.appendChild(removeBtn);
+                        li.addEventListener('click', function() {
+                            window.location.hash = '#' + f.key;
+                            window.location.reload();
+                        });
+                        ul.appendChild(li);
+                    });
+                }
+                renderList();
+
+                // When user picks a new file, set the hash and start upload flow
+                document.getElementById('file-input').addEventListener('change', function(e) {
+                    var file = e.target.files[0];
+                    if (!file) return;
+                    // Set the generated key as the hash
+                    window.location.hash = fragment;
+                    encKey = fragment.substring(1);
+
+                    // Register SW with the new key, then upload
+                    var swSetup = Promise.resolve();
+                    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({ type: 'setKey', key: encKey });
+                    }
+
+                    // Hide recent files, show upload progress
+                    recentDiv.style.display = 'none';
+                    orDiv.style.display = 'none';
+                    fileLabel.style.display = 'none';
+
+                    hashKey(encKey).then(function(docId) {
+                        status.textContent = 'Uploading ' + file.name + '...';
+                        swReady.then(function() {
+                            var reader = new FileReader();
+                            reader.onload = function(ev) {
+                                var data = new Uint8Array(ev.target.result);
+                                var uploadXhr = new XMLHttpRequest();
+                                uploadXhr.open('POST', '/wasm/' + encodeURIComponent(docId));
+                                uploadXhr.upload.onprogress = function(pe) {
+                                    if (pe.lengthComputable) {
+                                        var pct = Math.round((pe.loaded / pe.total) * 100);
+                                        status.textContent = 'Uploading ' + file.name + '... ' + pct + '%';
+                                    }
+                                };
+                                uploadXhr.onload = function() {
+                                    if (uploadXhr.status !== 200) {
+                                        status.textContent = 'Upload failed: ' + uploadXhr.status;
+                                        return;
+                                    }
+                                    deriveAesKey(encKey).then(function(aesKey) {
+                                        return encryptString(aesKey, file.name);
+                                    }).then(function(encName) {
+                                        var metaXhr2 = new XMLHttpRequest();
+                                        metaXhr2.open('POST', '/wasm/meta/' + encodeURIComponent(docId));
+                                        metaXhr2.setRequestHeader('Content-Type', 'application/json');
+                                        metaXhr2.onload = function() {
+                                            document.title = file.name + ' - Online';
+                                            saveRecentFile(encKey, file.name);
+                                            showReadyUI(docId, file.name);
+                                        };
+                                        metaXhr2.onerror = function() {
+                                            document.title = file.name + ' - Online';
+                                            saveRecentFile(encKey, file.name);
+                                            showReadyUI(docId, file.name);
+                                        };
+                                        metaXhr2.send(JSON.stringify({ encryptedName: encName }));
+                                    }).catch(function() {
+                                        document.title = file.name + ' - Online';
+                                        saveRecentFile(encKey, file.name);
+                                        showReadyUI(docId, file.name);
+                                    });
+                                };
+                                uploadXhr.onerror = function() {
+                                    status.textContent = 'Upload failed: network error';
+                                };
+                                uploadXhr.send(data);
+                            };
+                            reader.readAsArrayBuffer(file);
+                        });
+                    });
+                });
+            })();
         } else {
+            // Set the hash now for new documents (no recent files, or has hash)
+            if (!_hasHash) window.location.hash = fragment;
+
             var initFill = document.getElementById('init-fill');
             var initText = document.getElementById('init-text');
             initFill.style.width = '20%';
@@ -701,6 +894,8 @@
                         metaXhr.send();
 
                         function startAutoRole(docId, originalName) {
+                            // Remember this file for the recent files list
+                            if (originalName) saveRecentFile(encKey, originalName);
                             document.getElementById('init-progress').style.display = 'none';
                             // Check if this is a failover reload — auto-open as host
                             var isFailover = sessionStorage.getItem('failover') === '1';
@@ -742,8 +937,16 @@
                 xhr.send();
 
                 function showUploadForm(docId) {
-                    document.getElementById('init-progress').style.display = 'none';
                     status.textContent = 'No document found for this link. Please upload a file to get started.';
+                    // Show CDN preload progress while user picks a file
+                    if (_preloadDone) {
+                        document.getElementById('init-progress').style.display = 'none';
+                    } else {
+                        document.getElementById('init-text').textContent = 'Downloading WASM...';
+                        _preloadPromise.then(function() {
+                            document.getElementById('init-progress').style.display = 'none';
+                        });
+                    }
                     document.getElementById('file-input').addEventListener('change', function(e) {
                         var file = e.target.files[0];
                         if (!file) return;
@@ -785,11 +988,13 @@
                                     metaXhr2.onload = function() {
                                         console.log('Metadata saved');
                                         document.title = file.name + ' - Online';
+                                        saveRecentFile(encKey, file.name);
                                         showReadyUI(docId, file.name);
                                     };
                                     metaXhr2.onerror = function() {
                                         console.warn('Metadata save failed, continuing anyway');
                                         document.title = file.name + ' - Online';
+                                        saveRecentFile(encKey, file.name);
                                         showReadyUI(docId, file.name);
                                     };
                                     metaXhr2.send(JSON.stringify({ encryptedName: encName }));

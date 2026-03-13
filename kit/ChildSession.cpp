@@ -1977,17 +1977,50 @@ bool ChildSession::extTextInputEvent(const StringVector& tokens)
 
     getLOKitDocument()->setView(_viewId);
 
-    // WASM multi-view workaround: force view switch cycle for proper state restore
-    if (getLOKitDocument()->getViewsCount() > 1)
+    if (_viewId != 0 && id == 0)
     {
-        const int curView = getLOKitDocument()->getView();
-        const int otherView = (curView == 0) ? 1 : 0;
-        getLOKitDocument()->setView(otherView);
-        getLOKitDocument()->setView(_viewId);
+        // WASM single-process fix: for remote views, convert text input to
+        // document-level key events. postWindowExtTextInputEvent(0,...) targets
+        // the host's window, causing cursor callbacks to fire with wrong view data.
+        // postKeyEvent is document-level and respects setView().
+        for (size_t i = 0; i < decodedText.size(); )
+        {
+            uint32_t codepoint = 0;
+            unsigned char c = static_cast<unsigned char>(decodedText[i]);
+            if (c < 0x80) {
+                codepoint = c;
+                i += 1;
+            } else if (c < 0xE0) {
+                codepoint = (c & 0x1F) << 6;
+                if (i + 1 < decodedText.size())
+                    codepoint |= (static_cast<unsigned char>(decodedText[i+1]) & 0x3F);
+                i += 2;
+            } else if (c < 0xF0) {
+                codepoint = (c & 0x0F) << 12;
+                if (i + 1 < decodedText.size())
+                    codepoint |= (static_cast<unsigned char>(decodedText[i+1]) & 0x3F) << 6;
+                if (i + 2 < decodedText.size())
+                    codepoint |= (static_cast<unsigned char>(decodedText[i+2]) & 0x3F);
+                i += 3;
+            } else {
+                codepoint = (c & 0x07) << 18;
+                if (i + 1 < decodedText.size())
+                    codepoint |= (static_cast<unsigned char>(decodedText[i+1]) & 0x3F) << 12;
+                if (i + 2 < decodedText.size())
+                    codepoint |= (static_cast<unsigned char>(decodedText[i+2]) & 0x3F) << 6;
+                if (i + 3 < decodedText.size())
+                    codepoint |= (static_cast<unsigned char>(decodedText[i+3]) & 0x3F);
+                i += 4;
+            }
+            getLOKitDocument()->postKeyEvent(LOK_KEYEVENT_KEYINPUT, codepoint, 0);
+            getLOKitDocument()->postKeyEvent(LOK_KEYEVENT_KEYUP, codepoint, 0);
+        }
     }
-
-    getLOKitDocument()->postWindowExtTextInputEvent(id, LOK_EXT_TEXTINPUT, decodedText.c_str());
-    getLOKitDocument()->postWindowExtTextInputEvent(id, LOK_EXT_TEXTINPUT_END, decodedText.c_str());
+    else
+    {
+        getLOKitDocument()->postWindowExtTextInputEvent(id, LOK_EXT_TEXTINPUT, decodedText.c_str());
+        getLOKitDocument()->postWindowExtTextInputEvent(id, LOK_EXT_TEXTINPUT_END, decodedText.c_str());
+    }
 
     return true;
 }
@@ -2045,18 +2078,6 @@ bool ChildSession::keyEvent(const StringVector& tokens,
     }
 
     getLOKitDocument()->setView(_viewId);
-
-    // WASM multi-view workaround: LOK Core's setView() doesn't fully restore
-    // cursor/layout state for views created via createView(). Force a view
-    // switch cycle to trigger proper state save/restore.
-    if (getLOKitDocument()->getViewsCount() > 1)
-    {
-        const int curView = getLOKitDocument()->getView();
-        // Switch to a different view and back to force state refresh
-        const int otherView = (curView == 0) ? 1 : 0;
-        getLOKitDocument()->setView(otherView);
-        getLOKitDocument()->setView(_viewId);
-    }
 
     if (target == LokEventTargetEnum::Document)
     {
@@ -3633,10 +3654,38 @@ void ChildSession::loKitCallback(const int type, const std::string& payload)
         }
         break;
     case LOK_CALLBACK_INVALIDATE_VISIBLE_CURSOR:
-        updateSpeed();
-        updateCursorPositionJSON(payload);
-        sendTextFrame("invalidatecursor: " + payload);
+    {
+        // In the WASM single-process build, LOKit may fire this callback with
+        // payload data from the wrong view (cross-contamination). Detect and
+        // suppress: if the viewId in the payload doesn't match our session's
+        // viewId, the payload has stale/wrong cursor data.
+        bool crossContaminated = false;
+        try
+        {
+            Poco::JSON::Parser parser;
+            const auto result = parser.parse(payload);
+            const auto& obj = result.extract<Poco::JSON::Object::Ptr>();
+            const int payloadViewId = std::stoi(obj->get("viewId").toString());
+            if (payloadViewId != _viewId)
+            {
+                LOG_TRC("Suppressing cross-contaminated INVALIDATE_VISIBLE_CURSOR: "
+                         "payload viewId=" << payloadViewId << " but session viewId=" << _viewId);
+                crossContaminated = true;
+            }
+        }
+        catch (const std::exception& e)
+        {
+            LOG_WRN("Failed to parse INVALIDATE_VISIBLE_CURSOR payload: " << e.what());
+        }
+
+        if (!crossContaminated)
+        {
+            updateSpeed();
+            updateCursorPositionJSON(payload);
+            sendTextFrame("invalidatecursor: " + payload);
+        }
         break;
+    }
     case LOK_CALLBACK_TEXT_SELECTION:
         sendTextFrame("textselection: " + payload);
         break;
