@@ -1976,6 +1976,16 @@ bool ChildSession::extTextInputEvent(const StringVector& tokens)
     URI::decode(text, decodedText);
 
     getLOKitDocument()->setView(_viewId);
+
+    // WASM multi-view workaround: force view switch cycle for proper state restore
+    if (getLOKitDocument()->getViewsCount() > 1)
+    {
+        const int curView = getLOKitDocument()->getView();
+        const int otherView = (curView == 0) ? 1 : 0;
+        getLOKitDocument()->setView(otherView);
+        getLOKitDocument()->setView(_viewId);
+    }
+
     getLOKitDocument()->postWindowExtTextInputEvent(id, LOK_EXT_TEXTINPUT, decodedText.c_str());
     getLOKitDocument()->postWindowExtTextInputEvent(id, LOK_EXT_TEXTINPUT_END, decodedText.c_str());
 
@@ -2035,6 +2045,19 @@ bool ChildSession::keyEvent(const StringVector& tokens,
     }
 
     getLOKitDocument()->setView(_viewId);
+
+    // WASM multi-view workaround: LOK Core's setView() doesn't fully restore
+    // cursor/layout state for views created via createView(). Force a view
+    // switch cycle to trigger proper state save/restore.
+    if (getLOKitDocument()->getViewsCount() > 1)
+    {
+        const int curView = getLOKitDocument()->getView();
+        // Switch to a different view and back to force state refresh
+        const int otherView = (curView == 0) ? 1 : 0;
+        getLOKitDocument()->setView(otherView);
+        getLOKitDocument()->setView(_viewId);
+    }
+
     if (target == LokEventTargetEnum::Document)
     {
 #if !MOBILEAPP
