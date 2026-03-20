@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Document Viewer</title>
+    <style>
+        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+        iframe { width: 100%; height: 100%; border: none; }
+        #status {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: #f5f5f5; z-index: 10;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #555;
+        }
+        #status.hidden { display: none; }
+        #status h2 { margin-bottom: 0.5em; color: #333; }
+        .progress-bar { width: 300px; height: 6px; background: #ddd; border-radius: 3px; overflow: hidden; margin-top: 1em; }
+        .progress-fill { height: 100%; width: 0%; background: #0366d6; border-radius: 3px; transition: width 0.3s; }
+        .progress-text { font-size: 0.85em; color: #999; margin-top: 0.4em; }
+        #timeline {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            max-height: 200px; overflow-y: auto;
+            background: rgba(0,0,0,0.85); color: #0f0;
+            font-family: monospace; font-size: 11px;
+            padding: 6px 10px; z-index: 100;
+            line-height: 1.5;
+        }
+        #timeline .ev { display: flex; gap: 8px; }
+        #timeline .delta { color: #ff0; min-width: 60px; text-align: right; }
+        #timeline .total { color: #888; min-width: 70px; text-align: right; }
+        #timeline .label { color: #0f0; }
+        #timeline .phase { color: #0af; font-weight: bold; margin-top: 4px; }
+        #timeline .sub { color: #aaa; padding-left: 16px; }
+    </style>
+    <script>
+        var basePath = window.location.pathname.replace(/\/[^\/]*$/, '/');
+        var s = document.createElement('script');
+        s.src = basePath + 'config.js';
+        document.head.appendChild(s);
+    </script>
+</head>
+<body>
+    <div id="status">
+        <h2>Document Viewer</h2>
+        <div id="msg">Initializing...</div>
+        <div class="progress-bar"><div class="progress-fill" id="fill"></div></div>
+        <div class="progress-text" id="ptext"></div>
+    </div>
+    <form id="form" action enctype="multipart/form-data" target="coolframe" method="post" style="display:none;">
+        <input name="access_token" value="test" type="hidden" />
+    </form>
+    <iframe id="coolframe" name="coolframe" style="width:100%;height:calc(100% - 200px);position:absolute;display:none;" title="Collabora Online"></iframe>
+    <div id="timeline"></div>
+
+    <script>
+        var msg = document.getElementById('msg');
+        var fill = document.getElementById('fill');
+        var ptext = document.getElementById('ptext');
+
+        // =====================================================================
+        // Timeline logger
+        // =====================================================================
+        var _t0 = performance.now();
+        var _tLast = _t0;
+        var _timelineEl = document.getElementById('timeline');
+
+        window._viewerTlog = tlog;
+        function tlog(label, isPhase, isSub) {
+            var now = performance.now();
+            var delta = now - _tLast;
+            var total = now - _t0;
+            _tLast = now;
+            var div = document.createElement('div');
+            div.className = 'ev';
+            var cls = isPhase ? 'phase' : (isSub ? 'sub' : 'label');
+            div.innerHTML =
+                '<span class="delta">+' + delta.toFixed(0) + 'ms</span>' +
+                '<span class="total">' + total.toFixed(0) + 'ms</span>' +
+                '<span class="' + cls + '">' + label + '</span>';
+            _timelineEl.appendChild(div);
+            _timelineEl.scrollTop = _timelineEl.scrollHeight;
+        }
+
+        function tresetDoc() {
+            _tLast = performance.now();
+            var div = document.createElement('div');
+            div.innerHTML = '<span style="color:#f80;">─── Document open ───</span>';
+            _timelineEl.appendChild(div);
+        }
+
+        tlog('viewer.html loaded', true);
+
+        // =====================================================================
+        // PHASE 1: Preload WASM assets into Cache API
+        // =====================================================================
+
+        function preloadWasmAssets() {
+            tlog('Phase 1: WASM asset preload start', true);
+            var cdn = (window.__CONFIG__ && window.__CONFIG__.cdnUrl) || '';
+            var cdnBase = cdn ? cdn.replace(/\/+$/, '') + '/' : basePath;
+            var CACHE_NAME = 'cool-wasm-assets';
+            var files = ['online.wasm', 'soffice.data'];
+            return caches.open(CACHE_NAME).then(function(cache) {
+                return Promise.all(files.map(function(file) {
+                    return cache.match(cdnBase + file).then(function(resp) {
+                        if (resp) { tlog(file + ': cached', false, true); return; }
+                        tlog(file + ': downloading...', false, true);
+                        msg.textContent = 'Downloading ' + file + '...';
+                        return fetch(cdnBase + file).then(function(r) {
+                            if (r.ok) return cache.put(cdnBase + file, r);
+                        }).then(function() { tlog(file + ': done', false, true); });
+                    });
+                }));
+            }).then(function() {
+                tlog('Phase 1 complete', true);
+            }).catch(function() { tlog('Phase 1 failed', true); });
+        }
+        var assetsPromise = preloadWasmAssets();
+
+        // =====================================================================
+        // PHASE 2: Pre-warm LibreOffice with blank .docx
+        // After this, cool.html is loaded in coolframe with a blank document,
+        // COOL client UI is initialized, WASM is running, LOKit is warm.
+        // We keep this alive and reuse it for all subsequent documents.
+        // =====================================================================
+
+        var BLANK_DOCX_B64 = 'UEsDBBQAAAAIAAAAAAB5bjPX7AAAAK0BAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH2Qy07DMBBFf8XyFsUOLBBCcbrgsQQW5QMs'
+            + 'e5JYtWcsjxvSv0dpSxeosL6Pc3W7zZKimKFwIDTyVrVSADryAUcjP7evzYMUXC16GwnByAOw3PTd9pCBxZIispFTrflRa3YTJMuK'
+            + 'MuCS4kAl2cqKyqizdTs7gr5r23vtCCtgberaIfvuGQa7j1W8LBXwtKNAZCmeTsaVZaTNOQZnayDUM/pflOZMUAXi0cNTyHyzpCj1'
+            + 'VcKq/A04595nKCV4EB+21DebwEj9RcVrT26fAKv6v+bKThqG4OCSX9tyIQfMAccU1UVJNuDPfn28u/8GUEsDBBQAAAAIAAAAAACb'
+            + '/TfqsQAAACkBAAALAAAAX3JlbHMvLnJlbHONz8FqwzAQBNBfEXuv5eQQQrDsSwjkWtwPENLaFpV2hVZNnb/PJYc49NDrMLxhumFN'
+            + 'Ud2wSGAysGtaUEiOfaDZwNd4+TiCkmrJ28iEBu4oMPTdJ0ZbA5MsIYtaUyQxsNSaT1qLWzBZaTgjrSlOXJKt0nCZdbbu286o9217'
+            + '0OXVgK2prt5AufodqPGe8T82T1NweGb3k5DqHxNvDVCjLTNWA79cvPbPuFlTBN13enOxfwBQSwMEFAAAAAgAAAAAAIOo/XqXAAAA'
+            + 'ygAAABEAAAB3b3JkL2RvY3VtZW50LnhtbEXOQQ7CIBAF0KuQ2VuqC2OaUneeQA+AgG0TZoYwaNvbG+rCzfubn5/fX1eM6hOyzEwG'
+            + 'jk0LKpBjP9No4HG/HS6gpFjyNjIFA1sQuA790nl2bwxU1IqRpFsMTKWkTmtxU0ArDadAK8YXZ7RFGs6jXjj7lNkFkZlGjPrUtmeN'
+            + 'diaok0/2W81UyZUyqF7XqObdtPur6v+N4QtQSwMEFAAAAAgAAAAAAOn5wZN7AAAAmwAAABwAAAB3b3JkL19yZWxzL2RvY3VtZW50'
+            + 'LnhtbC5yZWxzVcxBDsIgEADAr5C9C9WDMaa0tz7A6AM2dG2JsEtYYvD3XnUeMOPcczJvqhqFPRztAIY4yBp58/C4L4cLGG3IKyZh'
+            + '8vAhhXkab5SwRWHdY1HTc2L1sLdWrs5p2CmjWinEPaen1IxNrdTNFQwv3MidhuHs6u8B0+j+0ukLUEsBAhQAFAAAAAgAAAAAAHlu'
+            + 'M9fsAAAArQEAABMAAAAAAAAAAAAAAAAAAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAAUAAAACAAAAAAAm/036rEAAAApAQAA'
+            + 'CwAAAAAAAAAAAAAAAAAdAQAAX3JlbHMvLnJlbHNQSwECFAAUAAAACAAAAAAAg6j9epcAAADKAAAAEQAAAAAAAAAAAAAAAAD3AQAA'
+            + 'd29yZC9kb2N1bWVudC54bWxQSwECFAAUAAAACAAAAAAA6fnBk3sAAACbAAAAHAAAAAAAAAAAAAAAAAC9AgAAd29yZC9fcmVscy9k'
+            + 'b2N1bWVudC54bWwucmVsc1BLBQYAAAAABAAEAAMBAAByAwAAAAA=';
+
+        var _warmDocId = null;
+
+        function prewarmLibreOffice() {
+            tlog('Phase 2: Pre-warm start', true);
+            msg.textContent = 'Starting LibreOffice...';
+            fill.style.width = '60%';
+
+            var raw = atob(BLANK_DOCX_B64);
+            var bytes = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+            _warmDocId = '_blank_' + randomId();
+
+            tlog('2a: Upload blank .docx', false, true);
+            return uploadToServer(_warmDocId, bytes).then(function() {
+                tlog('2b: Uploaded', false, true);
+                tlog('2c: Loading cool.html (hidden)', false, true);
+                return loadCoolHtml(_warmDocId, true);
+            }).then(function() {
+                tlog('2d: cool.html onload', false, true);
+                return waitForCoolReady();
+            }).then(function() {
+                fill.style.width = '100%';
+                msg.textContent = 'Ready';
+                ptext.textContent = '';
+                tlog('Phase 2 complete: editor pre-warmed', true);
+            }).catch(function(e) {
+                tlog('Phase 2 failed: ' + e.message, true);
+            });
+        }
+
+        var warmPromise = assetsPromise.then(prewarmLibreOffice);
+
+        // =====================================================================
+        // Helpers
+        // =====================================================================
+
+        function randomId() {
+            var arr = new Uint8Array(16);
+            crypto.getRandomValues(arr);
+            return Array.from(arr, function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+        }
+
+        function uploadToServer(docId, data) {
+            return new Promise(function(resolve, reject) {
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', basePath + 'wasm/' + encodeURIComponent(docId));
+                xhr.onload = function() { xhr.status === 200 ? resolve() : reject(new Error('HTTP ' + xhr.status)); };
+                xhr.onerror = function() { reject(new Error('Network error')); };
+                xhr.send(data);
+            });
+        }
+
+        function loadCoolHtml(docId, hidden) {
+            return new Promise(function(resolve) {
+                var coolUrl = window.location.protocol + '//' + window.location.host
+                    + basePath + 'cool.html?WOPISrc=' + encodeURIComponent(docId);
+                var coolframe = document.getElementById('coolframe');
+                if (!hidden) coolframe.style.display = '';
+                coolframe.onload = function() { resolve(); };
+                var form = document.getElementById('form');
+                form.action = coolUrl;
+                form.style.display = '';
+                form.submit();
+            });
+        }
+
+        function waitForCoolReady() {
+            return new Promise(function(resolve) {
+                var attempts = 0;
+                var poll = setInterval(function() {
+                    attempts++;
+                    try {
+                        var f = document.getElementById('coolframe');
+                        if (f && f.contentWindow && f.contentWindow.postMobileMessage) {
+                            clearInterval(poll);
+                            tlog('  postMobileMessage available', false, true);
+                            resolve();
+                            return;
+                        }
+                    } catch(e) {}
+                    if (attempts > 600) { clearInterval(poll); resolve(); }
+                    fill.style.width = Math.min(95, 60 + attempts * 0.3) + '%';
+                }, 50);
+            });
+        }
+
+        // Wait for document visible with detailed protocol tracking
+        function waitForStatus() {
+            return new Promise(function(resolve) {
+                var f = document.getElementById('coolframe');
+                if (!f || !f.contentWindow) { resolve(); return; }
+
+                // Install protocol interceptors to track every substep
+                var _t = {};
+                function once(k, label) { if (!_t[k]) { _t[k] = true; tlog(label, false, true); } }
+
+                // Hook outgoing (JS→WASM)
+                try {
+                    var origPost = f.contentWindow.postMobileMessage;
+                    if (origPost && !origPost._hooked) {
+                        var wrapped = function(msg) {
+                            if (typeof msg === 'string') {
+                                if (msg === 'HULLO') once('hullo', '7a: JS→HULLO');
+                                else if (msg.startsWith('coolclient')) once('cc', '7b: JS→coolclient');
+                                else if (msg.startsWith('load url=')) once('load', '7c: JS→load url=');
+                                else if (msg.startsWith('clientvisiblearea') && !_t['cva2']) {
+                                    // First real clientvisiblearea (not the 0,0,0,0 one)
+                                    if (msg.indexOf('width=0') === -1) once('cva', '7h: JS→clientvisiblearea');
+                                }
+                                else if (msg.startsWith('tilecombine')) once('tc', '7i: JS→tilecombine');
+                                else if (msg.startsWith('tileprocessed')) once('tp', '7k: JS→tileprocessed');
+                            }
+                            return origPost.apply(this, arguments);
+                        };
+                        wrapped._hooked = true;
+                        f.contentWindow.postMobileMessage = wrapped;
+                    }
+                } catch(e) {}
+
+                // Hook incoming (WASM→JS) via defineProperty on TheFakeWebSocket
+                var sockPoll = setInterval(function() {
+                    try {
+                        var sock = f.contentWindow.TheFakeWebSocket;
+                        if (sock && !_t['_sockHooked']) {
+                            _t['_sockHooked'] = true;
+                            clearInterval(sockPoll);
+
+                            var _realHandler = sock.onmessage || null;
+                            Object.defineProperty(sock, 'onmessage', {
+                                get: function() { return _intercept; },
+                                set: function(fn) { _realHandler = fn; },
+                                configurable: true
+                            });
+                            function _intercept(event) {
+                                if (typeof event.data === 'string') {
+                                    var d = event.data;
+                                    if (d.indexOf('loolserver') >= 0) once('hs', '7d: WASM→loolserver');
+                                    else if (d.startsWith('perm:')) once('perm', '7e: WASM→perm');
+                                    else if (d.startsWith('status:')) once('status', '7f: WASM→status (doc loaded!)');
+                                    else if (d.startsWith('viewinfo:')) once('vi', '7g: WASM→viewinfo');
+                                    else if (d.startsWith('invalidatecursor:')) once('cur', '7j: WASM→invalidatecursor');
+                                    else if (d.startsWith('statechanged:')) once('sc', '7j2: WASM→statechanged');
+                                } else {
+                                    once('tile', '7k: WASM→first tile (binary)');
+                                }
+                                if (_realHandler) return _realHandler.apply(this, arguments);
+                            }
+                        }
+                    } catch(e) {}
+                }, 10);
+
+                // Poll for _docLoaded
+                var attempts = 0;
+                var poll = setInterval(function() {
+                    attempts++;
+                    try {
+                        if (f.contentWindow.app && f.contentWindow.app.map &&
+                            f.contentWindow.app.map._docLoaded) {
+                            clearInterval(poll);
+                            clearInterval(sockPoll);
+                            resolve();
+                            return;
+                        }
+                    } catch(e) {}
+                    if (attempts > 300) { clearInterval(poll); clearInterval(sockPoll); resolve(); }
+                    fill.style.width = Math.min(95, 50 + attempts * 0.3) + '%';
+                    ptext.textContent = 'Loading... (' + (attempts * 0.1).toFixed(1) + 's)';
+                }, 100);
+            });
+        }
+
+        // =====================================================================
+        // Message protocol
+        // =====================================================================
+
+        var parentOrigin = '*';
+        function sendToParent(type, payload) {
+            if (window.parent === window) return;
+            var message = { type: type };
+            if (payload !== undefined) message.payload = payload;
+            window.parent.postMessage(message, parentOrigin);
+        }
+
+        window.addEventListener('message', function(event) {
+            var data = event.data;
+            if (!data || !data.type) return;
+            if (event.origin && event.origin !== 'null') parentOrigin = event.origin;
+            switch (data.type) {
+                case 'view-document':
+                    if (!data.payload || !data.payload.blob) { sendToParent('error', 'missing blob'); return; }
+                    tlog('Received: view-document (' + (data.payload.fileName || '?') + ')');
+                    openDocument(data.payload.blob, data.payload.fileName || 'document');
+                    break;
+                case 'edit-docx':
+                    if (!data.payload || !data.payload.blob) { sendToParent('error', 'missing blob'); return; }
+                    tlog('Received: edit-docx');
+                    openDocument(data.payload.blob, data.payload.blob.name || 'document.docx');
+                    break;
+                case 'save-docx':
+                    tlog('Received: save-docx');
+                    handleSaveDocx();
+                    break;
+            }
+        });
+
+        // =====================================================================
+        // Open document — HOT PATH (reuse running WASM) or COLD PATH (first load)
+        // =====================================================================
+
+        var currentDocId = null;
+        var currentFileName = null;
+        var _firstDocLoaded = false;
+        var _wasmDocCounter = 1; // 0 used by prewarm
+
+        function openDocument(blob, fileName) {
+            tresetDoc();
+            sendToParent('document-load-started');
+            currentFileName = fileName;
+            msg.textContent = 'Opening ' + fileName + '...';
+            document.getElementById('status').classList.remove('hidden');
+            fill.style.width = '10%';
+            ptext.textContent = 'Uploading...';
+
+            var docId = randomId();
+
+            tlog('1: FileReader start');
+            var reader = new FileReader();
+            reader.onload = function(ev) {
+                tlog('2: FileReader done (' + ev.target.result.byteLength + ' bytes)');
+                var data = new Uint8Array(ev.target.result);
+
+                tlog('3: Upload + prewarm (parallel)');
+                var t0 = performance.now();
+                var uploadDone = uploadToServer(docId, data).then(function() {
+                    tlog('4a: Upload complete (' + (performance.now() - t0).toFixed(0) + 'ms)', false, true);
+                });
+                var warmDone = warmPromise.then(function() {
+                    tlog('4b: Prewarm ready', false, true);
+                });
+
+                Promise.all([uploadDone, warmDone]).then(function() {
+                    currentDocId = docId;
+                    fill.style.width = '40%';
+
+                    var f = document.getElementById('coolframe');
+                    if (_firstDocLoaded && f && f.contentWindow && f.contentWindow.postMobileMessage) {
+                        // ── HOT PATH: switch document in running WASM via switchdocument command ──
+                        tlog('5: HOT PATH — switchdocument', true);
+                        return hotSwitchDocument(f, data);
+                    } else {
+                        // ── COLD PATH: first document, full cool.html load ──
+                        tlog('5: COLD PATH — loading cool.html', true);
+                        return loadCoolHtml(docId, false).then(function() {
+                            tlog('6: cool.html onload');
+                            return waitForCoolReady();
+                        }).then(function() {
+                            tlog('7: postMobileMessage available');
+                            _firstDocLoaded = true;
+                            return waitForStatus();
+                        });
+                    }
+                }).then(function() {
+                    tlog('DONE: document visible', true);
+                    document.getElementById('status').classList.add('hidden');
+                    sendToParent('document-loaded');
+                }).catch(function(e) {
+                    tlog('ERROR: ' + e.message);
+                    sendToParent('error', 'Failed: ' + e.message);
+                });
+            };
+            reader.readAsArrayBuffer(blob);
+        }
+
+        // Hot switch: write doc to VFS, send switchdocument command through COOL protocol.
+        // No BYE, no HULLO, no page reload. Same session, same broker.
+        // Kit handles it on the correct thread: closes old LOKit doc, opens new one.
+        function hotSwitchDocument(f, data) {
+            return new Promise(function(resolve, reject) {
+                var vfsPath = '/tempdoc' + _wasmDocCounter;
+                _wasmDocCounter++;
+
+                // Write new document bytes to Emscripten VFS
+                tlog('5a: Write ' + data.length + ' bytes to ' + vfsPath, false, true);
+                try {
+                    f.contentWindow.Module.FS.writeFile(vfsPath, data);
+                } catch(e) {
+                    tlog('5a: VFS write failed, cold fallback', false, true);
+                    _firstDocLoaded = false;
+                    return loadCoolHtml(currentDocId, false).then(function() {
+                        return waitForCoolReady();
+                    }).then(function() {
+                        _firstDocLoaded = true;
+                        return waitForStatus();
+                    }).then(resolve);
+                }
+
+                // Reset _docLoaded so waitForStatus detects the new status:
+                try {
+                    if (f.contentWindow.app && f.contentWindow.app.map) {
+                        f.contentWindow.app.map._docLoaded = false;
+                    }
+                } catch(e) {}
+
+                // Show loading overlay on top of the editor
+                msg.textContent = 'Switching document...';
+                document.getElementById('status').classList.remove('hidden');
+                document.getElementById('status').style.zIndex = '1000';
+
+                // Send switchdocument command through the existing COOL socket
+                var switchCmd = 'switchdocument file://' + vfsPath;
+                tlog('5b: Sending: ' + switchCmd, false, true);
+                try {
+                    f.contentWindow.postMobileMessage(switchCmd);
+                } catch(e) {
+                    tlog('5b: Failed, cold fallback: ' + e.message, false, true);
+                    _firstDocLoaded = false;
+                    return loadCoolHtml(currentDocId, false).then(function() {
+                        return waitForCoolReady();
+                    }).then(function() {
+                        _firstDocLoaded = true;
+                        return waitForStatus();
+                    }).then(resolve);
+                }
+
+                // Wait for the new document to be loaded (status: message triggers _docLoaded)
+                fill.style.width = '60%';
+                ptext.textContent = 'Switching document...';
+                waitForStatus().then(resolve).catch(function() {
+                    // Fallback to cold reload
+                    _firstDocLoaded = false;
+                    loadCoolHtml(currentDocId, false).then(function() {
+                        return waitForCoolReady();
+                    }).then(function() {
+                        _firstDocLoaded = true;
+                        return waitForStatus();
+                    }).then(resolve);
+                });
+            });
+        }
+
+        // =====================================================================
+        // HOT RELOAD: swap document in running COOL instance
+        //
+        // 1. Upload new doc to server at /wasm/<docId>  (already done above)
+        // 2. Write new doc bytes to Emscripten VFS at /tempdoc (overwrites old)
+        // 3. Close the COOL socket (sends BYE, triggers cleanup)
+        // 4. Tell COOL client to reconnect: map.loadDocument()
+        // 5. COOLWSD creates new DocumentBroker, Kit calls documentLoad()
+        // =====================================================================
+        // Save
+        // =====================================================================
+
+        function handleSaveDocx() {
+            if (!currentDocId) { sendToParent('error', 'DocxSaveError'); return; }
+            try {
+                var frame = document.getElementById('coolframe');
+                if (!frame || !frame.contentWindow) { sendToParent('error', 'DocxSaveError'); return; }
+                tlog('Save: sending save command');
+                frame.contentWindow.postMobileMessage('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
+                setTimeout(function() {
+                    tlog('Save: fetching from server');
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', basePath + 'wasm/' + encodeURIComponent(currentDocId));
+                    xhr.responseType = 'arraybuffer';
+                    xhr.onload = function() {
+                        if (xhr.status !== 200) { sendToParent('error', 'DocxSaveError'); return; }
+                        var blob = new Blob([xhr.response], { type: 'application/octet-stream' });
+                        blob.name = currentFileName;
+                        tlog('Save: done (' + xhr.response.byteLength + ' bytes)');
+                        sendToParent('save-docx-content', { payload: { blob: blob } });
+                    };
+                    xhr.onerror = function() { sendToParent('error', 'DocxSaveError'); };
+                    xhr.send();
+                }, 1500);
+            } catch(e) { sendToParent('error', 'DocxSaveError'); }
+        }
+
+        // Notify parent after prewarm
+        warmPromise.then(function() {
+            tlog('Sending event-listener-ready', true);
+            sendToParent('event-listener-ready');
+        });
+    </script>
+</body>
+</html>

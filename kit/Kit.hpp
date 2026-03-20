@@ -430,6 +430,11 @@ public:
     /// Return access to the lok::Document instance.
     std::shared_ptr<lok::Document> getLOKitDocument();
 
+#if WASMAPP
+    /// Replace the LOKit document (for hot document switching).
+    void setLOKitDocument(std::shared_ptr<lok::Document> newDoc) { _loKitDocument = newDoc; }
+#endif
+
     std::string getObfuscatedFileId() { return _obfuscatedFileId; }
 
     bool isBackgroundSaveProcess() const { return _isBgSaveProcess; }

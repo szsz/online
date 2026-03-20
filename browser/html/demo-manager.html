@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Document Manager (Demo)</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 2em; }
+        h1 { font-size: 1.3em; }
+        .controls { margin: 1em 0; display: flex; gap: 0.5em; align-items: center; }
+        label, .btn {
+            display: inline-block; padding: 10px 20px;
+            background: #0366d6; color: white; border-radius: 6px;
+            cursor: pointer; border: none; font-size: 1em;
+        }
+        label:hover, .btn:hover { background: #0256b9; }
+        .btn.green { background: #28a745; }
+        .btn.green:hover { background: #22863a; }
+        .btn:disabled { background: #999; cursor: not-allowed; }
+        input[type="file"] { display: none; }
+        #status { margin: 1em 0; color: #555; }
+        #log { background: #1e1e1e; color: #d4d4d4; padding: 1em; border-radius: 6px; font-family: monospace; font-size: 0.8em; height: 150px; overflow-y: auto; white-space: pre-wrap; }
+        iframe { width: 100%; height: 600px; border: 1px solid #ccc; border-radius: 6px; }
+        pre { background: #f5f5f5; padding: 1em; border-radius: 6px; overflow-x: auto; font-size: 0.85em; }
+        .info { background: #e8f4fd; padding: 1em; border-radius: 6px; margin: 1em 0; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <h1>Document Manager (Demo)</h1>
+    <div class="info">
+        Uses the same <code>postMessage</code> protocol as the webclient Content Preview service.
+        Viewer is served via reverse proxy at <code>/viewer/*</code> (same-origin for SharedArrayBuffer).
+        <br><br>
+        <b>Required server setup:</b>
+        1. Send <code>COOP: same-origin</code> + <code>COEP: require-corp</code> headers.
+        2. Reverse-proxy <code>/viewer/*</code> to the COOL viewer server.
+    </div>
+
+    <div class="controls">
+        <label for="file-input">Open Document</label>
+        <input type="file" id="file-input"
+            accept=".odt,.ods,.odp,.odg,.docx,.xlsx,.pptx,.doc,.xls,.ppt,.pdf,.txt,.csv,.rtf" />
+        <button class="btn green" id="save-btn" disabled>Save &amp; Download</button>
+    </div>
+    <div id="status">Select a file to open in the embedded editor.</div>
+
+    <!-- Same-origin via reverse proxy -->
+    <iframe id="viewer" src="/viewer/viewer.html"></iframe>
+
+    <h3>Log</h3>
+    <div id="log"></div>
+
+    <h3>Integration code:</h3>
+    <pre>
+// Same message protocol as webclient Content Preview service.
+// Viewer served same-origin via reverse proxy (/viewer/* → COOL server).
+
+var viewer = document.getElementById('viewer');
+
+window.addEventListener('message', function(e) {
+    switch (e.data.type) {
+        case 'event-listener-ready':
+            // Viewer ready — send document
+            viewer.contentWindow.postMessage({
+                type: 'view-document',
+                payload: {
+                    blob: fileBlob,         // Blob
+                    fileName: 'report.docx',
+                    language: 'en',
+                }
+            }, window.location.origin);
+            break;
+
+        case 'document-loaded':
+            console.log('Document rendered');
+            break;
+
+        case 'save-docx-content':
+            // e.data.payload.payload.blob = saved Blob
+            download(e.data.payload.payload.blob);
+            break;
+
+        case 'error':
+            console.error('Viewer error:', e.data.payload);
+            break;
+    }
+});
+
+// Request save
+viewer.contentWindow.postMessage(
+    { type: 'save-docx' },
+    window.location.origin
+);</pre>
+
+    <script>
+        var viewer = document.getElementById('viewer');
+        var status = document.getElementById('status');
+        var saveBtn = document.getElementById('save-btn');
+        var logEl = document.getElementById('log');
+        var currentFileName = null;
+        var viewerReady = false;
+        var pendingFile = null;
+
+        function log(msg) {
+            var ts = new Date().toLocaleTimeString();
+            logEl.textContent += '[' + ts + '] ' + msg + '\n';
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        log('crossOriginIsolated: ' + self.crossOriginIsolated);
+
+        // --- Handle messages from viewer (same protocol as Content Preview) ---
+
+        window.addEventListener('message', function(event) {
+            if (!event.data || !event.data.type) return;
+            log('← ' + event.data.type);
+
+            switch (event.data.type) {
+                case 'event-listener-ready':
+                    viewerReady = true;
+                    status.textContent = 'Viewer ready. Pick a file to open.';
+                    // If a file was selected before viewer was ready, send it now
+                    if (pendingFile) {
+                        sendFileToViewer(pendingFile);
+                        pendingFile = null;
+                    }
+                    break;
+
+                case 'document-loaded':
+                    status.textContent = 'Editing: ' + currentFileName;
+                    saveBtn.disabled = false;
+                    break;
+
+                case 'save-docx-content':
+                    var blob = event.data.payload && event.data.payload.payload && event.data.payload.payload.blob;
+                    if (blob) {
+                        log('Saved: ' + blob.size + ' bytes');
+                        var url = URL.createObjectURL(blob);
+                        var a = document.createElement('a');
+                        a.href = url;
+                        a.download = currentFileName || 'document';
+                        document.body.appendChild(a);
+                        a.click();
+                        setTimeout(function() { URL.revokeObjectURL(url); a.remove(); }, 1000);
+                        status.textContent = 'Downloaded: ' + currentFileName;
+                    } else {
+                        log('save-docx-content: no blob in payload');
+                    }
+                    break;
+
+                case 'error':
+                    log('Error: ' + event.data.payload);
+                    status.textContent = 'Error: ' + event.data.payload;
+                    break;
+            }
+        });
+
+        // --- Send file to viewer using view-document message ---
+
+        function sendFileToViewer(file) {
+            log('→ view-document (' + file.name + ', ' + file.size + ' bytes)');
+            viewer.contentWindow.postMessage({
+                type: 'view-document',
+                payload: {
+                    blob: file,
+                    fileName: file.name,
+                    language: navigator.language ? navigator.language.substring(0, 2) : 'en',
+                    isDownloadProtected: false,
+                    hidePrintButton: false,
+                    isTrustedCreator: true,
+                    isPageViewTrackable: false,
+                    esignFields: [],
+                }
+            }, window.location.origin);
+        }
+
+        // --- File input ---
+
+        document.getElementById('file-input').addEventListener('change', function(e) {
+            var file = e.target.files[0];
+            if (!file) return;
+            currentFileName = file.name;
+            status.textContent = 'Opening ' + file.name + '...';
+
+            if (viewerReady) {
+                sendFileToViewer(file);
+            } else {
+                pendingFile = file;
+                log('Viewer not ready yet, queuing file...');
+            }
+        });
+
+        // --- Save button ---
+
+        saveBtn.addEventListener('click', function() {
+            log('→ save-docx');
+            viewer.contentWindow.postMessage(
+                { type: 'save-docx' },
+                window.location.origin
+            );
+        });
+    </script>
+</body>
+</html>

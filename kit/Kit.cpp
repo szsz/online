@@ -28,6 +28,10 @@
 #include <dlfcn.h>
 #endif
 
+#if WASMAPP
+#include <emscripten.h>
+#endif
+
 #ifdef __linux__
 #include <ftw.h>
 #include <sys/vfs.h>
@@ -151,6 +155,7 @@ extern "C" { void dump_kit_state(void); /* easy for gdb */ }
 extern std::map<std::string, std::shared_ptr<DocumentBroker>> DocBrokers;
 extern std::mutex DocBrokersMutex;
 #endif
+
 
 #if !MOBILEAPP
 
@@ -2050,6 +2055,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         // This is the first time we are loading the document
         LOG_INF("Loading new document from URI: [" << uriAnonym << "] for session [" << sessionId << "].");
 
+        LOG_INF("LOADTRACE: registerCallback + setOptionalFeatures");
         _loKit->registerCallback(GlobalCallback, this);
 
         const int flags = LOK_FEATURE_DOCUMENT_PASSWORD
@@ -2060,6 +2066,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
             | LOK_FEATURE_VIEWID_IN_VISCURSOR_INVALIDATION_CALLBACK;
         _loKit->setOptionalFeatures(flags);
 
+        LOG_INF("LOADTRACE: preparing loadUri");
         std::string loadUri = uri;
 
         if (!docTemplate.empty())
@@ -2084,7 +2091,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         _isDocPasswordProtected = false;
 
         const char* url = loadUri.c_str();
-        LOG_DBG("Calling lokit::documentLoad(" << anonymizeUrl(url) << ", \"" << options << "\")");
+        LOG_INF("LOADTRACE: calling documentLoad(" << url << ") — this is the blocking LOKit call");
         const auto start = std::chrono::steady_clock::now();
         _loKitDocument.reset(_loKit->documentLoad(url, options.c_str()));
 #ifdef __ANDROID__
@@ -2098,7 +2105,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
 #endif
         const auto duration = std::chrono::steady_clock::now() - start;
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-        LOG_DBG("Returned lokit::documentLoad(" << anonymizeUrl(url) << ") in " << elapsed);
+        LOG_INF("LOADTRACE: documentLoad returned in " << elapsed.count() << "ms");
 #if defined(IOS) || defined(MACOS) || defined(_WIN32) || defined(QTAPP)
         DocumentData::get(_mobileAppDocId).loKitDocument = _loKitDocument.get();
         {
@@ -2207,7 +2214,9 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
     // registerCallback(), as the previous creates a new view in Impress.
     const std::string renderParams = makeRenderParams(_renderOpts, userName, spellOnline, theme, backgroundTheme, userPrivateInfo);
 
+    LOG_INF("LOADTRACE: calling initializeForRendering");
     _loKitDocument->initializeForRendering(renderParams.c_str());
+    LOG_INF("LOADTRACE: initializeForRendering done");
 
     const int viewId = _loKitDocument->getView();
     session->setViewId(viewId);

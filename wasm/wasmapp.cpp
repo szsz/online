@@ -267,8 +267,6 @@ void handle_cool_message(const char *string_value)
                        assert(false);
                     }).detach();
 
-        // First we simply send it the URL. This corresponds to the GET request with Upgrade to
-        // WebSocket.
         LOG_TRC_NOFILE("Actually sending to Online:" << fileURL);
         std::cout << "Loading file [" << fileURL << "]" << std::endl;
 

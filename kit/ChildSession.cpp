@@ -302,6 +302,57 @@ bool ChildSession::_handleInput(const char *buffer, int length)
     {
         return dialogEvent(tokens);
     }
+#if WASMAPP
+    else if (tokens.equals(0, "switchdocument"))
+    {
+        // Hot document switch: close current LOKit doc, open new one.
+        // Runs on the Kit thread so SolarMutex is safe.
+        // Format: "switchdocument file:///tempdocN"
+        if (tokens.size() < 2)
+        {
+            sendTextFrameAndLogError("error: cmd=switchdocument kind=syntax");
+            return false;
+        }
+
+        const std::string newUrl = tokens[1];
+        LOG_INF("SWITCHDOC: switching to " << newUrl);
+
+        // Block processing of other messages (tilecombine etc.) during switch
+        InputProcessingManager processInput(getProtocol(), false);
+        WatchdogGuard watchdogGuard;
+
+        // Don't destroyView or reset the old document — both are very slow.
+        // Just load the new document directly. LOKit handles the transition.
+        auto loKit = _docManager->getLOKit();
+        LOG_INF("SWITCHDOC: calling documentLoad(" << newUrl << ")");
+        auto newDoc = std::shared_ptr<lok::Document>(loKit->documentLoad(newUrl.c_str(), "Language=en-US,Batch=true"));
+        if (!newDoc || !newDoc->get())
+        {
+            LOG_ERR("SWITCHDOC: failed to load " << newUrl << ": " << loKit->getError());
+            sendTextFrameAndLogError("error: cmd=switchdocument kind=faileddocloading");
+            return false;
+        }
+
+        // Replace the document in the document manager
+        _docManager->setLOKitDocument(newDoc);
+
+        // Initialize for rendering
+        newDoc->initializeForRendering("");
+        _viewId = newDoc->getView();
+
+        // Invalidate all tiles on the client
+        sendTextFrame("invalidatetiles: EMPTY");
+
+        // Send new document status
+        const std::string status = LOKitHelper::documentStatus(newDoc->get());
+        LOG_INF("SWITCHDOC: sending new status (" << status.size() << " bytes)");
+        sendTextFrame("status: " + status);
+
+        _isDocLoaded = true;
+        LOG_INF("SWITCHDOC: complete, viewId=" << _viewId);
+        return true;
+    }
+#endif
     else if (tokens.equals(0, "load"))
     {
         if (_isDocLoaded)
@@ -1030,8 +1081,9 @@ bool ChildSession::loadDocument(const StringVector& tokens)
         _currentPart = getLOKitDocument()->getPart();
 
     // Respond by the document status
-    LOG_DBG("Sending status after loading view " << _viewId);
+    LOG_INF("LOADTRACE: generating document status for view " << _viewId);
     const std::string status = LOKitHelper::documentStatus(getLOKitDocument()->get());
+    LOG_INF("LOADTRACE: sending status: (" << status.size() << " bytes)");
     if (status.empty() || !sendTextFrame("status: " + status))
     {
         LOG_ERR("Failed to get/forward document status [" << status << ']');

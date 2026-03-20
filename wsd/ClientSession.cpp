@@ -773,6 +773,15 @@ bool ClientSession::_handleInput(const char *buffer, int length)
         }
     }
 
+#if WASMAPP
+    if (tokens.equals(0, "switchdocument"))
+    {
+        // Hot document switch — forward directly to Kit (bypasses doc-loaded check)
+        LOG_INF("SWITCHDOC: forwarding to child: " << firstLine);
+        return forwardToChild(std::string(buffer, length), docBroker);
+    }
+#endif
+
     if (tokens.equals(0, "urp"))
     {
         // This can't be pushed down into the long list of tokens that are

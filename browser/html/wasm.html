@@ -713,6 +713,16 @@
             form.style.display = '';
             form.action = constructWopiUrl(params.get('WOPISrc') || params.get('file_path'));
             form.submit();
+        } else if (params.get('viewerDocId')) {
+            // Opened from viewer.html — document is already on the server at /wasm/<docId>
+            var viewerDocId = params.get('viewerDocId');
+            var viewerFileName = params.get('viewerFileName') || 'document';
+            document.getElementById('upload-overlay').classList.add('hidden');
+            document.title = viewerFileName + ' - Online';
+            var form = document.getElementById("form");
+            form.style.display = '';
+            form.action = constructWopiUrl(viewerDocId);
+            form.submit();
         } else if (!_hasHash && getRecentFiles().length > 0) {
             // No key in URL and we have recent files — show the file picker
             (function showRecentFilesUI() {

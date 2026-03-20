@@ -35,6 +35,14 @@ if [ "$SKIP_BUILD" = false ]; then
     echo "--- Copying source files into container ---"
     docker cp "$REPO_DIR/kit/ChildSession.cpp" "$CONTAINER:/lo/online/kit/ChildSession.cpp"
     echo "  ChildSession.cpp"
+    docker cp "$REPO_DIR/kit/Kit.cpp" "$CONTAINER:/lo/online/kit/Kit.cpp"
+    echo "  Kit.cpp"
+    docker cp "$REPO_DIR/kit/KitWebSocket.cpp" "$CONTAINER:/lo/online/kit/KitWebSocket.cpp"
+    echo "  KitWebSocket.cpp"
+    docker cp "$REPO_DIR/wasm/wasmapp.cpp" "$CONTAINER:/lo/online/wasm/wasmapp.cpp"
+    echo "  wasmapp.cpp"
+    docker cp "$REPO_DIR/wsd/DocumentBroker.cpp" "$CONTAINER:/lo/online/wsd/DocumentBroker.cpp"
+    echo "  DocumentBroker.cpp"
 
     for f in relay-host.js relay-client-boot.js relay-client.html relay-server.js relay-crypto.js emscripten-module.js wasm-crypto-sw.js; do
         if [ -f "$SCRIPT_DIR/$f" ]; then
