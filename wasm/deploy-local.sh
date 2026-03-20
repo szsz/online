@@ -61,6 +61,16 @@ if [ "$SKIP_BUILD" = false ]; then
     docker cp "$CONTAINER:/lo/online/browser/dist/online.js" "$PUBLIC_DIR/online.js"
     docker cp "$CONTAINER:/lo/online/browser/dist/online.wasm" "$PUBLIC_DIR/online.wasm"
     echo "  online.js online.wasm"
+
+    echo "--- Brotli compression ---"
+    for f in online.wasm soffice.data bundle.js l10n-all.js online.js bundle.css; do
+        if [ -f "$PUBLIC_DIR/$f" ]; then
+            brotli -c -q 11 "$PUBLIC_DIR/$f" > "$PUBLIC_DIR/${f}.br"
+            orig=$(wc -c < "$PUBLIC_DIR/$f" | tr -d ' ')
+            comp=$(wc -c < "$PUBLIC_DIR/${f}.br" | tr -d ' ')
+            echo "  $f: $orig → $comp bytes"
+        fi
+    done
 fi
 
 # --- Copy JS/HTML overlay files ---

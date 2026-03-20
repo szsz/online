@@ -92,6 +92,13 @@
 
         tlog('viewer.html loaded', true);
 
+        // Register Service Worker to cache large WASM files across tabs/sessions
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register(basePath + 'viewer-sw.js', { scope: basePath })
+                .then(function() { tlog('Service Worker registered', false, true); })
+                .catch(function(e) { tlog('SW registration failed: ' + e.message, false, true); });
+        }
+
         // =====================================================================
         // PHASE 1: Preload WASM assets into Cache API
         // =====================================================================
@@ -100,24 +107,84 @@
             tlog('Phase 1: WASM asset preload start', true);
             var cdn = (window.__CONFIG__ && window.__CONFIG__.cdnUrl) || '';
             var cdnBase = cdn ? cdn.replace(/\/+$/, '') + '/' : basePath;
+            var cdnVersion = (window.__CONFIG__ && window.__CONFIG__.cdnVersion) || '';
+            var brSuffix = cdn ? '.br' : '';
+            var vSuffix = cdnVersion ? '?v=' + cdnVersion : '';
             var CACHE_NAME = 'cool-wasm-assets';
             var files = ['online.wasm', 'soffice.data'];
             return caches.open(CACHE_NAME).then(function(cache) {
+                // Use the SAME URL that Emscripten will request (with version suffix)
+                // so the Cache API matches and avoids re-downloading
                 return Promise.all(files.map(function(file) {
-                    return cache.match(cdnBase + file).then(function(resp) {
-                        if (resp) { tlog(file + ': cached', false, true); return; }
-                        tlog(file + ': downloading...', false, true);
-                        msg.textContent = 'Downloading ' + file + '...';
-                        return fetch(cdnBase + file).then(function(r) {
-                            if (r.ok) return cache.put(cdnBase + file, r);
-                        }).then(function() { tlog(file + ': done', false, true); });
+                    var url = cdnBase + file + brSuffix + vSuffix;
+                    return cache.match(url).then(function(resp) {
+                        return { file: file, url: url, cached: !!resp };
                     });
-                }));
+                })).then(function(results) {
+                    var toDownload = results.filter(function(r) { return !r.cached; });
+                    results.filter(function(r) { return r.cached; }).forEach(function(r) {
+                        tlog(r.file + ': cached', false, true);
+                    });
+
+                    if (toDownload.length === 0) return;
+
+                    // Download with XHR for progress tracking
+                    var totalLoaded = 0;
+                    var totalSize = 0;
+
+                    return Promise.all(toDownload.map(function(item) {
+                        return new Promise(function(resolve) {
+                            tlog(item.file + ': downloading...', false, true);
+                            var xhr = new XMLHttpRequest();
+                            xhr.open('GET', item.url);
+                            xhr.responseType = 'arraybuffer';
+                            xhr.onprogress = function(e) {
+                                if (e.lengthComputable) {
+                                    totalSize = Math.max(totalSize, e.total);
+                                    var pct = Math.round((e.loaded / e.total) * 50);
+                                    fill.style.width = pct + '%';
+                                    var mb = function(n) { return (n / 1048576).toFixed(1); };
+                                    msg.textContent = 'Downloading ' + item.file + '...';
+                                    ptext.textContent = mb(e.loaded) + ' / ' + mb(e.total) + ' MB';
+                                    // Notify parent (demo.html) of download progress
+                                    sendToParent('download-progress', {
+                                        file: item.file,
+                                        loaded: e.loaded,
+                                        total: e.total
+                                    });
+                                }
+                            };
+                            xhr.onload = function() {
+                                if (xhr.status === 200) {
+                                    var ct = item.file.endsWith('.wasm') ? 'application/wasm' : 'application/octet-stream';
+                                    var resp = new Response(xhr.response, {
+                                        headers: { 'Content-Type': ct, 'Content-Length': xhr.response.byteLength.toString() }
+                                    });
+                                    cache.put(item.url, resp).then(function() {
+                                        tlog(item.file + ': cached (' + (xhr.response.byteLength / 1048576).toFixed(1) + ' MB)', false, true);
+                                        resolve();
+                                    });
+                                } else {
+                                    tlog(item.file + ': failed HTTP ' + xhr.status, false, true);
+                                    resolve();
+                                }
+                            };
+                            xhr.onerror = function() {
+                                tlog(item.file + ': network error', false, true);
+                                resolve();
+                            };
+                            xhr.send();
+                        });
+                    }));
+                });
             }).then(function() {
                 tlog('Phase 1 complete', true);
-            }).catch(function() { tlog('Phase 1 failed', true); });
+            }).catch(function(e) { tlog('Phase 1 failed: ' + e.message, true); });
         }
-        var assetsPromise = preloadWasmAssets();
+        // Skip Phase 1 (preload) — let cool.html's Emscripten download WASM files
+        // directly from CDN during pre-warm. Browser HTTP cache handles caching.
+        // This avoids double-downloading (Cache API preload + Emscripten fetch).
+        var assetsPromise = Promise.resolve();
 
         // =====================================================================
         // PHASE 2: Pre-warm LibreOffice with blank .docx
@@ -164,7 +231,11 @@
                 tlog('2d: cool.html onload', false, true);
                 return waitForCoolReady();
             }).then(function() {
-                _firstDocLoaded = true; // first real doc will use hot switchdocument path
+                return waitForStatus();
+            }).then(function() {
+                // Pre-warm complete: blank doc fully loaded, COOL client connected.
+                // Hot switchdocument is safe now — the COOL protocol is established.
+                _firstDocLoaded = true;
                 fill.style.width = '100%';
                 msg.textContent = 'Ready';
                 ptext.textContent = '';
