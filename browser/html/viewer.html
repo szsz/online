@@ -164,10 +164,11 @@
                 tlog('2d: cool.html onload', false, true);
                 return waitForCoolReady();
             }).then(function() {
+                _firstDocLoaded = true; // first real doc will use hot switchdocument path
                 fill.style.width = '100%';
                 msg.textContent = 'Ready';
                 ptext.textContent = '';
-                tlog('Phase 2 complete: editor pre-warmed', true);
+                tlog('Phase 2 complete: editor pre-warmed (hot path ready)', true);
             }).catch(function(e) {
                 tlog('Phase 2 failed: ' + e.message, true);
             });
@@ -421,6 +422,9 @@
         // Kit handles it on the correct thread: closes old LOKit doc, opens new one.
         function hotSwitchDocument(f, data) {
             return new Promise(function(resolve, reject) {
+                // Show the coolframe (hidden during pre-warm)
+                f.style.display = '';
+
                 var vfsPath = '/tempdoc' + _wasmDocCounter;
                 _wasmDocCounter++;
 
