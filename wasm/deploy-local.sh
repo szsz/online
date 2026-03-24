@@ -8,7 +8,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEPLOY_DIR="C:/tmp/static-deploy"
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
+    DEPLOY_DIR="C:/tmp/static-deploy"
+else
+    DEPLOY_DIR="/tmp/static-deploy"
+fi
 PUBLIC_DIR="$DEPLOY_DIR/public"
 CONTAINER="lo-wasm-server"
 PORT=6931
@@ -32,34 +36,48 @@ if [ "$SKIP_BUILD" = false ]; then
         exit 1
     fi
 
+    # Determine container paths: init-local.sh uses /lo/online + /lo/online-build,
+    # but older setups may have everything in /lo/online directly.
+    CBUILD="/lo/online-build"
+    CSRC="/lo/online"
+    if ! docker exec "$CONTAINER" test -d "$CBUILD" 2>/dev/null; then
+        CBUILD="/lo/online"
+    fi
+
     echo "--- Copying source files into container ---"
-    docker cp "$REPO_DIR/kit/ChildSession.cpp" "$CONTAINER:/lo/online/kit/ChildSession.cpp"
-    echo "  ChildSession.cpp"
-    docker cp "$REPO_DIR/kit/Kit.cpp" "$CONTAINER:/lo/online/kit/Kit.cpp"
-    echo "  Kit.cpp"
-    docker cp "$REPO_DIR/kit/KitWebSocket.cpp" "$CONTAINER:/lo/online/kit/KitWebSocket.cpp"
-    echo "  KitWebSocket.cpp"
-    docker cp "$REPO_DIR/wasm/wasmapp.cpp" "$CONTAINER:/lo/online/wasm/wasmapp.cpp"
-    echo "  wasmapp.cpp"
-    docker cp "$REPO_DIR/wsd/DocumentBroker.cpp" "$CONTAINER:/lo/online/wsd/DocumentBroker.cpp"
-    echo "  DocumentBroker.cpp"
+    for f in kit/ChildSession.cpp kit/Kit.cpp kit/KitWebSocket.cpp wasm/wasmapp.cpp wsd/DocumentBroker.cpp; do
+        if [ -f "$REPO_DIR/$f" ]; then
+            docker cp "$REPO_DIR/$f" "$CONTAINER:$CSRC/$f"
+            echo "  $(basename $f)"
+        fi
+    done
 
     for f in relay-host.js relay-client-boot.js relay-client.html relay-server.js relay-crypto.js emscripten-module.js wasm-crypto-sw.js; do
         if [ -f "$SCRIPT_DIR/$f" ]; then
-            docker cp "$SCRIPT_DIR/$f" "$CONTAINER:/lo/online/wasm/$f"
+            docker cp "$SCRIPT_DIR/$f" "$CONTAINER:$CSRC/wasm/$f"
             echo "  $f"
         fi
     done
 
     echo "--- Clean relink in container ---"
-    docker exec "$CONTAINER" bash -c "cd /lo/online && rm -f browser/dist/online.js browser/dist/online.wasm browser/dist/online.worker.js"
-    docker exec "$CONTAINER" bash -c "cd /lo/online && make 2>&1" | tail -5
+    docker exec "$CONTAINER" bash -c "
+        source /home/builder/emsdk/emsdk_env.sh 2>/dev/null
+        cd $CBUILD
+        rm -f wasm/online.js wasm/online.wasm wasm/online.worker.js \
+              browser/dist/online.js browser/dist/online.wasm browser/dist/online.worker.js
+        emmake make -j\$(nproc) 2>&1
+    " | tail -10
     echo "  Build complete"
 
     echo "--- Copying build artifacts ---"
     rm -f "$PUBLIC_DIR/online.js" "$PUBLIC_DIR/online.wasm" "$PUBLIC_DIR/online.worker.js"
-    docker cp "$CONTAINER:/lo/online/browser/dist/online.js" "$PUBLIC_DIR/online.js"
-    docker cp "$CONTAINER:/lo/online/browser/dist/online.wasm" "$PUBLIC_DIR/online.wasm"
+    for f in online.js online.wasm online.worker.js; do
+        if docker exec "$CONTAINER" test -f "$CBUILD/wasm/$f" 2>/dev/null; then
+            docker cp "$CONTAINER:$CBUILD/wasm/$f" "$PUBLIC_DIR/$f"
+        elif docker exec "$CONTAINER" test -f "$CBUILD/browser/dist/$f" 2>/dev/null; then
+            docker cp "$CONTAINER:$CBUILD/browser/dist/$f" "$PUBLIC_DIR/$f"
+        fi
+    done
     echo "  online.js online.wasm"
 
     echo "--- Brotli compression ---"
@@ -90,9 +108,15 @@ fi
 
 # --- Kill existing server ---
 echo "--- Restarting server on port $PORT ---"
-for pid in $(netstat -ano 2>/dev/null | grep ":${PORT}.*LISTENING" | awk '{print $5}' | sort -u); do
-    taskkill //F //PID "$pid" 2>/dev/null && echo "  Killed PID $pid" || true
-done
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
+    for pid in $(netstat -ano 2>/dev/null | grep ":${PORT}.*LISTENING" | awk '{print $5}' | sort -u); do
+        taskkill //F //PID "$pid" 2>/dev/null && echo "  Killed PID $pid" || true
+    done
+else
+    for pid in $(lsof -ti ":${PORT}" 2>/dev/null); do
+        kill "$pid" 2>/dev/null && echo "  Killed PID $pid" || true
+    done
+fi
 sleep 1
 
 # --- Start server (foreground) ---

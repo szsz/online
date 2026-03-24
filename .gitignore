@@ -180,6 +180,11 @@ node_modules/
 
 # Wasm deploy config (contains secrets)
 /wasm/.deploy
+/wasm/.env.azure
+/wasm/.env.blobdownload
+/wasm/.env.uploadblob
+/wasm/dist/
+/wasm/online-build/
 
 # Wasm app build artifacts
 /wasm/emscripten-module.js
@@ -262,3 +267,4 @@ qt/flatpak/build-dir/
 qt/flatpak/repo/
 qt/translations/*.qm
 .wasm-docs/
+wasm/azure-create-sas.sh
