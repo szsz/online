@@ -8,6 +8,7 @@
 #   bash wasm/build-wasm.sh --setup      # setup only (pull image, create container, no build)
 #   bash wasm/build-wasm.sh --clean      # force full rebuild of Online (not core)
 #   bash wasm/build-wasm.sh --rebuild-core  # force full rebuild of LO Core
+#   bash wasm/build-wasm.sh --download    # auto-select Azure blob download (no prompt)
 #   bash wasm/build-wasm.sh --container-name=my-test  # override container name
 set -e
 
@@ -22,11 +23,13 @@ ONLINE_BUILD_DIR="$REPO_DIR/wasm/online-build"
 SETUP_ONLY=false
 CLEAN=false
 REBUILD_CORE=false
+DOWNLOAD=false
 for arg in "$@"; do
     case "$arg" in
         --setup) SETUP_ONLY=true ;;
         --clean) CLEAN=true ;;
         --rebuild-core) REBUILD_CORE=true ;;
+        --download) DOWNLOAD=true ;;
         --container-name=*) CONTAINER="${arg#*=}" ;;
     esac
 done
@@ -84,7 +87,11 @@ docker exec "$CONTAINER" bash -c "
     NODE_VER=\$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
     if [ \"\$NODE_VER\" -lt 20 ] 2>/dev/null; then
         apt-get remove -y -qq libnode-dev >/dev/null 2>&1 || true
-        curl -fsSL https://deb.nodesource.com/setup_24.x | bash - >/dev/null 2>&1
+        if command -v curl &>/dev/null; then
+            curl -fsSL https://deb.nodesource.com/setup_24.x | bash - >/dev/null 2>&1
+        else
+            wget -qO- https://deb.nodesource.com/setup_24.x | bash - >/dev/null 2>&1
+        fi
         apt-get install -y -qq nodejs >/dev/null 2>&1
     fi
     # emsdk layout fix
@@ -140,14 +147,18 @@ if [ "$REBUILD_CORE" = true ]; then
 fi
 
 if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 2>/dev/null; then
-    echo ""
-    echo "  LibreOffice Core not found. Choose:"
-    echo "    1) Clone and build from source (1-3 hours, ~12 GB RAM)"
-    echo "    2) Download pre-built from Azure blob"
-    echo "    3) Exit"
-    echo ""
-    read -p "  Choice [1/2/3]: " -n 1 -r
-    echo ""
+    if [ "$DOWNLOAD" = true ]; then
+        REPLY=2
+    else
+        echo ""
+        echo "  LibreOffice Core not found. Choose:"
+        echo "    1) Clone and build from source (1-3 hours, ~12 GB RAM)"
+        echo "    2) Download pre-built from Azure blob"
+        echo "    3) Exit"
+        echo ""
+        read -p "  Choice [1/2/3]: " -n 1 -r
+        echo ""
+    fi
 
     case "$REPLY" in
         1)
