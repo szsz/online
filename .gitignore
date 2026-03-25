@@ -256,3 +256,8 @@ windows/coda/config.props
 qt/flatpak/build-dir/
 qt/flatpak/repo/
 qt/translations/*.qm
+
+
+#wasm build
+wasm/.env.*
+wasm/online-build/
