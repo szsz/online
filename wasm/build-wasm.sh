@@ -8,6 +8,7 @@
 #   bash wasm/build-wasm.sh --setup      # setup only (pull image, create container, no build)
 #   bash wasm/build-wasm.sh --clean      # force full rebuild of Online (not core)
 #   bash wasm/build-wasm.sh --rebuild-core  # force full rebuild of LO Core
+#   bash wasm/build-wasm.sh --build-core   # auto-select local LO Core build (no prompt)
 #   bash wasm/build-wasm.sh --download    # auto-select Azure blob download (no prompt)
 #   bash wasm/build-wasm.sh --container-name=my-test  # override container name
 #
@@ -36,12 +37,14 @@ ONLINE_BUILD_DIR="$CONTAINER_REPO_DIR/wasm/online-build"
 SETUP_ONLY=false
 CLEAN=false
 REBUILD_CORE=false
+BUILD_CORE=false
 DOWNLOAD=false
 for arg in "$@"; do
     case "$arg" in
         --setup) SETUP_ONLY=true ;;
         --clean) CLEAN=true ;;
         --rebuild-core) REBUILD_CORE=true ;;
+        --build-core) BUILD_CORE=true ;;
         --download) DOWNLOAD=true ;;
         --container-name=*) CONTAINER="${arg#*=}" ;;
     esac
@@ -160,7 +163,9 @@ if [ "$REBUILD_CORE" = true ]; then
 fi
 
 if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 2>/dev/null; then
-    if [ "$DOWNLOAD" = true ]; then
+    if [ "$BUILD_CORE" = true ]; then
+        REPLY=1
+    elif [ "$DOWNLOAD" = true ]; then
         REPLY=2
     else
         echo ""
