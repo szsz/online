@@ -264,3 +264,4 @@ wasm/.deploy
 wasm/online-build/
 node_modules/
 .wasm-docs/
+wasm/.tmp-core-download/

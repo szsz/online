@@ -19,13 +19,19 @@
 
 set -e
 
+# Prevent MSYS/Git-Bash from mangling Unix paths passed to Docker (no-op on Linux)
+export MSYS_NO_PATHCONV=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONTAINER="lo-wasm-server"
 IMAGE="public.ecr.aws/allotropia/libo-builders/wasm"
 LO_CORE_BRANCH="master"
 LO_CORE_REPO="https://gerrit.libreoffice.org/core"
-ONLINE_BUILD_DIR="$REPO_DIR/wasm/online-build"
+
+# Inside the container the repo is always at /lo/online
+CONTAINER_REPO_DIR="/lo/online"
+ONLINE_BUILD_DIR="$CONTAINER_REPO_DIR/wasm/online-build"
 
 SETUP_ONLY=false
 CLEAN=false
@@ -75,7 +81,7 @@ else
     docker run -d \
         --name "$CONTAINER" \
         --memory=14g \
-        -v "$REPO_DIR":"$REPO_DIR" \
+        -v "$REPO_DIR":"$CONTAINER_REPO_DIR" \
         "$IMAGE" \
         sleep infinity
     echo "[OK] Container '$CONTAINER' created"
@@ -123,9 +129,9 @@ if docker exec "$CONTAINER" bash -c "
             tar -xjf poco-\${POCO_VER}-all.tar.bz2
         fi
         cd poco-\${POCO_VER}-all
-        patch -p1 -N < '$REPO_DIR/wasm/poco-1.12.4-emscripten.patch' 2>/dev/null || true
+        patch -p1 -N < '$CONTAINER_REPO_DIR/wasm/poco-1.12.4-emscripten.patch' 2>/dev/null || true
         [ -f XML/src/xmlparse.cpp ] && mv XML/src/xmlparse.cpp XML/src/xmlparse.c 2>/dev/null || true
-        patch -p0 -N < '$REPO_DIR/wasm/poco-no-special-expat-sauce.diff' 2>/dev/null || true
+        patch -p0 -N < '$CONTAINER_REPO_DIR/wasm/poco-no-special-expat-sauce.diff' 2>/dev/null || true
         emconfigure ./configure --static --no-samples --no-tests \
             --omit=Crypto,NetSSL_OpenSSL,JWT,Data,Data/SQLite,Data/ODBC,Data/MySQL,Data/PostgreSQL,Zip,PageCompiler,PageCompiler/File2Page,MongoDB,Redis,ActiveRecord,ActiveRecord/Compiler,Prometheus
         emmake make -j\$(nproc) \
@@ -198,16 +204,15 @@ if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 
             source "$AZURE_ENV"
 
             echo "--- Downloading pre-built core from Azure ---"
-            curl -sfS -o /tmp/lo-core-wasm.tar.gz "$BLOB_DOWNLOAD_URL"
-            echo "[OK] Downloaded"
-
-            echo "--- Extracting into container ---"
-            docker exec "$CONTAINER" bash -c "mkdir -p /lo"
-            mkdir -p /tmp/lo-core-extract
-            tar -xzf /tmp/lo-core-wasm.tar.gz -C /tmp/lo-core-extract
-            docker cp /tmp/lo-core-extract/core "$CONTAINER:/lo/core"
-            docker cp /tmp/lo-core-extract/core-build "$CONTAINER:/lo/core-build"
-            rm -rf /tmp/lo-core-wasm.tar.gz /tmp/lo-core-extract
+            # Download directly into the container and extract there
+            docker exec "$CONTAINER" bash -c "
+                mkdir -p /lo
+                curl -fS -o /tmp/lo-core-wasm.tar.gz '$BLOB_DOWNLOAD_URL'
+                echo '[OK] Downloaded'
+                echo '--- Extracting ---'
+                tar -xzf /tmp/lo-core-wasm.tar.gz -C /lo
+                rm -f /tmp/lo-core-wasm.tar.gz
+            "
             echo "[OK] Core installed from Azure"
             ;;
         *)
@@ -232,8 +237,8 @@ if ! docker exec "$CONTAINER" test -f "$ONLINE_BUILD_DIR/wasm/Makefile" 2>/dev/n
     docker exec "$CONTAINER" bash -c "
         source /home/builder/emsdk/emsdk_env.sh
         cd '$ONLINE_BUILD_DIR'
-        '$REPO_DIR/autogen.sh'
-        emconfigure '$REPO_DIR/configure' \
+        '$CONTAINER_REPO_DIR/autogen.sh'
+        emconfigure '$CONTAINER_REPO_DIR/configure' \
             --disable-werror \
             --with-lokit-path=/lo/core/include \
             --with-lo-path=/lo/core-build/instdir \
@@ -268,4 +273,4 @@ echo ""
 echo "=== Build complete ==="
 echo ""
 echo "  Artifacts:"
-ls -lh "$ONLINE_BUILD_DIR/wasm"/online.* 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
+ls -lh "$REPO_DIR/wasm/online-build/wasm"/online.* 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
