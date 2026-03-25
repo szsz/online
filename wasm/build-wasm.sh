@@ -75,9 +75,34 @@ fi
 echo "[OK] Image"
 
 # ---------- Create / start container ----------
+# Helper: verify an existing container's bind mount matches this repo
+check_container_mount() {
+    local mount_src
+    mount_src="$(docker inspect "$CONTAINER" \
+        --format '{{range .Mounts}}{{if eq .Destination "'"$CONTAINER_REPO_DIR"'"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)"
+    if [ -n "$mount_src" ] && [ "$mount_src" != "$REPO_DIR" ]; then
+        echo ""
+        echo "  WARNING: Container '$CONTAINER' is bound to a different repo:"
+        echo "    mounted: $mount_src"
+        echo "    current: $REPO_DIR"
+        echo ""
+        echo "  Another script may be using this container."
+        echo "  You can use --container-name=<name> to run a separate container."
+        echo ""
+        read -p "  Continue anyway? [y/N]: " -n 1 -r
+        echo ""
+        if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+            echo "Exiting."
+            exit 1
+        fi
+    fi
+}
+
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
+    check_container_mount
     echo "[OK] Container '$CONTAINER'"
 elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
+    check_container_mount
     docker start "$CONTAINER"
     echo "[OK] Container '$CONTAINER' started"
 else
@@ -279,3 +304,9 @@ echo "=== Build complete ==="
 echo ""
 echo "  Artifacts:"
 ls -lh "$REPO_DIR/wasm/online-build/wasm"/online.* 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
+
+# ---------- Stop container ----------
+echo ""
+echo "--- Stopping container '$CONTAINER' ---"
+docker stop "$CONTAINER" >/dev/null 2>&1
+echo "[OK] Container stopped"
