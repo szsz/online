@@ -40,6 +40,45 @@
         .status { color: #666; font-size: 13px; min-height: 20px; margin-top: 8px; }
         .status.error { color: #c00; }
         .supported { color: #999; font-size: 12px; margin-top: 16px; }
+        .share-link {
+            margin-top: 16px;
+            padding: 12px;
+            background: #f0f7ff;
+            border-radius: 8px;
+            display: none;
+        }
+        .share-link label { display: block; color: #555; font-size: 13px; margin-bottom: 6px; }
+        .share-link-row { display: flex; gap: 0; }
+        .share-link-row input {
+            flex: 1;
+            padding: 8px 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px 0 0 6px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .share-link-row button {
+            padding: 8px 14px;
+            background: #1b6acb;
+            color: #fff;
+            border: none;
+            border-radius: 0 6px 6px 0;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .btn-open {
+            display: none;
+            margin-top: 12px;
+            padding: 12px 24px;
+            background: #1b6acb;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 15px;
+            width: 100%;
+        }
+        .btn-open:hover { background: #155ba0; }
     </style>
 </head>
 <body>
@@ -58,9 +97,16 @@
     <div class="supported">
         Supported: ODT, ODS, ODP, DOCX, XLSX, PPTX, DOC, XLS, PPT, RTF, TXT, CSV
     </div>
+    <div class="share-link" id="share-link">
+        <label>Share this link for co-editing:</label>
+        <div class="share-link-row">
+            <input type="text" id="share-url" readonly />
+            <button onclick="copyShareLink()">Copy</button>
+        </div>
+    </div>
+    <button class="btn-open" id="btn-open">Open Document</button>
 </div>
 
-<!-- Hidden form for POST redirect to cool.html -->
 <form id="cool-form" method="post" style="display:none">
     <input name="access_token" value="test" type="hidden" />
 </form>
@@ -69,6 +115,17 @@
     var dropZone = document.getElementById('drop-zone');
     var fileInput = document.getElementById('file-input');
     var status = document.getElementById('status');
+    var pendingCoolUrl = null;
+
+    // Check if joining an existing room
+    var params = new URLSearchParams(window.location.search);
+    var joinFile = params.get('file');
+    var joinRoom = params.get('room');
+    if (joinFile && joinRoom) {
+        // Joining — skip upload, go straight to editor
+        status.textContent = 'Joining session...';
+        openInCool(decodeURIComponent(joinFile), joinRoom);
+    }
 
     dropZone.addEventListener('click', function() { fileInput.click(); });
     dropZone.addEventListener('dragover', function(e) {
@@ -94,20 +151,46 @@
             body: file,
         }).then(function(resp) {
             if (!resp.ok) throw new Error('Upload failed: ' + resp.status);
-            status.textContent = 'Loading editor...';
+            status.textContent = 'Ready to open ' + file.name;
 
-            // POST redirect to cool.html (full page, not iframe)
-            // WOPISrc is just the filename — wasmapp.cpp prepends /wasm/ for the fetch
-            var relayHost = window.location.hostname;
-            var relayParam = '&relay=' + encodeURIComponent('wss://' + relayHost + ':9091/room/default');
-            var coolUrl = '/browser/cool.html?WOPISrc=' + encodeURIComponent(file.name) + relayParam;
-            var form = document.getElementById('cool-form');
-            form.action = coolUrl;
-            form.submit();
+            // Generate room ID from filename + random suffix
+            var roomId = file.name.replace(/[^a-zA-Z0-9]/g, '-') + '-' + Math.random().toString(36).substr(2, 6);
+
+            // Show share link
+            var shareUrl = window.location.origin + '/editor.html?file=' + encodeURIComponent(file.name) + '&room=' + encodeURIComponent(roomId);
+            document.getElementById('share-url').value = shareUrl;
+            document.getElementById('share-link').style.display = 'block';
+
+            // Show open button
+            var btn = document.getElementById('btn-open');
+            btn.style.display = 'block';
+            btn.onclick = function() { openInCool(file.name, roomId); };
+
+            pendingCoolUrl = buildCoolUrl(file.name, roomId);
         }).catch(function(err) {
             status.className = 'status error';
             status.textContent = err.message;
         });
+    }
+
+    function buildCoolUrl(fileName, roomId) {
+        var relayHost = window.location.hostname;
+        var relayUrl = 'wss://' + relayHost + ':9091/room/' + encodeURIComponent(roomId);
+        return '/browser/cool.html?WOPISrc=' + encodeURIComponent(fileName)
+            + '&relay=' + encodeURIComponent(relayUrl);
+    }
+
+    function openInCool(fileName, roomId) {
+        var coolUrl = buildCoolUrl(fileName, roomId);
+        var form = document.getElementById('cool-form');
+        form.action = coolUrl;
+        form.submit();
+    }
+
+    function copyShareLink() {
+        var input = document.getElementById('share-url');
+        input.select();
+        navigator.clipboard.writeText(input.value);
     }
 </script>
 

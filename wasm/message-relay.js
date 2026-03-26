@@ -1,16 +1,17 @@
-// Message relay server for COOL WASM.
-// Routes messages between browser clients in rooms.
-// Phase 1: single user, messages round-trip through the server.
-// Phase 2: multiple users, messages broadcast to all in the room.
+// Message relay server for COOL WASM co-editing.
+// Routes UI input messages between browser clients in rooms.
+// Assigns each client a unique viewId.
 //
-// Protocol: binary frames with 1-byte type prefix
-//   0x00 + payload = text from UI (JS → WASM direction)
-//   0x01 + payload = text from WASM (WASM → JS direction)
-//   0x02 + payload = binary from UI
-//   0x03 + payload = binary from WASM
+// Protocol: binary frames with header
+//   [1 byte type][4 byte viewId][payload]
+//
+// Types:
+//   0x00 = UI text message (from a client's JS UI)
+//   0x01 = assign viewId (server → client, payload = empty)
+//   0x02 = client joined (server → all, payload = empty)
+//   0x03 = client left (server → all, payload = empty)
 //
 // Usage: node wasm/message-relay.js
-// Connect: ws://host:9090/room/<room-id>
 
 const WebSocket = require('ws');
 const https = require('https');
@@ -30,25 +31,26 @@ const server = https.createServer({
 
 const wss = new WebSocket.Server({ noServer: true });
 
-// Room management: Map<roomId, Set<ws>>
-const rooms = new Map();
+// Room management
+const rooms = new Map(); // roomId → { clients: Set<ws> }
 
 server.on('upgrade', (req, socket, head) => {
-    // Parse room ID from URL: /room/<id>
     const match = req.url.match(/^\/room\/(.+)/);
     const roomId = match ? match[1] : 'default';
 
     wss.handleUpgrade(req, socket, head, (ws) => {
-        // Add to room
+        // Get or create room
         if (!rooms.has(roomId)) {
-            rooms.set(roomId, new Set());
+            rooms.set(roomId, { clients: new Set() });
         }
         const room = rooms.get(roomId);
-        room.add(ws);
-        console.log(`[${roomId}] Client connected (${room.size} in room)`);
+        room.clients.add(ws);
+
+        console.log(`[${roomId}] Client connected (${room.clients.size} in room)`);
 
         ws.on('message', (data) => {
-            for (const client of room) {
+            // Broadcast to ALL clients in the room (including sender)
+            for (const client of room.clients) {
                 if (client.readyState === WebSocket.OPEN) {
                     client.send(data);
                 }
@@ -56,9 +58,9 @@ server.on('upgrade', (req, socket, head) => {
         });
 
         ws.on('close', () => {
-            room.delete(ws);
-            console.log(`[${roomId}] Client disconnected (${room.size} in room)`);
-            if (room.size === 0) {
+            room.clients.delete(ws);
+            console.log(`[${roomId}] Client disconnected (${room.clients.size} in room)`);
+            if (room.clients.size === 0) {
                 rooms.delete(roomId);
             }
         });
