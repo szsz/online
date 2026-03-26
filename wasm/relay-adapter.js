@@ -101,39 +101,27 @@
         console.log('[relay] FakeWebSocket.send interceptor installed');
     }
 
-    // --- Remote client lifecycle (called from C++ via send2RemoteJS) ---
-    // Detect when remote session finishes loading (via forwarding thread output)
+    // --- Remote client WASM output (called from C++ via send2RemoteJS) ---
     globalThis.onRemoteClientMessage = function(clientId, data) {
-        if (typeof data === 'string' && data.startsWith('commandresult:') && data.includes('"load"') && data.includes('"success": true')) {
+        // Remote session output — each browser renders locally, so mostly ignored.
+        // But detect commandresult:load as an early ready signal.
+        if (typeof data === 'string' && data.startsWith('commandresult:') &&
+            data.includes('"load"') && data.includes('"success": true')) {
             for (var vid in remoteClients) {
                 if (remoteClients[vid].clientId === clientId && !remoteClients[vid].ready) {
                     remoteClients[vid].ready = true;
-                    console.log('[relay] Remote client loaded: viewId=' + vid + ' clientId=' + clientId + ', flushing ' + remoteClients[vid].queue.length + ' queued msgs');
-
-                    // Post-load viewport setup
-                    Module._handle_remote_message(clientId, Module.stringToNewUTF8(
-                        'clientvisiblearea x=0 y=0 width=15000 height=9000 splitx=0 splity=0'));
-
-                    // Flush queued user input
                     var q = remoteClients[vid].queue;
                     remoteClients[vid].queue = [];
+                    console.log('[relay] Remote client ' + clientId + ' loaded (commandresult), flushing ' + q.length + ' msgs');
                     for (var i = 0; i < q.length; i++) {
-                        Module._handle_remote_message(clientId, Module.stringToNewUTF8(q[i]));
+                        try {
+                            Module._handle_remote_message(clientId, Module.stringToNewUTF8(q[i]));
+                        } catch(e) {
+                            console.error('[relay] Flush msg ' + i + ' failed: ' + q[i].substring(0, 40));
+                        }
                     }
-                    return;
+                    break;
                 }
-            }
-        }
-    };
-
-    globalThis.onRemoteClientMessage = function(clientId, data) {
-        // Remote client WASM output — we ignore it; each browser renders locally
-        // But log for debugging
-        if (typeof data === 'string') {
-            var preview = data.substring(0, 60);
-            if (data.startsWith('invalidatetiles:') || data.startsWith('statechanged:')) {
-                // These are tile invalidations — the local session also gets them via broadcastMessage
-                // No action needed
             }
         }
     };
@@ -147,41 +135,41 @@
         remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
         console.log('[relay] Remote client created: viewId=' + viewId + ' → clientId=' + clientId);
 
-        // Init sequence sent after pollConnected detects the thread connected
+        // C++ thread handles init (coolclient + load) and signals via queue.
+        // Global poller dispatches ready signals to the right client.
+    }
 
-        // Poll for the C++ thread to signal this client is connected.
-        // Can't use MAIN_THREAD_EM_ASM callbacks (they deadlock).
-        function pollConnected() {
-            if (!Module._poll_remote_client_ready) {
-                setTimeout(pollConnected, 500);
-                return;
-            }
-            var readyId = Module._poll_remote_client_ready();
-            if (readyId === clientId) {
-                // C++ thread already sent fileURL + coolclient + load
-                console.log('[relay] Remote client ' + clientId + ' init sent by C++ thread');
-                // Wait for Kit to load the second view (40s), then mark ready
-                setTimeout(function() {
-                    if (remoteClients[viewId] && !remoteClients[viewId].ready) {
-                        remoteClients[viewId].ready = true;
-                        var q = remoteClients[viewId].queue;
-                        remoteClients[viewId].queue = [];
-                        console.log('[relay] Remote client ' + clientId + ' ready, flushing ' + q.length + ' msgs');
-                        for (var i = 0; i < q.length; i++) {
-                            try {
-                                Module._handle_remote_message(clientId, Module.stringToNewUTF8(q[i]));
-                            } catch(e) {
-                                console.error('[relay] Flush msg ' + i + ' failed: ' + q[i].substring(0, 40));
-                            }
+    // Global poller: checks for ready clients from C++ background threads
+    function globalPollReady() {
+        if (!Module || !Module.calledRun || !Module._poll_remote_client_ready) {
+            setTimeout(globalPollReady, 500);
+            return;
+        }
+        var readyId = Module._poll_remote_client_ready();
+        if (readyId > 0) {
+            // Find which viewId has this clientId
+            for (var vid in remoteClients) {
+                if (remoteClients[vid].clientId === readyId && !remoteClients[vid].ready) {
+                    console.log('[relay] Remote client ' + readyId + ' (viewId=' + vid + ') init done by C++ thread');
+                    // Mark ready immediately — C++ thread already waited 30s for Kit to load
+                    remoteClients[vid].ready = true;
+                    var q = remoteClients[vid].queue;
+                    remoteClients[vid].queue = [];
+                    console.log('[relay] Flushing ' + q.length + ' queued msgs for client ' + readyId);
+                    for (var i = 0; i < q.length; i++) {
+                        try {
+                            Module._handle_remote_message(readyId, Module.stringToNewUTF8(q[i]));
+                        } catch(e) {
+                            console.error('[relay] Flush msg ' + i + ' failed: ' + q[i].substring(0, 40));
                         }
                     }
-                }, 40000);
-            } else {
-                setTimeout(pollConnected, 200);
+                    break;
+                }
             }
         }
-        setTimeout(pollConnected, 500);
+        setTimeout(globalPollReady, 500);
     }
+    setTimeout(globalPollReady, 1000);
 
     // --- Process relay message ---
     function processRelayMessage(msg) {

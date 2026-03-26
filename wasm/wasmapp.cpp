@@ -43,7 +43,9 @@ struct RemoteClient {
 static std::map<int, RemoteClient> remoteClients;
 static std::mutex remoteClientsMutex;
 static int nextRemoteClientId = 1;
-static std::atomic<int> g_lastReadyClientId{0};
+// Queue of ready client IDs (thread-safe)
+static std::mutex g_readyMutex;
+static std::vector<int> g_readyClientIds;
 
 static void send2JS(const std::vector<char>& buffer)
 {
@@ -156,7 +158,10 @@ int create_remote_client()
                     std::this_thread::sleep_for(std::chrono::seconds(30));
 
                     // Signal JS that this client is ready
-                    g_lastReadyClientId.store(clientId);
+                    {
+                        std::lock_guard<std::mutex> lock(g_readyMutex);
+                        g_readyClientIds.push_back(clientId);
+                    }
                     std::cout << "Remote client " << clientId << " signaled ready" << std::endl;
 
                     // Forwarding loop
@@ -198,7 +203,12 @@ extern "C"
 EMSCRIPTEN_KEEPALIVE
 int poll_remote_client_ready()
 {
-    return g_lastReadyClientId.exchange(0);
+    std::lock_guard<std::mutex> lock(g_readyMutex);
+    if (g_readyClientIds.empty())
+        return 0;
+    int id = g_readyClientIds.front();
+    g_readyClientIds.erase(g_readyClientIds.begin());
+    return id;
 }
 
 extern "C"

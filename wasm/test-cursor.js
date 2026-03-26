@@ -28,6 +28,7 @@ async function getStatus(page) {
     console.log('=== Cursor Position Test ===\n');
     const browser = await puppeteer.launch({
         headless: 'new',
+        protocolTimeout: 600000,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
                '--enable-features=SharedArrayBuffer'],
     });
@@ -66,9 +67,11 @@ async function getStatus(page) {
         }
 
         const pageA = await openDoc('A');
-        const pageB = await openDoc('B');
-        console.log('\n[wait] 10s stabilization...');
+        console.log('[wait] 10s before opening B...');
         await sleep(10000);
+        const pageB = await openDoc('B');
+        console.log('\n[wait] 15s stabilization...');
+        await sleep(15000);
         await snap(pageA, '1_A_initial');
         await snap(pageB, '1_B_initial');
 
@@ -124,9 +127,10 @@ async function getStatus(page) {
         await snap(pageB, '3_B_after_BBB');
         console.log(`[B] Status: "${await getStatus(pageB)}"`);
 
-        // --- Wait for full sync ---
-        console.log('\n[wait] 20s for sync...');
-        await sleep(20000);
+        // --- Wait for remote sessions to load + sync ---
+        // Each remote client: ~35s C++ init + JS flush
+        console.log('\n[wait] 60s for remote sessions to load and sync...');
+        await sleep(60000);
 
         await snap(pageA, '4_A_final');
         await snap(pageB, '4_B_final');

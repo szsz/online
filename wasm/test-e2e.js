@@ -29,6 +29,7 @@ async function getStatus(page) {
 
     const browser = await puppeteer.launch({
         headless: 'new',
+        protocolTimeout: 600000,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
                '--enable-features=SharedArrayBuffer'],
     });
@@ -124,8 +125,8 @@ async function getStatus(page) {
         console.log(`[status] A="${await getStatus(pageA)}"\n`);
 
         // Wait for sync
-        console.log('[wait] 15s for sync...');
-        await sleep(15000);
+        console.log('[wait] 60s for remote sessions to load and sync...');
+        await sleep(60000);
 
         await snap(pageB, '2_B_after_sync');
         console.log(`[status] A="${await getStatus(pageA)}" B="${await getStatus(pageB)}"`);
