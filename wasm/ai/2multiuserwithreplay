@@ -101,3 +101,29 @@ File upload + share link with room ID.
 
 4. Once remote sessions work: test separate cursors with the cursor test
    (A types at start, B types at end → should produce "AAAHello WorldBBB")
+
+## Root Cause of Kit Blocking (Discovered 2026-03-26)
+
+Session 002 is created by DocumentBroker but never loaded by Kit.
+Kit thread (lokit_main_000) is stuck in `loKit->runLoop(pollCallback, ...)`.
+The `pollCallback` (Kit.cpp:3167) iterates KitSocketPoll instances.
+Session 002's load request is queued in Kit's socket but never processed.
+
+Verified: waited 2 minutes — session 002 never loads.
+Session 001 loaded fine (~30s). Session 002 stalls at "Loading for session [002]".
+
+The prewarm branch DID have working multi-view. The difference:
+- Prewarm: ONE browser runs WASM (host), thin clients have no WASM
+- Prewarm: host creates remote clients when thin clients connect
+- The Kit was likely idle when remote clients connected (host was waiting)
+- In our architecture: EVERY browser runs WASM, Kit is always busy with tiles
+
+Potential fix: investigate Kit.cpp's kitPoll and session loading to understand
+why session 002's message isn't processed. The KitSocketPoll for session 002
+might need to be created by the Kit thread, which requires kitPoll to process
+the incoming connection from DocumentBroker. But kitPoll might be returning 0
+because the new connection hasn't been fully set up yet.
+
+Also check: does the Kit's main loop (loKit->runLoop) yield to process
+new connections? In WASM, this runs in a pthread. The FakeSocket connection
+from the remote client thread might not be visible to the Kit thread.
