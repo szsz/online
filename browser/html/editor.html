@@ -98,7 +98,9 @@
 
             // POST redirect to cool.html (full page, not iframe)
             // WOPISrc is just the filename — wasmapp.cpp prepends /wasm/ for the fetch
-            var coolUrl = '/browser/cool.html?WOPISrc=' + encodeURIComponent(file.name);
+            var relayHost = window.location.hostname;
+            var relayParam = '&relay=' + encodeURIComponent('wss://' + relayHost + ':9091/room/default');
+            var coolUrl = '/browser/cool.html?WOPISrc=' + encodeURIComponent(file.name) + relayParam;
             var form = document.getElementById('cool-form');
             form.action = coolUrl;
             form.submit();
