@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Collabora Online Editor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background: #f5f5f5;
+        }
+        .upload-box {
+            background: #fff;
+            border-radius: 12px;
+            padding: 48px;
+            text-align: center;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            max-width: 480px;
+            width: 90%;
+        }
+        .upload-box h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
+        .upload-box p { color: #666; margin-bottom: 24px; font-size: 14px; }
+        .drop-zone {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px 20px;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            margin-bottom: 16px;
+        }
+        .drop-zone:hover, .drop-zone.dragover { border-color: #1b6acb; background: #f0f7ff; }
+        .drop-zone-text { color: #888; font-size: 15px; }
+        .drop-zone-text strong { color: #1b6acb; }
+        #file-input { display: none; }
+        .status { color: #666; font-size: 13px; min-height: 20px; margin-top: 8px; }
+        .status.error { color: #c00; }
+        .supported { color: #999; font-size: 12px; margin-top: 16px; }
+    </style>
+</head>
+<body>
+
+<div class="upload-box">
+    <h1>Collabora Online</h1>
+    <p>Open a document to start editing</p>
+    <div class="drop-zone" id="drop-zone">
+        <div class="drop-zone-text">
+            Drop a file here or <strong>click to browse</strong>
+        </div>
+    </div>
+    <input type="file" id="file-input"
+        accept=".odt,.ods,.odp,.docx,.xlsx,.pptx,.doc,.xls,.ppt,.rtf,.txt,.csv" />
+    <div class="status" id="status"></div>
+    <div class="supported">
+        Supported: ODT, ODS, ODP, DOCX, XLSX, PPTX, DOC, XLS, PPT, RTF, TXT, CSV
+    </div>
+</div>
+
+<!-- Hidden form for POST redirect to cool.html -->
+<form id="cool-form" method="post" style="display:none">
+    <input name="access_token" value="test" type="hidden" />
+</form>
+
+<script>
+    var dropZone = document.getElementById('drop-zone');
+    var fileInput = document.getElementById('file-input');
+    var status = document.getElementById('status');
+
+    dropZone.addEventListener('click', function() { fileInput.click(); });
+    dropZone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', function() { dropZone.classList.remove('dragover'); });
+    dropZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', function() {
+        if (fileInput.files.length > 0) handleFile(fileInput.files[0]);
+    });
+
+    function handleFile(file) {
+        status.className = 'status';
+        status.textContent = 'Uploading ' + file.name + '...';
+
+        fetch('/wasm/' + encodeURIComponent(file.name), {
+            method: 'POST',
+            body: file,
+        }).then(function(resp) {
+            if (!resp.ok) throw new Error('Upload failed: ' + resp.status);
+            status.textContent = 'Loading editor...';
+
+            // POST redirect to cool.html (full page, not iframe)
+            // WOPISrc is just the filename — wasmapp.cpp prepends /wasm/ for the fetch
+            var coolUrl = '/browser/cool.html?WOPISrc=' + encodeURIComponent(file.name);
+            var form = document.getElementById('cool-form');
+            form.action = coolUrl;
+            form.submit();
+        }).catch(function(err) {
+            status.className = 'status error';
+            status.textContent = err.message;
+        });
+    }
+</script>
+
+</body>
+</html>
