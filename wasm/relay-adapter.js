@@ -102,31 +102,7 @@
     }
 
     // --- Remote client lifecycle (called from C++ via send2RemoteJS) ---
-    globalThis.onRemoteClientReady = function(clientId) {
-        for (var vid in remoteClients) {
-            if (remoteClients[vid].clientId === clientId && !remoteClients[vid].ready) {
-                console.log('[relay] Remote client connected: viewId=' + vid + ' clientId=' + clientId);
-
-                // Send init sequence so the session loads the document
-                var wopiSrc = params.get('WOPISrc') || '';
-                var initMsgs = [
-                    'coolclient 0.1 ' + Date.now() + ' 0',
-                    'load url=' + encodeURIComponent(wopiSrc) + ' lang=en-US deviceFormFactor=desktop',
-                    'clientvisiblearea x=0 y=0 width=15000 height=9000 splitx=0 splity=0',
-                    'clientzoom tilepixelwidth=256 tilepixelheight=256 tiletwipwidth=3840 tiletwipheight=3840 dpiscale=1 zoompercent=100',
-                ];
-                initMsgs.forEach(function(m) {
-                    Module._handle_remote_message(clientId, Module.stringToNewUTF8(m));
-                });
-                console.log('[relay] Sent init sequence to remote client ' + clientId);
-
-                // Don't mark ready yet — wait for commandresult: load
-                return;
-            }
-        }
-    };
-
-    // Detect when remote session finishes loading
+    // Detect when remote session finishes loading (via forwarding thread output)
     globalThis.onRemoteClientMessage = function(clientId, data) {
         if (typeof data === 'string' && data.startsWith('commandresult:') && data.includes('"load"') && data.includes('"success": true')) {
             for (var vid in remoteClients) {
@@ -134,7 +110,7 @@
                     remoteClients[vid].ready = true;
                     console.log('[relay] Remote client loaded: viewId=' + vid + ' clientId=' + clientId + ', flushing ' + remoteClients[vid].queue.length + ' queued msgs');
 
-                    // Send post-load viewport setup
+                    // Post-load viewport setup
                     Module._handle_remote_message(clientId, Module.stringToNewUTF8(
                         'clientvisiblearea x=0 y=0 width=15000 height=9000 splitx=0 splity=0'));
 
@@ -164,12 +140,62 @@
 
     // --- Create a remote ClientSession for a viewId ---
     function createRemoteClient(viewId) {
-        if (remoteClients[viewId]) return; // Already exists
+        if (remoteClients[viewId]) return;
 
         console.log('[relay] Creating remote client for viewId=' + viewId);
-        var clientId = Module._create_remote_client(); // C++ returns clientId, sets up async
+        var clientId = Module._create_remote_client();
         remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
         console.log('[relay] Remote client created: viewId=' + viewId + ' → clientId=' + clientId);
+
+        // Init sequence sent after pollConnected detects the thread connected
+
+        // Poll for the C++ thread to signal this client is connected.
+        // Can't use MAIN_THREAD_EM_ASM callbacks (they deadlock).
+        function pollConnected() {
+            if (!Module._poll_remote_client_ready) {
+                setTimeout(pollConnected, 500);
+                return;
+            }
+            var readyId = Module._poll_remote_client_ready();
+            if (readyId === clientId) {
+                console.log('[relay] Remote client ' + clientId + ' connected (polled)');
+                // Send init sequence now that FakeSocket is connected
+                try {
+                    Module._handle_remote_message(clientId, Module.stringToNewUTF8(
+                        'coolclient 0.1 ' + Date.now() + ' 0'));
+                    Module._handle_remote_message(clientId, Module.stringToNewUTF8(
+                        'load url=' + (params.get('WOPISrc') || '') +
+                        ' lang=en-US deviceFormFactor=desktop timezone=Etc/UTC darkTheme=false darkBackground=false'));
+                    console.log('[relay] Sent init to client ' + clientId);
+                } catch(e) {
+                    console.error('[relay] Init failed:', e.message);
+                }
+                // Wait for document load (fixed time), then mark ready
+                setTimeout(function() {
+                    if (remoteClients[viewId] && !remoteClients[viewId].ready) {
+                        remoteClients[viewId].ready = true;
+                        // Post-load: set viewport, then flush user input
+                        // Wrap each in try-catch to prevent one failure from blocking the rest
+                        try { Module._handle_remote_message(clientId, Module.stringToNewUTF8(
+                            'clientvisiblearea x=0 y=0 width=15000 height=9000 splitx=0 splity=0')); } catch(e) {}
+                        // Flush queued user input
+                        var q = remoteClients[viewId].queue;
+                        remoteClients[viewId].queue = [];
+                        console.log('[relay] Remote client ' + clientId + ' ready, flushing ' + q.length + ' msgs');
+                        for (var i = 0; i < q.length; i++) {
+                            try {
+                                Module._handle_remote_message(clientId, Module.stringToNewUTF8(q[i]));
+                            } catch(e) {
+                                console.error('[relay] Flush msg ' + i + ' failed: ' + q[i].substring(0, 40));
+                            }
+                        }
+                    }
+                }, 45000); // Remote session needs time to load document in Kit
+            } else {
+                setTimeout(pollConnected, 200);
+            }
+        }
+        setTimeout(pollConnected, 500);
     }
 
     // --- Process relay message ---
@@ -205,8 +231,11 @@
             return;
         }
 
-        console.log('[relay] → remote_message clientId=' + rc.clientId + ': ' + text.substring(0, 60));
-        Module._handle_remote_message(rc.clientId, Module.stringToNewUTF8(text));
+        try {
+            Module._handle_remote_message(rc.clientId, Module.stringToNewUTF8(text));
+        } catch(e) {
+            console.error('[relay] remote_message failed: ' + text.substring(0, 40));
+        }
     }
 
     // --- WebSocket handlers ---

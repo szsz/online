@@ -43,6 +43,7 @@ struct RemoteClient {
 static std::map<int, RemoteClient> remoteClients;
 static std::mutex remoteClientsMutex;
 static int nextRemoteClientId = 1;
+static std::atomic<int> g_lastReadyClientId{0};
 
 static void send2JS(const std::vector<char>& buffer)
 {
@@ -95,17 +96,16 @@ int create_remote_client()
 {
     assert(coolwsd_server_socket_fd != -1);
 
-    // Allocate a clientId immediately (on main thread) and return it.
-    // The actual fakeSocketConnect (which blocks) runs in a new pthread.
     int clientId;
     {
         std::lock_guard<std::mutex> lock(remoteClientsMutex);
         clientId = nextRemoteClientId++;
     }
 
-    std::cout << "Creating remote client " << clientId << " (async)" << std::endl;
-
-    // Spawn a thread to do the blocking connect + forwarding
+    // Must run connect in a thread — fakeSocketConnect blocks until COOLWSD
+    // accepts, which requires the main thread to yield. Doing it on the main
+    // thread deadlocks.
+    // Use an atomic flag for JS to poll readiness.
     std::thread([clientId]
                 {
                     Util::setThreadName("relay_" + std::to_string(clientId));
@@ -114,8 +114,7 @@ int create_remote_client()
                     int rc = fakeSocketConnect(clientFd, coolwsd_server_socket_fd);
                     if (rc == -1)
                     {
-                        std::cerr << "create_remote_client: fakeSocketConnect failed for client "
-                                  << clientId << std::endl;
+                        std::cerr << "Remote client " << clientId << " connect failed" << std::endl;
                         return;
                     }
 
@@ -128,21 +127,15 @@ int create_remote_client()
                         remoteClients[clientId] = client;
                     }
 
-                    std::cout << "Remote client " << clientId << " connected with fd "
-                              << clientFd << std::endl;
+                    std::cout << "Remote client " << clientId << " connected fd=" << clientFd << std::endl;
 
-                    // Send the document URL as the first message
-                    // (same as the local client does on HULLO)
+                    // Send the document URL
                     fakeSocketWriteQueue(clientFd, fileURL.c_str(), fileURL.size());
 
-                    // Notify JS that the remote client is ready
-                    MAIN_THREAD_EM_ASM({
-                        if (globalThis.onRemoteClientReady) {
-                            globalThis.onRemoteClientReady($0);
-                        }
-                    }, clientId);
+                    // Signal JS that this client is ready
+                    g_lastReadyClientId.store(clientId);
 
-                    // Forwarding loop: read from COOLWSD and send to JS
+                    // Forwarding loop
                     int closePipe1 = client.closeNotificationPipe[1];
                     while (true)
                     {
@@ -179,6 +172,13 @@ int create_remote_client()
 
 extern "C"
 EMSCRIPTEN_KEEPALIVE
+int poll_remote_client_ready()
+{
+    return g_lastReadyClientId.exchange(0);
+}
+
+extern "C"
+EMSCRIPTEN_KEEPALIVE
 void handle_remote_message(int clientId, const char *string_value)
 {
     std::lock_guard<std::mutex> lock(remoteClientsMutex);
@@ -188,6 +188,7 @@ void handle_remote_message(int clientId, const char *string_value)
         std::cerr << "handle_remote_message: unknown client " << clientId << std::endl;
         return;
     }
+    std::cout << "handle_remote_message(" << clientId << "): " << std::string(string_value).substr(0, 60) << std::endl;
     fakeSocketWriteQueue(it->second.fakeClientFd, string_value, strlen(string_value));
 }
 
