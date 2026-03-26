@@ -1,0 +1,47 @@
+Plan: Message Relay Server
+
+  Current Flow (direct)
+
+  JS UI → postMobileMessage() → Module._handle_cool_message() → WASM
+  WASM → send2JS() → TheFakeWebSocket.onmessage() → JS UI
+
+  Phase 1 Flow (relayed, single user, WASM still in browser)
+
+  JS UI → postMobileMessage() → WebSocket → Relay Server → WebSocket → Module._handle_cool_message() → WASM
+  WASM → send2JS() → intercepted onmessage → WebSocket → Relay Server → WebSocket → JS UI onmessage
+
+  Files to change
+
+  ┌─────────────────────────────┬──────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────┐
+  │            File             │                 What                 │                                   Why                                    │
+  ├─────────────────────────────┼──────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+  │ NEW wasm/relay-server.js    │ WebSocket relay with rooms           │ Routes messages between clients                                          │
+  ├─────────────────────────────┼──────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+  │ NEW wasm/relay-adapter.js   │ Browser-side WebSocket adapter       │ Intercepts postMobileMessage and TheFakeWebSocket.onmessage              │
+  ├─────────────────────────────┼──────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+  │ MODIFY browser/js/global.js │ EMSCRIPTENAppInitializer (~line 582) │ Override postMobileMessage to send via relay instead of direct WASM call │
+  ├─────────────────────────────┼──────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+  │ NO CHANGE wasm/wasmapp.cpp  │ C++ stays as-is                      │ send2JS and handle_cool_message unchanged — interception is all in JS    │
+  └─────────────────────────────┴──────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────┘
+
+  Key intercept points
+
+  1. JS→WASM: Replace postMobileMessage (global.js:582) — instead of calling Module._handle_cool_message, send to relay WebSocket. When it comes back from the relay, then call Module._handle_cool_message.
+  2. WASM→JS: Wrap TheFakeWebSocket.onmessage — when send2JS calls it, intercept and forward to relay WebSocket. When it comes back, deliver to the real socket._slurpMessage handler.
+
+  Binary handling
+
+  Messages can be text (commands) or binary (tile images). Use a 1-byte prefix protocol:
+  - 0x00 + payload = text from UI
+  - 0x01 + payload = text from WASM
+  - 0x02 + payload = binary from UI
+  - 0x03 + payload = binary from WASM
+
+  Critical timing
+
+  - Relay WebSocket must be connected BEFORE postMobileMessage('HULLO') is called (global.js:2180)
+  - relay-adapter.js must load before online.js
+
+  No WASM changes needed for Phase 1
+
+  All interception happens in JavaScript. The WASM module doesn't know messages are being relayed.
