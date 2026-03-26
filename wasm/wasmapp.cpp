@@ -129,11 +129,51 @@ int create_remote_client()
 
                     std::cout << "Remote client " << clientId << " connected fd=" << clientFd << std::endl;
 
-                    // Send the document URL
+                    // Send the document URL (first message, like HULLO does for local client)
                     fakeSocketWriteQueue(clientFd, fileURL.c_str(), fileURL.size());
 
-                    // Signal JS that this client is ready
+                    // Wait for the Kit to process the "session" command and create the view.
+                    // Poll by trying to read — if we get a response, the session is alive.
+                    // The Kit needs time to create the session, so we wait and then send init.
+                    for (int attempt = 0; attempt < 60; attempt++)
+                    {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+
+                        // Try sending coolclient — if the Kit has processed the session command,
+                        // this will go through to the KitWebSocket handler.
+                        if (attempt == 3)
+                        {
+                            std::string coolclient = "coolclient 0.1 0 0";
+                            fakeSocketWriteQueue(clientFd, coolclient.c_str(), coolclient.size());
+                            std::cout << "Remote client " << clientId << " sent coolclient" << std::endl;
+                        }
+                        if (attempt == 5)
+                        {
+                            std::string docName;
+                            if (remoteUrl.size() > 6)
+                                docName = remoteUrl.substr(6);
+                            else
+                                docName = "document";
+                            std::string loadCmd = "load url=" + docName +
+                                " lang=en-US deviceFormFactor=desktop timezone=Etc/UTC"
+                                " darkTheme=false darkBackground=false";
+                            fakeSocketWriteQueue(clientFd, loadCmd.c_str(), loadCmd.size());
+                            std::cout << "Remote client " << clientId << " sent load" << std::endl;
+                        }
+
+                        // Check if we got any response (means session is alive)
+                        int avail = fakeSocketAvailableDataLength(clientFd);
+                        if (avail > 0)
+                        {
+                            std::cout << "Remote client " << clientId << " got response (" << avail << " bytes) at attempt " << attempt << std::endl;
+                            // Don't read it — the forwarding loop will handle it
+                            break;
+                        }
+                    }
+
+                    // Signal JS
                     g_lastReadyClientId.store(clientId);
+                    std::cout << "Remote client " << clientId << " signaled ready" << std::endl;
 
                     // Forwarding loop
                     int closePipe1 = client.closeNotificationPipe[1];

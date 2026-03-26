@@ -158,27 +158,12 @@
             }
             var readyId = Module._poll_remote_client_ready();
             if (readyId === clientId) {
-                console.log('[relay] Remote client ' + clientId + ' connected (polled)');
-                // Send init sequence now that FakeSocket is connected
-                try {
-                    Module._handle_remote_message(clientId, Module.stringToNewUTF8(
-                        'coolclient 0.1 ' + Date.now() + ' 0'));
-                    Module._handle_remote_message(clientId, Module.stringToNewUTF8(
-                        'load url=' + (params.get('WOPISrc') || '') +
-                        ' lang=en-US deviceFormFactor=desktop timezone=Etc/UTC darkTheme=false darkBackground=false'));
-                    console.log('[relay] Sent init to client ' + clientId);
-                } catch(e) {
-                    console.error('[relay] Init failed:', e.message);
-                }
-                // Wait for document load (fixed time), then mark ready
+                // C++ thread already sent fileURL + coolclient + load
+                console.log('[relay] Remote client ' + clientId + ' init sent by C++ thread');
+                // Wait for Kit to load the second view (40s), then mark ready
                 setTimeout(function() {
                     if (remoteClients[viewId] && !remoteClients[viewId].ready) {
                         remoteClients[viewId].ready = true;
-                        // Post-load: set viewport, then flush user input
-                        // Wrap each in try-catch to prevent one failure from blocking the rest
-                        try { Module._handle_remote_message(clientId, Module.stringToNewUTF8(
-                            'clientvisiblearea x=0 y=0 width=15000 height=9000 splitx=0 splity=0')); } catch(e) {}
-                        // Flush queued user input
                         var q = remoteClients[viewId].queue;
                         remoteClients[viewId].queue = [];
                         console.log('[relay] Remote client ' + clientId + ' ready, flushing ' + q.length + ' msgs');
@@ -190,7 +175,7 @@
                             }
                         }
                     }
-                }, 45000); // Remote session needs time to load document in Kit
+                }, 40000);
             } else {
                 setTimeout(pollConnected, 200);
             }
