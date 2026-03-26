@@ -2996,7 +2996,7 @@ std::shared_ptr<KitSocketPoll> KitSocketPoll::create() // static
 {
     std::shared_ptr<KitSocketPoll> result(new KitSocketPoll());
 
-#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32)
+#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32) || defined(__EMSCRIPTEN__)
     {
         std::unique_lock<std::mutex> lock(KSPollsMutex);
         KSPolls.push_back(result);
@@ -3145,7 +3145,7 @@ bool pushToMainThread(LibreOfficeKitCallback cb, int type, const char *p, void *
     return KitSocketPoll::pushToMainThread(cb, type, p, data);
 }
 
-#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32)
+#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32) || defined(__EMSCRIPTEN__)
 
 std::mutex KitSocketPoll::KSPollsMutex;
 std::condition_variable KitSocketPoll::KSPollsCV;

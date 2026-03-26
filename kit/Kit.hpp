@@ -194,7 +194,7 @@ public:
     static bool pushToMainThread(LibreOfficeKitCallback callback, int type, const char* p,
                                  void* data);
 
-#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32)
+#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32) || defined(__EMSCRIPTEN__)
     static std::mutex KSPollsMutex;
     static std::condition_variable KSPollsCV;
     static std::vector<std::weak_ptr<KitSocketPoll>> KSPolls;
