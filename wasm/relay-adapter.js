@@ -1,16 +1,6 @@
 // Relay adapter for COOL WASM co-editing.
-// Loaded in the browser AFTER global.js, BEFORE HULLO is sent.
-//
-// Intercepts postMobileMessage (JS→WASM) and routes UI messages through
-// a WebSocket relay server so multiple browsers can co-edit.
-//
-// Each browser runs its own WASM instance. All UI messages are broadcast
-// to all clients. Each WASM processes all messages independently.
-// WASM→JS (tiles, status) stays local — no relay needed for that direction.
-//
-// Remote clients (other browsers in the room) get their own ClientSession
-// in the local WASM via create_remote_client / handle_remote_message.
-//
+// Each user's input goes to their own remote ClientSession (separate cursors).
+// The local session (from HULLO) handles rendering only.
 // Activate by adding ?relay=wss://host:port/room/id to the URL.
 
 (function() {
@@ -26,22 +16,44 @@
     ws.binaryType = 'arraybuffer';
 
     var connected = false;
-    var wasmReady = false;
-    var coolwsdReady = false; // True after local HULLO has been processed
-    var sendQueue = [];  // Messages queued before WebSocket connects
-    var recvQueue = [];  // Messages queued before WASM + COOLWSD are ready
-    // Use small random ID to avoid signed int32 issues in bitwise parsing
+    var coolwsdReady = false;
+    var sendQueue = [];
+    var recvQueue = [];
     var myViewId = Math.floor(Math.random() * 0x7FFFFF);
-    var remoteViewIds = new Set(); // viewIds of other clients in the room
 
-    // Wait for COOLWSD to be fully ready.
-    // COOLWSD.cpp calls handle_cool_message("HULLO") then TheFakeWebSocket.onopen()
-    // directly from C++ (not through JS postMobileMessage). So we detect readiness
-    // by polling for coolwsd_server_socket_fd being set (via Module calledRun + delay)
-    // or by intercepting TheFakeWebSocket.onopen.
+    // Remote client tracking: viewId → { clientId, ready, queue }
+    var remoteClients = {};
+
+    // --- Relay framing ---
+    function sendToRelay(type, viewId, payload) {
+        var encoded = typeof payload === 'string' ? new TextEncoder().encode(payload) : new Uint8Array(payload);
+        var frame = new Uint8Array(1 + 4 + encoded.length);
+        frame[0] = type;
+        frame[1] = (viewId >>> 24) & 0xFF;
+        frame[2] = (viewId >>> 16) & 0xFF;
+        frame[3] = (viewId >>> 8) & 0xFF;
+        frame[4] = viewId & 0xFF;
+        frame.set(encoded, 5);
+        if (connected) ws.send(frame);
+        else sendQueue.push(frame);
+    }
+
+    function parseFrame(data) {
+        var f = new Uint8Array(data);
+        return {
+            type: f[0],
+            viewId: ((f[1] << 24) | (f[2] << 16) | (f[3] << 8) | f[4]) >>> 0,
+            payload: f.slice(5)
+        };
+    }
+
+    console.log('[relay] My viewId=' + myViewId);
+
+    // --- COOLWSD readiness: detected via TheFakeWebSocket.onopen ---
     function onCoolwsdReady() {
-        wasmReady = true;
         coolwsdReady = true;
+        // Install send interceptor now that init is done
+        installSendInterceptor();
         console.log('[relay] COOLWSD ready, flushing ' + recvQueue.length + ' queued messages');
         var pending = recvQueue.splice(0);
         for (var i = 0; i < pending.length; i++) {
@@ -49,8 +61,6 @@
         }
     }
 
-    // Intercept TheFakeWebSocket.onopen — COOLWSD calls this after HULLO.
-    // Use Object.defineProperty so we catch the call even if onopen is set later.
     function waitForFakeWebSocket() {
         if (!globalThis.TheFakeWebSocket) {
             setTimeout(waitForFakeWebSocket, 50);
@@ -58,7 +68,6 @@
         }
         var fakeWs = globalThis.TheFakeWebSocket;
         var _realOnOpen = fakeWs.onopen || null;
-
         Object.defineProperty(fakeWs, 'onopen', {
             configurable: true,
             set: function(fn) { _realOnOpen = fn; },
@@ -76,137 +85,133 @@
     }
     waitForFakeWebSocket();
 
-    // --- Send a framed message to the relay ---
-    function sendToRelay(type, viewId, payload) {
-        var encoded;
-        if (typeof payload === 'string') {
-            encoded = new TextEncoder().encode(payload);
-        } else {
-            encoded = new Uint8Array(payload);
-        }
-        var frame = new Uint8Array(1 + 4 + encoded.length);
-        frame[0] = type;
-        // Write viewId as big-endian uint32
-        frame[1] = (viewId >>> 24) & 0xFF;
-        frame[2] = (viewId >>> 16) & 0xFF;
-        frame[3] = (viewId >>> 8) & 0xFF;
-        frame[4] = viewId & 0xFF;
-        frame.set(encoded, 5);
-
-        if (connected) {
-            ws.send(frame);
-        } else {
-            sendQueue.push(frame);
-        }
-    }
-
-    // --- Parse a framed message from the relay ---
-    function parseFrame(data) {
-        var frame = new Uint8Array(data);
-        var type = frame[0];
-        var viewId = ((frame[1] << 24) | (frame[2] << 16) | (frame[3] << 8) | frame[4]) >>> 0;
-        var payload = frame.slice(5);
-        return { type: type, viewId: viewId, payload: payload };
-    }
-
-    console.log('[relay] My viewId=' + myViewId);
-
-    // --- Override FakeWebSocket.send: intercept ALL messages to WASM ---
-    // This is more reliable than overriding postMobileMessage because:
-    // 1. global.js EMSCRIPTENAppInitializer can overwrite postMobileMessage
-    // 2. FakeWebSocket.send() is the ONLY path from JS to WASM
+    // --- FakeWebSocket.send interceptor (installed after init) ---
     function installSendInterceptor() {
-        if (!globalThis.TheFakeWebSocket) {
-            setTimeout(installSendInterceptor, 50);
-            return;
-        }
-        // Override the prototype.send on the constructor
-        var FWS = globalThis.TheFakeWebSocket.constructor;
+        if (!globalThis.TheFakeWebSocket) return;
+        var fws = globalThis.TheFakeWebSocket;
+        var FWS = fws.constructor;
         if (FWS && FWS.prototype && FWS.prototype.send) {
-            var origSend = FWS.prototype.send;
             FWS.prototype.send = function(data) {
                 sendToRelay(0x00, myViewId, data);
             };
-            console.log('[relay] Intercepted FakeWebSocket.prototype.send');
         }
-        // Also override the instance's send
-        globalThis.TheFakeWebSocket.send = function(data) {
-            if (typeof data === 'string' && (data.startsWith('key ') || data.startsWith('textinput '))) {
-                console.log('[relay] FakeWebSocket.send intercepted: ' + data.substring(0, 80));
-            }
+        fws.send = function(data) {
             sendToRelay(0x00, myViewId, data);
         };
+        console.log('[relay] FakeWebSocket.send interceptor installed');
     }
-    installSendInterceptor();
 
-    // Also override postMobileMessage as fallback (some code calls it directly)
-    window.postMobileMessage = function(msg) {
-        sendToRelay(0x00, myViewId, msg);
+    // --- Remote client lifecycle (called from C++ via send2RemoteJS) ---
+    globalThis.onRemoteClientReady = function(clientId) {
+        for (var vid in remoteClients) {
+            if (remoteClients[vid].clientId === clientId && !remoteClients[vid].ready) {
+                console.log('[relay] Remote client connected: viewId=' + vid + ' clientId=' + clientId);
+
+                // Send init sequence so the session loads the document
+                var wopiSrc = params.get('WOPISrc') || '';
+                var initMsgs = [
+                    'coolclient 0.1 ' + Date.now() + ' 0',
+                    'load url=' + encodeURIComponent(wopiSrc) + ' lang=en-US deviceFormFactor=desktop',
+                    'clientvisiblearea x=0 y=0 width=15000 height=9000 splitx=0 splity=0',
+                    'clientzoom tilepixelwidth=256 tilepixelheight=256 tiletwipwidth=3840 tiletwipheight=3840 dpiscale=1 zoompercent=100',
+                ];
+                initMsgs.forEach(function(m) {
+                    Module._handle_remote_message(clientId, Module.stringToNewUTF8(m));
+                });
+                console.log('[relay] Sent init sequence to remote client ' + clientId);
+
+                // Don't mark ready yet — wait for commandresult: load
+                return;
+            }
+        }
     };
-    window.postMobileCall = window.postMobileMessage;
 
-    // --- Handle WASM output for remote clients ---
-    // When a remote client's ClientSession in our WASM produces output,
-    // send2RemoteJS calls this. We ignore it — each browser renders its own tiles.
-    var remoteClientReady = {}; // viewId → true when load completes
-    var remoteClientQueue = {}; // viewId → queued messages waiting for load
-
-    globalThis.onRemoteMessage = function(clientId, data) {
-        var preview = typeof data === 'string' ? data.substring(0, 80) : '(binary ' + data.byteLength + ' bytes)';
-        console.log('[relay] Remote WASM output for clientId=' + clientId + ': ' + preview);
-        // Detect when the remote session has finished loading
+    // Detect when remote session finishes loading
+    globalThis.onRemoteClientMessage = function(clientId, data) {
         if (typeof data === 'string' && data.startsWith('commandresult:') && data.includes('"load"') && data.includes('"success": true')) {
-            // Find the viewId for this clientId
-            for (var vid of remoteViewIds) {
-                if (!remoteClientReady[vid]) {
-                    remoteClientReady[vid] = true;
-                    console.log('[relay] Remote client viewId=' + vid + ' document loaded, flushing ' + (remoteClientQueue[vid] || []).length + ' queued messages');
-                    var q = remoteClientQueue[vid] || [];
-                    delete remoteClientQueue[vid];
-                    for (var k = 0; k < q.length; k++) {
-                        Module._handle_remote_message(vid, Module.stringToNewUTF8(q[k]));
+            for (var vid in remoteClients) {
+                if (remoteClients[vid].clientId === clientId && !remoteClients[vid].ready) {
+                    remoteClients[vid].ready = true;
+                    console.log('[relay] Remote client loaded: viewId=' + vid + ' clientId=' + clientId + ', flushing ' + remoteClients[vid].queue.length + ' queued msgs');
+
+                    // Send post-load viewport setup
+                    Module._handle_remote_message(clientId, Module.stringToNewUTF8(
+                        'clientvisiblearea x=0 y=0 width=15000 height=9000 splitx=0 splity=0'));
+
+                    // Flush queued user input
+                    var q = remoteClients[vid].queue;
+                    remoteClients[vid].queue = [];
+                    for (var i = 0; i < q.length; i++) {
+                        Module._handle_remote_message(clientId, Module.stringToNewUTF8(q[i]));
                     }
-                    break;
+                    return;
                 }
             }
         }
     };
 
-    // --- Process a relay message (only when WASM is ready) ---
-    function processRelayMessage(msg) {
-        switch (msg.type) {
-            case 0x00: // UI text message
-                var text = new TextDecoder().decode(msg.payload);
-                if (msg.viewId === myViewId) {
-                    Module._handle_cool_message(Module.stringToNewUTF8(text));
-                } else {
-                    // Remote user's message
-                    if (!coolwsdReady) {
-                        recvQueue.push(msg);
-                        return;
-                    }
-                    // Feed remote user input into LOCAL session (state machine replication)
-                    if (text.startsWith('key ') || text.startsWith('mouse ') || text.startsWith('textinput ')) {
-                        Module._handle_cool_message(Module.stringToNewUTF8(text));
-                    }
-                }
-                break;
-
-            case 0x03: // Client left
-                if (msg.viewId !== myViewId && remoteViewIds.has(msg.viewId)) {
-                    console.log('[relay] Remote client left: viewId=' + msg.viewId);
-                    Module._close_remote_client(msg.viewId);
-                    remoteViewIds.delete(msg.viewId);
-                }
-                break;
+    globalThis.onRemoteClientMessage = function(clientId, data) {
+        // Remote client WASM output — we ignore it; each browser renders locally
+        // But log for debugging
+        if (typeof data === 'string') {
+            var preview = data.substring(0, 60);
+            if (data.startsWith('invalidatetiles:') || data.startsWith('statechanged:')) {
+                // These are tile invalidations — the local session also gets them via broadcastMessage
+                // No action needed
+            }
         }
+    };
+
+    // --- Create a remote ClientSession for a viewId ---
+    function createRemoteClient(viewId) {
+        if (remoteClients[viewId]) return; // Already exists
+
+        console.log('[relay] Creating remote client for viewId=' + viewId);
+        var clientId = Module._create_remote_client(); // C++ returns clientId, sets up async
+        remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
+        console.log('[relay] Remote client created: viewId=' + viewId + ' → clientId=' + clientId);
     }
 
-    // --- Handle messages from relay ---
+    // --- Process relay message ---
+    function processRelayMessage(msg) {
+        if (msg.type !== 0x00) return;
+        var text = new TextDecoder().decode(msg.payload);
+        var vid = msg.viewId;
+
+        // Skip control messages
+        if (text === 'HULLO' || text === 'BYE' || text.startsWith('tileprocessed ')) {
+            return;
+        }
+
+        // Determine if this is user input or system/rendering message
+        var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
+            text.startsWith('textinput ') || text.startsWith('windowkey ');
+
+        // System messages (tilecombine, clientvisiblearea, etc.) go to local session
+        if (!isUserInput) {
+            Module._handle_cool_message(Module.stringToNewUTF8(text));
+            return;
+        }
+
+        // User input → goes to this viewId's remote ClientSession
+        if (!remoteClients[vid]) {
+            createRemoteClient(vid);
+        }
+
+        var rc = remoteClients[vid];
+        if (!rc.ready) {
+            console.log('[relay] Queuing for viewId=' + vid + ' (not ready): ' + text.substring(0, 60));
+            rc.queue.push(text);
+            return;
+        }
+
+        console.log('[relay] → remote_message clientId=' + rc.clientId + ': ' + text.substring(0, 60));
+        Module._handle_remote_message(rc.clientId, Module.stringToNewUTF8(text));
+    }
+
+    // --- WebSocket handlers ---
     ws.onmessage = function(event) {
         var msg = parseFrame(event.data);
-
-        // Queue everything until COOLWSD is ready
         if (!coolwsdReady) {
             recvQueue.push(msg);
             return;
@@ -217,18 +222,10 @@
     ws.onopen = function() {
         connected = true;
         console.log('[relay] Connected');
-        for (var i = 0; i < sendQueue.length; i++) {
-            ws.send(sendQueue[i]);
-        }
+        for (var i = 0; i < sendQueue.length; i++) ws.send(sendQueue[i]);
         sendQueue = [];
     };
 
-    ws.onerror = function(err) {
-        console.error('[relay] WebSocket error', err);
-    };
-
-    ws.onclose = function() {
-        connected = false;
-        console.log('[relay] Disconnected');
-    };
+    ws.onerror = function(err) { console.error('[relay] WebSocket error', err); };
+    ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
 })();

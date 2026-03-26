@@ -1,0 +1,103 @@
+# Multi-User Co-Editing via Message Relay — Status & Notes
+
+## What Works (Proven by E2E Tests)
+
+### Document Sync
+- Two browsers open the same document via relay room
+- User A types text → appears on Browser B (and vice versa)
+- Verified with `textinput`, `key`, `mouse` messages
+- Status bar character count matches on both browsers
+- Screenshots confirm identical document content
+
+### Key Technical Details
+1. **FakeWebSocket.send interception** (not postMobileMessage):
+   - global.js EMSCRIPTENAppInitializer overwrites `window.postMobileMessage`
+   - Must intercept at `FakeWebSocket.prototype.send` level
+   - Interceptor installed AFTER COOLWSD init (onopen) to avoid breaking document load
+
+2. **Real typing uses `textinput` messages** (not `key type=input`):
+   - COOL's TextInput.js sends `textinput id=0 text=X` for actual keyboard input
+   - `key type=input char=X key=0` is only used for special keys (Home, End, etc.)
+   - Must forward both `textinput` and `key` messages through the relay
+
+3. **COOLWSD readiness detection**:
+   - COOLWSD.cpp calls `handle_cool_message("HULLO")` directly from C++ (not through JS)
+   - Then calls `TheFakeWebSocket.onopen()` from C++
+   - Detected via `Object.defineProperty` on `TheFakeWebSocket.onopen`
+
+4. **Message flow**:
+   - JS UI → FakeWebSocket.send() → relay-adapter intercepts → relay server → broadcast
+   - Relay → back to all browsers → processRelayMessage → Module._handle_cool_message
+   - WASM → send2JS → TheFakeWebSocket.onmessage → JS UI (stays local, no relay)
+
+## What Doesn't Work Yet
+
+### Shared Cursor Problem
+- ALL user input goes to the same local session via `_handle_cool_message`
+- Only ONE cursor exists — shared by all users
+- If A clicks at position 1 and B clicks at position 5, both cursors move to 5
+- A's typing then goes to position 5 (B's cursor), not position 1
+
+### Remote ClientSession Approach (Attempted, Not Working)
+The correct fix is for each user to have their own ClientSession in COOL's multi-view:
+- `_create_remote_client(viewId)` creates a FakeSocket + ClientSession
+- `_handle_remote_message(viewId, msg)` sends to that session
+- Each session has its own cursor, selection, view
+
+#### Issues Found:
+1. **Remote session needs full init sequence**: `coolclient` → `load` → `clientvisiblearea` → `clientzoom`
+   Without `clientvisiblearea` after load, key/textinput events are silently dropped.
+
+2. **Duplicate remote client creation**: `_create_remote_client` is called multiple times for the same viewId.
+   The `remoteViewIds` guard (both Set and plain object) doesn't prevent duplicates.
+   Root cause likely: `_handle_remote_message` for the init sequence causes a WASM error that
+   prevents the guard variable from being updated, or corrupts state.
+
+3. **Remote session key events produce no output after load**:
+   Even after `commandresult: load success`, `textinput` messages sent to the remote session
+   produce no tile invalidations. The session may need additional setup messages after load
+   (e.g., a mouse click to place the cursor, or `a11ystate`).
+
+4. **WebSocket disconnect during WASM load**: The relay WebSocket frequently drops during
+   WASM compilation (~248MB). The main thread blocks, preventing WebSocket keepalive.
+   Affects ~30% of test runs, especially for the second browser.
+
+## Files
+
+### relay-adapter.js
+Browser-side adapter. Intercepts FakeWebSocket.send, routes messages through relay.
+Own init messages go to local session. User input goes through relay.
+Remote user input currently goes to local session (_handle_cool_message) — shared cursor.
+
+### message-relay.js
+Node.js WebSocket relay server. Rooms, broadcast to all clients.
+Binary protocol: [1 byte type][4 byte viewId][payload].
+Runs on WSS port 9091.
+
+### wasmapp.cpp
+C++ WASM entry point. Added `create_remote_client`, `handle_remote_message`,
+`close_remote_client`, `send2RemoteJS` for multi-view support.
+These work (remote sessions load documents) but key events don't produce output yet.
+
+### editor.html
+File upload + share link with room ID.
+
+## Next Steps
+1. Fix the remote ClientSession to accept textinput after load:
+   - Send `a11ystate false` after load
+   - Send a mouse click to place cursor
+   - Send `clientvisiblearea` again after load completes
+   - Test with longer delays between init and input
+
+2. Fix the duplicate creation bug:
+   - The guard variable isn't being respected
+   - May need to use a global window property instead of closure variable
+   - Or check if WASM abort during init corrupts JS execution
+
+3. Fix WebSocket disconnect during WASM load:
+   - Add reconnection logic in relay-adapter.js
+   - Or add ping/pong keepalive to the relay server
+   - Or delay WebSocket connection until WASM is loaded
+
+4. Once remote sessions work: test separate cursors with the cursor test
+   (A types at start, B types at end → should produce "AAAHello WorldBBB")

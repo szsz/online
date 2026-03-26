@@ -35,17 +35,24 @@ static std::string fileURL;
 static int fakeClientFd;
 static int closeNotificationPipeForForwardingThread[2] = {-1, -1};
 
-// Remote clients (multi-view co-editing)
+// Multi-client support for remote collaborative editing via relay
 struct RemoteClient {
-    int fd;
-    int closePipe[2];
+    int fakeClientFd;
+    int closeNotificationPipe[2];
 };
-static std::mutex remoteClientsMutex;
 static std::map<int, RemoteClient> remoteClients;
+static std::mutex remoteClientsMutex;
+static int nextRemoteClientId = 1;
 
 static void send2JS(const std::vector<char>& buffer)
 {
     MAIN_THREAD_EM_ASM({
+        // Check if the message is binary. We say that any message that isn't just a single line is
+        // "binary" even if that strictly speaking isn't the case; for instance the commandvalues:
+        // message has a long bunch of non-binary JSON on multiple lines. But _onMessage() in
+        // Socket.js handles it fine even if such a message, too, comes in as an ArrayBuffer. (Look
+        // for the "textMsg = String.fromCharCode.apply(null, imgBytes);".)
+
         let newline = false;
         for (let i = 0; i != $1; ++i) {
             if (HEAPU8[$0 + i] === 0x0A) {
@@ -76,11 +83,125 @@ static void send2RemoteJS(int clientId, const std::vector<char>& buffer)
         if (!newline) {
             data = new TextDecoder().decode(data);
         }
-
-        if (typeof globalThis.onRemoteMessage === 'function') {
-            globalThis.onRemoteMessage($0, data);
+        if (globalThis.onRemoteClientMessage) {
+            globalThis.onRemoteClientMessage($0, data);
         }
     }, clientId, buffer.data(), buffer.size());
+}
+
+extern "C"
+EMSCRIPTEN_KEEPALIVE
+int create_remote_client()
+{
+    assert(coolwsd_server_socket_fd != -1);
+
+    // Allocate a clientId immediately (on main thread) and return it.
+    // The actual fakeSocketConnect (which blocks) runs in a new pthread.
+    int clientId;
+    {
+        std::lock_guard<std::mutex> lock(remoteClientsMutex);
+        clientId = nextRemoteClientId++;
+    }
+
+    std::cout << "Creating remote client " << clientId << " (async)" << std::endl;
+
+    // Spawn a thread to do the blocking connect + forwarding
+    std::thread([clientId]
+                {
+                    Util::setThreadName("relay_" + std::to_string(clientId));
+
+                    int clientFd = fakeSocketSocket();
+                    int rc = fakeSocketConnect(clientFd, coolwsd_server_socket_fd);
+                    if (rc == -1)
+                    {
+                        std::cerr << "create_remote_client: fakeSocketConnect failed for client "
+                                  << clientId << std::endl;
+                        return;
+                    }
+
+                    RemoteClient client;
+                    client.fakeClientFd = clientFd;
+                    fakeSocketPipe2(client.closeNotificationPipe);
+
+                    {
+                        std::lock_guard<std::mutex> lock(remoteClientsMutex);
+                        remoteClients[clientId] = client;
+                    }
+
+                    std::cout << "Remote client " << clientId << " connected with fd "
+                              << clientFd << std::endl;
+
+                    // Send the document URL as the first message
+                    // (same as the local client does on HULLO)
+                    fakeSocketWriteQueue(clientFd, fileURL.c_str(), fileURL.size());
+
+                    // Notify JS that the remote client is ready
+                    MAIN_THREAD_EM_ASM({
+                        if (globalThis.onRemoteClientReady) {
+                            globalThis.onRemoteClientReady($0);
+                        }
+                    }, clientId);
+
+                    // Forwarding loop: read from COOLWSD and send to JS
+                    int closePipe1 = client.closeNotificationPipe[1];
+                    while (true)
+                    {
+                        struct pollfd pollfd[2];
+                        pollfd[0].fd = clientFd;
+                        pollfd[0].events = POLLIN;
+                        pollfd[1].fd = closePipe1;
+                        pollfd[1].events = POLLIN;
+                        if (fakeSocketPoll(pollfd, 2, -1) > 0)
+                        {
+                            if (pollfd[1].revents == POLLIN)
+                            {
+                                fakeSocketClose(closePipe1);
+                                fakeSocketClose(clientFd);
+                                return;
+                            }
+                            if (pollfd[0].revents == POLLIN)
+                            {
+                                int n = fakeSocketAvailableDataLength(clientFd);
+                                if (n == 0)
+                                    return;
+                                std::vector<char> buf(n);
+                                n = fakeSocketRead(clientFd, buf.data(), n);
+                                send2RemoteJS(clientId, buf);
+                            }
+                        }
+                        else
+                            break;
+                    }
+                }).detach();
+
+    return clientId;
+}
+
+extern "C"
+EMSCRIPTEN_KEEPALIVE
+void handle_remote_message(int clientId, const char *string_value)
+{
+    std::lock_guard<std::mutex> lock(remoteClientsMutex);
+    auto it = remoteClients.find(clientId);
+    if (it == remoteClients.end())
+    {
+        std::cerr << "handle_remote_message: unknown client " << clientId << std::endl;
+        return;
+    }
+    fakeSocketWriteQueue(it->second.fakeClientFd, string_value, strlen(string_value));
+}
+
+extern "C"
+EMSCRIPTEN_KEEPALIVE
+void close_remote_client(int clientId)
+{
+    std::lock_guard<std::mutex> lock(remoteClientsMutex);
+    auto it = remoteClients.find(clientId);
+    if (it == remoteClients.end())
+        return;
+    fakeSocketClose(it->second.closeNotificationPipe[0]);
+    remoteClients.erase(it);
+    std::cout << "Closed remote client " << clientId << std::endl;
 }
 
 extern "C"
@@ -88,15 +209,20 @@ void handle_cool_message(const char *string_value)
 {
     std::cout << "================ handle_cool_message(): '" << string_value << "'" << std::endl;
 
-    if (string_value == std::string_view("HULLO"))
+    if (strcmp(string_value, "HULLO") == 0)
     {
+        // Now we know that the JS has started completely
+
+        // Contact the permanently (during app lifetime) listening COOLWSD server
+        // "public" socket
         assert(coolwsd_server_socket_fd != -1);
         int rc = fakeSocketConnect(fakeClientFd, coolwsd_server_socket_fd);
         assert(rc != -1);
 
+        // Create a socket pair to notify the below thread when the document has been closed
         fakeSocketPipe2(closeNotificationPipeForForwardingThread);
 
-        // Start forwarding thread for local client: WASM → JS
+        // Start another thread to read responses and forward them to the JavaScript
         std::thread([]
                     {
                         Util::setThreadName("app2js");
@@ -111,8 +237,18 @@ void handle_cool_message(const char *string_value)
                            {
                                if (pollfd[1].revents == POLLIN)
                                {
+                                   // The code below handling the "BYE" fake Websocket
+                                   // message has closed the other end of the
+                                   // closeNotificationPipeForForwardingThread. Let's close
+                                   // the other end too just for cleanliness, even if a
+                                   // FakeSocket as such is not a system resource so nothing
+                                   // is saved by closing it.
                                    fakeSocketClose(closeNotificationPipeForForwardingThread[1]);
+
+                                   // Close our end of the fake socket connection to the
+                                   // ClientSession thread, so that it terminates
                                    fakeSocketClose(fakeClientFd);
+
                                    return;
                                }
                                if (pollfd[0].revents == POLLIN)
@@ -136,101 +272,16 @@ void handle_cool_message(const char *string_value)
 
         fakeSocketWriteQueue(fakeClientFd, fileURL.c_str(), fileURL.size());
     }
-    else if (string_value == std::string_view("BYE"))
+    else if (strcmp(string_value, "BYE") == 0)
     {
         LOG_TRC_NOFILE("Document window terminating on JavaScript side. Closing our end of the socket.");
+
+        // Close one end of the socket pair, that will wake up the forwarding thread above
         fakeSocketClose(closeNotificationPipeForForwardingThread[0]);
     }
     else
     {
         fakeSocketWriteQueue(fakeClientFd, string_value, strlen(string_value));
-    }
-}
-
-extern "C"
-int create_remote_client(int clientId)
-{
-
-    int fd = fakeSocketSocket();
-    assert(coolwsd_server_socket_fd != -1);
-    int rc = fakeSocketConnect(fd, coolwsd_server_socket_fd);
-    assert(rc != -1);
-
-    RemoteClient client;
-    client.fd = fd;
-    fakeSocketPipe2(client.closePipe);
-
-    {
-        std::lock_guard<std::mutex> lock(remoteClientsMutex);
-        remoteClients[clientId] = client;
-    }
-
-    // Start forwarding thread for this remote client: WASM → remote JS
-    std::thread([clientId, fd, closePipeFd = client.closePipe[1]]
-                {
-                    Util::setThreadName("remote2js");
-                    while (true)
-                    {
-                        struct pollfd pollfd[2];
-                        pollfd[0].fd = fd;
-                        pollfd[0].events = POLLIN;
-                        pollfd[1].fd = closePipeFd;
-                        pollfd[1].events = POLLIN;
-                        if (fakeSocketPoll(pollfd, 2, -1) > 0)
-                        {
-                            if (pollfd[1].revents == POLLIN)
-                            {
-                                fakeSocketClose(closePipeFd);
-                                fakeSocketClose(fd);
-                                return;
-                            }
-                            if (pollfd[0].revents == POLLIN)
-                            {
-                                int n = fakeSocketAvailableDataLength(fd);
-                                if (n == 0)
-                                    return;
-                                std::vector<char> buf(n);
-                                n = fakeSocketRead(fd, buf.data(), n);
-                                send2RemoteJS(clientId, buf);
-                            }
-                        }
-                        else
-                            break;
-                    }
-                }).detach();
-
-    // Send the document URL to start loading for this client
-    fakeSocketWriteQueue(fd, fileURL.c_str(), fileURL.size());
-
-    std::cout << "================ create_remote_client(): clientId=" << clientId << " fd=" << fd << std::endl;
-    return clientId;
-}
-
-extern "C"
-void handle_remote_message(int clientId, const char *string_value)
-{
-    std::lock_guard<std::mutex> lock(remoteClientsMutex);
-    auto it = remoteClients.find(clientId);
-    if (it != remoteClients.end())
-    {
-        fakeSocketWriteQueue(it->second.fd, string_value, strlen(string_value));
-    }
-    else
-    {
-        std::cout << "================ handle_remote_message(): unknown clientId=" << clientId << std::endl;
-    }
-}
-
-extern "C"
-void close_remote_client(int clientId)
-{
-    std::cout << "================ close_remote_client(): clientId=" << clientId << std::endl;
-    std::lock_guard<std::mutex> lock(remoteClientsMutex);
-    auto it = remoteClients.find(clientId);
-    if (it != remoteClients.end())
-    {
-        fakeSocketClose(it->second.closePipe[0]);
-        remoteClients.erase(it);
     }
 }
 
@@ -249,17 +300,17 @@ void saveToServer() {
     {
         auto const f = std::unique_ptr<FILE, FileClose>(std::fopen(tempFile, "r"));
         if (f.get() == nullptr) {
-            LOG_WRN("Failed to open " << tempFile << " for reading");
+            LOG_WRN("Failed to open " << tempFile << " for reading"); //TODO
             return;
         }
         int e = std::fseek(f.get(), 0, SEEK_END);
         if (e != 0) {
-            LOG_WRN("Failed to seek in " << tempFile);
+            LOG_WRN("Failed to seek in " << tempFile); //TODO
             return;
         }
         n = std::ftell(f.get());
         if (n == -1) {
-            LOG_WRN("Failed to get size of " << tempFile);
+            LOG_WRN("Failed to get size of " << tempFile); //TODO
             return;
         }
         buf = std::make_unique<char[]>(n);
@@ -267,19 +318,20 @@ void saveToServer() {
         std::size_t n2 = std::fread(buf.get(), 1, n, f.get());
         assert(n >= 0);
         if (n2 != static_cast<unsigned long>(n)) {
-            LOG_WRN("Failed to get read " << tempFile);
+            LOG_WRN("Failed to get read " << tempFile); //TODO
             return;
         }
     }
     emscripten_fetch_attr_t attr;
     emscripten_fetch_attr_init(&attr);
     strcpy(attr.requestMethod, "POST");
-    attr.attributes = EMSCRIPTEN_FETCH_SYNCHRONOUS;
+    attr.attributes = EMSCRIPTEN_FETCH_SYNCHRONOUS; //TODO: make this asynchronous
     attr.requestData = buf.get();
     attr.requestDataSize = n;
     emscripten_fetch_t * fetch = emscripten_fetch(&attr, remoteUrl.c_str());
     emscripten_fetch_close(fetch);
     LOG_TRC("Saved " << tempFile << " back to <" << remoteUrl << ">: " << fetch->status);
+    //TODO: handle fetch->status != 200
 }
 
 int main(int argc, char* argv_main[])
@@ -302,6 +354,7 @@ int main(int argc, char* argv_main[])
 
     fakeClientFd = fakeSocketSocket();
 
+    // We run COOOLWSD::run() in a thread of its own so that main() can return.
     std::thread(
         [&]
         {
@@ -321,7 +374,7 @@ int main(int argc, char* argv_main[])
                 strcpy(attr.requestMethod, "GET");
                 attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
                 emscripten_fetch_t* fetch = emscripten_fetch(
-                    &attr, remoteUrl.data());
+                    &attr, remoteUrl.data()); // Blocks here until the operation is complete.
                 if (fetch->status == 200)
                 {
                     printf("Finished downloading %llu bytes from URL %s.\n", fetch->numBytes,
@@ -337,7 +390,7 @@ int main(int argc, char* argv_main[])
                 {
                     printf("Downloading %s failed, HTTP failure status code: %d.\n", fetch->url,
                            fetch->status);
-                    std::exit(EXIT_FAILURE);
+                    std::exit(EXIT_FAILURE); //TODO: error handling
                 }
                 emscripten_fetch_close(fetch);
             }
