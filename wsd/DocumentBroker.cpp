@@ -3879,9 +3879,33 @@ std::size_t DocumentBroker::addSession(const std::shared_ptr<ClientSession>& ses
     try
     {
         // First, download the document, since this can fail.
-        if (!download(session, _childProcess->getJailId(), session->getPublicUri(),
-                      session->getAdditionalFilePublicUri(),
-                      std::move(wopiFileInfo)))
+        // For MOBILEAPP with multiple sessions, skip download if already loaded.
+        bool downloadOk = true;
+        if constexpr (Util::isMobileApp())
+        {
+            // Skip download for subsequent sessions — document is already loaded
+            if (_sessions.size() > 0)
+            {
+                LOG_INF("Skipping download for session [" << id << "] - document already loaded (have " << _sessions.size() << " sessions)");
+                if (session)
+                {
+                    session->setWritable(true);
+                    session->setReadOnly(false);
+                    session->setAllowChangeComments(true);
+                }
+            }
+            else
+            {
+                downloadOk = download(session, _childProcess->getJailId(), session->getPublicUri(),
+                                      session->getAdditionalFilePublicUri(), std::move(wopiFileInfo));
+            }
+        }
+        else
+        {
+            downloadOk = download(session, _childProcess->getJailId(), session->getPublicUri(),
+                                  session->getAdditionalFilePublicUri(), std::move(wopiFileInfo));
+        }
+        if (!downloadOk)
         {
             const auto msg = "Failed to load document with URI [" + session->getPublicUri().toString() + "].";
             LOG_ERR(msg);
@@ -3890,7 +3914,9 @@ std::size_t DocumentBroker::addSession(const std::shared_ptr<ClientSession>& ses
 
         // Request a new session from the child kit.
         const std::string message = "session " + id + ' ' + _docKey + ' ' + _docId;
-        _childProcess->sendTextFrame(message);
+        LOG_INF("download() returned true for session [" << id << "], SENDING TO KIT: [" << message << "]");
+        bool sent = _childProcess->sendTextFrame(message, /*flush=*/true);
+        LOG_INF("SENT TO KIT: result=" << sent);
 
 #if !MOBILEAPP
         // Tell the admin console about this new doc
