@@ -24,6 +24,8 @@
     var myViewId = Math.floor(Math.random() * 0x7FFFFF);
     var isLateJoiner = false;
     var lateJoinSaveComplete = false;
+    var lateJoinFileUrl = null;
+    var lateJoinFileHash = null;
 
     var remoteClients = {};
 
@@ -108,6 +110,34 @@
 
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
+
+        // If first client (not a late joiner), upload initial file to relay
+        // so future late joiners can get it without needing an existing client to save.
+        if (!isLateJoiner) {
+            setTimeout(function() {
+                // Trigger a save so the file on the WOPI server is current
+                sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
+                setTimeout(function() {
+                    // Upload to relay
+                    var wopiSrc = params.get('WOPISrc') || '';
+                    var fetchUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+                    fetch(fetchUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+                        var bytes = new Uint8Array(buf);
+                        console.log('[relay] Initial file upload: ' + bytes.length + ' bytes');
+                        var frame = new Uint8Array(5 + bytes.length);
+                        frame[0] = 0x07;
+                        frame[1] = (myViewId >>> 24) & 0xFF;
+                        frame[2] = (myViewId >>> 16) & 0xFF;
+                        frame[3] = (myViewId >>> 8) & 0xFF;
+                        frame[4] = myViewId & 0xFF;
+                        frame.set(bytes, 5);
+                        ws.send(frame);
+                    }).catch(function(e) {
+                        console.log('[relay] Initial file upload failed: ' + e.message);
+                    });
+                }, 5000); // wait for save to complete
+            }, 3000); // wait a bit after becoming ready
+        }
     }
     setTimeout(waitForCoolwsd, 500);
 
@@ -194,42 +224,82 @@
     setTimeout(globalPollReady, 1000);
 
     // --- Handle save-request from a late joiner (existing participant) ---
-    function handleSaveRequest(msg) {
-        console.log('[relay] Received save-request — triggering document save');
-        var filename = new TextDecoder().decode(msg.payload);
-
-        // Force save: use UNO dispatch + COOL save + savetostorage
-        sendToKit('uno .uno:Save {"DontTerminateEdit":{"type":"boolean","value":true},"DontSaveIfUnmodified":{"type":"boolean","value":false}}');
+    // --- Handle save-trigger (0x08) from relay ---
+    // Relay asks us to save the document and upload the file back.
+    function handleSaveTrigger() {
+        console.log('[relay] Save-trigger received — saving and uploading document');
+        // Send save command to Kit
         sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
 
-        // Wait for save to complete. The chain is:
-        // ClientSession → Kit → .uno:Save → saveToServer() → HTTP POST.
-        // For a 4MB docx, this takes 5-15 seconds. Wait 15s to be safe.
+        // After Kit saves to disk, read the file and upload to relay via 0x07
+        // Kit calls saveToServer() which POSTs to the WOPI URL.
+        // We also need to upload to the relay. Wait for the save to finish,
+        // then fetch the file from the WOPI server and send it to relay.
         setTimeout(function() {
-            sendToRelay(0x05, myViewId, filename);
-            console.log('[relay] Save complete (15s wait) — notified relay');
-        }, 15000);
+            // Fetch the saved file from the WOPI server
+            var wopiSrc = new URLSearchParams(window.location.search).get('WOPISrc') || '';
+            var fetchUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+            console.log('[relay] Fetching saved file from ' + fetchUrl);
+            fetch(fetchUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+                var bytes = new Uint8Array(buf);
+                console.log('[relay] Uploading ' + bytes.length + ' bytes to relay');
+                // Send as type 0x07 (file-upload)
+                var frame = new Uint8Array(5 + bytes.length);
+                frame[0] = 0x07;
+                frame[1] = (myViewId >>> 24) & 0xFF;
+                frame[2] = (myViewId >>> 16) & 0xFF;
+                frame[3] = (myViewId >>> 8) & 0xFF;
+                frame[4] = myViewId & 0xFF;
+                frame.set(bytes, 5);
+                ws.send(frame);
+                console.log('[relay] File uploaded to relay');
+            }).catch(function(e) {
+                console.error('[relay] File upload failed: ' + e.message);
+            });
+        }, 10000); // Wait 10s for Kit to save + saveToServer to POST
     }
 
     // --- Process relay message ---
     function processRelayMessage(msg) {
         // Handle late-join protocol messages
-        if (msg.type === 0x04) {
-            // Save-request from late joiner (only existing participants receive this)
-            handleSaveRequest(msg);
+        if (msg.type === 0x08) {
+            // Save-trigger from relay: save document and upload file
+            handleSaveTrigger();
             return;
         }
 
         if (msg.type === 0x05) {
-            // Save-complete from existing participant (or empty = no peers, you're first)
+            // Save-complete from relay (with hash+url, or empty = no peers)
             lateJoinSaveComplete = true;
             if (msg.payload.length > 0) {
                 isLateJoiner = true;
-                var filename = new TextDecoder().decode(msg.payload);
-                console.log('[relay] Save-complete received (file: ' + filename + ') — late joiner, document saved');
+                try {
+                    var info = JSON.parse(new TextDecoder().decode(msg.payload));
+                    lateJoinFileUrl = info.url;
+                    lateJoinFileHash = info.hash;
+                    console.log('[relay] Save-complete: hash=' + info.hash + ' url=' + info.url);
+
+                    // Download from relay and overwrite the WOPI file
+                    // so the WASM module (which fetches via WOPISrc) gets the current state.
+                    var relayHost = new URL(relayUrl.replace('wss://', 'https://').replace('ws://', 'http://'));
+                    var fileUrl = relayHost.origin + info.url;
+                    var wopiSrc = params.get('WOPISrc') || '';
+                    var wopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+                    console.log('[relay] Downloading from relay: ' + fileUrl);
+                    fetch(fileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+                        console.log('[relay] Downloaded ' + buf.byteLength + ' bytes, uploading to WOPI: ' + wopiUrl);
+                        return fetch(wopiUrl, { method: 'POST', body: new Blob([buf]) });
+                    }).then(function() {
+                        console.log('[relay] WOPI file updated for late joiner');
+                    }).catch(function(e) {
+                        console.error('[relay] Late join file sync failed: ' + e.message);
+                    });
+                } catch(e) {
+                    console.log('[relay] Save-complete parse error: ' + e.message);
+                }
             } else {
                 isLateJoiner = false;
-                console.log('[relay] No peers in room — first client, loading normally');
+                console.log('[relay] No peers — first client');
             }
             return;
         }
