@@ -170,9 +170,9 @@ async function waitForAnyCharCount(pages, expected, timeout) {
 
         // 3 browsers = 3 viewIds. Each browser creates 3 remote clients (including own).
         console.log('\n--- Waiting for remote clients ---');
-        const readyA = await waitForReady(pageA, 'A', 3);
-        const readyB = await waitForReady(pageB, 'B', 3);
-        const readyC = await waitForReady(pageC, 'C', 3);
+        const readyA = await waitForReady(pageA, 'A', 2);
+        const readyB = await waitForReady(pageB, 'B', 2);
+        const readyC = await waitForReady(pageC, 'C', 2);
         if (!readyA || !readyB || !readyC) throw new Error('Not all ready');
 
         console.log('\n=== Phase 1: A types ABC at start (default cursor pos 0) ===\n');

@@ -22,7 +22,6 @@
     var recvQueue = [];
     var myViewId = Math.floor(Math.random() * 0x7FFFFF);
 
-    // Remote client tracking: viewId → { clientId, ready, queue }
     var remoteClients = {};
 
     // --- Relay framing ---
@@ -50,50 +49,64 @@
 
     console.log('[relay] My viewId=' + myViewId);
 
-    // --- COOLWSD readiness: detected via TheFakeWebSocket.onopen ---
-    function onCoolwsdReady() {
+    // --- Send message to Kit via the local session ---
+    // Uses postMobileMessage which always calls Module._handle_cool_message.
+    function sendToKit(data) {
+        if (window.postMobileMessage) {
+            window.postMobileMessage(data);
+        }
+    }
+
+    // --- COOLWSD readiness detection ---
+    // Poll for TheFakeWebSocket existence and readyState instead of
+    // using Object.defineProperty (which causes race conditions).
+    function waitForCoolwsd() {
+        if (coolwsdReady) return;
+
+        var fws = globalThis.TheFakeWebSocket;
+        if (!fws) {
+            setTimeout(waitForCoolwsd, 100);
+            return;
+        }
+
+        // Check if onopen has already fired (readyState-like check)
+        // COOL sets TheFakeWebSocket.onopen during init. Once the socket
+        // is "open", COOL has finished its init sequence.
+        // We detect this by checking if the COOL app has initialized.
+        if (!window._map && !document.querySelector('#map')) {
+            setTimeout(waitForCoolwsd, 100);
+            return;
+        }
+
+        // Wait for the status bar to appear (document loaded)
+        var statusEl = document.querySelector('#StateWordCount');
+        if (!statusEl || !statusEl.textContent || !statusEl.textContent.includes('word')) {
+            setTimeout(waitForCoolwsd, 200);
+            return;
+        }
+
+        // COOLWSD is fully ready — document is loaded
         coolwsdReady = true;
+        console.log('[relay] COOLWSD ready (document loaded)');
         installSendInterceptor();
-        console.log('[relay] COOLWSD ready, flushing ' + recvQueue.length + ' queued messages');
+
+        // Flush queued relay messages
         var pending = recvQueue.splice(0);
+        console.log('[relay] Flushing ' + pending.length + ' queued relay messages');
         for (var i = 0; i < pending.length; i++) {
             processRelayMessage(pending[i]);
         }
-        // Announce presence so other browsers create our remote client
+
+        // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
     }
-
-    function waitForFakeWebSocket() {
-        if (!globalThis.TheFakeWebSocket) {
-            setTimeout(waitForFakeWebSocket, 50);
-            return;
-        }
-        var fakeWs = globalThis.TheFakeWebSocket;
-        var _realOnOpen = fakeWs.onopen || null;
-        Object.defineProperty(fakeWs, 'onopen', {
-            configurable: true,
-            set: function(fn) { _realOnOpen = fn; },
-            get: function() {
-                return function() {
-                    if (_realOnOpen) _realOnOpen.apply(fakeWs, arguments);
-                    if (!coolwsdReady) {
-                        console.log('[relay] TheFakeWebSocket.onopen fired');
-                        onCoolwsdReady();
-                    }
-                };
-            }
-        });
-        console.log('[relay] Intercepting TheFakeWebSocket.onopen');
-    }
-    waitForFakeWebSocket();
+    setTimeout(waitForCoolwsd, 500);
 
     // --- FakeWebSocket.send interceptor ---
-    // User input → relay (for ordering). System messages → Kit directly.
+    // User input → relay. System messages → Kit directly via postMobileMessage.
     function installSendInterceptor() {
-        if (!globalThis.TheFakeWebSocket) return;
         var fws = globalThis.TheFakeWebSocket;
-        var FWS = fws.constructor;
-        var origSend = FWS.prototype.send.bind(fws);
+        if (!fws) return;
 
         function interceptedSend(data) {
             var text = typeof data === 'string' ? data : '';
@@ -102,26 +115,25 @@
             if (isUserInput) {
                 sendToRelay(0x00, myViewId, data);
             } else {
-                origSend(data);
+                // System messages go to Kit via postMobileMessage (always current)
+                sendToKit(data);
             }
         }
 
-        if (FWS && FWS.prototype && FWS.prototype.send) {
+        var FWS = fws.constructor;
+        if (FWS && FWS.prototype) {
             FWS.prototype.send = interceptedSend;
         }
         fws.send = interceptedSend;
         console.log('[relay] Send interceptor installed');
     }
 
-    // --- Remote client output from Kit ---
+    // --- Remote client Kit output ---
     globalThis.onRemoteClientMessage = function(clientId, data) {
-        // Mostly ignored — each browser renders via its local session.
-        // Could log for debugging.
+        // Ignored — each browser renders via its own local session.
     };
 
-    // --- Send a message to a remote client, converting textinput to key events ---
-    // textinput uses postWindowExtTextInputEvent (async — cursor doesn't advance).
-    // key uses postKeyEvent (sync — cursor advances immediately).
+    // --- Send message to remote client, converting textinput to key events ---
     function sendToRemoteClient(clientId, text) {
         if (text.startsWith('textinput ')) {
             var match = text.match(/text=(.+)/);
@@ -140,20 +152,17 @@
         }
     }
 
-    // --- Create a remote ClientSession for a viewId ---
+    // --- Create remote client ---
     function createRemoteClient(viewId) {
         if (remoteClients[viewId]) return;
-
         console.log('[relay] Creating remote client for viewId=' + viewId);
         var clientId = Module._create_remote_client();
         remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
         console.log('[relay] Remote client created: viewId=' + viewId + ' → clientId=' + clientId);
-
-        // Re-announce presence so late-joining peers learn about us
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
     }
 
-    // --- Global poller: C++ signals when remote clients finish init ---
+    // --- Poll for C++ ready signals ---
     function globalPollReady() {
         if (!Module || !Module.calledRun || !Module._poll_remote_client_ready) {
             setTimeout(globalPollReady, 500);
@@ -182,33 +191,55 @@
     setTimeout(globalPollReady, 1000);
 
     // --- Process relay message ---
-    // ALL messages from ALL viewIds (including own) go to remote ClientSessions.
-    // The relay guarantees identical ordering on every browser.
+    // ALL messages go through relay for strict ordering.
+    // Own viewId: route to local session (own cursor, own view).
+    // Other viewIds: route to remote ClientSessions (separate cursors).
     function processRelayMessage(msg) {
         if (msg.type !== 0x00) return;
         var text = new TextDecoder().decode(msg.payload);
         var vid = msg.viewId;
 
-        // Skip control messages
-        if (text === 'HULLO' || text === 'BYE' || text.startsWith('tileprocessed ')) {
+        if (text === 'HULLO' || text === 'BYE' || text.startsWith('tileprocessed ')) return;
+
+        // Presence messages: trigger remote client creation for other viewIds
+        if (text.startsWith('presence ')) {
+            if (vid !== myViewId && !remoteClients[vid]) {
+                createRemoteClient(vid);
+            }
             return;
         }
 
-        // Create remote client for any new viewId (including own)
+        // Only user input is relevant
+        var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
+            text.startsWith('textinput ') || text.startsWith('windowkey ');
+        if (!isUserInput) return;
+
+        // Own viewId: send to local session (own cursor position)
+        // Convert textinput to key events (postKeyEvent is sync, postWindowExtTextInputEvent is async)
+        if (vid === myViewId) {
+            if (text.startsWith('textinput ')) {
+                var match = text.match(/text=(.+)/);
+                if (match) {
+                    var chars = decodeURIComponent(match[1]);
+                    for (var ci = 0; ci < chars.length; ci++) {
+                        var charCode = chars.charCodeAt(ci);
+                        sendToKit('key type=input char=' + charCode + ' key=0');
+                        sendToKit('key type=up char=0 key=0');
+                    }
+                }
+            } else {
+                sendToKit(text);
+            }
+            return;
+        }
+
+        // Other viewId: create remote client if needed
         if (!remoteClients[vid]) {
             createRemoteClient(vid);
         }
 
-        // Only user input goes to remote clients
-        var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
-            text.startsWith('textinput ') || text.startsWith('windowkey ');
-        if (!isUserInput) {
-            return;
-        }
-
         var rc = remoteClients[vid];
         if (!rc.ready) {
-            console.log('[relay] Queuing for viewId=' + vid + ' (not ready): ' + text.substring(0, 60));
             rc.queue.push(text);
             return;
         }
@@ -216,27 +247,22 @@
         try {
             sendToRemoteClient(rc.clientId, text);
         } catch(e) {
-            console.error('[relay] FAILED: ' + e.message + ' | ' + text.substring(0, 40));
+            console.error('[relay] FAILED: ' + e.message);
         }
     }
 
     // --- WebSocket handlers ---
     ws.onmessage = function(event) {
         var msg = parseFrame(event.data);
-        if (!coolwsdReady) {
-            recvQueue.push(msg);
-            return;
-        }
+        if (!coolwsdReady) { recvQueue.push(msg); return; }
         processRelayMessage(msg);
     };
-
     ws.onopen = function() {
         connected = true;
         console.log('[relay] Connected');
         for (var i = 0; i < sendQueue.length; i++) ws.send(sendQueue[i]);
         sendQueue = [];
     };
-
     ws.onerror = function(err) { console.error('[relay] WebSocket error', err); };
     ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
 })();

@@ -132,8 +132,8 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
         check('Initial: both 11 chars', charCount(await getStatus(pageA)) === 11 && charCount(await getStatus(pageB)) === 11);
 
         console.log('\n--- Waiting for remote clients ---');
-        const readyA = await waitForReady(pageA, 'A', 2);
-        const readyB = await waitForReady(pageB, 'B', 2);
+        const readyA = await waitForReady(pageA, 'A', 1);
+        const readyB = await waitForReady(pageB, 'B', 1);
         if (!readyA || !readyB) throw new Error('Not ready');
 
         console.log('\n=== Typing ===\n');

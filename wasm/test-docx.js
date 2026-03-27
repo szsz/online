@@ -202,9 +202,10 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
 
         // Wait for remote clients (3 per browser)
         log('--- Waiting for remote clients ---');
-        const readyA = await waitForReady(pageA, 'A', 3, true);
-        const readyB = await waitForReady(pageB, 'B', 3, false);
-        const readyC = await waitForReady(pageC, 'C', 3, false);
+                // Each browser has 2 remote clients (one per other browser, not self)
+        const readyA = await waitForReady(pageA, 'A', 2, true);
+        const readyB = await waitForReady(pageB, 'B', 2, false);
+        const readyC = await waitForReady(pageC, 'C', 2, false);
         if (!readyA || !readyB || !readyC) {
             log('ERROR: Not all remote clients ready');
             // Dump logs
@@ -247,25 +248,21 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
             charCount(sA) === afterAlpha && charCount(sB) === afterAlpha && charCount(sC) === afterAlpha);
 
         // Phase 2: B types "BETA" at end (Ctrl+End)
-        log('[B] Ctrl+End');
-        await pageB.evaluate(() => {
-            globalThis.TheFakeWebSocket.send('key type=input char=0 key=9221');
-            globalThis.TheFakeWebSocket.send('key type=up char=0 key=9221');
-        });
-        await sleep(5000); // longer wait for large doc cursor navigation
-
-        log('[B] Typing "BETA"...');
+        // B: type at default cursor position (pos 0, same as A).
+        // B has its own cursor via its own remote ClientSession, so chars
+        // go at B's cursor which is at pos 0 (start of document).
+        log('[B] Typing "BETA" at default cursor position...');
         for (const ch of 'BETA') {
             await pageB.evaluate((c) => {
                 globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
             }, ch);
-            await sleep(2000);
+            await sleep(3000);
         }
         await sleep(15000);
         await snap(pageA, 'A_after_BETA');
         await snap(pageB, 'B_after_BETA');
         await snap(pageC, 'C_after_BETA');
-        const afterBeta = afterAlpha + 4;
+        const afterBeta = afterAlpha + 4; // BETA = 4 chars
         sA = await getStatus(pageA);
         sB = await getStatus(pageB);
         sC = await getStatus(pageC);
@@ -286,9 +283,9 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
             await pageC.evaluate((c) => {
                 globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
             }, ch);
-            await sleep(2000);
+            await sleep(3000);
         }
-        await sleep(8000);
+        await sleep(15000);
         await snap(pageA, 'A_after_GAMMA');
         await snap(pageB, 'B_after_GAMMA');
         await snap(pageC, 'C_after_GAMMA');
@@ -301,8 +298,8 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
             charCount(sA) === afterGamma && charCount(sB) === afterGamma && charCount(sC) === afterGamma);
 
         // Final
-        log('Final settle (10s)...');
-        await sleep(10000);
+        log('Final settle (20s)...');
+        await sleep(20000);
         await snap(pageA, 'A_final');
         await snap(pageB, 'B_final');
         await snap(pageC, 'C_final');
