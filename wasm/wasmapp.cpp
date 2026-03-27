@@ -154,8 +154,42 @@ int create_remote_client()
                     fakeSocketWriteQueue(clientFd, loadCmd.c_str(), loadCmd.size());
                     std::cout << "Remote client " << clientId << " sent load: " << loadCmd.substr(0, 50) << std::endl;
 
-                    // Wait for Kit to load the second view
-                    std::this_thread::sleep_for(std::chrono::seconds(30));
+                    // Wait for Kit to load the view — poll for commandresult
+                    // instead of blind sleep. Supports large documents.
+                    {
+                        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+                        bool loaded = false;
+                        while (std::chrono::steady_clock::now() < deadline)
+                        {
+                            struct pollfd pfd;
+                            pfd.fd = clientFd;
+                            pfd.events = POLLIN;
+                            int r = fakeSocketPoll(&pfd, 1, 1000); // 1s poll
+                            if (r > 0 && (pfd.revents & POLLIN))
+                            {
+                                int n = fakeSocketAvailableDataLength(clientFd);
+                                if (n <= 0) break;
+                                std::vector<char> buf(n);
+                                n = fakeSocketRead(clientFd, buf.data(), n);
+                                std::string msg(buf.data(), n);
+                                // Forward to JS (for tile rendering etc.)
+                                send2RemoteJS(clientId, buf);
+
+                                if (msg.find("commandresult:") != std::string::npos &&
+                                    msg.find("\"load\"") != std::string::npos &&
+                                    msg.find("\"success\"") != std::string::npos)
+                                {
+                                    std::cout << "Remote client " << clientId
+                                              << " loaded (commandresult)" << std::endl;
+                                    loaded = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!loaded)
+                            std::cout << "Remote client " << clientId
+                                      << " load timeout (120s) — signaling ready anyway" << std::endl;
+                    }
 
                     // Signal JS that this client is ready
                     {

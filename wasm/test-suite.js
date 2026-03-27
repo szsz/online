@@ -27,6 +27,11 @@ const TESTS = {
         file: 'test-3browsers.js',
         desc: 'A types ABC, B types XYZ, C types PQR → 20 chars identical on all',
     },
+    docx: {
+        name: '3-Browser DOCX Co-Editing',
+        file: 'test-docx.js',
+        desc: '3 browsers edit test document.docx with ALPHA/BETA/GAMMA at different positions',
+    },
 };
 
 function runTest(key) {
