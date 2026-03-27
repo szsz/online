@@ -32,6 +32,11 @@ const TESTS = {
         file: 'test-docx.js',
         desc: '3 browsers edit test document.docx with ALPHA/BETA/GAMMA at different positions',
     },
+    formats: {
+        name: 'Multi-Format (docx/xlsx/pptx)',
+        file: 'test-formats.js',
+        desc: '2 browsers co-edit docx, xlsx, and pptx files sequentially',
+    },
     latejoin: {
         name: 'Late Join Stress Test',
         file: 'test-late-join.js',
