@@ -142,27 +142,7 @@ server.on('upgrade', (req, socket, head) => {
                 ws.saveResponseReceived = false;
                 ws.bufferingStartTime = Date.now();
 
-                // If room already has a file, serve it immediately
-                if (room.file) {
-                    console.log(`[${roomId}] Late joiner: serving cached file (hash=${room.fileHash})`);
-                    ws.saveResponseReceived = true;
-                    ws.bufferingActive = true;
-                    ws.messageBuffer = [];
-                    // Send save-complete with hash+URL
-                    const payload = JSON.stringify({
-                        hash: room.fileHash,
-                        url: `/room/${encodeURIComponent(roomId)}/file`,
-                    });
-                    const payloadBuf = Buffer.from(payload);
-                    const frame = Buffer.alloc(5 + payloadBuf.length);
-                    frame[0] = 0x05;
-                    frame.writeUInt32BE(0, 1);
-                    payloadBuf.copy(frame, 5);
-                    ws.send(frame);
-                    return;
-                }
-
-                // No cached file — ask an existing client to save
+                // Always ask an existing client to save (to get latest edits)
                 let sent = false;
                 for (const client of room.clients) {
                     if (client !== ws && !client.isLateJoiner && client.readyState === WebSocket.OPEN) {
@@ -177,13 +157,31 @@ server.on('upgrade', (req, socket, head) => {
                     }
                 }
                 if (!sent) {
-                    // No existing clients — first client
-                    console.log(`[${roomId}] No peers — first client`);
-                    const frame = Buffer.alloc(5);
-                    frame[0] = 0x05;
-                    ws.send(frame);
-                    ws.isLateJoiner = false;
-                    ws.saveResponseReceived = true;
+                    if (room.file) {
+                        // No active peers but we have a cached file — serve it
+                        console.log(`[${roomId}] No active peers, serving cached file (hash=${room.fileHash})`);
+                        ws.saveResponseReceived = true;
+                        ws.bufferingActive = true;
+                        ws.messageBuffer = [];
+                        const payload = JSON.stringify({
+                            hash: room.fileHash,
+                            url: `/room/${encodeURIComponent(roomId)}/file`,
+                        });
+                        const payloadBuf = Buffer.from(payload);
+                        const frame = Buffer.alloc(5 + payloadBuf.length);
+                        frame[0] = 0x05;
+                        frame.writeUInt32BE(0, 1);
+                        payloadBuf.copy(frame, 5);
+                        ws.send(frame);
+                    } else {
+                        // No peers, no file — first client
+                        console.log(`[${roomId}] No peers — first client`);
+                        const frame = Buffer.alloc(5);
+                        frame[0] = 0x05;
+                        ws.send(frame);
+                        ws.isLateJoiner = false;
+                        ws.saveResponseReceived = true;
+                    }
                 }
 
                 setTimeout(() => {
@@ -198,10 +196,10 @@ server.on('upgrade', (req, socket, head) => {
             }
 
             // --- 0x07: File upload from client ---
+            // Always update the cached file. This keeps the relay's copy current.
             if (type === 0x07) {
                 const fileData = buf.slice(5);
                 room.setFile(fileData);
-                room.savePending = false;
 
                 // Notify any waiting late joiners
                 for (const client of room.clients) {

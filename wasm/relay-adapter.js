@@ -110,34 +110,6 @@
 
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
-
-        // If first client (not a late joiner), upload initial file to relay
-        // so future late joiners can get it without needing an existing client to save.
-        if (!isLateJoiner) {
-            setTimeout(function() {
-                // Trigger a save so the file on the WOPI server is current
-                sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
-                setTimeout(function() {
-                    // Upload to relay
-                    var wopiSrc = params.get('WOPISrc') || '';
-                    var fetchUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                    fetch(fetchUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
-                        var bytes = new Uint8Array(buf);
-                        console.log('[relay] Initial file upload: ' + bytes.length + ' bytes');
-                        var frame = new Uint8Array(5 + bytes.length);
-                        frame[0] = 0x07;
-                        frame[1] = (myViewId >>> 24) & 0xFF;
-                        frame[2] = (myViewId >>> 16) & 0xFF;
-                        frame[3] = (myViewId >>> 8) & 0xFF;
-                        frame[4] = myViewId & 0xFF;
-                        frame.set(bytes, 5);
-                        ws.send(frame);
-                    }).catch(function(e) {
-                        console.log('[relay] Initial file upload failed: ' + e.message);
-                    });
-                }, 5000); // wait for save to complete
-            }, 3000); // wait a bit after becoming ready
-        }
     }
     setTimeout(waitForCoolwsd, 500);
 
@@ -361,6 +333,15 @@
     // --- WebSocket handlers ---
     ws.onmessage = function(event) {
         var msg = parseFrame(event.data);
+        if (msg.type !== 0x00) {
+            console.log('[relay] Received type=0x' + msg.type.toString(16) + ' payload=' + msg.payload.length + 'b');
+        }
+        // Process control messages (0x05 save-complete, 0x08 save-trigger) IMMEDIATELY
+        // because 0x05 must update the WOPI file BEFORE the WASM module fetches it.
+        if (msg.type === 0x05 || msg.type === 0x08) {
+            processRelayMessage(msg);
+            return;
+        }
         if (!coolwsdReady) { recvQueue.push(msg); return; }
         processRelayMessage(msg);
     };
