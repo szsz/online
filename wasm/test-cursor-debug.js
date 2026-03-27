@@ -214,5 +214,6 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
     } finally {
         await browser.close();
         console.log('\nDone.');
+        process.exit(allPassed ? 0 : 1);
     }
 })();

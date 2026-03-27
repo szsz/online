@@ -64,13 +64,15 @@ clientA.on('open', () => {
             
             if (fromA.length >= 1) {
                 console.log('\n✓ RELAY WORKS: B received A\'s message');
+                clientA.close();
+                clientB.close();
+                process.exit(0);
             } else {
                 console.log('\n✗ RELAY BROKEN: B did not receive A\'s message');
+                clientA.close();
+                clientB.close();
+                process.exit(1);
             }
-            
-            clientA.close();
-            clientB.close();
-            process.exit(0);
         }, 1500);
     });
 });
