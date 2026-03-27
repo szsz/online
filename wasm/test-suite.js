@@ -32,6 +32,11 @@ const TESTS = {
         file: 'test-docx.js',
         desc: '3 browsers edit test document.docx with ALPHA/BETA/GAMMA at different positions',
     },
+    latejoin: {
+        name: 'Late Join Stress Test',
+        file: 'test-late-join.js',
+        desc: 'Browsers join/leave at different times, late joiners get saved state + buffered messages',
+    },
 };
 
 function runTest(key) {

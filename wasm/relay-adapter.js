@@ -1,7 +1,8 @@
 // Relay adapter for COOL WASM co-editing.
 // ALL user input goes through the relay for strict ordering.
-// Each viewId (including own) gets a separate remote ClientSession with its own cursor.
-// The local session (from HULLO) handles rendering only (tile requests/responses).
+// Each viewId gets a separate cursor (own = local session, other = remote ClientSession).
+// Supports late join: new browser requests save from existing participant,
+// downloads current state, then replays buffered messages.
 // Activate by adding ?relay=wss://host:port/room/id to the URL.
 
 (function() {
@@ -21,6 +22,8 @@
     var sendQueue = [];
     var recvQueue = [];
     var myViewId = Math.floor(Math.random() * 0x7FFFFF);
+    var isLateJoiner = false;
+    var lateJoinSaveComplete = false;
 
     var remoteClients = {};
 
@@ -49,52 +52,58 @@
 
     console.log('[relay] My viewId=' + myViewId);
 
-    // --- Send message to Kit via the local session ---
-    // Uses postMobileMessage which always calls Module._handle_cool_message.
+    // --- Send message to Kit via local session ---
     function sendToKit(data) {
         if (window.postMobileMessage) {
             window.postMobileMessage(data);
         }
     }
 
-    // --- COOLWSD readiness detection ---
-    // Poll for TheFakeWebSocket existence and readyState instead of
-    // using Object.defineProperty (which causes race conditions).
+    // --- Late join: send save-request as soon as relay connects ---
+    // The save handshake (~3-5s) completes well before WASM compile (~40s),
+    // so the file is updated before the WASM module fetches it.
+    function initiateLateJoin() {
+        var wopiSrc = params.get('WOPISrc') || '';
+        console.log('[relay] Sending save-request for late join (WOPISrc=' + wopiSrc + ')');
+        sendToRelay(0x04, myViewId, wopiSrc);
+
+        // Timeout: if no save-complete in 10s, proceed as first client
+        setTimeout(function() {
+            if (!lateJoinSaveComplete) {
+                console.log('[relay] No save-complete response — proceeding as first client');
+                isLateJoiner = false;
+            }
+        }, 10000);
+    }
+
+    // --- COOLWSD readiness: poll for document loaded ---
     function waitForCoolwsd() {
         if (coolwsdReady) return;
 
         var fws = globalThis.TheFakeWebSocket;
-        if (!fws) {
-            setTimeout(waitForCoolwsd, 100);
-            return;
-        }
+        if (!fws) { setTimeout(waitForCoolwsd, 100); return; }
 
-        // Check if onopen has already fired (readyState-like check)
-        // COOL sets TheFakeWebSocket.onopen during init. Once the socket
-        // is "open", COOL has finished its init sequence.
-        // We detect this by checking if the COOL app has initialized.
-        if (!window._map && !document.querySelector('#map')) {
-            setTimeout(waitForCoolwsd, 100);
-            return;
-        }
-
-        // Wait for the status bar to appear (document loaded)
         var statusEl = document.querySelector('#StateWordCount');
         if (!statusEl || !statusEl.textContent || !statusEl.textContent.includes('word')) {
             setTimeout(waitForCoolwsd, 200);
             return;
         }
 
-        // COOLWSD is fully ready — document is loaded
         coolwsdReady = true;
         console.log('[relay] COOLWSD ready (document loaded)');
         installSendInterceptor();
 
-        // Flush queued relay messages
+        // Flush queued relay messages FIRST (may set isLateJoiner via 0x05)
         var pending = recvQueue.splice(0);
         console.log('[relay] Flushing ' + pending.length + ' queued relay messages');
         for (var i = 0; i < pending.length; i++) {
             processRelayMessage(pending[i]);
+        }
+
+        // Now check if we became a late joiner from queued messages
+        if (isLateJoiner) {
+            console.log('[relay] Late joiner sending ready signal');
+            sendToRelay(0x06, myViewId, '');
         }
 
         // Announce presence
@@ -103,7 +112,6 @@
     setTimeout(waitForCoolwsd, 500);
 
     // --- FakeWebSocket.send interceptor ---
-    // User input → relay. System messages → Kit directly via postMobileMessage.
     function installSendInterceptor() {
         var fws = globalThis.TheFakeWebSocket;
         if (!fws) return;
@@ -115,25 +123,20 @@
             if (isUserInput) {
                 sendToRelay(0x00, myViewId, data);
             } else {
-                // System messages go to Kit via postMobileMessage (always current)
                 sendToKit(data);
             }
         }
 
         var FWS = fws.constructor;
-        if (FWS && FWS.prototype) {
-            FWS.prototype.send = interceptedSend;
-        }
+        if (FWS && FWS.prototype) FWS.prototype.send = interceptedSend;
         fws.send = interceptedSend;
         console.log('[relay] Send interceptor installed');
     }
 
-    // --- Remote client Kit output ---
-    globalThis.onRemoteClientMessage = function(clientId, data) {
-        // Ignored — each browser renders via its own local session.
-    };
+    // --- Remote client output ---
+    globalThis.onRemoteClientMessage = function(clientId, data) {};
 
-    // --- Send message to remote client, converting textinput to key events ---
+    // --- Send to remote client with textinput→key conversion ---
     function sendToRemoteClient(clientId, text) {
         if (text.startsWith('textinput ')) {
             var match = text.match(/text=(.+)/);
@@ -190,18 +193,54 @@
     }
     setTimeout(globalPollReady, 1000);
 
+    // --- Handle save-request from a late joiner (existing participant) ---
+    function handleSaveRequest(msg) {
+        console.log('[relay] Received save-request — triggering document save');
+        var filename = new TextDecoder().decode(msg.payload);
+
+        // Force save: use UNO dispatch + COOL save + savetostorage
+        sendToKit('uno .uno:Save {"DontTerminateEdit":{"type":"boolean","value":true},"DontSaveIfUnmodified":{"type":"boolean","value":false}}');
+        sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
+
+        // Wait for save to complete. The chain is:
+        // ClientSession → Kit → .uno:Save → saveToServer() → HTTP POST.
+        // For a 4MB docx, this takes 5-15 seconds. Wait 15s to be safe.
+        setTimeout(function() {
+            sendToRelay(0x05, myViewId, filename);
+            console.log('[relay] Save complete (15s wait) — notified relay');
+        }, 15000);
+    }
+
     // --- Process relay message ---
-    // ALL messages go through relay for strict ordering.
-    // Own viewId: route to local session (own cursor, own view).
-    // Other viewIds: route to remote ClientSessions (separate cursors).
     function processRelayMessage(msg) {
+        // Handle late-join protocol messages
+        if (msg.type === 0x04) {
+            // Save-request from late joiner (only existing participants receive this)
+            handleSaveRequest(msg);
+            return;
+        }
+
+        if (msg.type === 0x05) {
+            // Save-complete from existing participant (or empty = no peers, you're first)
+            lateJoinSaveComplete = true;
+            if (msg.payload.length > 0) {
+                isLateJoiner = true;
+                var filename = new TextDecoder().decode(msg.payload);
+                console.log('[relay] Save-complete received (file: ' + filename + ') — late joiner, document saved');
+            } else {
+                isLateJoiner = false;
+                console.log('[relay] No peers in room — first client, loading normally');
+            }
+            return;
+        }
+
         if (msg.type !== 0x00) return;
         var text = new TextDecoder().decode(msg.payload);
         var vid = msg.viewId;
 
         if (text === 'HULLO' || text === 'BYE' || text.startsWith('tileprocessed ')) return;
 
-        // Presence messages: trigger remote client creation for other viewIds
+        // Presence: trigger remote client creation
         if (text.startsWith('presence ')) {
             if (vid !== myViewId && !remoteClients[vid]) {
                 createRemoteClient(vid);
@@ -209,13 +248,11 @@
             return;
         }
 
-        // Only user input is relevant
         var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
             text.startsWith('textinput ') || text.startsWith('windowkey ');
         if (!isUserInput) return;
 
-        // Own viewId: send to local session (own cursor position)
-        // Convert textinput to key events (postKeyEvent is sync, postWindowExtTextInputEvent is async)
+        // Own viewId → local session (with textinput→key conversion)
         if (vid === myViewId) {
             if (text.startsWith('textinput ')) {
                 var match = text.match(/text=(.+)/);
@@ -233,7 +270,7 @@
             return;
         }
 
-        // Other viewId: create remote client if needed
+        // Other viewId → remote ClientSession
         if (!remoteClients[vid]) {
             createRemoteClient(vid);
         }
@@ -262,6 +299,8 @@
         console.log('[relay] Connected');
         for (var i = 0; i < sendQueue.length; i++) ws.send(sendQueue[i]);
         sendQueue = [];
+        // Initiate late-join protocol immediately
+        initiateLateJoin();
     };
     ws.onerror = function(err) { console.error('[relay] WebSocket error', err); };
     ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
