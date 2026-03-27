@@ -1,6 +1,7 @@
 // Relay adapter for COOL WASM co-editing.
-// Each user's input goes to their own remote ClientSession (separate cursors).
-// The local session (from HULLO) handles rendering only.
+// ALL user input goes through the relay for strict ordering.
+// Each viewId (including own) gets a separate remote ClientSession with its own cursor.
+// The local session (from HULLO) handles rendering only (tile requests/responses).
 // Activate by adding ?relay=wss://host:port/room/id to the URL.
 
 (function() {
@@ -52,13 +53,14 @@
     // --- COOLWSD readiness: detected via TheFakeWebSocket.onopen ---
     function onCoolwsdReady() {
         coolwsdReady = true;
-        // Install send interceptor now that init is done
         installSendInterceptor();
         console.log('[relay] COOLWSD ready, flushing ' + recvQueue.length + ' queued messages');
         var pending = recvQueue.splice(0);
         for (var i = 0; i < pending.length; i++) {
             processRelayMessage(pending[i]);
         }
+        // Announce presence so other browsers create our remote client
+        sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
     }
 
     function waitForFakeWebSocket() {
@@ -85,46 +87,58 @@
     }
     waitForFakeWebSocket();
 
-    // --- FakeWebSocket.send interceptor (installed after init) ---
+    // --- FakeWebSocket.send interceptor ---
+    // User input → relay (for ordering). System messages → Kit directly.
     function installSendInterceptor() {
         if (!globalThis.TheFakeWebSocket) return;
         var fws = globalThis.TheFakeWebSocket;
         var FWS = fws.constructor;
-        if (FWS && FWS.prototype && FWS.prototype.send) {
-            FWS.prototype.send = function(data) {
-                sendToRelay(0x00, myViewId, data);
-            };
-        }
-        fws.send = function(data) {
-            sendToRelay(0x00, myViewId, data);
-        };
-        console.log('[relay] FakeWebSocket.send interceptor installed');
-    }
+        var origSend = FWS.prototype.send.bind(fws);
 
-    // --- Remote client WASM output (called from C++ via send2RemoteJS) ---
-    globalThis.onRemoteClientMessage = function(clientId, data) {
-        // Remote session output — each browser renders locally, so mostly ignored.
-        // But detect commandresult:load as an early ready signal.
-        if (typeof data === 'string' && data.startsWith('commandresult:') &&
-            data.includes('"load"') && data.includes('"success": true')) {
-            for (var vid in remoteClients) {
-                if (remoteClients[vid].clientId === clientId && !remoteClients[vid].ready) {
-                    remoteClients[vid].ready = true;
-                    var q = remoteClients[vid].queue;
-                    remoteClients[vid].queue = [];
-                    console.log('[relay] Remote client ' + clientId + ' loaded (commandresult), flushing ' + q.length + ' msgs');
-                    for (var i = 0; i < q.length; i++) {
-                        try {
-                            Module._handle_remote_message(clientId, Module.stringToNewUTF8(q[i]));
-                        } catch(e) {
-                            console.error('[relay] Flush msg ' + i + ' failed: ' + q[i].substring(0, 40));
-                        }
-                    }
-                    break;
-                }
+        function interceptedSend(data) {
+            var text = typeof data === 'string' ? data : '';
+            var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
+                text.startsWith('textinput ') || text.startsWith('windowkey ');
+            if (isUserInput) {
+                sendToRelay(0x00, myViewId, data);
+            } else {
+                origSend(data);
             }
         }
+
+        if (FWS && FWS.prototype && FWS.prototype.send) {
+            FWS.prototype.send = interceptedSend;
+        }
+        fws.send = interceptedSend;
+        console.log('[relay] Send interceptor installed');
+    }
+
+    // --- Remote client output from Kit ---
+    globalThis.onRemoteClientMessage = function(clientId, data) {
+        // Mostly ignored — each browser renders via its local session.
+        // Could log for debugging.
     };
+
+    // --- Send a message to a remote client, converting textinput to key events ---
+    // textinput uses postWindowExtTextInputEvent (async — cursor doesn't advance).
+    // key uses postKeyEvent (sync — cursor advances immediately).
+    function sendToRemoteClient(clientId, text) {
+        if (text.startsWith('textinput ')) {
+            var match = text.match(/text=(.+)/);
+            if (match) {
+                var chars = decodeURIComponent(match[1]);
+                for (var ci = 0; ci < chars.length; ci++) {
+                    var charCode = chars.charCodeAt(ci);
+                    Module._handle_remote_message(clientId,
+                        Module.stringToNewUTF8('key type=input char=' + charCode + ' key=0'));
+                    Module._handle_remote_message(clientId,
+                        Module.stringToNewUTF8('key type=up char=0 key=0'));
+                }
+            }
+        } else {
+            Module._handle_remote_message(clientId, Module.stringToNewUTF8(text));
+        }
+    }
 
     // --- Create a remote ClientSession for a viewId ---
     function createRemoteClient(viewId) {
@@ -135,11 +149,11 @@
         remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
         console.log('[relay] Remote client created: viewId=' + viewId + ' → clientId=' + clientId);
 
-        // C++ thread handles init (coolclient + load) and signals via queue.
-        // Global poller dispatches ready signals to the right client.
+        // Re-announce presence so late-joining peers learn about us
+        sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
     }
 
-    // Global poller: checks for ready clients from C++ background threads
+    // --- Global poller: C++ signals when remote clients finish init ---
     function globalPollReady() {
         if (!Module || !Module.calledRun || !Module._poll_remote_client_ready) {
             setTimeout(globalPollReady, 500);
@@ -147,20 +161,16 @@
         }
         var readyId = Module._poll_remote_client_ready();
         if (readyId > 0) {
-            // Find which viewId has this clientId
             for (var vid in remoteClients) {
                 if (remoteClients[vid].clientId === readyId && !remoteClients[vid].ready) {
-                    console.log('[relay] Remote client ' + readyId + ' (viewId=' + vid + ') init done by C++ thread');
-                    // Mark ready immediately — C++ thread already waited 30s for Kit to load
+                    console.log('[relay] Client ' + readyId + ' (viewId=' + vid + ') ready');
                     remoteClients[vid].ready = true;
                     var q = remoteClients[vid].queue;
                     remoteClients[vid].queue = [];
-                    console.log('[relay] Flushing ' + q.length + ' queued msgs for client ' + readyId);
-                    for (var i = 0; i < q.length; i++) {
-                        try {
-                            Module._handle_remote_message(readyId, Module.stringToNewUTF8(q[i]));
-                        } catch(e) {
-                            console.error('[relay] Flush msg ' + i + ' failed: ' + q[i].substring(0, 40));
+                    if (q.length > 0) {
+                        console.log('[relay] Flushing ' + q.length + ' queued msgs');
+                        for (var i = 0; i < q.length; i++) {
+                            try { sendToRemoteClient(readyId, q[i]); } catch(e) {}
                         }
                     }
                     break;
@@ -172,6 +182,8 @@
     setTimeout(globalPollReady, 1000);
 
     // --- Process relay message ---
+    // ALL messages from ALL viewIds (including own) go to remote ClientSessions.
+    // The relay guarantees identical ordering on every browser.
     function processRelayMessage(msg) {
         if (msg.type !== 0x00) return;
         var text = new TextDecoder().decode(msg.payload);
@@ -182,19 +194,16 @@
             return;
         }
 
-        // Determine if this is user input or system/rendering message
-        var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
-            text.startsWith('textinput ') || text.startsWith('windowkey ');
-
-        // System messages (tilecombine, clientvisiblearea, etc.) go to local session
-        if (!isUserInput) {
-            Module._handle_cool_message(Module.stringToNewUTF8(text));
-            return;
-        }
-
-        // User input → goes to this viewId's remote ClientSession
+        // Create remote client for any new viewId (including own)
         if (!remoteClients[vid]) {
             createRemoteClient(vid);
+        }
+
+        // Only user input goes to remote clients
+        var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
+            text.startsWith('textinput ') || text.startsWith('windowkey ');
+        if (!isUserInput) {
+            return;
         }
 
         var rc = remoteClients[vid];
@@ -205,9 +214,9 @@
         }
 
         try {
-            Module._handle_remote_message(rc.clientId, Module.stringToNewUTF8(text));
+            sendToRemoteClient(rc.clientId, text);
         } catch(e) {
-            console.error('[relay] remote_message failed: ' + text.substring(0, 40));
+            console.error('[relay] FAILED: ' + e.message + ' | ' + text.substring(0, 40));
         }
     }
 

@@ -3171,7 +3171,7 @@ int pollCallback([[maybe_unused]] void* data, int timeoutUs)
 
     if (timeoutUs < 0)
         timeoutUs = SocketPoll::DefaultPollTimeoutMicroS.count();
-#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
+#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
     if (!data)
         return 0;
     else
@@ -3227,7 +3227,7 @@ bool anyInputCallback(void* data, int mostUrgentPriority)
 } // namespace
 
 bool KitSocketPoll::kitHasAnyInput([[maybe_unused]] int mostUrgentPriority) {
-#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
+#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
     const std::shared_ptr<Document>& document = getDocument();
 
     if (document)
@@ -3284,7 +3284,7 @@ void wakeCallback(void* data)
 } // namespace
 
 void KitSocketPoll::kitWakeup() {
-#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
+#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
     wakeup();
 #else
     std::unique_lock<std::mutex> lock(KitSocketPoll::KSPollsMutex);
