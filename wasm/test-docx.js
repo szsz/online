@@ -160,7 +160,9 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
             }
         }
 
-        // Open all 3 with fresh-room retry
+        // Open all 3 with fresh-room retry.
+        // WASM+relay load has ~30% failure rate per browser (race in init hooking).
+        // Retry each individual browser, keeping the room the same.
         let pageA, pageB, pageC;
         for (let roomAttempt = 1; roomAttempt <= 3; roomAttempt++) {
             try {
@@ -168,14 +170,14 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
                 relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
                 coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(DOC_NAME)}&relay=${relay}&access_token=test`;
                 log(`Room attempt ${roomAttempt}: ${ROOM}`);
-                pageA = await openDoc('A', 1);
-                await sleep(5000);
-                pageB = await openDoc('B', 1);
-                await sleep(5000);
-                pageC = await openDoc('C', 1);
+                pageA = await openDoc('A', 3);
+                await sleep(10000);
+                pageB = await openDoc('B', 3);
+                await sleep(10000);
+                pageC = await openDoc('C', 3);
                 break;
             } catch (e) {
-                log(`Room ${roomAttempt} failed, retrying...`);
+                log(`Room ${roomAttempt} failed: ${e.message}`);
                 try { if (pageA) await pageA.close(); } catch (x) {}
                 try { if (pageB) await pageB.close(); } catch (x) {}
                 try { if (pageC) await pageC.close(); } catch (x) {}
