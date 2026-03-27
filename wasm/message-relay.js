@@ -142,19 +142,27 @@ server.on('upgrade', (req, socket, head) => {
                 ws.saveResponseReceived = false;
                 ws.bufferingStartTime = Date.now();
 
-                // Always ask an existing client to save (to get latest edits)
+                // Ask an existing non-late-joiner client to save.
+                // Skip if we're already waiting for a save from another request.
                 let sent = false;
-                for (const client of room.clients) {
-                    if (client !== ws && !client.isLateJoiner && client.readyState === WebSocket.OPEN) {
-                        // Send save-trigger (0x08) to this client
-                        const triggerFrame = Buffer.alloc(5);
-                        triggerFrame[0] = 0x08;
-                        triggerFrame.writeUInt32BE(viewId, 1);
-                        client.send(triggerFrame);
-                        sent = true;
-                        console.log(`[${roomId}] Asked existing client to save`);
-                        break;
+                if (!room.savePending) {
+                    for (const client of room.clients) {
+                        if (client !== ws && !client.isLateJoiner && client.readyState === WebSocket.OPEN) {
+                            const triggerFrame = Buffer.alloc(5);
+                            triggerFrame[0] = 0x08;
+                            triggerFrame.writeUInt32BE(viewId, 1);
+                            client.send(triggerFrame);
+                            sent = true;
+                            room.savePending = true;
+                            console.log(`[${roomId}] Asked existing client to save`);
+                            // Clear pending after 30s timeout
+                            setTimeout(() => { room.savePending = false; }, 30000);
+                            break;
+                        }
                     }
+                } else {
+                    // Save already pending — wait for it
+                    console.log(`[${roomId}] Save already pending, waiting...`);
                 }
                 if (!sent) {
                     if (room.file) {
@@ -200,6 +208,7 @@ server.on('upgrade', (req, socket, head) => {
             if (type === 0x07) {
                 const fileData = buf.slice(5);
                 room.setFile(fileData);
+                room.savePending = false;
 
                 // Notify any waiting late joiners
                 for (const client of room.clients) {

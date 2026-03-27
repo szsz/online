@@ -69,13 +69,14 @@
         console.log('[relay] Sending save-request for late join (WOPISrc=' + wopiSrc + ')');
         sendToRelay(0x04, myViewId, wopiSrc);
 
-        // Timeout: if no save-complete in 10s, proceed as first client
+        // Short timeout: relay responds immediately if no peers (first client)
+        // or within ~15s if an existing client needs to save.
         setTimeout(function() {
             if (!lateJoinSaveComplete) {
                 console.log('[relay] No save-complete response — proceeding as first client');
                 isLateJoiner = false;
             }
-        }, 10000);
+        }, 5000);
     }
 
     // --- COOLWSD readiness: poll for document loaded ---
