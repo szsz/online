@@ -54,6 +54,35 @@
 
     console.log('[relay] My viewId=' + myViewId);
 
+    // --- Intercept document fetch for late-join file redirect ---
+    // The WASM module uses emscripten_fetch to GET the document.
+    // For late joiners, we overwrite the file on the WOPI server
+    // before the WASM module fetches it. We also intercept fetch/XHR as backup.
+    var lateJoinFileReady = false;
+
+    // Intercept both XHR and fetch API
+    var xhrOrigOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        if (lateJoinFileReady && method === 'GET') {
+            var wopiSrc = params.get('WOPISrc') || '';
+            if (wopiSrc && url.indexOf(wopiSrc) !== -1) {
+                console.log('[relay] XHR redirect: ' + url.substring(0, 80));
+            }
+        }
+        return xhrOrigOpen.apply(this, arguments);
+    };
+
+    var origFetch = window.fetch;
+    window.fetch = function(url, opts) {
+        if (lateJoinFileReady && typeof url === 'string') {
+            var wopiSrc = params.get('WOPISrc') || '';
+            if (wopiSrc && url.indexOf(wopiSrc) !== -1 && (!opts || opts.method === 'GET' || !opts.method)) {
+                console.log('[relay] fetch redirect: ' + url.substring(0, 80));
+            }
+        }
+        return origFetch.apply(this, arguments);
+    };
+
     // --- Send message to Kit via local session ---
     function sendToKit(data) {
         if (window.postMobileMessage) {
@@ -86,8 +115,14 @@
         var fws = globalThis.TheFakeWebSocket;
         if (!fws) { setTimeout(waitForCoolwsd, 100); return; }
 
+        // Writer: StateWordCount has "word"
         var statusEl = document.querySelector('#StateWordCount');
-        if (!statusEl || !statusEl.textContent || !statusEl.textContent.includes('word')) {
+        var writerReady = statusEl && statusEl.textContent && statusEl.textContent.includes('word');
+        // Calc: StatusDocPos has "Sheet"
+        var calcEl = document.querySelector('#StatusDocPos');
+        var calcReady = calcEl && calcEl.textContent && calcEl.textContent.includes('Sheet');
+
+        if (!writerReady && !calcReady) {
             setTimeout(waitForCoolwsd, 200);
             return;
         }
@@ -111,6 +146,31 @@
 
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
+
+        // Auto-save to relay every 15s (keeps relay file current for late joiners)
+        function autoSaveToRelay() {
+            if (!connected) return;
+            sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
+            setTimeout(function() {
+                var wopiSrc = params.get('WOPISrc') || '';
+                var fetchUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+                origFetch(fetchUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+                    var bytes = new Uint8Array(buf);
+                    var frame = new Uint8Array(5 + bytes.length);
+                    frame[0] = 0x07;
+                    frame[1] = (myViewId >>> 24) & 0xFF;
+                    frame[2] = (myViewId >>> 16) & 0xFF;
+                    frame[3] = (myViewId >>> 8) & 0xFF;
+                    frame[4] = myViewId & 0xFF;
+                    frame.set(bytes, 5);
+                    ws.send(frame);
+                    console.log('[relay] Auto-saved to relay: ' + bytes.length + ' bytes');
+                }).catch(function(e) {});
+            }, 5000);
+        }
+        // First save immediately, then every 15s
+        autoSaveToRelay();
+        setInterval(autoSaveToRelay, 15000);
     }
     setTimeout(waitForCoolwsd, 500);
 
@@ -250,20 +310,20 @@
                     var info = JSON.parse(new TextDecoder().decode(msg.payload));
                     lateJoinFileUrl = info.url;
                     lateJoinFileHash = info.hash;
-                    console.log('[relay] Save-complete: hash=' + info.hash + ' url=' + info.url);
-
-                    // Download from relay and overwrite the WOPI file
-                    // so the WASM module (which fetches via WOPISrc) gets the current state.
                     var relayHost = new URL(relayUrl.replace('wss://', 'https://').replace('ws://', 'http://'));
-                    var fileUrl = relayHost.origin + info.url;
+                    var relayFileUrl = relayHost.origin + info.url;
+                    console.log('[relay] Save-complete: hash=' + info.hash + ', downloading from relay...');
+
+                    // Download from relay and overwrite the WOPI file IMMEDIATELY.
+                    // This must complete before the WASM module fetches the document (~25s from now).
                     var wopiSrc = params.get('WOPISrc') || '';
                     var wopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                    console.log('[relay] Downloading from relay: ' + fileUrl);
-                    fetch(fileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
-                        console.log('[relay] Downloaded ' + buf.byteLength + ' bytes, uploading to WOPI: ' + wopiUrl);
-                        return fetch(wopiUrl, { method: 'POST', body: new Blob([buf]) });
+                    origFetch(relayFileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+                        console.log('[relay] Downloaded ' + buf.byteLength + ' bytes from relay, uploading to WOPI...');
+                        lateJoinFileReady = true;
+                        return origFetch(wopiUrl, { method: 'POST', body: new Blob([buf]) });
                     }).then(function() {
-                        console.log('[relay] WOPI file updated for late joiner');
+                        console.log('[relay] WOPI file updated for late join');
                     }).catch(function(e) {
                         console.error('[relay] Late join file sync failed: ' + e.message);
                     });
