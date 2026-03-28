@@ -40,12 +40,48 @@ class Room {
         this.file = null;       // Buffer: current document bytes
         this.fileHash = null;   // SHA-256 of current file
         this.savePending = false;
+        this.hasChanges = false; // true if UI messages received since last save
+        this.autoSaveInterval = null;
     }
 
     setFile(buf) {
         this.file = Buffer.from(buf);
         this.fileHash = crypto.createHash('sha256').update(this.file).digest('hex').substring(0, 16);
+        this.hasChanges = false;
         console.log(`[${this.id}] File stored: ${this.file.length} bytes, hash=${this.fileHash}`);
+    }
+
+    // Start periodic auto-save (10 minutes)
+    startAutoSave() {
+        if (this.autoSaveInterval) return;
+        this.autoSaveInterval = setInterval(() => {
+            if (!this.hasChanges || this.savePending) return;
+            this.triggerSave();
+        }, 10 * 60 * 1000); // 10 minutes
+    }
+
+    stopAutoSave() {
+        if (this.autoSaveInterval) {
+            clearInterval(this.autoSaveInterval);
+            this.autoSaveInterval = null;
+        }
+    }
+
+    // Ask one client to save
+    triggerSave() {
+        if (this.savePending) return;
+        for (const client of this.clients) {
+            if (!client.isLateJoiner && client.readyState === 1) { // WebSocket.OPEN
+                const frame = Buffer.alloc(5);
+                frame[0] = 0x08;
+                client.send(frame);
+                this.savePending = true;
+                console.log(`[${this.id}] Auto-save triggered`);
+                setTimeout(() => { this.savePending = false; }, 30000);
+                return true;
+            }
+        }
+        return false;
     }
 }
 
@@ -127,6 +163,7 @@ server.on('upgrade', (req, socket, head) => {
         ws._roomId = roomId;
 
         console.log(`[${roomId}] Client connected (${room.clients.size} in room)`);
+        room.startAutoSave();
 
         ws.on('message', (data) => {
             const buf = Buffer.from(data);
@@ -245,6 +282,7 @@ server.on('upgrade', (req, socket, head) => {
             }
 
             // --- 0x00+: Normal broadcast ---
+            room.hasChanges = true; // Mark room as having changes for auto-save
             for (const client of room.clients) {
                 if (client.readyState === WebSocket.OPEN) {
                     client.send(data);
@@ -265,6 +303,7 @@ server.on('upgrade', (req, socket, head) => {
                 // Keep room for a while in case someone rejoins
                 setTimeout(() => {
                     if (room.clients.size === 0) {
+                        room.stopAutoSave();
                         rooms.delete(roomId);
                         console.log(`[${roomId}] Room cleaned up`);
                     }

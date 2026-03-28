@@ -147,30 +147,9 @@
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
 
-        // Auto-save to relay every 15s (keeps relay file current for late joiners)
-        function autoSaveToRelay() {
-            if (!connected) return;
-            sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
-            setTimeout(function() {
-                var wopiSrc = params.get('WOPISrc') || '';
-                var fetchUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                origFetch(fetchUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
-                    var bytes = new Uint8Array(buf);
-                    var frame = new Uint8Array(5 + bytes.length);
-                    frame[0] = 0x07;
-                    frame[1] = (myViewId >>> 24) & 0xFF;
-                    frame[2] = (myViewId >>> 16) & 0xFF;
-                    frame[3] = (myViewId >>> 8) & 0xFF;
-                    frame[4] = myViewId & 0xFF;
-                    frame.set(bytes, 5);
-                    ws.send(frame);
-                    console.log('[relay] Auto-saved to relay: ' + bytes.length + ' bytes');
-                }).catch(function(e) {});
-            }, 5000);
-        }
-        // First save immediately, then every 15s
-        autoSaveToRelay();
-        setInterval(autoSaveToRelay, 15000);
+        // Initial save to relay so late joiners can get the document.
+        // Subsequent saves are coordinated by the relay server (every 10 min or on join).
+        saveAndUploadToRelay();
     }
     setTimeout(waitForCoolwsd, 500);
 
@@ -260,23 +239,19 @@
     // --- Handle save-trigger (0x08) from relay ---
     // Relay asks us to save the document and upload the file back.
     function handleSaveTrigger() {
-        console.log('[relay] Save-trigger received — saving and uploading document');
-        // Send save command to Kit
-        sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
+        console.log('[relay] Save-trigger received — saving and uploading');
+        saveAndUploadToRelay();
+    }
 
-        // After Kit saves to disk, read the file and upload to relay via 0x07
-        // Kit calls saveToServer() which POSTs to the WOPI URL.
-        // We also need to upload to the relay. Wait for the save to finish,
-        // then fetch the file from the WOPI server and send it to relay.
+    // Reusable save+upload function (called on init, save-trigger, etc.)
+    function saveAndUploadToRelay() {
+        if (!connected) return;
+        sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
         setTimeout(function() {
-            // Fetch the saved file from the WOPI server
-            var wopiSrc = new URLSearchParams(window.location.search).get('WOPISrc') || '';
+            var wopiSrc = params.get('WOPISrc') || '';
             var fetchUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-            console.log('[relay] Fetching saved file from ' + fetchUrl);
-            fetch(fetchUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+            origFetch(fetchUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
                 var bytes = new Uint8Array(buf);
-                console.log('[relay] Uploading ' + bytes.length + ' bytes to relay');
-                // Send as type 0x07 (file-upload)
                 var frame = new Uint8Array(5 + bytes.length);
                 frame[0] = 0x07;
                 frame[1] = (myViewId >>> 24) & 0xFF;
@@ -285,11 +260,11 @@
                 frame[4] = myViewId & 0xFF;
                 frame.set(bytes, 5);
                 ws.send(frame);
-                console.log('[relay] File uploaded to relay');
+                console.log('[relay] Uploaded to relay: ' + bytes.length + ' bytes');
             }).catch(function(e) {
-                console.error('[relay] File upload failed: ' + e.message);
+                console.error('[relay] Upload failed: ' + e.message);
             });
-        }, 10000); // Wait 10s for Kit to save + saveToServer to POST
+        }, 5000); // Wait 5s for Kit save + saveToServer POST
     }
 
     // --- Process relay message ---
