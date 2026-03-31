@@ -42,6 +42,11 @@ const TESTS = {
         file: 'test-late-join.js',
         desc: 'Browsers join/leave at different times, late joiners get saved state + buffered messages',
     },
+    stress: {
+        name: 'Connection Stress Test',
+        file: 'test-stress.js',
+        desc: 'Multiple browsers join/leave/reconnect with connection loss simulation',
+    },
 };
 
 function runTest(key) {
