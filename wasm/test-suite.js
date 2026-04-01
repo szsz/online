@@ -47,6 +47,11 @@ const TESTS = {
         file: 'test-stress.js',
         desc: 'Multiple browsers join/leave/reconnect with connection loss simulation',
     },
+    caching: {
+        name: 'Caching & Compression',
+        file: 'test-caching.js',
+        desc: 'Brotli compression, content-hash caching, progress bar, first vs return visit timing',
+    },
 };
 
 function runTest(key) {
