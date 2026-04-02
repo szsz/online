@@ -47,6 +47,11 @@ const TESTS = {
         file: 'test-stress.js',
         desc: 'Multiple browsers join/leave/reconnect with connection loss simulation',
     },
+    split: {
+        name: 'Split WASM Loading',
+        file: 'test-split-loading.js',
+        desc: 'Document type detection and correct WASM binary selection per file type',
+    },
     caching: {
         name: 'Caching & Compression',
         file: 'test-caching.js',
