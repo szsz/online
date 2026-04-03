@@ -214,9 +214,12 @@ if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 
             fi
             echo "--- Configuring LibreOffice Core ---"
             docker exec "$CONTAINER" bash -c "
+                # Ensure gcc-12 is default (required by latest LO Core)
+                update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 2>/dev/null
+                update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100 2>/dev/null
                 source /home/builder/emsdk/emsdk_env.sh
                 mkdir -p /lo/core-build && cd /lo/core-build
-                /lo/core/autogen.sh --with-distro=LibreOfficeWASM32
+                /lo/core/autogen.sh --with-distro=LibreOfficeWASM32 --with-wasm-module='writer calc impress'
             "
             echo "--- Building LibreOffice Core ---"
             docker exec "$CONTAINER" bash -c "
