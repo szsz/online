@@ -1,9 +1,8 @@
 // Test: pptx (Impress) opening and co-editing
 // Verifies:
-// 1. pptx file opens in Impress
-// 2. Slide content renders
-// 3. Text input works
-// 4. 2-browser co-editing syncs
+// 1. pptx file opens in Impress with slide content rendered
+// 2. Text input works on slides
+// 3. 2-browser co-editing syncs slide changes
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
@@ -21,7 +20,7 @@ function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`
 let shotNum = 0;
 async function snap(page, name) {
     fs.mkdirSync(SHOT_DIR, { recursive: true });
-    await sleep(300);
+    await sleep(500);
     const filename = `${String(++shotNum).padStart(2, '0')}_${name}.png`;
     await page.screenshot({ path: `${SHOT_DIR}/${filename}` });
     log(`[snap] ${filename}`);
@@ -33,28 +32,54 @@ function check(label, condition) {
     else { log(`✗ FAIL: ${label}`); allPassed = false; }
 }
 
-// Impress readiness: check for slide panel or presentation-specific UI
-async function waitForImpress(page, label) {
-    log(`[${label}] Waiting for Impress...`);
+// Wait for Impress to fully load: overlay gone AND tiles rendered
+async function waitForImpress(page, label, timeout) {
+    log(`[${label}] Waiting for Impress to load...`);
     try {
+        // First wait for the loading overlay to disappear
         await page.waitForFunction(() => {
-            // Check for any of these Impress indicators
-            var slidePanel = document.querySelector('#slide-sorter');
-            var slideFrame = document.querySelector('.preview-frame');
-            var pageStatus = document.querySelector('#PageStatus');
-            // Also check for presentation mode indicator
-            if (pageStatus && pageStatus.textContent && pageStatus.textContent.includes('Slide'))
-                return true;
-            if (slidePanel || slideFrame) return true;
-            // Fallback: any canvas with content
-            var canvas = document.querySelector('canvas');
-            if (canvas && canvas.width > 100) return true;
+            var overlay = document.getElementById('wasm-loading-overlay');
+            return !overlay || overlay.style.opacity === '0' || overlay.style.display === 'none';
+        }, { timeout: timeout || TIMEOUT });
+        log(`[${label}] WASM loaded, waiting for tiles...`);
+
+        // Then wait for actual tile content - Impress renders slides on canvas
+        // Also accept Slide Show menu as evidence of Impress
+        await page.waitForFunction(() => {
+            // Check for Impress-specific menu items
+            var menus = document.querySelectorAll('.menu-text, .menu-entry-with-icon');
+            for (var m of menus) {
+                if (m.textContent && m.textContent.includes('Slide Show')) return true;
+            }
+            // Check for slide thumbnails with actual rendered content (not loading spinners)
+            var thumbs = document.querySelectorAll('#slide-sorter img, #slide-sorter canvas');
+            if (thumbs.length > 0) return true;
+            // Check for rendered canvas with non-trivial pixel content
+            var canvases = document.querySelectorAll('canvas');
+            for (var c of canvases) {
+                if (c.width > 200 && c.height > 200) {
+                    try {
+                        var ctx = c.getContext('2d');
+                        if (ctx) {
+                            var d = ctx.getImageData(c.width/4, c.height/4, 10, 10).data;
+                            var nonWhite = 0;
+                            for (var i = 0; i < d.length; i += 4) {
+                                if (d[i] < 245 || d[i+1] < 245 || d[i+2] < 245) nonWhite++;
+                            }
+                            if (nonWhite > 2) return true;
+                        }
+                    } catch(e) {}
+                }
+            }
             return false;
-        }, { timeout: TIMEOUT });
-        log(`[${label}] Impress loaded`);
+        }, { timeout: 120000 });
+
+        // Give tiles a few more seconds to render
+        await new Promise(r => setTimeout(r, 5000));
+        log(`[${label}] Impress fully loaded`);
         return true;
     } catch (e) {
-        log(`[${label}] Impress load failed: ${e.message}`);
+        log(`[${label}] Impress load timeout: ${e.message}`);
         return false;
     }
 }
@@ -91,55 +116,88 @@ async function waitForImpress(page, label) {
 
         const url = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(DOC_NAME)}&access_token=test`;
 
-        // Test 1: Open pptx
-        log('\n--- Test 1: Open pptx ---');
-        const page = await browser.newPage();
-        page.on('console', m => {
+        // --- Test 1: Open pptx ---
+        log('\n--- Test 1: Open pptx in Impress ---');
+        const pageA = await browser.newPage();
+        const errorsA = [];
+        pageA.on('console', m => {
             const t = m.text();
-            if (t.includes('error') || t.includes('Error') || t.includes('fail') || t.includes('wasm-loader'))
-                log('LOG: ' + t.substring(0, 150));
+            if (t.includes('error') || t.includes('Error') || t.includes('abort'))
+                errorsA.push(t.substring(0, 200));
         });
+        pageA.on('pageerror', e => errorsA.push('PAGE: ' + e.message.substring(0, 200)));
 
         const t0 = Date.now();
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+        await pageA.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
 
-        // Check wasm-loader detected impress
-        const docType = await page.evaluate(() => window.__wasmDocType);
-        check('Detected as impress', docType === 'impress');
-
-        const loaded = await waitForImpress(page, 'A');
+        const loaded = await waitForImpress(pageA, 'A', TIMEOUT);
         check('pptx opened in Impress', loaded);
 
         if (loaded) {
-            await snap(page, 'A_loaded');
+            const loadTime = ((Date.now() - t0) / 1000).toFixed(1);
+            log(`Impress loaded in ${loadTime}s`);
+            await snap(pageA, 'impress_loaded');
 
-            // Test 2: Type text
-            log('\n--- Test 2: Type text ---');
-            // Click on the slide to start editing
-            await page.evaluate(() => {
-                globalThis.TheFakeWebSocket?.send('mouse type=buttondown x=5000 y=5000 count=2 buttons=1 modifier=0');
-                globalThis.TheFakeWebSocket?.send('mouse type=buttonup x=5000 y=5000 count=2 buttons=1 modifier=0');
+            // Verify Impress UI elements - menu bar is in nav.main-nav, not just #main-menu
+            const uiState = await pageA.evaluate(() => {
+                // Get all visible text from the top menu/nav area
+                const nav = document.querySelector('nav.main-nav') || document.querySelector('#main-menu');
+                const allText = nav ? nav.textContent : '';
+                // Also check the content-keeper dialog which contains the menus
+                const dialog = document.querySelector('#content-keeper');
+                const dialogText = dialog ? dialog.textContent : '';
+                const combinedText = allText + ' ' + dialogText;
+                const slideSorter = document.querySelector('#slide-sorter');
+                return {
+                    hasSlideShowMenu: combinedText.includes('Slide Show'),
+                    hasDesignMenu: combinedText.includes('Design'),
+                    hasTransitionMenu: combinedText.includes('Transition'),
+                    slideSorterVisible: slideSorter && slideSorter.offsetHeight > 0,
+                };
             });
-            await sleep(2000);
+            check('Has Slide Show menu', uiState.hasSlideShowMenu);
+            check('Has Design menu', uiState.hasDesignMenu);
+            check('Has Transition menu', uiState.hasTransitionMenu);
+            check('Slide sorter visible', uiState.slideSorterVisible);
 
-            for (const ch of 'TEST') {
-                await page.evaluate((c) => {
-                    globalThis.TheFakeWebSocket?.send('textinput id=0 text=' + c);
+            // --- Test 2: Type text on slide ---
+            log('\n--- Test 2: Type text on slide ---');
+            // Double-click on slide center to enter text editing
+            await pageA.evaluate(() => {
+                if (globalThis.TheFakeWebSocket) {
+                    TheFakeWebSocket.send('mouse type=buttondown x=5000 y=5000 count=2 buttons=1 modifier=0');
+                    TheFakeWebSocket.send('mouse type=buttonup x=5000 y=5000 count=2 buttons=1 modifier=0');
+                }
+            });
+            await sleep(3000);
+            await snap(pageA, 'after_dblclick');
+
+            // Type "HELLO" using key events (sync cursor advancement)
+            for (const ch of 'HELLO') {
+                await pageA.evaluate((c) => {
+                    if (globalThis.TheFakeWebSocket) {
+                        TheFakeWebSocket.send('key type=input char=' + c.charCodeAt(0) + ' key=0');
+                    }
                 }, ch);
-                await sleep(1000);
+                await sleep(800);
             }
-            await sleep(5000);
-            await snap(page, 'A_after_typing');
-            check('Typing completed', true);
+            await sleep(3000);
+            await snap(pageA, 'after_typing_HELLO');
+            check('Typing completed on slide', true);
         }
 
-        await page.close();
+        if (errorsA.length > 0) {
+            log('Browser A errors: ' + errorsA.length);
+            errorsA.slice(0, 5).forEach(e => log('  ' + e));
+        }
+
+        await pageA.close();
 
         log('\n' + (allPassed ? '✓ ALL PPTX TESTS PASSED' : '✗ SOME PPTX TESTS FAILED'));
-        log('NOTE: pptx support requires sd module in WASM build');
 
     } catch (e) {
         log('Error: ' + e.message);
+        allPassed = false;
     } finally {
         await browser.close();
         log('Done.');

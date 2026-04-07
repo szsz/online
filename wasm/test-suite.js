@@ -47,6 +47,11 @@ const TESTS = {
         file: 'test-stress.js',
         desc: 'Multiple browsers join/leave/reconnect with connection loss simulation',
     },
+    pptx: {
+        name: 'PPTX (Impress)',
+        file: 'test-pptx.js',
+        desc: 'pptx opens in Impress, slides render, text input works',
+    },
     split: {
         name: 'Split WASM Loading',
         file: 'test-split-loading.js',

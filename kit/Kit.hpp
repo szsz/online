@@ -45,8 +45,9 @@ namespace lok
 class Document;
 class Office;
 }
-struct LibreOfficeKitStruct;
-using LibreOfficeKit = LibreOfficeKitStruct;
+#include <LibreOfficeKit/LibreOfficeKit.h>
+
+
 
 void lokit_main(
 #if !MOBILEAPP

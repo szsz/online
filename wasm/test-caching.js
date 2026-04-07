@@ -54,7 +54,7 @@ function check(label, condition) {
 
     // === Test 1: Brotli compression on WASM ===
     log('\n--- Test 1: Brotli compression ---');
-    const wasmResp = await httpGet(`${BASE}/online.wasm`, { 'Accept-Encoding': 'br' });
+    const wasmResp = await httpGet(`${BASE}/browser/online.wasm`, { 'Accept-Encoding': 'br' });
     check('WASM brotli: Content-Encoding=br', wasmResp.headers['content-encoding'] === 'br');
     check('WASM brotli: correct Content-Type', wasmResp.headers['content-type'] === 'application/wasm');
     const brSize = parseInt(wasmResp.headers['content-length']);

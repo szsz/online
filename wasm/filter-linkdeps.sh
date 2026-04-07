@@ -30,7 +30,8 @@ CANVAS_LIBS="cairocanvaslo canvasfactorylo simplecanvaslo vclcanvaslo canvastool
 EXCLUDE=""
 case "$TYPE" in
     writer)
-        EXCLUDE="$CALC_LIBS $IMPRESS_LIBS $CANVAS_LIBS"
+        EXCLUDE="$CALC_LIBS $IMPRESS_LIBS"
+        # Writer keeps canvas (needed by mtfrenderer for EMF/WMF rendering)
         ;;
     calc)
         EXCLUDE="$WRITER_LIBS $IMPRESS_LIBS"

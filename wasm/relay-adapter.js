@@ -121,8 +121,14 @@
         // Calc: StatusDocPos has "Sheet"
         var calcEl = document.querySelector('#StatusDocPos');
         var calcReady = calcEl && calcEl.textContent && calcEl.textContent.includes('Sheet');
+        // Impress: look for Slide Show menu or slide sorter with content
+        var impressReady = false;
+        var navEl = document.querySelector('nav.main-nav') || document.querySelector('#content-keeper');
+        if (navEl && navEl.textContent && navEl.textContent.includes('Slide Show')) {
+            impressReady = true;
+        }
 
-        if (!writerReady && !calcReady) {
+        if (!writerReady && !calcReady && !impressReady) {
             setTimeout(waitForCoolwsd, 200);
             return;
         }
