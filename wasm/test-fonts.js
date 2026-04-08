@@ -1,8 +1,9 @@
-// Test: Font rendering with rare fonts
+// Test: Font rendering, browser font access, and lazy loading
 // Verifies:
-// 1. Documents with rare fonts open correctly (substituted with available fonts)
-// 2. Font names are detected from the document
-// 3. Screenshots show text rendering (substituted or real)
+// 1. Documents with rare fonts open (substituted with available fonts)
+// 2. Local Font Access API works (browser fonts accessible)
+// 3. Fonts can be loaded from server /fonts/ endpoint
+// 4. Fonts can be injected into Emscripten VFS at runtime
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
@@ -31,7 +32,7 @@ function check(label, condition) {
 }
 
 (async () => {
-    log('=== Font Rendering Test ===');
+    log('=== Font Rendering & Lazy Loading Test ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
@@ -58,7 +59,7 @@ function check(label, condition) {
         }
         await up.close();
 
-        // --- Test 1: Writer with rare fonts ---
+        // --- Test 1: Writer with rare fonts (substitution) ---
         log('\n--- Test 1: Writer with rare fonts ---');
         const pageW = await browser.newPage();
         const t0 = Date.now();
@@ -72,56 +73,10 @@ function check(label, condition) {
             );
             log(`Writer loaded in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
             check('Writer rare-font docx loaded', true);
-
-            await sleep(10000); // Wait for all tiles to render
-            await snap(pageW, 'writer_rare_fonts');
-
-            // Scroll down to see more font samples
-            await pageW.evaluate(() => {
-                if (globalThis.TheFakeWebSocket)
-                    TheFakeWebSocket.send('key type=input char=0 key=1031 modifier=0');
-            });
-            await sleep(3000);
-            await snap(pageW, 'writer_rare_fonts_scrolled');
-
-            // Check available fonts via the status bar
-            const wc = await pageW.evaluate(() => document.querySelector('#StateWordCount')?.textContent);
-            log(`Word count: ${wc}`);
-            check('Document rendered with text', wc && wc.includes('word'));
-
-            // Check which fonts the browser has available
-            const browserFonts = await pageW.evaluate(() => {
-                // Test specific fonts by measuring text width
-                const testFonts = [
-                    'Comic Sans MS', 'Impact', 'Georgia', 'Verdana', 'Tahoma',
-                    'Palatino Linotype', 'Trebuchet MS', 'Arial Black', 'Garamond',
-                    'Liberation Sans', 'Carlito', 'DejaVu Sans'
-                ];
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                const testStr = 'mmmmmmmmmmlli';
-                const fallbackWidth = {};
-
-                // Measure with monospace as baseline
-                ctx.font = '72px monospace';
-                const monoWidth = ctx.measureText(testStr).width;
-
-                const available = [];
-                for (const font of testFonts) {
-                    ctx.font = `72px "${font}", monospace`;
-                    const width = ctx.measureText(testStr).width;
-                    if (Math.abs(width - monoWidth) > 1) {
-                        available.push(font);
-                    }
-                }
-                return available;
-            });
-            log(`Browser-available fonts: ${browserFonts.join(', ') || 'none detected'}`);
-
+            await sleep(10000);
+            await snap(pageW, 'writer_rare_fonts_substituted');
         } catch (e) {
-            log('Writer FAIL: ' + e.message);
             check('Writer rare-font docx loaded', false);
-            await snap(pageW, 'writer_rare_fonts_fail');
         }
         await pageW.close();
 
@@ -139,14 +94,10 @@ function check(label, condition) {
             );
             log(`Calc loaded in ${((Date.now() - t1) / 1000).toFixed(0)}s`);
             check('Calc rare-font xlsx loaded', true);
-
             await sleep(10000);
             await snap(pageC, 'calc_rare_fonts');
-
         } catch (e) {
-            log('Calc FAIL: ' + e.message);
             check('Calc rare-font xlsx loaded', false);
-            await snap(pageC, 'calc_rare_fonts_fail');
         }
         await pageC.close();
 
@@ -166,32 +117,157 @@ function check(label, condition) {
             }, { timeout: 180000 });
             log(`Impress loaded in ${((Date.now() - t2) / 1000).toFixed(0)}s`);
             check('Impress rare-font pptx loaded', true);
-
             await sleep(10000);
             await snap(pageI, 'impress_rare_fonts');
-
         } catch (e) {
-            log('Impress FAIL: ' + e.message);
             check('Impress rare-font pptx loaded', false);
-            await snap(pageI, 'impress_rare_fonts_fail');
         }
         await pageI.close();
 
-        // --- Test 4: Check lazy font loading from server ---
-        log('\n--- Test 4: Font lazy loading from server ---');
-        const fontTests = ['LinLibertine_R_G.ttf', 'NotoSerif-Regular.ttf', 'Amiri-Regular.ttf'];
-        const fontPage = await browser.newPage();
-        await fontPage.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
-        for (const fontFile of fontTests) {
-            const status = await fontPage.evaluate(async (file) => {
+        // --- Test 4: Browser Local Font Access API ---
+        log('\n--- Test 4: Browser Local Font Access ---');
+        const pageF = await browser.newPage();
+
+        // Grant local font permission via CDP
+        const client = await pageF.createCDPSession();
+        await client.send('Browser.grantPermissions', {
+            origin: BASE,
+            permissions: ['localFonts']
+        });
+
+        await pageF.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+
+        const fontAccess = await pageF.evaluate(async () => {
+            if (!('queryLocalFonts' in window)) return { api: false };
+            try {
+                const fonts = await window.queryLocalFonts();
+                const families = [...new Set(fonts.map(f => f.family))].sort();
+
+                // Get font blob data for one font
+                let blobTest = null;
+                const testFont = fonts.find(f => f.family === 'DejaVu Sans' || f.family === 'Liberation Sans');
+                if (testFont) {
+                    const blob = await testFont.blob();
+                    blobTest = {
+                        family: testFont.family,
+                        fullName: testFont.fullName,
+                        size: blob.size,
+                    };
+                }
+
+                return {
+                    api: true,
+                    count: fonts.length,
+                    familyCount: families.length,
+                    families: families.slice(0, 20),
+                    blobTest,
+                };
+            } catch (e) {
+                return { api: true, error: e.message };
+            }
+        });
+
+        check('Local Font Access API available', fontAccess.api);
+        check('Browser fonts enumerated', fontAccess.count > 0);
+        check('Font blob data accessible', fontAccess.blobTest && fontAccess.blobTest.size > 0);
+        log(`  Browser has ${fontAccess.count} fonts in ${fontAccess.familyCount} families`);
+        if (fontAccess.blobTest) {
+            log(`  Blob test: ${fontAccess.blobTest.fullName} = ${fontAccess.blobTest.size} bytes`);
+        }
+        await pageF.close();
+
+        // --- Test 5: Server font endpoint ---
+        log('\n--- Test 5: Server font lazy loading ---');
+        const pageS = await browser.newPage();
+        await pageS.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        const serverFonts = ['LinLibertine_R_G.ttf', 'NotoSerif-Regular.ttf', 'Amiri-Regular.ttf'];
+        for (const fontFile of serverFonts) {
+            const status = await pageS.evaluate(async (file) => {
                 try {
                     const r = await fetch('/browser/fonts/' + file, { method: 'HEAD' });
                     return r.status;
-                } catch(e) { return 0; }
+                } catch (e) { return 0; }
             }, fontFile);
-            check(`Font ${fontFile} available at /fonts/ (${status})`, status === 200);
+            check(`Server font ${fontFile} (${status})`, status === 200);
         }
-        await fontPage.close();
+        await pageS.close();
+
+        // --- Test 6: VFS font injection (full round-trip) ---
+        log('\n--- Test 6: Font injection into WASM VFS ---');
+        const pageV = await browser.newPage();
+
+        // Grant local font permission
+        const client2 = await pageV.createCDPSession();
+        await client2.send('Browser.grantPermissions', {
+            origin: BASE,
+            permissions: ['localFonts']
+        });
+
+        pageV.on('console', m => {
+            if (m.text().includes('font-loader')) log('  ' + m.text());
+        });
+
+        const t3 = Date.now();
+        await pageV.goto(`${BASE}/browser/cool.html?WOPISrc=rare-fonts.docx&access_token=test`, {
+            waitUntil: 'domcontentloaded', timeout: TIMEOUT
+        });
+        try {
+            await pageV.waitForFunction(
+                () => document.querySelector('#StateWordCount')?.textContent?.includes('word'),
+                { timeout: 180000 }
+            );
+            log(`Document loaded in ${((Date.now() - t3) / 1000).toFixed(0)}s`);
+            await sleep(5000);
+
+            // Count fonts in VFS before loading
+            const before = await pageV.evaluate(() => {
+                if (typeof Module !== 'undefined' && Module.FS) {
+                    return Module.FS.readdir('/instdir/share/fonts/truetype/').filter(f => f !== '.' && f !== '..').length;
+                }
+                return -1;
+            });
+
+            // Load fonts via font-loader (browser + server)
+            const loadResult = await pageV.evaluate(async () => {
+                const loader = window.__fontLoader;
+                if (!loader) return { error: 'no loader' };
+
+                await loader.init();
+                const results = {};
+
+                // Try loading from browser (DejaVu Sans is on the system)
+                results.browserLoad = await loader.loadFont('DejaVu Sans');
+                results.browserFonts = loader._browserFonts ? loader._browserFonts.size : 0;
+
+                // Try loading from server (Noto Serif)
+                results.serverLoad = await loader.loadFont('Noto Serif');
+
+                results.totalLoaded = loader._loaded.size;
+                return results;
+            });
+
+            // Count fonts after
+            const after = await pageV.evaluate(() => {
+                if (typeof Module !== 'undefined' && Module.FS) {
+                    return Module.FS.readdir('/instdir/share/fonts/truetype/').filter(f => f !== '.' && f !== '..').length;
+                }
+                return -1;
+            });
+
+            check('Browser font loaded into VFS', loadResult.browserLoad);
+            check('Server font loaded into VFS', loadResult.serverLoad);
+            check('VFS font count increased', after > before);
+            log(`  VFS fonts: ${before} → ${after} (+${after - before})`);
+            log(`  Browser font families: ${loadResult.browserFonts}`);
+
+            await sleep(5000);
+            await snap(pageV, 'writer_after_font_injection');
+
+        } catch (e) {
+            log('VFS injection test failed: ' + e.message);
+            check('Font injection into VFS', false);
+        }
+        await pageV.close();
 
         log('\n' + (allPassed ? '✓ ALL FONT TESTS PASSED' : '✗ SOME FONT TESTS FAILED'));
 
