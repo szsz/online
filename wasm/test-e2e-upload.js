@@ -54,7 +54,7 @@ function check(label, condition) {
         const clientA = await pageA.createCDPSession();
         await clientA.send('Network.clearBrowserCache');
 
-        await pageA.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0', timeout: 30000 });
+        await pageA.goto(`${BASE}/editor.html`, { waitUntil: "domcontentloaded", timeout: 30000 });
         await snap(pageA, 'landing_page');
 
         // Check preload bar is visible
