@@ -89,8 +89,10 @@ function check(label, condition) {
         check('Preload progress bar shown', true);
         check('Preload completed', preloadDone);
 
-        // --- Phase 2: Upload file ---
-        log('\n--- Phase 2: Upload file ---');
+        // --- Phase 2: Upload file at 3 seconds ---
+        log('\n--- Phase 2: Upload file (at 3s) ---');
+        await sleep(3000);
+
         // Remove throttle for upload
         await clientA.send('Network.emulateNetworkConditions', {
             offline: false, downloadThroughput: -1, uploadThroughput: -1, latency: 0,
@@ -111,17 +113,8 @@ function check(label, condition) {
         check('File uploaded', shareUrl.includes('editor.html'));
         log(`  Share URL: ${shareUrl}`);
 
-        // --- Phase 3: Open document (clear WASM cache to see loading progress) ---
-        log('\n--- Phase 3: Open document ---');
-        // Clear cache so we see actual download progress with throttle
-        await clientA.send('Network.clearBrowserCache');
-        await clientA.send('Network.emulateNetworkConditions', {
-            offline: false,
-            downloadThroughput: THROTTLE_KBPS * 1024 / 8,
-            uploadThroughput: 5000000,
-            latency: 20,
-        });
-        log('  Cache cleared + throttle applied for document load');
+        // --- Phase 3: Click Open as soon as button is enabled ---
+        log('\n--- Phase 3: Open document (immediately) ---');
         const t0 = Date.now();
         await pageA.evaluate(() => document.getElementById('btn-open').click());
 
