@@ -25,6 +25,8 @@ TESTS=(
     "latejoin|test-late-join.js|Late Join|Late-joining user receives current document state|shots-latejoin"
     "stress|test-stress.js|Stress Test|Rapid concurrent edits under load|shots-stress"
     "caching|test-caching.js|Caching Test|WASM module caching and reuse|shots-caching"
+    "chart|test-chart.js|Chart Rendering|Writer docx and Calc xlsx with embedded charts|shots-chart"
+    "fonts|test-fonts.js|Font Lazy Loading|Rare fonts, browser font access, server fallback, VFS injection|shots-fonts"
     "e2e-upload|test-e2e-upload.js|E2E Upload & Co-Edit|Upload file, background preload, open, co-edit with 2nd browser|shots-e2e-upload"
 )
 
