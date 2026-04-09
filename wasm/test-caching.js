@@ -149,6 +149,21 @@ function check(label, condition) {
 
         await snap(page1, 'first_visit_content');
 
+        // Measure total transferred on first visit
+        const firstResources = await page1.evaluate(() => {
+            return performance.getEntriesByType('resource').map(e => ({
+                name: e.name.split('/').pop().substring(0, 50),
+                transfer: e.transferSize,
+                decoded: e.decodedBodySize,
+            }));
+        });
+        let firstTotalTransfer = 0, firstTotalDecoded = 0, firstFileCount = firstResources.length;
+        for (const r of firstResources) {
+            firstTotalTransfer += r.transfer;
+            firstTotalDecoded += r.decoded;
+        }
+        log(`  First visit: ${firstFileCount} files, ${(firstTotalTransfer/1048576).toFixed(1)}MB transferred, ${(firstTotalDecoded/1048576).toFixed(0)}MB decoded`);
+
     } catch (e) {
         log('First visit FAIL: ' + e.message);
         check('First visit: document loaded', false);
@@ -190,30 +205,38 @@ function check(label, condition) {
 
         await snap(page2, 'return_visit_content');
 
-        // Check which resources were served from cache
-        const resources = await page2.evaluate(() => {
+        // Measure ALL resources on return visit
+        const allResources = await page2.evaluate(() => {
             return performance.getEntriesByType('resource').map(e => ({
                 name: e.name.split('/').pop().substring(0, 50),
                 transfer: e.transferSize,
                 decoded: e.decodedBodySize,
                 cached: e.transferSize === 0 && e.decodedBodySize > 0,
-            })).filter(e =>
-                e.name.includes('wasm') || e.name.includes('soffice') ||
-                e.name.includes('bundle') || e.name.includes('online')
-            );
+            }));
         });
 
-        log('  Resource transfer on return visit:');
-        let cachedCount = 0;
-        let downloadedCount = 0;
-        for (const r of resources) {
-            const status = r.cached ? 'CACHED' : `${(r.transfer / 1048576).toFixed(1)}MB`;
-            log(`    ${r.name}: ${status} (decoded: ${(r.decoded / 1048576).toFixed(1)}MB)`);
+        let returnTotalTransfer = 0, returnTotalDecoded = 0;
+        let cachedCount = 0, downloadedCount = 0;
+        for (const r of allResources) {
+            returnTotalTransfer += r.transfer;
+            returnTotalDecoded += r.decoded;
             if (r.cached) cachedCount++;
             else downloadedCount++;
         }
+
+        log(`  Return visit: ${allResources.length} files, ${(returnTotalTransfer/1024).toFixed(0)}KB transferred, ${(returnTotalDecoded/1048576).toFixed(0)}MB decoded`);
+        log(`  Cached: ${cachedCount} files, Downloaded: ${downloadedCount} files`);
         check('Large resources served from cache', cachedCount > 0);
-        log(`  Cached: ${cachedCount}, Downloaded: ${downloadedCount}`);
+
+        // Show what was actually downloaded (not cached)
+        const downloaded = allResources.filter(r => !r.cached && r.transfer > 0).sort((a,b) => b.transfer - a.transfer);
+        if (downloaded.length > 0) {
+            log('  Downloaded files (not cached):');
+            for (const r of downloaded.slice(0, 10)) {
+                log(`    ${r.name}: ${(r.transfer/1024).toFixed(0)}KB`);
+            }
+            if (downloaded.length > 10) log(`    ... and ${downloaded.length - 10} more small files`);
+        }
 
         // Compare times
         const returnLoadTime = (Date.now() - t2) / 1000;
