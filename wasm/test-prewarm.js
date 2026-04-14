@@ -218,9 +218,16 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
             process.exit(1);
         }
 
+        // Snapshot the WASM runtime fingerprint BEFORE clicking — same value
+        // after the switch proves the runtime was reused (true hot-switch),
+        // a different value would mean the iframe was reloaded.
+        let runtimeIdBefore = null;
+        try { runtimeIdBefore = await editorFrame.evaluate(() => window.__wasmRuntimeId); } catch(e) {}
+        log(`  runtimeId before switch: ${runtimeIdBefore}`);
+
         // Now click the real doc — take timestamped screenshots so each
         // frame of the user's experience is captured and measurable.
-        log('\n--- Cached reload timeline with screenshots ---');
+        log('\n--- Hot-switch timeline with screenshots ---');
 
         // Snapshot baseline BEFORE click
         let baselineCanvas = null;
@@ -243,6 +250,7 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
         let nextSnap = 0;
         let canvasChangeMs = -1;
         let wcChangeMs = -1;
+        let runtimeIdAfter = null;
 
         for (let i = 0; i < 600; i++) {
             await sleep(10);
@@ -251,7 +259,7 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
             // Scheduled screenshots
             while (nextSnap < SNAP_AT.length && t >= SNAP_AT[nextSnap]) {
                 const ms = SNAP_AT[nextSnap];
-                await snap(page, `cached_reload_${String(ms).padStart(4,'0')}ms`);
+                await snap(page, `hotswitch_${String(ms).padStart(4,'0')}ms`);
                 log(`  [screenshot +${ms}ms]`);
                 nextSnap++;
             }
@@ -265,14 +273,14 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
                 }));
                 if (canvasChangeMs < 0 && state.canvas && state.canvas !== baselineCanvas) {
                     canvasChangeMs = t;
-                    await snap(page, 'cached_reload_canvas_changed');
+                    await snap(page, 'hotswitch_canvas_changed');
                     log(`  *** Canvas pixels changed at +${t}ms`);
                 }
                 const m = state.wc.match(/(\d+)\s*words/);
                 const w = m ? parseInt(m[1]) : 0;
                 if (wcChangeMs < 0 && (w >= 1 || state.dp.includes('Sheet'))) {
                     wcChangeMs = t;
-                    await snap(page, 'cached_reload_wc_updated');
+                    await snap(page, 'hotswitch_wc_updated');
                     log(`  *** Word count updated at +${t}ms ("${state.wc}")`);
                 }
             } catch(e) {}
@@ -283,10 +291,11 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
             const ms = SNAP_AT[nextSnap];
             const remaining = ms - (Date.now() - openStart);
             if (remaining > 0) await sleep(remaining);
-            await snap(page, `cached_reload_${String(ms).padStart(4,'0')}ms`);
+            await snap(page, `hotswitch_${String(ms).padStart(4,'0')}ms`);
             nextSnap++;
         }
 
+        try { runtimeIdAfter = await editorFrame.evaluate(() => window.__wasmRuntimeId); } catch(e) {}
         const warmTime = wcChangeMs / 1000;
         const renderOk = canvasChangeMs >= 0;
 
@@ -305,9 +314,12 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
             }
         }
 
-        log(`\n  Canvas pixels changed:   ${canvasChangeMs} ms  ← shield drops, user sees content`);
+        log(`\n  runtimeId after switch:  ${runtimeIdAfter}`);
+        log(`  Canvas pixels changed:   ${canvasChangeMs} ms  ← shield drops, user sees content`);
         log(`  WordCount text updated:  ${wcChangeMs} ms  ← full metadata arrived`);
 
+        check('Hot-switch reuses WASM runtime (same instance)',
+              runtimeIdBefore && runtimeIdAfter && runtimeIdBefore === runtimeIdAfter);
         check('Visible switch under 1 second (canvas change)', canvasChangeMs >= 0 && canvasChangeMs < 1000);
         await snap(page, 'warm_loaded');
         check('Real document rendered from warm cache', renderOk);
@@ -357,18 +369,36 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
             // status-bar text persists across the switch until the new doc
             // overwrites it.
             const beforeFr = page.frames().find(fx => fx.url().includes('cool.html'));
-            let baseline = { wc: '', dp: '', canvas: '', toolbarSig: '' };
+            let baseline = { wc: '', dp: '', canvas: '', runtimeId: '', toolbarSig: '' };
             if (beforeFr) {
                 try {
                     baseline = await beforeFr.evaluate(() => ({
                         wc: document.querySelector('#StateWordCount')?.textContent || '',
                         dp: document.querySelector('#StatusDocPos')?.textContent || '',
                         canvas: document.querySelector('canvas')?.toDataURL('image/png').substring(0, 200) || '',
+                        // Whether the editor chrome (toolbar / nav) is mounted.
+                        // If a hot-switch keeps this present, the user does not
+                        // perceive an "editor reload". A cold reload will tear
+                        // it down and recreate it.
+                        runtimeId:  window.__wasmRuntimeId || '',
                         toolbarSig: (document.querySelector('nav.main-nav')?.textContent || '').length + ':' +
                                     (document.querySelectorAll('canvas').length),
                     }));
                 } catch(e) {}
             }
+
+            // Track network requests for the heavy WASM payload. Any new
+            // online.wasm fetch during the click means the WASM module was
+            // re-instantiated — i.e. the editor really did "reload from
+            // scratch", which is what the user complained about.
+            const wasmRefetches = [];
+            const reqHandler = (req) => {
+                const u = req.url();
+                if (/\/online(\.[a-f0-9]+)?\.wasm(\?|$)/.test(u) || /\/soffice\.data(\?|$)/.test(u)) {
+                    wasmRefetches.push(u);
+                }
+            };
+            page.on('request', reqHandler);
 
             // Prepare a high-resolution sampler INSIDE the iframe that records
             // whether the editor toolbar / canvas is being covered by a
@@ -431,33 +461,48 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
                 } catch(e) {}
             }
             const took = Date.now() - t0;
+            page.off('request', reqHandler);
             await snap(page, f.kind + '_open');
 
-            // Re-find the frame at the END of the open to check toolbar state.
+            // Re-find the frame at the END of the open. If runtimeId stayed
+            // the same we did a true hot-switch (no WASM re-instantiation).
             const afterFr = page.frames().find(fx => fx.url().includes('cool.html'));
-            let after = { toolbarSig: '' };
+            let after = { runtimeId: '', toolbarSig: '' };
             if (afterFr) {
                 try {
                     after = await afterFr.evaluate(() => ({
+                        runtimeId:  window.__wasmRuntimeId || '',
                         toolbarSig: (document.querySelector('nav.main-nav')?.textContent || '').length + ':' +
                                     (document.querySelectorAll('canvas').length),
                     }));
                 } catch(e) {}
             }
+            const sameRuntime = baseline.runtimeId && after.runtimeId &&
+                                baseline.runtimeId === after.runtimeId;
             const sameToolbar = baseline.toolbarSig && baseline.toolbarSig === after.toolbarSig;
 
-            log(`  ${f.name} opened in ${took}ms (visible=${docVisible})`);
+            log(`  ${f.name} opened in ${took}ms (visible=${docVisible}, ` +
+                `runtime=${sameRuntime?'same':'NEW'}, wasmRefetched=${wasmRefetches.length})`);
             check(`${f.kind} opens via viewer`, docVisible, `${took}ms`);
             check(`${f.kind} open within budget (${f.budgetMs}ms)`, docVisible && took <= f.budgetMs, `${took}ms`);
             if (f.hot) {
-                check(`${f.kind} cached reload sub-1s`, docVisible && took <= 1000, `${took}ms`);
-                check(`${f.kind} cached reload keeps editor chrome mounted`,
+                check(`${f.kind} hot-switch sub-1s`, docVisible && took <= 1000, `${took}ms`);
+                // Hot-switch must NOT re-fetch the WASM/data — that would mean
+                // the user is perceiving "the whole editor reloads".
+                check(`${f.kind} hot-switch reuses WASM (no re-fetch)`,
+                      wasmRefetches.length === 0,
+                      wasmRefetches.length ? wasmRefetches[0].split('/').pop() : 'no refetch');
+                check(`${f.kind} hot-switch reuses runtime (same instance)`,
+                      sameRuntime, `before=${baseline.runtimeId} after=${after.runtimeId}`);
+                check(`${f.kind} hot-switch keeps editor chrome mounted`,
                       sameToolbar || (after.toolbarSig && parseInt(after.toolbarSig.split(':')[0]) > 0),
                       `before=${baseline.toolbarSig} after=${after.toolbarSig}`);
-                // During a cached reload the iframe should not slap a
-                // full-screen gray overlay over the toolbar. The viewer's
-                // shield is the right place for that UX. Compute coverage
-                // stats from the in-iframe sampler.
+                // The thing the user actually complained about: during a
+                // hot-switch the iframe used to slap a full-screen gray
+                // overlay over the toolbar, making it look like the whole
+                // editor was reloading. The viewer's shield is the right
+                // place for that UX — the iframe should not also cover
+                // itself. Compute coverage stats from the in-iframe sampler.
                 let coverSamples = [];
                 try {
                     coverSamples = await afterFr.evaluate(() => {
@@ -470,12 +515,13 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
                 } catch(e) {}
                 const coverFrames = coverSamples.filter(s => s.cover).length;
                 const coverPct = coverSamples.length ? (coverFrames / coverSamples.length * 100).toFixed(0) : 'n/a';
-                check(`${f.kind} cached reload does NOT cover editor with full-screen overlay`,
+                check(`${f.kind} hot-switch does NOT cover editor with full-screen overlay`,
                       coverFrames === 0,
                       `${coverFrames}/${coverSamples.length} samples covered (${coverPct}%)`);
             } else {
-                // Cross-type opens do a cold reload from cache.
-                log(`    ${f.kind} cross-type cold reload`);
+                // Cross-type opens DO re-fetch from cache (browser HTTP cache
+                // hit — fast but not "no fetch"). Just record that too.
+                log(`    ${f.kind} cross-type cold reload, ${wasmRefetches.length} wasm/data fetches`);
             }
         }
 

@@ -50,7 +50,7 @@ async function getStatus(page) {
 
 async function waitForReady(page, label, count) {
     const t0 = Date.now();
-    while (Date.now() - t0 < 90000) {
+    while (Date.now() - t0 < 120000) {
         const logs = await page.evaluate(() => window._logs ? window._logs.filter(l =>
             l.includes(') ready')
         ) : []);
@@ -187,7 +187,7 @@ async function waitForReady(page, label, count) {
         log('\n=== Phase 3: A disconnects (connection loss) ===');
         await pageA.close();
         log('A disconnected');
-        await sleep(15000);
+        await sleep(5000);
         await snap(pageB, 'B_after_A_disconnect');
         check('B still running after A disconnect', charCount(await getStatus(pageB)) > 0);
 
@@ -211,7 +211,7 @@ async function waitForReady(page, label, count) {
         log('\n=== Phase 5: B disconnects ===');
         await pageB.close();
         log('B disconnected');
-        await sleep(15000);
+        await sleep(5000);
         check('C still running after B disconnect', charCount(await getStatus(pageC)) > 0);
         await snap(pageC, 'C_after_B_disconnect');
 

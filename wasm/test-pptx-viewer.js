@@ -94,23 +94,17 @@ function check(label, cond, ev) {
             } catch(e) {}
             if (i === 299) log('Impress TIMEOUT');
         }
-        await sleep(8000);
+        await sleep(5000);
         check('Impress UI loaded', !!fr);
         await snap(page, 'impress_loaded');
 
         if (!fr) { log('No frame — aborting'); throw new Error('No Impress frame'); }
 
-        // Get slide count — poll with retry since parts may take time to populate
-        let totalSlides = 0;
-        const slideDeadline = Date.now() + 10000;
-        while (Date.now() < slideDeadline) {
-            totalSlides = await fr.evaluate(() => {
-                const map = window.app?.map || window._map;
-                return map?._docLayer?._parts || 0;
-            }).catch(() => 0);
-            if (totalSlides > 1) break;
-            await sleep(500);
-        }
+        // Get slide count
+        const totalSlides = await fr.evaluate(() => {
+            const map = window.app?.map || window._map;
+            return map?._docLayer?._parts || 0;
+        }).catch(() => 0);
         log('Total slides: ' + totalSlides);
         check('Has multiple slides', totalSlides >= 2, 'count=' + totalSlides);
 

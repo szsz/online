@@ -276,21 +276,16 @@ async function typeText(page, label, text) {
             return el && el.textContent && el.textContent.includes('Sheet');
         })()`;
 
-        // Open 3 xlsx browsers (use longer timeout — XLSX is heavier than DOCX)
+        // Open 3 xlsx browsers
         const xlsxPages = [];
-        const XLSX_TIMEOUT = 420000; // 7 minutes per browser
         for (let i = 0; i < 3; i++) {
-            const p = await openPage(browser, xlsxUrl, `X${i+1}`, calcWait, XLSX_TIMEOUT);
+            const p = await openPage(browser, xlsxUrl, `X${i+1}`, calcWait);
             xlsxPages.push(p);
-            if (i > 0) await sleep(5000);
+            if (i > 0) await sleep(3000);
         }
-        await sleep(15000);
+        await sleep(10000);
 
         const xlsxOpened = xlsxPages.filter(p => p).length;
-        if (xlsxOpened === 0) {
-            log('  XLSX: no browsers opened — skipping XLSX session (DOCX is the primary test)');
-            check('XLSX: skipped (timeout)', true);
-        } else {
         check(`XLSX: ${xlsxOpened}/3 browsers opened`, xlsxOpened >= 2);
 
         // Type in calc (textinput works for cell content)
@@ -350,7 +345,6 @@ async function typeText(page, label, text) {
             if (xlsxPages[i]) { await xlsxPages[i].close().catch(() => {}); }
         }
         await sleep(5000);
-        } // end else (xlsxOpened > 0)
     }
 
     // =================================================================

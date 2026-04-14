@@ -271,19 +271,9 @@ function check(label, condition) { __cl.recordCheck(label, condition);
 
             check('Browser font loaded into VFS', loadResult.browserLoad);
             check('Server font loaded into VFS', loadResult.serverLoad);
-            // Count may not change if fonts replace existing files — check by name instead.
-            // If __wasmFS is not exposed (returns -1), the VFS API is not available in
-            // this WASM build. Skip the count-based check with a warning rather than
-            // failing the entire test, since the font *loader* path still works.
-            if (before === -1 && after === -1) {
-                log('  WARNING: __wasmFS not available — VFS font count check skipped');
-                // Fall back: if the loader reported success for either font, consider it a pass
-                const loaderOk = loadResult.browserLoad || loadResult.serverLoad;
-                check('Fonts injected into VFS', loaderOk);
-            } else {
-                const fontsInjected = vfsCheck.hasDejaVu || vfsCheck.hasNoto || after > before;
-                check('Fonts injected into VFS', fontsInjected);
-            }
+            // Count may not change if fonts replace existing files — check by name instead
+            const fontsInjected = vfsCheck.hasDejaVu || vfsCheck.hasNoto || after > before;
+            check('Fonts injected into VFS', fontsInjected);
             log(`  VFS fonts: ${before} → ${after} (+${after - before})`);
             log(`  Browser font families: ${loadResult.browserFonts}`);
 
