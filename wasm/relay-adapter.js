@@ -362,6 +362,9 @@
     function saveAndUploadCheckpoint() {
         if (!connected) return;
         sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
+        // Short delay for Kit to process the save — 1.5s is enough for
+        // small docs. Previous 5s delay caused late joiners to miss
+        // checkpoints when they connected during the delay window.
         setTimeout(function() {
             var saveAtSeq = lastSeq;
             var wopiSrc = params.get('WOPISrc') || '';
@@ -402,7 +405,7 @@
             }).catch(function(e) {
                 console.error('[relay] Checkpoint failed: ' + e.message);
             });
-        }, 5000);
+        }, 1500);
     }
 
     // Resolve the file storage URL for a given WOPISrc.
