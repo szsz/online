@@ -74,7 +74,8 @@ async function uploadFile(browser, name, filePath, room) {
 
 async function openPage(browser, url, label, waitFn, timeout) {
     for (let attempt = 1; attempt <= 3; attempt++) {
-        const page = await browser.newPage();
+        const ctx = await browser.createBrowserContext();
+        const page = await ctx.newPage();
         await page.evaluateOnNewDocument(() => {
             window._logs = [];
             const orig = console.log;
@@ -89,7 +90,7 @@ async function openPage(browser, url, label, waitFn, timeout) {
             return page;
         } catch(e) {
             log(`  [${label}] Attempt ${attempt} failed: ${e.message.substring(0, 80)}`);
-            await page.close().catch(() => {});
+            await ctx.close().catch(() => {});
             if (attempt === 3) return null;
             await sleep(5000);
         }
