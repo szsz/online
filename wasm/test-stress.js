@@ -1,3 +1,4 @@
+const __cl = require('./lib/inject-checklist');
 // Stress test: multiple browsers joining, leaving, reconnecting
 // Tests resilience of the co-editing system under dynamic conditions.
 //
@@ -78,7 +79,7 @@ async function waitForReady(page, label, count) {
     });
 
     let allPassed = true;
-    function check(label, condition) {
+    function check(label, condition) { __cl.recordCheck(label, condition);
         if (condition) { log(`✓ ${label}`); }
         else { log(`✗ FAIL: ${label}`); allPassed = false; }
     }
@@ -89,7 +90,8 @@ async function waitForReady(page, label, count) {
 
     async function openDoc(label) {
         for (let attempt = 1; attempt <= 3; attempt++) {
-            const page = await browser.newPage();
+            const ctx = await browser.createBrowserContext();
+            const page = await ctx.newPage();
             await page.evaluateOnNewDocument(() => {
                 window._logs = [];
                 const orig = console.log;
@@ -112,7 +114,7 @@ async function waitForReady(page, label, count) {
                 return page;
             } catch (e) {
                 log(`[${label}] Attempt ${attempt} failed: ${e.message}`);
-                await page.close();
+                await ctx.close();
                 if (attempt === 3) throw e;
                 await sleep(5000);
             }
@@ -135,13 +137,17 @@ async function waitForReady(page, label, count) {
     const up = await browser.newPage();
     await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
     const docBytes = fs.readFileSync(DOC_PATH);
-    await up.evaluate(async (url, name, arr) => {
+    await up.evaluate(async (url, name, arr, room) => {
         await fetch(url + '/wasm/' + encodeURIComponent(name), {
             method: 'POST', body: new Blob([new Uint8Array(arr)])
         });
-    }, BASE, DOC_NAME, Array.from(docBytes));
+        // Pre-seed relay server so late joiners get this file immediately
+        await fetch('https://wasm.atgpartners.info:9091/room/' + encodeURIComponent(room) + '/file', {
+            method: 'POST', body: new Blob([new Uint8Array(arr)])
+        });
+    }, BASE, DOC_NAME, Array.from(docBytes), ROOM);
     await up.close();
-    log('Uploaded');
+    log('Uploaded (WOPI + relay)');
 
     try {
         // === Phase 1: A opens, types ALPHA ===

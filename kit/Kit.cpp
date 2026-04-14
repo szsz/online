@@ -1736,6 +1736,20 @@ void replaceKeysWithPlaceholder(std::string& json, std::initializer_list<std::st
 }
 }
 
+void Document::registerViewCallback(int viewId)
+{
+    if (!_loKitDocument) {
+        LOG_ERR("registerViewCallback: no _loKitDocument");
+        return;
+    }
+    // Re-create the descriptor for this view (the old one pointed at the old doc)
+    _viewIdToCallbackDescr[viewId] =
+        std::unique_ptr<CallbackDescriptor>(new CallbackDescriptor({ this, viewId }));
+    _loKitDocument->setView(viewId);
+    _loKitDocument->registerCallback(ViewCallback, _viewIdToCallbackDescr[viewId].get());
+    LOG_INF("registerViewCallback: viewId=" << viewId << " registered on new document");
+}
+
 void Document::notifyViewInfo()
 {
     // Get the list of view ids from the core

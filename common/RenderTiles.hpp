@@ -119,12 +119,31 @@ namespace RenderTiles
 
         RenderTiles::Buffer pixmap(pixmapWidth, pixmapHeight);
 
+        // Validate part number before rendering — in WASM builds, an out-of-
+        // bounds part number causes paintPartTile to access invalid memory in
+        // the linear WASM heap, which crashes the pthread with "memory access
+        // out of bounds" instead of a recoverable error.
+        const int requestedPart = tileCombined.getPart();
+        const int totalParts = document->getParts();
+        if (requestedPart < 0 || requestedPart >= totalParts)
+        {
+            LOG_ERR("RenderTiles: part " << requestedPart << " out of range (0.."
+                    << (totalParts - 1) << "), skipping tile render");
+            return false;
+        }
+
+        if (!pixmap.data())
+        {
+            LOG_ERR("RenderTiles: pixmap allocation failed for " << pixmapWidth << 'x' << pixmapHeight);
+            return false;
+        }
+
         // Render the whole area
         const double area = pixmapWidth * pixmapHeight;
         const auto start = std::chrono::steady_clock::now();
         LOG_TRC("Calling paintPartTile(" << (void*)pixmap.data() << ')');
         document->paintPartTile(pixmap.data(),
-                                tileCombined.getPart(),
+                                requestedPart,
                                 tileCombined.getEditMode(),
                                 pixmapWidth, pixmapHeight,
                                 renderArea.getLeft(), renderArea.getTop(),

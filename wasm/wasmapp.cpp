@@ -191,6 +191,17 @@ int create_remote_client()
                                       << " load timeout (120s) — signaling ready anyway" << std::endl;
                     }
 
+                    // Send viewport setup so the Kit can map mouse coordinates.
+                    // Without these, mouse events hit the wrong document position
+                    // and cursor-dependent UNO commands (InsertRows etc.) fail.
+                    {
+                        std::string zoom = "clientzoom tilepixelwidth=256 tilepixelheight=256 tiletwipwidth=6636 tiletwipheight=6636";
+                        fakeSocketWriteQueue(clientFd, zoom.c_str(), zoom.size());
+                        std::string visarea = "clientvisiblearea x=0 y=0 width=19195 height=11535 splitx=0 splity=0";
+                        fakeSocketWriteQueue(clientFd, visarea.c_str(), visarea.size());
+                        std::cout << "Remote client " << clientId << " sent viewport setup" << std::endl;
+                    }
+
                     // Signal JS that this client is ready
                     {
                         std::lock_guard<std::mutex> lock(g_readyMutex);

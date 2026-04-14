@@ -62,6 +62,40 @@ const badgeColor = passed ? '#16a34a' : '#dc2626';
 const badgeLabel = passed ? 'PASS' : 'FAIL';
 
 // ---------------------------------------------------------------------------
+// Checklist (written by the test via lib/checklist.js)
+// ---------------------------------------------------------------------------
+let checklist = null;
+if (shotsDir) {
+    const checklistFile = path.join(shotsDir, 'checklist.json');
+    if (fs.existsSync(checklistFile)) {
+        try { checklist = JSON.parse(fs.readFileSync(checklistFile, 'utf8')); }
+        catch (e) { console.warn('Failed to parse checklist:', e.message); }
+    }
+}
+let checklistHTML = '';
+if (checklist && checklist.items && checklist.items.length) {
+    const items = checklist.items.map(it => {
+        const icon = it.passed ? '✅' : '❌';
+        const color = it.passed ? '#16a34a' : '#dc2626';
+        const ev = it.evidence ? `<span class="evidence">${escapeHtml(String(it.evidence)).slice(0,300)}</span>` : '';
+        return `<li class="check-item" style="border-left:3px solid ${color};"><span class="check-icon">${icon}</span><span class="check-name">${escapeHtml(it.name)}</span>${ev}</li>`;
+    }).join('');
+    const passed = checklist.items.filter(x => x.passed).length;
+    const total = checklist.items.length;
+    checklistHTML = `
+    <h2 class="section-title">Checklist <span class="check-summary">(${passed}/${total})</span></h2>
+    <ul class="checklist">${items}</ul>
+    <hr class="divider" />`;
+} else {
+    checklistHTML = '<p style="color:#888;">No structured checklist recorded.</p><hr class="divider" />';
+}
+
+function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ---------------------------------------------------------------------------
 // Screenshot HTML
 // ---------------------------------------------------------------------------
 let screenshotHTML = '';
@@ -113,6 +147,20 @@ const html = `<!DOCTYPE html>
   .shot img { width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 6px; }
   .caption { font-size: 0.85rem; color: #888; margin-top: 0.35rem; font-family: monospace; }
   .divider { border: none; border-top: 1px solid #e5e7eb; margin: 1.5rem 0; }
+  .section-title { font-size: 1.25rem; margin: 1.25rem 0 0.5rem; }
+  .check-summary { font-size: 0.85rem; font-weight: normal; color: #666; }
+  .checklist { list-style: none; padding: 0; margin: 0; }
+  .check-item {
+    background: #fafafa; padding: 0.5rem 0.75rem; margin-bottom: 4px;
+    border-radius: 0 4px 4px 0; display: flex; align-items: baseline; gap: 0.5rem;
+  }
+  .check-icon { font-size: 1rem; }
+  .check-name { font-size: 0.95rem; }
+  .evidence {
+    margin-left: auto; font-family: monospace; font-size: 0.78rem;
+    color: #666; max-width: 50%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -123,6 +171,8 @@ const html = `<!DOCTYPE html>
   <span class="badge">${badgeLabel}</span>
   <div class="desc">${desc}</div>
   <hr class="divider" />
+  ${checklistHTML}
+  <h2 class="section-title">Screenshots</h2>
   ${screenshotHTML}
 </div>
 </body>

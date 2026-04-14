@@ -64,6 +64,7 @@
 
 #if WASMAPP
 #include <wasmapp.hpp>
+#include <emscripten/fetch.h>
 #endif
 
 #include <cassert>
@@ -302,6 +303,91 @@ bool ChildSession::_handleInput(const char *buffer, int length)
     {
         return dialogEvent(tokens);
     }
+#if WASMAPP
+    else if (tokens.equals(0, "switchdocument"))
+    {
+        // Hot document switch: fetch new document and load it.
+        if (tokens.size() < 2)
+        {
+            sendTextFrameAndLogError("error: cmd=switchdocument kind=syntax");
+            return false;
+        }
+        const std::string arg = tokens[1];
+        LOG_INF("SWITCHDOC: arg=" << arg);
+        InputProcessingManager processInput(getProtocol(), false);
+        WatchdogGuard watchdogGuard;
+
+        std::string fileUrl;
+        if (arg.substr(0, 4) == "url=")
+        {
+            const std::string remoteUrl = arg.substr(4);
+            LOG_INF("SWITCHDOC: fetching from " << remoteUrl);
+
+            emscripten_fetch_attr_t attr;
+            emscripten_fetch_attr_init(&attr);
+            strcpy(attr.requestMethod, "GET");
+            attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
+            emscripten_fetch_t* fetch = emscripten_fetch(&attr, remoteUrl.c_str());
+            if (fetch->status != 200 || fetch->numBytes == 0)
+            {
+                LOG_ERR("SWITCHDOC: fetch failed, status=" << fetch->status);
+                emscripten_fetch_close(fetch);
+                sendTextFrameAndLogError("error: cmd=switchdocument kind=fetchfailed");
+                return false;
+            }
+            LOG_INF("SWITCHDOC: fetched " << fetch->numBytes << " bytes");
+
+            static int switchCounter = 0;
+            const std::string tempPath = "/tempdoc_switch" + std::to_string(++switchCounter);
+            FILE* f = fopen(tempPath.c_str(), "w");
+            if (f)
+            {
+                fwrite(fetch->data, 1, fetch->numBytes, f);
+                fclose(f);
+            }
+            emscripten_fetch_close(fetch);
+            fileUrl = "file://" + tempPath;
+            LOG_INF("SWITCHDOC: wrote to " << tempPath);
+        }
+        else
+        {
+            fileUrl = arg;
+        }
+
+        auto loKit = _docManager->getLOKit();
+        LOG_INF("SWITCHDOC: calling documentLoad(" << fileUrl << ")");
+        auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), "Language=en-US,Batch=true");
+        LOG_INF("SWITCHDOC: documentLoad returned " << (rawDoc ? "non-null" : "null"));
+        auto newDoc = std::shared_ptr<lok::Document>(rawDoc);
+        if (!newDoc || !newDoc->get())
+        {
+            LOG_ERR("SWITCHDOC: failed to load " << fileUrl << ": " << loKit->getError());
+            sendTextFrameAndLogError("error: cmd=switchdocument kind=faileddocloading");
+            return false;
+        }
+        _docManager->setLOKitDocument(newDoc);
+        newDoc->initializeForRendering("");
+        _viewId = newDoc->getView();
+        _docManager->registerViewCallback(_viewId);
+
+        sendTextFrame("invalidatetiles: EMPTY");
+
+        const std::string status = LOKitHelper::documentStatus(newDoc->get());
+        sendTextFrame("status: " + status);
+
+        _docManager->notifyViewInfo();
+        sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
+        std::ostringstream loadedMsg;
+        loadedMsg << "loaded: viewid=" << _viewId
+                  << " views=" << _docManager->getViewsCount()
+                  << " isfirst=true";
+        sendTextFrame(loadedMsg.str());
+
+        _isDocLoaded = true;
+        LOG_INF("SWITCHDOC: complete, viewId=" << _viewId);
+        return true;
+    }
+#endif
     else if (tokens.equals(0, "load"))
     {
         if (_isDocLoaded)
@@ -586,6 +672,7 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                tokens.equals(0, "rendershapeselection") ||
                tokens.equals(0, "removetextcontext") ||
                tokens.equals(0, "dialogevent") ||
+               tokens.equals(0, "switchdocument") ||
                tokens.equals(0, "completefunction")||
                tokens.equals(0, "formfieldevent") ||
                tokens.equals(0, "traceeventrecording") ||

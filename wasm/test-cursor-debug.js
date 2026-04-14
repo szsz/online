@@ -1,3 +1,4 @@
+const __cl = require('./lib/inject-checklist');
 // Co-editing test: all input via relay, verify document content after each keystroke
 // Expected: "ABCHello WorldXYZ" = 17 chars, identical on both browsers
 const puppeteer = require('puppeteer');
@@ -77,7 +78,7 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
     });
 
     let allPassed = true;
-    function check(label, condition) {
+    function check(label, condition) { __cl.recordCheck(label, condition);
         if (condition) {
             console.log(`  ✓ ${label}`);
         } else {
@@ -103,7 +104,8 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
         const coolUrl = `${BASE}/browser/cool.html?WOPISrc=cotest.txt&relay=${relay}&access_token=test`;
 
         async function openDoc(label) {
-            const page = await browser.newPage();
+            const ctx = await browser.createBrowserContext();
+            const page = await ctx.newPage();
             await page.evaluateOnNewDocument(() => {
                 window._logs = [];
                 const orig = console.log;

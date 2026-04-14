@@ -1,3 +1,4 @@
+const __cl = require('./lib/inject-checklist');
 // Test: pptx (Impress) opening and co-editing
 // Verifies:
 // 1. pptx file opens in Impress with slide content rendered
@@ -27,7 +28,7 @@ async function snap(page, name) {
 }
 
 let allPassed = true;
-function check(label, condition) {
+function check(label, condition) { __cl.recordCheck(label, condition);
     if (condition) { log(`✓ ${label}`); }
     else { log(`✗ FAIL: ${label}`); allPassed = false; }
 }

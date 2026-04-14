@@ -1,3 +1,4 @@
+const __cl = require('./lib/inject-checklist');
 // Test: 3 browsers co-edit different file formats (docx, xlsx, pptx)
 // Each browser types at the default cursor position.
 // Verifies all browsers converge to the same character count.
@@ -71,7 +72,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
     log(`${'='.repeat(50)}`);
 
     let allPassed = true;
-    function check(label, condition) {
+    function check(label, condition) { __cl.recordCheck(label, condition);
         if (condition) { log(`  ✓ ${label}`); }
         else { log(`  ✗ FAIL: ${label}`); allPassed = false; }
     }

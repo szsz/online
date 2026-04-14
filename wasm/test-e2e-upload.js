@@ -1,3 +1,4 @@
+const __cl = require('./lib/inject-checklist');
 // Test: End-to-end upload → open → co-edit
 // Upload at 3s, click open immediately. No waiting for preload.
 const puppeteer = require('puppeteer');
@@ -21,7 +22,7 @@ async function snap(page, name) {
 }
 
 let allPassed = true;
-function check(label, condition) {
+function check(label, condition) { __cl.recordCheck(label, condition);
     if (condition) { log(`  ✓ ${label}`); }
     else { log(`  ✗ FAIL: ${label}`); allPassed = false; }
 }

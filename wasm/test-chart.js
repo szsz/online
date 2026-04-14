@@ -1,3 +1,4 @@
+const __cl = require('./lib/inject-checklist');
 // Test: Documents with embedded charts
 // Verifies chart rendering in both Writer (docx) and Calc (xlsx)
 const puppeteer = require('puppeteer');
@@ -22,7 +23,7 @@ async function snap(page, name) {
 }
 
 let allPassed = true;
-function check(label, condition) {
+function check(label, condition) { __cl.recordCheck(label, condition);
     if (condition) { log(`  ✓ ${label}`); }
     else { log(`  ✗ FAIL: ${label}`); allPassed = false; }
 }

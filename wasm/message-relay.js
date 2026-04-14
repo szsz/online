@@ -1,25 +1,32 @@
-// Smart message relay server for COOL WASM co-editing.
-// Handles message routing, file storage, and late-join coordination.
+// Checkpoint-based relay server for COOL WASM co-editing.
 //
-// Protocol: binary frames with header
-//   [1 byte type][4 byte viewId][payload]
+// Architecture — zero divergence guarantee:
+//   1. A room always has a CHECKPOINT: a file + hash + sequence number.
+//      The checkpoint is the initial document or the last save from any browser.
+//   2. All UI messages get monotonic sequence numbers and are logged since the checkpoint.
+//   3. Every browser MUST start from the checkpoint:
+//      - Download the checkpoint file
+//      - Write it to WOPI (so the WASM module loads it)
+//      - Replay all messages since the checkpoint
+//      - Only THEN can the browser send changes
+//   4. When a late joiner arrives:
+//      - If changes exist since the last checkpoint, trigger a FRESH save first
+//      - Wait for the save to complete (creates new checkpoint with 0 pending messages)
+//      - Send the fresh checkpoint to the late joiner
+//      - This ensures the joiner doesn't need to replay a huge backlog
+//   5. Join-ready (0x06) includes the checkpoint hash the browser loaded.
+//      The relay verifies it matches. If not → re-send current checkpoint.
 //
-// Types:
-//   0x00 = UI message (client <-> client, broadcast)
-//   0x01 = assign viewId (server -> client)
-//   0x02 = client joined (server -> all)
-//   0x03 = client left (server -> all)
-//   0x04 = save-request (late joiner -> server)
-//   0x05 = save-complete (server -> late joiner, payload = JSON {hash, url})
-//   0x06 = late-join-ready (late joiner -> server, triggers buffer flush)
-//   0x07 = file-upload (client -> server, payload = file bytes)
-//   0x08 = save-trigger (server -> one client, asks to upload file via 0x07)
-//
-// HTTP endpoints (on same port):
-//   GET  /room/<roomId>/file   — download current room file
-//   POST /room/<roomId>/file   — upload file to room
-//
-// Usage: node wasm/message-relay.js
+// Protocol: binary frames [1 byte type][4 byte viewId][payload]
+//   0x00 = UI message. Broadcast: [4 byte seq][original payload]
+//   0x02 = client joined  (server -> all, JSON {viewId, seq})
+//   0x03 = client left    (server -> all, JSON {viewId, seq})
+//   0x04 = join-request   (client -> server, payload = WOPISrc)
+//   0x05 = join-response  (server -> client, JSON {hash, url, seq, first, msgCount})
+//   0x06 = join-ready     (client -> server, payload = JSON {hash} — checkpoint hash verification)
+//   0x07 = file-upload    (client -> server, payload = file bytes)
+//   0x08 = save-trigger   (server -> one client)
+//   0x0A = checkpoint-mismatch (server -> client, JSON {expected, url, seq}) — re-download required
 
 const WebSocket = require('ws');
 const https = require('https');
@@ -30,58 +37,177 @@ const PORT = process.env.RELAY_PORT || 9091;
 const SSL_CERT = process.env.SSL_CERT || '/etc/letsencrypt/live/wasm.atgpartners.info/fullchain.pem';
 const SSL_KEY = process.env.SSL_KEY || '/etc/letsencrypt/live/wasm.atgpartners.info/privkey.pem';
 
-// Room state: tracks clients, file, and message history
-const rooms = new Map(); // roomId → Room
+const rooms = new Map();
 
 class Room {
     constructor(id) {
         this.id = id;
         this.clients = new Set();
-        this.file = null;       // Buffer: current document bytes
-        this.fileHash = null;   // SHA-256 of current file
+        this.activeClients = new Set();
+        this.seq = 0;
+
+        // Checkpoint
+        this.checkpoint = null;
+        this.checkpointHash = null;
+        this.checkpointSeq = 0;
+
+        // Save coordination
         this.savePending = false;
-        this.hasChanges = false; // true if UI messages received since last save
-        this.autoSaveInterval = null;
+        this.saveTimeout = null;
+
+        // Message log since checkpoint (for replay)
+        this.messageLog = [];
+        this.maxLogSize = 50000;
     }
 
-    setFile(buf) {
-        this.file = Buffer.from(buf);
-        this.fileHash = crypto.createHash('sha256').update(this.file).digest('hex').substring(0, 16);
-        this.hasChanges = false;
-        console.log(`[${this.id}] File stored: ${this.file.length} bytes, hash=${this.fileHash}`);
-    }
+    nextSeq() { return ++this.seq; }
 
-    // Start periodic auto-save (10 minutes)
-    startAutoSave() {
-        if (this.autoSaveInterval) return;
-        this.autoSaveInterval = setInterval(() => {
-            if (!this.hasChanges || this.savePending) return;
-            this.triggerSave();
-        }, 10 * 60 * 1000); // 10 minutes
-    }
+    // Register a checkpoint by hash+seq only. The relay does NOT store the
+    // file — that's the file storage server's responsibility. We only track
+    // the hash and sequence number for late-join coordination.
+    registerCheckpoint(hash, atSeq) {
+        this.checkpointHash = hash;
+        this.checkpointSeq = atSeq !== undefined ? atSeq : this.seq;
+        this.savePending = false;
+        if (this.saveTimeout) { clearTimeout(this.saveTimeout); this.saveTimeout = null; }
 
-    stopAutoSave() {
-        if (this.autoSaveInterval) {
-            clearInterval(this.autoSaveInterval);
-            this.autoSaveInterval = null;
+        // Keep messages AFTER the checkpoint seq — these need to be replayed
+        // to any browser that loads this checkpoint file.
+        const before = this.messageLog.length;
+        this.messageLog = this.messageLog.filter(m => m.seq > this.checkpointSeq);
+        if (this.messageLog.length > this.maxLogSize) {
+            this.messageLog = this.messageLog.slice(-this.maxLogSize);
         }
+        console.log(`[${this.id}] CHECKPOINT: hash=${this.checkpointHash} atSeq=${this.checkpointSeq} roomSeq=${this.seq} replay=${this.messageLog.length} (pruned ${before - this.messageLog.length})`);
     }
 
-    // Ask one client to save
-    triggerSave() {
-        if (this.savePending) return;
+    // Legacy compat — old clients may still upload file data
+    createCheckpoint(buf, atSeq) {
+        const hash = crypto.createHash('sha256').update(buf).digest('hex').substring(0, 16);
+        this.registerCheckpoint(hash, atSeq);
+    }
+
+    get fileHash() { return this.checkpointHash; }
+    get fileSeq() { return this.checkpointSeq; }
+
+    hasUnsavedChanges() {
+        return this.messageLog.length > 0;
+    }
+
+    broadcast(originFrame) {
+        const seq = this.nextSeq();
+        const viewId = originFrame.slice(1, 5);
+        const payload = originFrame.slice(5);
+
+        const frame = Buffer.alloc(5 + 4 + payload.length);
+        frame[0] = 0x00;
+        viewId.copy(frame, 1);
+        frame.writeUInt32BE(seq, 5);
+        payload.copy(frame, 9);
+
+        this.messageLog.push({ seq, frame });
+        if (this.messageLog.length > this.maxLogSize) {
+            this.messageLog = this.messageLog.slice(-this.maxLogSize);
+        }
+
+        for (const client of this.activeClients) {
+            if (client.readyState === WebSocket.OPEN) client.send(frame);
+        }
+        // Buffer for joining clients that are already downloading
         for (const client of this.clients) {
-            if (!client.isLateJoiner && client.readyState === 1) { // WebSocket.OPEN
-                const frame = Buffer.alloc(5);
-                frame[0] = 0x08;
-                client.send(frame);
+            if (client._joinBuffering) client._joinBuffer.push(frame);
+        }
+        return seq;
+    }
+
+    sendControl(ws, type, viewId, payload) {
+        const payloadBuf = typeof payload === 'string' ? Buffer.from(payload) : Buffer.from(payload || []);
+        const frame = Buffer.alloc(5 + payloadBuf.length);
+        frame[0] = type;
+        frame.writeUInt32BE(viewId || 0, 1);
+        payloadBuf.copy(frame, 5);
+        if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+    }
+
+    triggerSave() {
+        if (this.savePending) return false;
+        for (const client of this.activeClients) {
+            if (client.readyState === WebSocket.OPEN) {
                 this.savePending = true;
-                console.log(`[${this.id}] Auto-save triggered`);
-                setTimeout(() => { this.savePending = false; }, 30000);
+                this.sendControl(client, 0x08, 0, '');
+                console.log(`[${this.id}] Save triggered (${this.messageLog.length} unsaved msgs)`);
+                this.saveTimeout = setTimeout(() => {
+                    this.savePending = false;
+                    console.log(`[${this.id}] Save timeout — serving stale checkpoint to waiting joiners`);
+                    this._serveCheckpointToWaitingJoiners();
+                }, 20000);
                 return true;
             }
         }
         return false;
+    }
+
+    // Send current checkpoint + replay log to a joining client
+    serveCheckpoint(ws) {
+        if (!this.checkpointHash) return false;
+        // Tell the client to download the checkpoint from the FILE STORAGE
+        // SERVER (not the relay). The client knows its WOPISrc and can
+        // fetch from FILE_STORAGE_URL/api/files/<WOPISrc>.
+        const info = JSON.stringify({
+            first: false,
+            hash: this.checkpointHash,
+            source: 'wopi',   // client downloads from file storage server
+            seq: this.checkpointSeq,
+            msgCount: this.messageLog.length,
+        });
+        this.sendControl(ws, 0x05, 0, info);
+        ws._joinBuffering = true;
+        ws._joinBuffer = this.messageLog.map(m => m.frame); // Copy current log
+        ws._expectedHash = this.checkpointHash;
+        console.log(`[${this.id}] Served checkpoint hash=${this.checkpointHash} + ${ws._joinBuffer.length} msgs to viewId=${ws._viewId}`);
+        return true;
+    }
+
+    _serveCheckpointToWaitingJoiners() {
+        for (const client of this.clients) {
+            if (client._joining && client._waitingForSave && client.readyState === WebSocket.OPEN) {
+                client._waitingForSave = false;
+                if (this.checkpointHash) {
+                    this.serveCheckpoint(client);
+                } else {
+                    // No checkpoint at all — activate as first
+                    this.sendControl(client, 0x05, 0, JSON.stringify({ first: true, seq: this.seq }));
+                    client._joining = false;
+                    this.activeClients.add(client);
+                }
+            }
+        }
+    }
+
+    announceJoin(viewId) {
+        const seq = this.nextSeq();
+        const payload = JSON.stringify({ viewId, seq });
+        const buf = Buffer.from(payload);
+        const frame = Buffer.alloc(5 + buf.length);
+        frame[0] = 0x02;
+        frame.writeUInt32BE(viewId, 1);
+        buf.copy(frame, 5);
+        for (const c of this.activeClients) {
+            if (c.readyState === WebSocket.OPEN) c.send(frame);
+        }
+    }
+
+    announceLeave(viewId) {
+        const seq = this.nextSeq();
+        const payload = JSON.stringify({ viewId, seq });
+        const buf = Buffer.from(payload);
+        const frame = Buffer.alloc(5 + buf.length);
+        frame[0] = 0x03;
+        frame.writeUInt32BE(viewId, 1);
+        buf.copy(frame, 5);
+        for (const c of this.activeClients) {
+            if (c.readyState === WebSocket.OPEN) c.send(frame);
+        }
     }
 }
 
@@ -90,59 +216,53 @@ function getRoom(roomId) {
     return rooms.get(roomId);
 }
 
-const LATE_JOIN_TIMEOUT = 120000;
-
-// --- HTTPS server with file endpoints ---
+// --- HTTPS server ---
 const server = https.createServer({
     cert: fs.readFileSync(SSL_CERT),
     key: fs.readFileSync(SSL_KEY),
 }, (req, res) => {
-    // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
     const match = req.url.match(/^\/room\/([^/]+)\/file$/);
-    if (!match) {
-        res.writeHead(200);
-        res.end('COOL Smart Relay');
-        return;
-    }
+    if (!match) { res.writeHead(200); res.end('Checkpoint Relay v3'); return; }
 
     const roomId = decodeURIComponent(match[1]);
     const room = rooms.get(roomId);
 
     if (req.method === 'GET') {
-        if (!room || !room.file) {
-            res.writeHead(404);
-            res.end('No file in room');
-            return;
-        }
-        res.writeHead(200, {
-            'Content-Type': 'application/octet-stream',
-            'X-File-Hash': room.fileHash,
-            'Content-Length': room.file.length,
-        });
-        res.end(room.file);
-        console.log(`[${roomId}] File served: ${room.file.length} bytes`);
+        // Return checkpoint metadata only — the file itself is on the
+        // file storage server, not the relay.
+        if (!room || !room.checkpointHash) { res.writeHead(404); res.end('No checkpoint'); return; }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            hash: room.checkpointHash,
+            seq: room.checkpointSeq,
+        }));
         return;
     }
 
     if (req.method === 'POST') {
+        // Accept hash+seq from client (client already uploaded file to
+        // the file storage server).
         const chunks = [];
         req.on('data', c => chunks.push(c));
         req.on('end', () => {
-            const buf = Buffer.concat(chunks);
-            const room = getRoom(roomId);
-            room.setFile(buf);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ hash: room.fileHash, size: buf.length }));
+            try {
+                const body = JSON.parse(Buffer.concat(chunks).toString());
+                const room = getRoom(roomId);
+                room.registerCheckpoint(body.hash, body.seq || room.seq);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ hash: room.checkpointHash, seq: room.checkpointSeq }));
+            } catch(e) {
+                res.writeHead(400);
+                res.end('Invalid JSON: ' + e.message);
+            }
         });
         return;
     }
-
-    res.writeHead(405);
-    res.end('Method not allowed');
+    res.writeHead(405); res.end();
 });
 
 // --- WebSocket server ---
@@ -155,15 +275,15 @@ server.on('upgrade', (req, socket, head) => {
     wss.handleUpgrade(req, socket, head, (ws) => {
         const room = getRoom(roomId);
         room.clients.add(ws);
-
-        ws.isLateJoiner = false;
-        ws.bufferingActive = false;
-        ws.messageBuffer = [];
-        ws.saveResponseReceived = false;
         ws._roomId = roomId;
+        ws._viewId = 0;
+        ws._joining = true;
+        ws._joinBuffering = false;
+        ws._joinBuffer = [];
+        ws._waitingForSave = false;
+        ws._expectedHash = null;
 
-        console.log(`[${roomId}] Client connected (${room.clients.size} in room)`);
-        room.startAutoSave();
+        console.log(`[${roomId}] Connected (${room.clients.size} total, ${room.activeClients.size} active)`);
 
         ws.on('message', (data) => {
             const buf = Buffer.from(data);
@@ -171,139 +291,152 @@ server.on('upgrade', (req, socket, head) => {
             const type = buf[0];
             const viewId = buf.readUInt32BE(1);
 
-            // --- 0x04: Save-request from late joiner ---
+            // ── 0x04: Join request ──
             if (type === 0x04) {
-                ws.isLateJoiner = true;
-                ws.bufferingActive = false;
-                ws.messageBuffer = [];
-                ws.saveResponseReceived = false;
-                ws.bufferingStartTime = Date.now();
+                ws._viewId = viewId;
+                console.log(`[${roomId}] JOIN viewId=${viewId} active=${room.activeClients.size} checkpoint=${!!room.checkpoint} unsaved=${room.messageLog.length}`);
 
-                // Ask an existing non-late-joiner client to save.
-                // Skip if we're already waiting for a save from another request.
-                let sent = false;
+                if (!room.checkpoint) {
+                    // No checkpoint at all — first client ever
+                    console.log(`[${roomId}]   → First client (no checkpoint)`);
+                    room.sendControl(ws, 0x05, 0, JSON.stringify({ first: true, seq: 0 }));
+                    ws._joining = false;
+                    room.activeClients.add(ws);
+                    return;
+                }
+
+                // ALWAYS trigger a fresh save when a new browser joins (if there are active peers)
+                // This ensures the checkpoint includes ALL prior edits.
+                // If no changes since last checkpoint, the save will produce the same file.
+                if (room.activeClients.size === 0) {
+                    // No active peers — serve current checkpoint directly
+                    console.log(`[${roomId}]   → No active peers, serving cached checkpoint`);
+                    room.serveCheckpoint(ws);
+                    return;
+                }
+
+                // Wait for a fresh save before serving
+                console.log(`[${roomId}]   → Requesting fresh save (unsaved=${room.messageLog.length})`);
+                ws._waitingForSave = true;
                 if (!room.savePending) {
-                    for (const client of room.clients) {
-                        if (client !== ws && !client.isLateJoiner && client.readyState === WebSocket.OPEN) {
-                            const triggerFrame = Buffer.alloc(5);
-                            triggerFrame[0] = 0x08;
-                            triggerFrame.writeUInt32BE(viewId, 1);
-                            client.send(triggerFrame);
-                            sent = true;
-                            room.savePending = true;
-                            console.log(`[${roomId}] Asked existing client to save`);
-                            // Clear pending after 30s timeout
-                            setTimeout(() => { room.savePending = false; }, 30000);
-                            break;
-                        }
-                    }
-                } else {
-                    // Save already pending — wait for it
-                    console.log(`[${roomId}] Save already pending, waiting...`);
+                    room.triggerSave();
                 }
-                if (!sent) {
-                    if (room.file) {
-                        // No active peers but we have a cached file — serve it
-                        console.log(`[${roomId}] No active peers, serving cached file (hash=${room.fileHash})`);
-                        ws.saveResponseReceived = true;
-                        ws.bufferingActive = true;
-                        ws.messageBuffer = [];
-                        const payload = JSON.stringify({
-                            hash: room.fileHash,
-                            url: `/room/${encodeURIComponent(roomId)}/file`,
-                        });
-                        const payloadBuf = Buffer.from(payload);
-                        const frame = Buffer.alloc(5 + payloadBuf.length);
-                        frame[0] = 0x05;
-                        frame.writeUInt32BE(0, 1);
-                        payloadBuf.copy(frame, 5);
-                        ws.send(frame);
-                    } else {
-                        // No peers, no file — first client
-                        console.log(`[${roomId}] No peers — first client`);
-                        const frame = Buffer.alloc(5);
-                        frame[0] = 0x05;
-                        ws.send(frame);
-                        ws.isLateJoiner = false;
-                        ws.saveResponseReceived = true;
-                    }
-                }
-
-                setTimeout(() => {
-                    if (ws.isLateJoiner) {
-                        console.log(`[${roomId}] Late joiner timeout (${ws.messageBuffer.length} buffered)`);
-                        ws.isLateJoiner = false;
-                        ws.bufferingActive = false;
-                        ws.messageBuffer = [];
-                    }
-                }, LATE_JOIN_TIMEOUT);
+                // 0x07 handler serves checkpoint to all waiting joiners
+                // Timeout fallback in triggerSave
                 return;
             }
 
-            // --- 0x07: File upload from client ---
-            // Always update the cached file. This keeps the relay's copy current.
+            // ── 0x07: Checkpoint report (hash + seq, NO file) ──
+            // The client has already saved the file to the file storage
+            // server. It now reports the hash + seq to the relay so we can
+            // coordinate late joiners.
+            // Frame: [0x07][viewId 4b][seq 4b][hash string (optional)]
             if (type === 0x07) {
-                const fileData = buf.slice(5);
-                room.setFile(fileData);
-                room.savePending = false;
+                let checkpointSeq = room.seq;
+                let hash = null;
+                if (buf.length >= 9) {
+                    checkpointSeq = buf.readUInt32BE(5);
+                    if (buf.length > 9) {
+                        // Remaining bytes are the hash string
+                        hash = buf.slice(9).toString();
+                    }
+                }
+                if (!hash) {
+                    // Legacy: client sent file bytes. Compute hash from data.
+                    const fileData = buf.length > 9 ? buf.slice(9) : buf.slice(5);
+                    hash = crypto.createHash('sha256').update(fileData).digest('hex').substring(0, 16);
+                }
 
-                // Notify any waiting late joiners
+                const hasWaitingJoiners = [...room.clients].some(c => c._waitingForSave);
+                const hasDownloadingJoiners = [...room.clients].some(c => c._joinBuffering);
+
+                if (!room.savePending && (hasWaitingJoiners || hasDownloadingJoiners)) {
+                    console.log(`[${roomId}] IGNORING voluntary checkpoint (hash=${hash} seq=${checkpointSeq}) — joiners active`);
+                    return;
+                }
+
+                console.log(`[${roomId}] CHECKPOINT REPORT: hash=${hash}, seq=${checkpointSeq}, roomSeq=${room.seq}`);
+                room.registerCheckpoint(hash, checkpointSeq);
+
+                // Notify waiting joiners that checkpoint is ready
                 for (const client of room.clients) {
-                    if (client.isLateJoiner && !client.saveResponseReceived && client.readyState === WebSocket.OPEN) {
-                        client.saveResponseReceived = true;
-                        client.bufferingActive = true;
-                        client.messageBuffer = [];
-                        const payload = JSON.stringify({
-                            hash: room.fileHash,
-                            url: `/room/${encodeURIComponent(roomId)}/file`,
-                        });
-                        const payloadBuf = Buffer.from(payload);
-                        const frame = Buffer.alloc(5 + payloadBuf.length);
-                        frame[0] = 0x05;
-                        frame.writeUInt32BE(0, 1);
-                        payloadBuf.copy(frame, 5);
-                        client.send(frame);
-                        console.log(`[${roomId}] File received, notified late joiner (hash=${room.fileHash})`);
+                    if (client._waitingForSave && client.readyState === WebSocket.OPEN) {
+                        client._waitingForSave = false;
+                        room.serveCheckpoint(client);
                     }
                 }
                 return;
             }
 
-            // --- 0x06: Late-join-ready ---
+            // ── 0x06: Join ready (with checkpoint hash verification) ──
             if (type === 0x06) {
-                console.log(`[${roomId}] Late joiner ready, replaying ${ws.messageBuffer.length} post-save msgs`);
-                for (const msg of ws.messageBuffer) {
-                    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+                if (!ws._joining) return;
+
+                // Parse the hash the client loaded
+                let clientHash = null;
+                if (buf.length > 5) {
+                    try {
+                        const info = JSON.parse(buf.slice(5).toString());
+                        clientHash = info.hash;
+                    } catch(e) {}
                 }
-                ws.isLateJoiner = false;
-                ws.bufferingActive = false;
-                ws.messageBuffer = [];
+
+                const expected = ws._expectedHash || room.checkpointHash;
+
+                if (expected && clientHash && clientHash !== expected) {
+                    // MISMATCH — client loaded wrong checkpoint
+                    console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${clientHash} expected=${expected}`);
+                    // Tell client to re-download
+                    const info = JSON.stringify({
+                        expected: room.checkpointHash,
+                        url: `/room/${encodeURIComponent(roomId)}/file`,
+                        seq: room.checkpointSeq,
+                    });
+                    room.sendControl(ws, 0x0A, 0, info);
+                    // Reset join state — client must re-download and re-send 0x06
+                    ws._joinBuffering = false;
+                    ws._joinBuffer = [];
+                    room.serveCheckpoint(ws);
+                    return;
+                }
+
+                // Hash matches (or no hash sent — backward compat) — activate
+                const bufferedCount = ws._joinBuffer.length;
+                console.log(`[${roomId}] JOIN READY viewId=${viewId} hash=${clientHash || 'none'} replaying ${bufferedCount} msgs`);
+
+                for (const frame of ws._joinBuffer) {
+                    if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+                }
+
+                ws._joining = false;
+                ws._joinBuffering = false;
+                ws._joinBuffer = [];
+                ws._expectedHash = null;
+                room.activeClients.add(ws);
+                room.announceJoin(viewId);
+                console.log(`[${roomId}] ACTIVATED viewId=${viewId} (${room.activeClients.size} active)`);
                 return;
             }
 
-            // --- 0x00+: Normal broadcast ---
-            room.hasChanges = true; // Mark room as having changes for auto-save
-            for (const client of room.clients) {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(data);
-                }
+            // ── 0x09: Ack ──
+            if (type === 0x09) return;
+
+            // ── 0x00: UI message ──
+            if (ws._joining) {
+                console.log(`[${roomId}] REJECTED msg from joining viewId=${viewId}`);
+                return;
             }
-            // Buffer for active late joiners
-            for (const client of room.clients) {
-                if (client.bufferingActive && client.readyState === WebSocket.OPEN) {
-                    client.messageBuffer.push(Buffer.from(data));
-                }
-            }
+            room.broadcast(buf);
         });
 
         ws.on('close', () => {
             room.clients.delete(ws);
-            console.log(`[${roomId}] Client disconnected (${room.clients.size} in room)`);
+            room.activeClients.delete(ws);
+            if (ws._viewId) room.announceLeave(ws._viewId);
+            console.log(`[${roomId}] Disconnected (${room.clients.size} total, ${room.activeClients.size} active)`);
             if (room.clients.size === 0) {
-                // Keep room for a while in case someone rejoins
                 setTimeout(() => {
                     if (room.clients.size === 0) {
-                        room.stopAutoSave();
                         rooms.delete(roomId);
                         console.log(`[${roomId}] Room cleaned up`);
                     }
@@ -314,5 +447,5 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 server.listen(PORT, () => {
-    console.log(`Smart relay on port ${PORT}`);
+    console.log(`Checkpoint relay on port ${PORT} (v3)`);
 });

@@ -1,3 +1,4 @@
+const __cl = require('./lib/inject-checklist');
 // Test 3: 3 browsers co-editing via relay
 // Document: "Hello World" (1 line)
 // A types "ABC" at start, B types "XYZ" at end, C types "PQR" in middle
@@ -78,7 +79,7 @@ async function waitForAnyCharCount(pages, expected, timeout) {
     });
 
     let allPassed = true;
-    function check(label, condition) {
+    function check(label, condition) { __cl.recordCheck(label, condition);
         if (condition) {
             console.log(`  ✓ ${label}`);
         } else {
@@ -91,23 +92,25 @@ async function waitForAnyCharCount(pages, expected, timeout) {
         // Upload
         const up = await browser.newPage();
         await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
-        await up.evaluate(async (url) => {
-            await fetch(url + '/wasm/test3.txt', {
-                method: 'POST',
-                body: new Blob(['Hello World'], { type: 'application/octet-stream' }),
-            });
-        }, BASE);
-        await up.close();
-        console.log('[setup] Uploaded "Hello World"\n');
-
         let ROOM = 'test3-' + Date.now();
+        await up.evaluate(async (url, room) => {
+            const body = new Blob(['Hello World'], { type: 'application/octet-stream' });
+            await fetch(url + '/wasm/test3.txt', { method: 'POST', body });
+            // Pre-seed relay so late joiners get this file immediately
+            await fetch('https://wasm.atgpartners.info:9091/room/' + encodeURIComponent(room) + '/file', {
+                method: 'POST', body: new Blob(['Hello World']),
+            });
+        }, BASE, ROOM);
+        await up.close();
+        console.log('[setup] Uploaded "Hello World" (WOPI + relay)\n');
         let relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
         let coolUrl = `${BASE}/browser/cool.html?WOPISrc=test3.txt&relay=${relay}&access_token=test`;
 
         async function openDoc(label, retries) {
             retries = retries || 3;
             for (let attempt = 1; attempt <= retries; attempt++) {
-                const page = await browser.newPage();
+                const ctx = await browser.createBrowserContext();
+                const page = await ctx.newPage();
                 await page.evaluateOnNewDocument(() => {
                     window._logs = [];
                     const orig = console.log;
@@ -127,7 +130,7 @@ async function waitForAnyCharCount(pages, expected, timeout) {
                     return page;
                 } catch(e) {
                     console.log(`[${label}] Attempt ${attempt} failed: ${e.message}`);
-                    await page.close();
+                    await ctx.close();
                     if (attempt === retries) throw e;
                     await sleep(5000);
                 }

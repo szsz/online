@@ -1244,6 +1244,14 @@ bool ClientSession::_handleInput(const char *buffer, int length)
     {
         return forwardToChild(firstLine, docBroker);
     }
+#if WASMAPP
+    else if (tokens.equals(0, "switchdocument"))
+    {
+        // WASM: hot document switch — forward to ChildSession where the
+        // actual documentLoad happens without tearing down the DocumentBroker.
+        return forwardToChild(firstLine, docBroker);
+    }
+#endif
     else if (tokens.equals(0, "loggingleveloverride"))
     {
         if (tokens.size() > 0)

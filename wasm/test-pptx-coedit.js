@@ -1,3 +1,4 @@
+const __cl = require('./lib/inject-checklist');
 // Test: 2-browser PPTX (Impress) co-editing
 // Verifies both browsers load the same pptx via relay and both have Impress UI
 const puppeteer = require('puppeteer');
@@ -23,7 +24,7 @@ async function snap(page, name) {
 }
 
 let allPassed = true;
-function check(label, condition) {
+function check(label, condition) { __cl.recordCheck(label, condition);
     if (condition) { log(`  ✓ ${label}`); }
     else { log(`  ✗ FAIL: ${label}`); allPassed = false; }
 }

@@ -357,6 +357,12 @@ public:
     /// Notify all views of viewId and their associated usernames
     void notifyViewInfo();
 
+    /// WASM hot-switch helper: register the ViewCallback on the *current*
+    /// _loKitDocument for the given viewId, so callbacks from the freshly
+    /// loaded document reach the JS side. Mirrors the registerCallback line
+    /// inside Document::onLoad.
+    void registerViewCallback(int viewId);
+
     std::shared_ptr<ChildSession> findSessionByViewId(int viewId);
 
     void invalidateCanonicalId(const std::string& sessionId);
@@ -420,6 +426,16 @@ public:
 
     /// Returns true iff we have a LOKit Document instance.
     bool isLoaded() const { return !!_loKitDocument; }
+
+    /// Replace the current document with a new one (hot switch).
+    /// We intentionally stash the old pointer in _retiredDocuments instead of
+    /// letting it destruct — LO's document destructor blocks for a long time
+    /// (synchronous flush/close of the old document). Leaking a small amount
+    /// of memory is fine for a short-lived WASM session.
+    void setLOKitDocument(std::shared_ptr<lok::Document> newDoc) {
+        if (_loKitDocument) _retiredDocuments.push_back(_loKitDocument);
+        _loKitDocument = newDoc;
+    }
 
     /// Return access to the lok::Office instance.
     std::shared_ptr<lok::Office> getLOKit() const { return _loKit; }
@@ -488,6 +504,9 @@ private:
     std::string _renderOpts;
 
     std::shared_ptr<lok::Document> _loKitDocument;
+    /// Old documents retired during hot-switch — we hold them to avoid the
+    /// slow synchronous destructor. They leak for the lifetime of the session.
+    std::vector<std::shared_ptr<lok::Document>> _retiredDocuments;
 #ifdef __ANDROID__
     static std::shared_ptr<lok::Document> _loKitDocumentForAndroidOnly;
     static std::weak_ptr<DocumentBroker> _documentBrokerForAndroidOnly;

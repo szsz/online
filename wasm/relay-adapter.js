@@ -1,8 +1,13 @@
-// Relay adapter for COOL WASM co-editing.
-// ALL user input goes through the relay for strict ordering.
-// Each viewId gets a separate cursor (own = local session, other = remote ClientSession).
-// Supports late join: new browser requests save from existing participant,
-// downloads current state, then replays buffered messages.
+// Strict-ordering relay adapter for COOL WASM co-editing.
+// Guarantees zero divergence: all browsers apply events in the same order.
+//
+// Protocol:
+//   - All user input (key, mouse, textinput) goes through the relay
+//   - Relay assigns monotonic sequence numbers to every broadcast
+//   - This client processes messages strictly in seq order
+//   - Late join: download state file from relay, replay buffered messages, then activate
+//   - Client cannot send until fully synced (join-ready sent and acknowledged)
+//
 // Activate by adding ?relay=wss://host:port/room/id to the URL.
 
 (function() {
@@ -19,19 +24,20 @@
 
     var connected = false;
     var coolwsdReady = false;
+    var activated = false;       // true after join-ready acknowledged
     var sendQueue = [];
-    var recvQueue = [];
+    var recvQueue = [];          // messages received before COOLWSD ready
     var myViewId = Math.floor(Math.random() * 0x7FFFFF);
-    var isLateJoiner = false;
-    var lateJoinSaveComplete = false;
-    var lateJoinFileUrl = null;
-    var lateJoinFileHash = null;
+    var lastSeq = 0;             // last processed sequence number
+    var joinFileHash = null;
+    var joinFileSeq = 0;         // seq# of the base state we downloaded
+    var isFirstClient = false;
 
     var remoteClients = {};
 
     // --- Relay framing ---
     function sendToRelay(type, viewId, payload) {
-        var encoded = typeof payload === 'string' ? new TextEncoder().encode(payload) : new Uint8Array(payload);
+        var encoded = typeof payload === 'string' ? new TextEncoder().encode(payload) : new Uint8Array(payload || []);
         var frame = new Uint8Array(1 + 4 + encoded.length);
         frame[0] = type;
         frame[1] = (viewId >>> 24) & 0xFF;
@@ -45,6 +51,7 @@
 
     function parseFrame(data) {
         var f = new Uint8Array(data);
+        if (f.length < 5) return null;
         return {
             type: f[0],
             viewId: ((f[1] << 24) | (f[2] << 16) | (f[3] << 8) | f[4]) >>> 0,
@@ -55,57 +62,51 @@
     console.log('[relay] My viewId=' + myViewId);
 
     // --- Intercept document fetch for late-join file redirect ---
-    // The WASM module uses emscripten_fetch to GET the document.
-    // For late joiners, we overwrite the file on the WOPI server
-    // before the WASM module fetches it. We also intercept fetch/XHR as backup.
     var lateJoinFileReady = false;
-
-    // Intercept both XHR and fetch API
-    var xhrOrigOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function(method, url) {
-        if (lateJoinFileReady && method === 'GET') {
-            var wopiSrc = params.get('WOPISrc') || '';
-            if (wopiSrc && url.indexOf(wopiSrc) !== -1) {
-                console.log('[relay] XHR redirect: ' + url.substring(0, 80));
-            }
-        }
-        return xhrOrigOpen.apply(this, arguments);
-    };
-
     var origFetch = window.fetch;
-    window.fetch = function(url, opts) {
-        if (lateJoinFileReady && typeof url === 'string') {
-            var wopiSrc = params.get('WOPISrc') || '';
-            if (wopiSrc && url.indexOf(wopiSrc) !== -1 && (!opts || opts.method === 'GET' || !opts.method)) {
-                console.log('[relay] fetch redirect: ' + url.substring(0, 80));
-            }
-        }
-        return origFetch.apply(this, arguments);
-    };
 
     // --- Send message to Kit via local session ---
+    // Send directly to Kit C++ via Module._handle_cool_message.
+    // This bypasses FakeWebSocket.send (which is intercepted by us) and
+    // postMobileMessage (which might be overridden). Direct C++ call.
+    var originalSend = null; // set in installSendInterceptor
+    // Send a message to the Kit. Called for:
+    //  - Non-user-input from COOL JS (tileprocessed, clientzoom, etc.)
+    //    → must be synchronous, COOL JS expects immediate processing
+    //  - Relay echo of own messages (from processUIMessage)
+    //    → also synchronous to maintain Kit's event ordering
+    var kitQueue = [];
     function sendToKit(data) {
-        if (window.postMobileMessage) {
-            window.postMobileMessage(data);
+        // Queue and process ONE message per event loop tick. The Kit worker
+        // responds via MAIN_THREAD_EM_ASM which needs the main thread idle.
+        // Processing multiple messages in a tight loop starves the Kit's
+        // response delivery.
+        kitQueue.push(data);
+        if (kitQueue.length === 1) {
+            setTimeout(processOneKitMessage, 0);
+        }
+    }
+    function processOneKitMessage() {
+        if (kitQueue.length === 0) return;
+        var msg = kitQueue.shift();
+        if (globalThis.postMobileMessage) {
+            if (typeof msg === 'string' && msg.startsWith('key ')) {
+                console.log('[relay] Kit←relay: ' + msg.substring(0, 50));
+            }
+            globalThis.postMobileMessage(msg);
+        } else {
+            console.error('[relay] NO postMobileMessage!');
+        }
+        if (kitQueue.length > 0) {
+            setTimeout(processOneKitMessage, 1);
         }
     }
 
-    // --- Late join: send save-request as soon as relay connects ---
-    // The save handshake (~3-5s) completes well before WASM compile (~40s),
-    // so the file is updated before the WASM module fetches it.
-    function initiateLateJoin() {
+    // --- Join protocol: request to join as soon as relay connects ---
+    function initiateJoin() {
         var wopiSrc = params.get('WOPISrc') || '';
-        console.log('[relay] Sending save-request for late join (WOPISrc=' + wopiSrc + ')');
+        console.log('[relay] Sending join-request (WOPISrc=' + wopiSrc + ')');
         sendToRelay(0x04, myViewId, wopiSrc);
-
-        // Short timeout: relay responds immediately if no peers (first client)
-        // or within ~15s if an existing client needs to save.
-        setTimeout(function() {
-            if (!lateJoinSaveComplete) {
-                console.log('[relay] No save-complete response — proceeding as first client');
-                isLateJoiner = false;
-            }
-        }, 5000);
     }
 
     // --- COOLWSD readiness: poll for document loaded ---
@@ -121,7 +122,7 @@
         // Calc: StatusDocPos has "Sheet"
         var calcEl = document.querySelector('#StatusDocPos');
         var calcReady = calcEl && calcEl.textContent && calcEl.textContent.includes('Sheet');
-        // Impress: look for Slide Show menu or slide sorter with content
+        // Impress: Slide Show menu
         var impressReady = false;
         var navEl = document.querySelector('nav.main-nav') || document.querySelector('#content-keeper');
         if (navEl && navEl.textContent && navEl.textContent.includes('Slide Show')) {
@@ -137,41 +138,67 @@
         console.log('[relay] COOLWSD ready (document loaded)');
         installSendInterceptor();
 
-        // Flush queued relay messages FIRST (may set isLateJoiner via 0x05)
+        // Flush queued relay messages
         var pending = recvQueue.splice(0);
         console.log('[relay] Flushing ' + pending.length + ' queued relay messages');
         for (var i = 0; i < pending.length; i++) {
             processRelayMessage(pending[i]);
         }
 
-        // Now check if we became a late joiner from queued messages
-        if (isLateJoiner) {
-            console.log('[relay] Late joiner sending ready signal');
-            sendToRelay(0x06, myViewId, '');
+        // If first client or already got join-response, activate now
+        if (isFirstClient && !activated) {
+            activateClient();
         }
+    }
+    setTimeout(waitForCoolwsd, 500);
+
+    // --- Activate: send join-ready and start accepting/sending messages ---
+    function activateClient() {
+        if (activated) return;
+        activated = true;
+        // Send join-ready with checkpoint hash for verification
+        var readyPayload = joinFileHash ? JSON.stringify({ hash: joinFileHash }) : '';
+        console.log('[relay] Activating — sending join-ready hash=' + (joinFileHash || 'none'));
+        sendToRelay(0x06, myViewId, readyPayload);
 
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
 
-        // Initial save to relay so late joiners can get the document.
-        // Subsequent saves are coordinated by the relay server (every 10 min or on join).
-        saveAndUploadToRelay();
+        // Initial save to relay so future late joiners can get the document
+        saveAndUploadCheckpoint();
     }
-    setTimeout(waitForCoolwsd, 500);
 
     // --- FakeWebSocket.send interceptor ---
     function installSendInterceptor() {
         var fws = globalThis.TheFakeWebSocket;
-        if (!fws) return;
+        if (!fws) {
+            console.log('[relay] TheFakeWebSocket not found — retrying installSendInterceptor');
+            setTimeout(installSendInterceptor, 200);
+            return;
+        }
+
+        // Save original send BEFORE replacing — sendToKit uses this to
+        // bypass the relay and talk directly to the Kit's FakeSocket.
+        originalSend = fws.send.bind(fws);
 
         function interceptedSend(data) {
             var text = typeof data === 'string' ? data : '';
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
-                text.startsWith('textinput ') || text.startsWith('windowkey ');
+                text.startsWith('textinput ') || text.startsWith('windowkey ') ||
+                text.startsWith('uno ');
             if (isUserInput) {
+                if (!activated) {
+                    console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
+                    return;
+                }
                 sendToRelay(0x00, myViewId, data);
             } else {
-                sendToKit(data);
+                // Non-user-input (tileprocessed, clientzoom, etc.) goes
+                // directly to Kit SYNCHRONOUSLY via postMobileMessage.
+                // These are not relayed and must not be deferred.
+                if (globalThis.postMobileMessage) {
+                    globalThis.postMobileMessage(data);
+                }
             }
         }
 
@@ -181,10 +208,48 @@
         console.log('[relay] Send interceptor installed');
     }
 
-    // --- Remote client output ---
-    globalThis.onRemoteClientMessage = function(clientId, data) {};
+    // --- Remote client management ---
+    // Messages FROM remote client Kit sessions back to JS. These include
+    // tile invalidations, status changes, cursor positions, etc. triggered
+    // by remote users' actions. We forward the relevant ones to the primary
+    // view's Kit session so the local canvas re-renders.
+    globalThis.onRemoteClientMessage = function(clientId, data) {
+        var text = typeof data === 'string' ? data : '';
+        if (!text) return;
 
-    // --- Send to remote client with textinput→key conversion ---
+        // Log all messages from remote client for debugging
+        if (text.startsWith('invalidate') || text.startsWith('statechanged') ||
+            text.startsWith('status:') || text.startsWith('error:')) {
+            console.log('[relay] Remote client ' + clientId + ' → ' + text.substring(0, 120));
+        }
+
+        // Only forward messages that reflect DOCUMENT changes (not remote
+        // view UI state). The remote client sends hundreds of statechanged
+        // messages during init (toolbar enabled/disabled etc.) — forwarding
+        // those would corrupt the primary view's UI state.
+        var shouldForward = text.startsWith('invalidatetiles:');
+        // Word count is document-level, safe to forward.
+        if (text.indexOf('.uno:StateWordCount=') >= 0) shouldForward = true;
+        // Modified status is document-level.
+        if (text.indexOf('.uno:ModifiedStatus=') >= 0) shouldForward = true;
+
+        if (shouldForward) {
+            // Defer to next tick — onRemoteClientMessage is called from
+            // EM_ASM on the main thread; calling onmessage synchronously
+            // can cause reentrancy issues with the COOL message handler.
+            var msg = text;
+            setTimeout(function() {
+                var ws = globalThis.TheFakeWebSocket;
+                if (ws && ws.onmessage) {
+                    ws.onmessage({ data: msg });
+                }
+            }, 0);
+        }
+
+        // Other messages from remote Kit (commandresult, tile data, etc.)
+        // are specific to the remote view and can be ignored.
+    };
+
     function sendToRemoteClient(clientId, text) {
         if (text.startsWith('textinput ')) {
             var match = text.match(/text=(.+)/);
@@ -203,13 +268,12 @@
         }
     }
 
-    // --- Create remote client ---
     function createRemoteClient(viewId) {
         if (remoteClients[viewId]) return;
         console.log('[relay] Creating remote client for viewId=' + viewId);
         var clientId = Module._create_remote_client();
         remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
-        console.log('[relay] Remote client created: viewId=' + viewId + ' → clientId=' + clientId);
+        console.log('[relay] Remote client created: viewId=' + viewId + ' clientId=' + clientId);
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
     }
 
@@ -241,85 +305,81 @@
     }
     setTimeout(globalPollReady, 1000);
 
-    // --- Handle save-request from a late joiner (existing participant) ---
-    // --- Handle save-trigger (0x08) from relay ---
-    // Relay asks us to save the document and upload the file back.
+    // --- Save-trigger handler ---
     function handleSaveTrigger() {
-        console.log('[relay] Save-trigger received — saving and uploading');
-        saveAndUploadToRelay();
+        console.log('[relay] Save-trigger received');
+        saveAndUploadCheckpoint();
     }
 
-    // Reusable save+upload function (called on init, save-trigger, etc.)
-    function saveAndUploadToRelay() {
+    function saveAndUploadCheckpoint() {
         if (!connected) return;
         sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
         setTimeout(function() {
+            var saveAtSeq = lastSeq;
             var wopiSrc = params.get('WOPISrc') || '';
-            var fetchUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-            origFetch(fetchUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+            // 1. Download saved file from editor's temp storage
+            var editorFileUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+            origFetch(editorFileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
                 var bytes = new Uint8Array(buf);
-                var frame = new Uint8Array(5 + bytes.length);
-                frame[0] = 0x07;
-                frame[1] = (myViewId >>> 24) & 0xFF;
-                frame[2] = (myViewId >>> 16) & 0xFF;
-                frame[3] = (myViewId >>> 8) & 0xFF;
-                frame[4] = myViewId & 0xFF;
-                frame.set(bytes, 5);
-                ws.send(frame);
-                console.log('[relay] Uploaded to relay: ' + bytes.length + ' bytes');
+                // 2. Compute hash
+                return crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
+                    var hashArr = new Uint8Array(hashBuf);
+                    var hash = Array.from(hashArr.slice(0, 8)).map(function(b) {
+                        return b.toString(16).padStart(2, '0');
+                    }).join('');
+                    // 3. Upload file to FILE STORAGE SERVER (the viewer)
+                    var viewerFileUrl = getFileStorageUrl(wopiSrc);
+                    return origFetch(viewerFileUrl, {
+                        method: 'POST',
+                        body: new Blob([bytes]),
+                        mode: 'cors',
+                    }).then(function() {
+                        // 4. Report to relay — send file bytes for backward
+                        // compat with old relay servers. Future: send hash only.
+                        var frame = new Uint8Array(5 + 4 + bytes.length);
+                        frame[0] = 0x07;
+                        frame[1] = (myViewId >>> 24) & 0xFF;
+                        frame[2] = (myViewId >>> 16) & 0xFF;
+                        frame[3] = (myViewId >>> 8) & 0xFF;
+                        frame[4] = myViewId & 0xFF;
+                        frame[5] = (saveAtSeq >>> 24) & 0xFF;
+                        frame[6] = (saveAtSeq >>> 16) & 0xFF;
+                        frame[7] = (saveAtSeq >>> 8) & 0xFF;
+                        frame[8] = saveAtSeq & 0xFF;
+                        frame.set(bytes, 9);
+                        ws.send(frame);
+                        console.log('[relay] Checkpoint: ' + bytes.length + 'b hash=' + hash + ' seq=' + saveAtSeq + ' → file storage + relay');
+                    });
+                });
             }).catch(function(e) {
-                console.error('[relay] Upload failed: ' + e.message);
+                console.error('[relay] Checkpoint failed: ' + e.message);
             });
-        }, 5000); // Wait 5s for Kit save + saveToServer POST
+        }, 5000);
     }
 
-    // --- Process relay message ---
-    function processRelayMessage(msg) {
-        // Handle late-join protocol messages
-        if (msg.type === 0x08) {
-            // Save-trigger from relay: save document and upload file
-            handleSaveTrigger();
-            return;
-        }
-
-        if (msg.type === 0x05) {
-            // Save-complete from relay (with hash+url, or empty = no peers)
-            lateJoinSaveComplete = true;
-            if (msg.payload.length > 0) {
-                isLateJoiner = true;
-                try {
-                    var info = JSON.parse(new TextDecoder().decode(msg.payload));
-                    lateJoinFileUrl = info.url;
-                    lateJoinFileHash = info.hash;
-                    var relayHost = new URL(relayUrl.replace('wss://', 'https://').replace('ws://', 'http://'));
-                    var relayFileUrl = relayHost.origin + info.url;
-                    console.log('[relay] Save-complete: hash=' + info.hash + ', downloading from relay...');
-
-                    // Download from relay and overwrite the WOPI file IMMEDIATELY.
-                    // This must complete before the WASM module fetches the document (~25s from now).
-                    var wopiSrc = params.get('WOPISrc') || '';
-                    var wopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                    origFetch(relayFileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
-                        console.log('[relay] Downloaded ' + buf.byteLength + ' bytes from relay, uploading to WOPI...');
-                        lateJoinFileReady = true;
-                        return origFetch(wopiUrl, { method: 'POST', body: new Blob([buf]) });
-                    }).then(function() {
-                        console.log('[relay] WOPI file updated for late join');
-                    }).catch(function(e) {
-                        console.error('[relay] Late join file sync failed: ' + e.message);
-                    });
-                } catch(e) {
-                    console.log('[relay] Save-complete parse error: ' + e.message);
-                }
-            } else {
-                isLateJoiner = false;
-                console.log('[relay] No peers — first client');
+    // Resolve the file storage URL for a given WOPISrc.
+    // The viewer's /api/files/ endpoint is the canonical file store.
+    function getFileStorageUrl(wopiSrc) {
+        // The viewer URL is the parent page's origin (the page that hosts the iframe)
+        try {
+            var viewerOrigin = window.parent.location.origin;
+            return viewerOrigin + '/api/files/' + encodeURIComponent(wopiSrc);
+        } catch(e) {
+            // Cross-origin — fall back to referrer
+            if (document.referrer) {
+                var ref = new URL(document.referrer);
+                return ref.origin + '/api/files/' + encodeURIComponent(wopiSrc);
             }
-            return;
+            // Last resort: assume same origin
+            return '/api/files/' + encodeURIComponent(wopiSrc);
         }
+    }
 
-        if (msg.type !== 0x00) return;
-        var text = new TextDecoder().decode(msg.payload);
+    // --- Process a sequenced UI message ---
+    function processUIMessage(msg, seq) {
+        lastSeq = seq;
+
+        var text = new TextDecoder().decode(msg.payload.slice(4)); // Skip seq bytes
         var vid = msg.viewId;
 
         if (text === 'HULLO' || text === 'BYE' || text.startsWith('tileprocessed ')) return;
@@ -333,10 +393,21 @@
         }
 
         var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
-            text.startsWith('textinput ') || text.startsWith('windowkey ');
+            text.startsWith('textinput ') || text.startsWith('windowkey ') ||
+            text.startsWith('uno ');
         if (!isUserInput) return;
 
-        // Own viewId → local session (with textinput→key conversion)
+        if (text.startsWith('uno ')) {
+            console.log('[relay] UNO via relay: vid=' + vid + ' myVid=' + myViewId +
+                        ' isSelf=' + (vid === myViewId) + ' cmd=' + text.substring(0, 60));
+        }
+
+        // Log relay-routed messages for debugging
+        if (text.startsWith('key ') && text.includes('char=')) {
+            console.log('[relay] processUI: vid=' + vid + ' myVid=' + myViewId + ' isSelf=' + (vid===myViewId) + ' ' + text.substring(0, 50));
+        }
+
+        // Own viewId → local Kit session (own cursor)
         if (vid === myViewId) {
             if (text.startsWith('textinput ')) {
                 var match = text.match(/text=(.+)/);
@@ -354,47 +425,151 @@
             return;
         }
 
-        // Other viewId → remote ClientSession
+        // Other viewId → remote client session (their cursor)
         if (!remoteClients[vid]) {
             createRemoteClient(vid);
         }
-
         var rc = remoteClients[vid];
         if (!rc.ready) {
             rc.queue.push(text);
             return;
         }
-
         try {
             sendToRemoteClient(rc.clientId, text);
         } catch(e) {
-            console.error('[relay] FAILED: ' + e.message);
+            console.error('[relay] Remote send failed: ' + e.message);
+        }
+    }
+
+    // --- Process relay message ---
+    function processRelayMessage(msg) {
+        // 0x08: Save-trigger
+        if (msg.type === 0x08) {
+            handleSaveTrigger();
+            return;
+        }
+
+        // 0x0A: Checkpoint mismatch — relay rejected our hash, must re-download
+        if (msg.type === 0x0A) {
+            try {
+                var mismatch = JSON.parse(new TextDecoder().decode(msg.payload));
+                console.log('[relay] CHECKPOINT MISMATCH: expected=' + mismatch.expected + ' — will re-download');
+                // The relay will send a new 0x05 with the correct checkpoint
+                // Reset state so we re-process it
+                activated = false;
+                lateJoinFileReady = false;
+            } catch(e) {}
+            return;
+        }
+
+        // 0x05: Join-response
+        if (msg.type === 0x05) {
+            if (msg.payload.length > 0) {
+                try {
+                    var info = JSON.parse(new TextDecoder().decode(msg.payload));
+                    if (info.first) {
+                        // First client — no file to download
+                        isFirstClient = true;
+                        joinFileSeq = 0;
+                        console.log('[relay] First client in room');
+                        if (coolwsdReady) activateClient();
+                        return;
+                    }
+
+                    // Late joiner — download checkpoint from FILE STORAGE SERVER
+                    joinFileHash = info.hash;
+                    joinFileSeq = info.seq;
+                    var wopiSrc = params.get('WOPISrc') || '';
+                    var fileStorageUrl = getFileStorageUrl(wopiSrc);
+                    console.log('[relay] Join-response: hash=' + info.hash + ' seq=' + info.seq + ' source=' + (info.source || 'wopi') + ' — downloading from file storage');
+
+                    // Download from file storage server and push to editor's temp storage
+                    var editorWopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+                    origFetch(fileStorageUrl, { mode: 'cors' }).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+                        console.log('[relay] Downloaded ' + buf.byteLength + 'b from file storage (hash=' + joinFileHash + ')');
+                        lateJoinFileReady = true;
+                        // Push to editor's temp storage so WASM can load it
+                        return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
+                    }).then(function() {
+                        console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
+                    }).catch(function(e) {
+                        console.error('[relay] Late-join file sync failed: ' + e.message);
+                    });
+                } catch(e) {
+                    console.log('[relay] Join-response parse error: ' + e.message);
+                }
+            }
+            return;
+        }
+
+        // 0x02: Client joined
+        if (msg.type === 0x02) {
+            try {
+                var joinInfo = JSON.parse(new TextDecoder().decode(msg.payload));
+                console.log('[relay] Client joined: viewId=' + joinInfo.viewId + ' seq=' + joinInfo.seq);
+                if (joinInfo.viewId !== myViewId && !remoteClients[joinInfo.viewId]) {
+                    createRemoteClient(joinInfo.viewId);
+                }
+            } catch(e) {}
+            return;
+        }
+
+        // 0x03: Client left
+        if (msg.type === 0x03) {
+            try {
+                var leaveInfo = JSON.parse(new TextDecoder().decode(msg.payload));
+                console.log('[relay] Client left: viewId=' + leaveInfo.viewId);
+            } catch(e) {}
+            return;
+        }
+
+        // 0x00: UI message (with seq#)
+        if (msg.type === 0x00 && msg.payload.length >= 4) {
+            var seq = ((msg.payload[0] << 24) | (msg.payload[1] << 16) |
+                       (msg.payload[2] << 8) | msg.payload[3]) >>> 0;
+            processUIMessage(msg, seq);
+            return;
         }
     }
 
     // --- WebSocket handlers ---
     ws.onmessage = function(event) {
         var msg = parseFrame(event.data);
-        if (msg.type !== 0x00) {
-            console.log('[relay] Received type=0x' + msg.type.toString(16) + ' payload=' + msg.payload.length + 'b');
-        }
-        // Process control messages (0x05 save-complete, 0x08 save-trigger) IMMEDIATELY
-        // because 0x05 must update the WOPI file BEFORE the WASM module fetches it.
-        if (msg.type === 0x05 || msg.type === 0x08) {
+        if (!msg) return;
+
+        // Control messages processed immediately
+        if (msg.type === 0x05 || msg.type === 0x08 || msg.type === 0x0A) {
             processRelayMessage(msg);
             return;
         }
-        if (!coolwsdReady) { recvQueue.push(msg); return; }
+
+        // Queue until COOLWSD ready
+        if (!coolwsdReady) {
+            recvQueue.push(msg);
+            return;
+        }
+
         processRelayMessage(msg);
     };
+
     ws.onopen = function() {
         connected = true;
         console.log('[relay] Connected');
         for (var i = 0; i < sendQueue.length; i++) ws.send(sendQueue[i]);
         sendQueue = [];
-        // Initiate late-join protocol immediately
-        initiateLateJoin();
+        initiateJoin();
     };
+
     ws.onerror = function(err) { console.error('[relay] WebSocket error', err); };
     ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
+
+    // --- Activation when COOLWSD is ready (for late joiners) ---
+    // Late joiners: wait for both COOLWSD ready AND file downloaded
+    var activationPollInterval = setInterval(function() {
+        if (activated) { clearInterval(activationPollInterval); return; }
+        if (coolwsdReady && lateJoinFileReady && !activated) {
+            activateClient();
+            clearInterval(activationPollInterval);
+        }
+    }, 500);
 })();
