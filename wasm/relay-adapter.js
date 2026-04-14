@@ -35,6 +35,54 @@
 
     var remoteClients = {};
 
+    // --- Room switching (for hot-switch document changes) ---
+    // When the viewer switches documents via hash change, it sends a
+    // RelaySwitchRoom message. We disconnect from the old room and
+    // connect to the new one, preserving the WASM runtime.
+    window.addEventListener('message', function(event) {
+        try {
+            var msg = typeof event.data === 'string' ? JSON.parse(event.data) : null;
+            if (!msg || msg.MessageId !== 'RelaySwitchRoom') return;
+            var newRoom = msg.Values.room;
+            var newDoc = msg.Values.docName;
+            console.log('[relay] Room switch: ' + relayUrl + ' → ' + newRoom);
+
+            // Close old connection
+            if (ws && ws.readyState <= 1) {
+                ws.onclose = null; // prevent reconnect logic
+                ws.close();
+            }
+
+            // Reset state for new room
+            connected = false;
+            activated = false;
+            isFirstClient = false;
+            joinFileHash = null;
+            joinFileSeq = 0;
+            lastSeq = 0;
+            sendQueue = [];
+            recvQueue = [];
+            // Keep remoteClients — they'll be cleaned up when new room announces joins
+            for (var vid in remoteClients) {
+                if (remoteClients[vid].clientId > 0) {
+                    try { Module._close_remote_client(remoteClients[vid].clientId); } catch(e) {}
+                }
+            }
+            remoteClients = {};
+
+            // Connect to new room
+            relayUrl = newRoom;
+            ws = new WebSocket(newRoom);
+            ws.binaryType = 'arraybuffer';
+            ws.onopen = onWsOpen;
+            ws.onmessage = onWsMessage;
+            ws.onerror = function(err) { console.error('[relay] WebSocket error', err); };
+            ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
+
+            console.log('[relay] Connecting to new room: ' + newRoom);
+        } catch(e) {}
+    });
+
     // --- Relay framing ---
     function sendToRelay(type, viewId, payload) {
         var encoded = typeof payload === 'string' ? new TextEncoder().encode(payload) : new Uint8Array(payload || []);
@@ -359,20 +407,28 @@
 
     // Resolve the file storage URL for a given WOPISrc.
     // The viewer's /api/files/ endpoint is the canonical file store.
+    // Since the iframe is cross-origin, we derive the viewer origin from
+    // the relay URL (same host family) or document.referrer.
     function getFileStorageUrl(wopiSrc) {
-        // The viewer URL is the parent page's origin (the page that hosts the iframe)
+        var encoded = encodeURIComponent(wopiSrc);
+        // Try parent origin (works if same-origin or permissions allow)
         try {
-            var viewerOrigin = window.parent.location.origin;
-            return viewerOrigin + '/api/files/' + encodeURIComponent(wopiSrc);
-        } catch(e) {
-            // Cross-origin — fall back to referrer
-            if (document.referrer) {
-                var ref = new URL(document.referrer);
-                return ref.origin + '/api/files/' + encodeURIComponent(wopiSrc);
+            if (window.parent !== window) {
+                var origin = window.parent.location.origin;
+                if (origin && origin !== 'null') return origin + '/api/files/' + encoded;
             }
-            // Last resort: assume same origin
-            return '/api/files/' + encodeURIComponent(wopiSrc);
+        } catch(e) {}
+        // Try referrer (set when iframe is created by the viewer)
+        if (document.referrer) {
+            try {
+                return new URL(document.referrer).origin + '/api/files/' + encoded;
+            } catch(e) {}
         }
+        // Derive from relay URL: relay is on the editor domain,
+        // but the file storage server is the viewer. We can't derive
+        // it without configuration. Fall back to the editor's /wasm/
+        // endpoint which also stores files.
+        return window.location.origin + '/wasm/' + encoded;
     }
 
     // --- Process a sequenced UI message ---
@@ -476,19 +532,29 @@
                         return;
                     }
 
-                    // Late joiner — download checkpoint from FILE STORAGE SERVER
+                    // Late joiner — download checkpoint file.
+                    // The checkpoint was saved to both the file storage server
+                    // AND the editor's /wasm/ endpoint. We download from the
+                    // editor (same origin, no CORS issues) and overwrite the
+                    // local WOPI file so the WASM loads the right version.
                     joinFileHash = info.hash;
                     joinFileSeq = info.seq;
                     var wopiSrc = params.get('WOPISrc') || '';
-                    var fileStorageUrl = getFileStorageUrl(wopiSrc);
-                    console.log('[relay] Join-response: hash=' + info.hash + ' seq=' + info.seq + ' source=' + (info.source || 'wopi') + ' — downloading from file storage');
-
-                    // Download from file storage server and push to editor's temp storage
                     var editorWopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                    origFetch(fileStorageUrl, { mode: 'cors' }).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
-                        console.log('[relay] Downloaded ' + buf.byteLength + 'b from file storage (hash=' + joinFileHash + ')');
+                    console.log('[relay] Join-response: hash=' + info.hash + ' seq=' + info.seq + ' — downloading checkpoint');
+
+                    // First try file storage (canonical), fall back to editor's /wasm/
+                    var fileStorageUrl = getFileStorageUrl(wopiSrc);
+                    origFetch(fileStorageUrl, { mode: 'cors' }).then(function(r) {
+                        if (!r.ok) throw new Error('File storage ' + r.status);
+                        return r.arrayBuffer();
+                    }).catch(function() {
+                        // Fallback: download from editor's own /wasm/ endpoint
+                        console.log('[relay] File storage unavailable, using editor /wasm/');
+                        return origFetch(editorWopiUrl).then(function(r) { return r.arrayBuffer(); });
+                    }).then(function(buf) {
+                        console.log('[relay] Downloaded ' + buf.byteLength + 'b (hash=' + joinFileHash + ')');
                         lateJoinFileReady = true;
-                        // Push to editor's temp storage so WASM can load it
                         return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
                     }).then(function() {
                         console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
@@ -532,34 +598,34 @@
         }
     }
 
-    // --- WebSocket handlers ---
-    ws.onmessage = function(event) {
+    // --- WebSocket handlers (named for reuse during room switch) ---
+    function onWsMessage(event) {
         var msg = parseFrame(event.data);
         if (!msg) return;
 
-        // Control messages processed immediately
         if (msg.type === 0x05 || msg.type === 0x08 || msg.type === 0x0A) {
             processRelayMessage(msg);
             return;
         }
 
-        // Queue until COOLWSD ready
         if (!coolwsdReady) {
             recvQueue.push(msg);
             return;
         }
 
         processRelayMessage(msg);
-    };
+    }
 
-    ws.onopen = function() {
+    function onWsOpen() {
         connected = true;
         console.log('[relay] Connected');
         for (var i = 0; i < sendQueue.length; i++) ws.send(sendQueue[i]);
         sendQueue = [];
         initiateJoin();
-    };
+    }
 
+    ws.onmessage = onWsMessage;
+    ws.onopen = onWsOpen;
     ws.onerror = function(err) { console.error('[relay] WebSocket error', err); };
     ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
 
