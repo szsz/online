@@ -16,11 +16,21 @@
 //   node_modules/        (express, optionally @azure/storage-blob)
 
 const express = require('express');
+const http = require('http');
+const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const storage = require('./lib/storage');
 
-const PORT = process.env.PORT || 6934;
+const PORT = parseInt(process.env.PORT || '6934', 10);
+
+// HTTPS — used when SSL_CERT and SSL_KEY are both set and readable.
+// On Azure App Service, the platform terminates TLS so these are unset
+// and we listen plain HTTP on $PORT (Azure's `process.env.PORT` is the
+// internal port the platform routes HTTPS traffic to).
+const SSL_CERT = process.env.SSL_CERT || '';
+const SSL_KEY  = process.env.SSL_KEY  || '';
+const useSSL = !!SSL_CERT && !!SSL_KEY && fs.existsSync(SSL_CERT) && fs.existsSync(SSL_KEY);
 
 // ── URLs injected into the viewer page via /config.js ───────────
 const EDITOR_URL = process.env.EDITOR_URL || '';
@@ -35,13 +45,11 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS
     .split(',').map(s => s.trim()).filter(Boolean);
 const ALLOW_ANY = ALLOWED_ORIGINS.length === 1 && ALLOWED_ORIGINS[0] === '*';
 
-// Where the sidebar UI assets live. In a deployed bundle they sit next to
-// server.js; in a dev tree they live at wasm/viewer-public/.
-const VIEWER_PUBLIC = (function () {
-    const deployPath = path.join(__dirname, 'viewer-public');
-    const devPath    = path.join(__dirname, 'viewer-public');  // wasm/viewer-public
-    return fs.existsSync(deployPath) ? deployPath : devPath;
-})();
+// Where the sidebar UI assets live. By default look next to this script
+// (works for both the deployed bundle and the in-tree wasm/viewer-public/).
+// VIEWER_PUBLIC env can override for unusual layouts.
+const VIEWER_PUBLIC = process.env.VIEWER_PUBLIC
+    || path.join(__dirname, 'viewer-public');
 
 const app = express();
 
@@ -182,11 +190,16 @@ app.get('/blank.docx', async (req, res) => {
     res.status(404).send('blank.docx not available (neither in storage nor bundled)');
 });
 
-app.listen(PORT, () => {
-    console.log(`Viewer server on port ${PORT}`);
+const server = useSSL
+    ? https.createServer({ cert: fs.readFileSync(SSL_CERT), key: fs.readFileSync(SSL_KEY) }, app)
+    : http.createServer(app);
+
+server.listen(PORT, () => {
+    console.log(`Viewer server on ${useSSL ? 'HTTPS' : 'HTTP'} port ${PORT}`);
     console.log(`  UI:         ${VIEWER_PUBLIC}`);
     console.log(`  Storage:    ${storage.describe()}`);
     console.log(`  Editor:     ${EDITOR_URL}`);
     console.log(`  Relay:      ${RELAY_URL}`);
     console.log(`  CORS allow: ${ALLOW_ANY ? '* (any)' : ALLOWED_ORIGINS.join(', ') || '(none)'}`);
+    if (useSSL) console.log(`  TLS:        cert=${SSL_CERT}`);
 });
