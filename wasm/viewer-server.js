@@ -142,8 +142,33 @@ app.get('/api/files/', async (req, res) => {
 });
 
 // ── GET /api/files/:name — download file ────────────────────────
+// Cache contract for stored documents:
+//   - Cache-Control: no-cache  (browser MUST revalidate before reuse)
+//   - ETag + Last-Modified set from the storage backend
+//   - If-None-Match / If-Modified-Since → 304 with body suppressed
+// Documents are mutable (co-editing saves back here), so we never let the
+// browser skip revalidation, but a fresh ETag round-trip is much cheaper
+// than re-streaming the file body from the storage backend on every click.
 app.get('/api/files/:name', async (req, res) => {
     try {
+        if (typeof storage.stat === 'function') {
+            const meta = await storage.stat(req.params.name);
+            if (meta) {
+                const etag = 'W/"' + meta.etag + '"';
+                const lastMod = meta.lastModified ? new Date(meta.lastModified).toUTCString() : null;
+                res.setHeader('ETag', etag);
+                if (lastMod) res.setHeader('Last-Modified', lastMod);
+                res.setHeader('Cache-Control', 'no-cache');
+                // Conditional GET: honour ETag first, fall back to mtime.
+                const ims = req.headers['if-modified-since'];
+                const imsHit = lastMod && ims &&
+                    new Date(ims).getTime() >= new Date(lastMod).getTime();
+                if (req.headers['if-none-match'] === etag || imsHit) {
+                    res.status(304).end();
+                    return;
+                }
+            }
+        }
         await storage.pipeTo(req.params.name, res);
     } catch (err) {
         console.error('Download error:', err.message);
@@ -170,23 +195,54 @@ app.post('/api/files/:name', (req, res) => {
 // ── GET /blank.docx — blank document for prewarm ────────────────
 // Try storage first (so an admin can swap the prewarm doc by uploading a
 // `blank.docx`), then fall back to the bundled viewer-public/blank.docx.
+//
+// Caching: the bundled file's mtime is stable across deploys (its tracked
+// in source), so set a 1-hour max-age + ETag — first-visit downloads it,
+// subsequent visits get 304 quickly.
 app.get('/blank.docx', async (req, res) => {
+    const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    // Helper: send a buffer with cache headers.
+    function sendWithCache(buf, etag, lastMod) {
+        const wEtag = 'W/"' + etag + '"';
+        res.setHeader('Content-Type', DOCX_MIME);
+        res.setHeader('ETag', wEtag);
+        if (lastMod) res.setHeader('Last-Modified', new Date(lastMod).toUTCString());
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        const ims = req.headers['if-modified-since'];
+        const imsHit = lastMod && ims &&
+            new Date(ims).getTime() >= new Date(lastMod).getTime();
+        if (req.headers['if-none-match'] === wEtag || imsHit) {
+            return res.status(304).end();
+        }
+        res.end(buf);
+    }
+
+    // Storage-side blank.docx (admin override).
     try {
-        const buf = await storage.getBuffer('blank.docx');
-        if (buf) {
-            res.setHeader('Content-Type',
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-            return res.end(buf);
+        if (typeof storage.stat === 'function') {
+            const meta = await storage.stat('blank.docx');
+            if (meta) {
+                const buf = await storage.getBuffer('blank.docx');
+                if (buf) return sendWithCache(buf, meta.etag, meta.lastModified);
+            }
+        } else {
+            const buf = await storage.getBuffer('blank.docx');
+            if (buf) {
+                res.setHeader('Content-Type', DOCX_MIME);
+                return res.end(buf);
+            }
         }
     } catch (err) {
         console.error('blank.docx storage lookup error:', err.message);
     }
-    // Fallback: bundled blank.docx
+    // Fallback: bundled blank.docx — use the file's own stat for ETag.
     const bundled = path.join(VIEWER_PUBLIC, 'blank.docx');
     if (fs.existsSync(bundled)) {
-        res.setHeader('Content-Type',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        return res.end(fs.readFileSync(bundled));
+        const st = fs.statSync(bundled);
+        const buf = fs.readFileSync(bundled);
+        const etag = st.size.toString(16) + '-' + Math.floor(st.mtimeMs * 1000).toString(16);
+        return sendWithCache(buf, etag, st.mtime);
     }
     res.status(404).send('blank.docx not available (neither in storage nor bundled)');
 });

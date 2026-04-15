@@ -35,6 +35,24 @@ async function getBuffer(name) {
     return fs.readFileSync(fp);
 }
 
+// Cheap "does it exist + when did it change" probe used by the viewer's
+// HTTP layer to send ETag / Last-Modified without downloading the body.
+// Returns null when the entry doesn't exist.
+async function stat(name) {
+    const fp = safePath(name);
+    if (!fs.existsSync(fp)) return null;
+    const st = fs.statSync(fp);
+    if (!st.isFile()) return null;
+    return {
+        size: st.size,
+        // Strong-ish ETag from size + mtime in microseconds. The viewer
+        // wraps it in W/"…" because the bytes flow through a stream and
+        // we can't guarantee byte-for-byte identity across encodings.
+        etag: st.size.toString(16) + '-' + Math.floor(st.mtimeMs * 1000).toString(16),
+        lastModified: st.mtime,
+    };
+}
+
 // Pipe the file straight to an HTTP response without buffering.
 function pipeTo(name, res, contentType) {
     const fp = safePath(name);
@@ -52,4 +70,4 @@ function describe() {
     return `local (${STORAGE_DIR})`;
 }
 
-module.exports = { list, getBuffer, pipeTo, put, describe };
+module.exports = { list, getBuffer, pipeTo, put, describe, stat };
