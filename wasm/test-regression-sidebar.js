@@ -9,8 +9,9 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const VIEWER = 'https://viewer.szebeni.hu:6934';
+const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-sidebar';
 const DOC_NAME = 'sidebar-test.docx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'new.docx');

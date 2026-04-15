@@ -30,8 +30,14 @@ for (const key of required) {
     }
 }
 
+// HTTP form of the relay URL — same host/port as RELAY_URL but with
+// http(s):// scheme instead of ws(s)://. Used for the relay's REST endpoints
+// (e.g. /room/<id>/file) which can't be reached over a WebSocket scheme.
+const RELAY_HTTP = (process.env.RELAY_URL || '').replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+
 module.exports = {
     EDITOR_URL: process.env.EDITOR_URL,
     FILE_STORAGE_URL: process.env.FILE_STORAGE_URL,
     RELAY_URL: process.env.RELAY_URL,
+    RELAY_HTTP_URL: RELAY_HTTP,
 };

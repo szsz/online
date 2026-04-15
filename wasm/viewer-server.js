@@ -1,39 +1,41 @@
 // Viewer / File Storage server for COOL WASM co-editing.
-// Serves editor.html (upload/share UI) and a REST API for file CRUD
-// backed by Azure Blob Storage.
+// Serves editor.html (upload/share UI) and a REST API for file CRUD.
+//
+// Storage backend is pluggable — see wasm/lib/storage/index.js.
+// Switch with STORAGE_BACKEND=local|azure (default: local).
+//   local  → filesystem under LOCAL_STORAGE_DIR (default ./storage)
+//   azure  → Azure Blob, requires DOC_STORAGE_ACCOUNT / DOC_STORAGE_KEY
 
 const express = require('express');
-const { BlobServiceClient, StorageSharedKeyCredential } = require('@azure/storage-blob');
 const path = require('path');
+const fs = require('fs');
+const storage = require('./lib/storage');
 
 const PORT = process.env.PORT || 6934;
-
-// ── Azure Blob Storage ──────────────────────────────────────────
-const accountName = process.env.DOC_STORAGE_ACCOUNT;
-const accountKey  = process.env.DOC_STORAGE_KEY;
-const containerName = process.env.DOC_STORAGE_CONTAINER || 'documents';
-
-if (!accountName || !accountKey) {
-    console.error('Missing DOC_STORAGE_ACCOUNT or DOC_STORAGE_KEY');
-    process.exit(1);
-}
-
-const credential = new StorageSharedKeyCredential(accountName, accountKey);
-const blobService = new BlobServiceClient(
-    `https://${accountName}.blob.core.windows.net`, credential
-);
-const container = blobService.getContainerClient(containerName);
 
 // ── URLs injected into editor.html ──────────────────────────────
 const EDITOR_URL = process.env.EDITOR_URL || '';
 const RELAY_URL  = process.env.RELAY_URL  || '';
 const VIEWER_URL = process.env.FILE_STORAGE_URL || '';
 
+// CORS allow-list. Defaults to EDITOR_URL (the only origin that legitimately
+// uploads files into storage) plus self. Override with ALLOWED_ORIGINS as a
+// comma-separated list, or `*` to disable origin checking entirely.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS
+    || [EDITOR_URL, VIEWER_URL].filter(Boolean).join(','))
+    .split(',').map(s => s.trim()).filter(Boolean);
+const ALLOW_ANY = ALLOWED_ORIGINS.length === 1 && ALLOWED_ORIGINS[0] === '*';
+
 const app = express();
 
-// CORS — editor app on a different domain needs access
 app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin;
+    if (ALLOW_ANY) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (origin && ALLOWED_ORIGINS.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -46,7 +48,7 @@ app.get('/', (req, res) => {
     // In development, fall back to browser/html/editor.html.
     const deployPath = path.join(__dirname, 'editor.html');
     const devPath = path.join(__dirname, '..', 'browser', 'html', 'editor.html');
-    const htmlPath = require('fs').existsSync(deployPath) ? deployPath : devPath;
+    const htmlPath = fs.existsSync(deployPath) ? deployPath : devPath;
     res.sendFile(htmlPath, (err) => {
         if (err) res.status(500).send('Cannot load editor.html');
     });
@@ -64,11 +66,7 @@ app.get('/config', (req, res) => {
 // ── GET /api/files/ — list files ────────────────────────────────
 app.get('/api/files/', async (req, res) => {
     try {
-        const files = [];
-        for await (const blob of container.listBlobsFlat()) {
-            files.push({ name: blob.name, size: blob.properties.contentLength });
-        }
-        res.json(files);
+        res.json(await storage.list());
     } catch (err) {
         console.error('List files error:', err.message);
         res.status(500).json({ error: err.message });
@@ -78,14 +76,10 @@ app.get('/api/files/', async (req, res) => {
 // ── GET /api/files/:name — download file ────────────────────────
 app.get('/api/files/:name', async (req, res) => {
     try {
-        const blob = container.getBlobClient(req.params.name);
-        const download = await blob.download(0);
-        res.setHeader('Content-Type', download.contentType || 'application/octet-stream');
-        download.readableStreamBody.pipe(res);
+        await storage.pipeTo(req.params.name, res);
     } catch (err) {
-        if (err.statusCode === 404) return res.status(404).send('Not found');
         console.error('Download error:', err.message);
-        res.status(500).json({ error: err.message });
+        if (!res.headersSent) res.status(500).json({ error: err.message });
     }
 });
 
@@ -96,11 +90,8 @@ app.post('/api/files/:name', (req, res) => {
     req.on('end', async () => {
         try {
             const data = Buffer.concat(chunks);
-            const blob = container.getBlockBlobClient(req.params.name);
-            await blob.upload(data, data.length, {
-                blobHTTPHeaders: { blobContentType: 'application/octet-stream' },
-            });
-            res.json({ name: req.params.name, size: data.length });
+            const result = await storage.put(req.params.name, data);
+            res.json(result);
         } catch (err) {
             console.error('Upload error:', err.message);
             res.status(500).json({ error: err.message });
@@ -111,19 +102,17 @@ app.post('/api/files/:name', (req, res) => {
 // ── GET /blank.docx — blank document for pre-warm ───────────────
 app.get('/blank.docx', async (req, res) => {
     try {
-        const blob = container.getBlobClient('blank.docx');
-        const download = await blob.download(0);
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        download.readableStreamBody.pipe(res);
+        await storage.pipeTo('blank.docx', res,
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     } catch (err) {
-        if (err.statusCode === 404) return res.status(404).send('No blank.docx in storage');
-        res.status(500).json({ error: err.message });
+        if (!res.headersSent) res.status(500).json({ error: err.message });
     }
 });
 
 app.listen(PORT, () => {
     console.log(`Viewer server on port ${PORT}`);
-    console.log(`  Blob: ${accountName}/${containerName}`);
-    console.log(`  Editor: ${EDITOR_URL}`);
-    console.log(`  Relay:  ${RELAY_URL}`);
+    console.log(`  Storage:    ${storage.describe()}`);
+    console.log(`  Editor:     ${EDITOR_URL}`);
+    console.log(`  Relay:      ${RELAY_URL}`);
+    console.log(`  CORS allow: ${ALLOW_ANY ? '* (any)' : ALLOWED_ORIGINS.join(', ') || '(none)'}`);
 });

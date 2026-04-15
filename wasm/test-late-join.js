@@ -12,6 +12,7 @@ const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;
+const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-latejoin';
 const DOC_NAME = 'test document.docx';
@@ -153,17 +154,17 @@ async function waitForChars(pages, expected, timeout) {
         const up = await browser.newPage();
         await up.goto(BASE, { waitUntil: 'networkidle0' });
         const docBytes = fs.readFileSync(DOC_PATH);
-        await up.evaluate(async (url, name, arr, room, relayBase) => {
+        await up.evaluate(async (url, name, arr, room, relayHttp) => {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {
                 method: 'POST',
                 body: new Blob([new Uint8Array(arr)])
             });
             // Pre-seed relay so late joiners get this file immediately
-            await fetch(relayBase + '/room/' + encodeURIComponent(room) + '/file', {
+            await fetch(relayHttp + '/room/' + encodeURIComponent(room) + '/file', {
                 method: 'POST',
                 body: new Blob([new Uint8Array(arr)])
             });
-        }, BASE, DOC_NAME, Array.from(docBytes), ROOM, RELAY_BASE);
+        }, BASE, DOC_NAME, Array.from(docBytes), ROOM, RELAY_HTTP);
         await up.close();
         log('Uploaded (WOPI + relay)');
 

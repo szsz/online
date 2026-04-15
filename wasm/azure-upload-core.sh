@@ -13,7 +13,7 @@
 #   Generate a write SAS token via the Azure portal or:
 #     az storage blob generate-sas --account-name <account> --container-name <container> \
 #       --name <blob> --permissions cw --expiry <date> --full-uri
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONTAINER="lo-wasm-server"

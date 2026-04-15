@@ -260,6 +260,8 @@ qt/translations/*.qm
 
 #wasm build
 wasm/.env.*
+!wasm/.env.example
+!wasm/.env.deploy.example
 wasm/.deploy
 wasm/online-build/
 node_modules/

@@ -15,6 +15,7 @@ const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;
+const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-extreme';
 const TEST_DIR = path.join(__dirname, '..', 'test', 'data');
@@ -60,16 +61,16 @@ async function uploadFile(browser, name, filePath, room) {
     const up = await browser.newPage();
     await up.goto(BASE, { waitUntil: 'networkidle0' });
     const bytes = fs.readFileSync(filePath);
-    await up.evaluate(async (url, n, arr, r, relayBase) => {
+    await up.evaluate(async (url, n, arr, r, relayHttp) => {
         const body = new Blob([new Uint8Array(arr)]);
         await fetch(url + '/wasm/' + encodeURIComponent(n), { method: 'POST', body });
         // Pre-seed relay
         if (r) {
-            await fetch(relayBase + '/room/' + encodeURIComponent(r) + '/file', {
+            await fetch(relayHttp + '/room/' + encodeURIComponent(r) + '/file', {
                 method: 'POST', body: new Blob([new Uint8Array(arr)]),
             });
         }
-    }, BASE, name, Array.from(bytes), room || '', RELAY_BASE);
+    }, BASE, name, Array.from(bytes), room || '', RELAY_HTTP);
     await up.close();
     log(`  Uploaded ${name} (${(bytes.length/1024).toFixed(0)}KB)`);
 }

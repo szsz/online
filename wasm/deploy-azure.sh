@@ -60,14 +60,40 @@ fi
 # ── Create App Services ─────────────────────────────────────────
 if $DO_CREATE; then
     echo "=== Creating App Services ==="
+
+    # Refuse Free/Shared tier — WASM serving needs at least Basic.
+    PLAN_SKU="$(az appservice plan show --name "$APP_SERVICE_PLAN" \
+        --resource-group "$RESOURCE_GROUP" --query 'sku.tier' -o tsv 2>/dev/null || true)"
+    case "$PLAN_SKU" in
+        ""|Free|Shared)
+            echo "ERROR: App Service Plan '$APP_SERVICE_PLAN' is on tier '$PLAN_SKU'."
+            echo "       Free/Shared tiers cannot serve WASM at acceptable speed."
+            echo "       Use Basic (B1) or higher."
+            exit 1 ;;
+        *) echo "  Plan tier OK: $PLAN_SKU" ;;
+    esac
+
     for APP in "$VIEWER_APP_NAME" "$RELAY_APP_NAME" "$EDITOR_APP_NAME"; do
         echo "  Creating $APP..."
-        az webapp create \
-            --resource-group "$RESOURCE_GROUP" \
-            --plan "$APP_SERVICE_PLAN" \
-            --name "$APP" \
-            --runtime "NODE:20-lts" \
-            2>/dev/null || echo "  $APP already exists or creation failed"
+        # Capture stderr so we can distinguish "already exists" (benign) from
+        # real errors (quota exceeded, name taken, auth, etc.).
+        ERR_FILE="$(mktemp)"
+        if az webapp create \
+                --resource-group "$RESOURCE_GROUP" \
+                --plan "$APP_SERVICE_PLAN" \
+                --name "$APP" \
+                --runtime "NODE:20-lts" \
+                2>"$ERR_FILE" >/dev/null; then
+            echo "    created"
+        elif grep -qiE "already (exists|in use)|WebsiteAlreadyExists" "$ERR_FILE"; then
+            echo "    already exists (skipping)"
+        else
+            echo "ERROR: az webapp create failed for $APP:"
+            sed 's/^/      /' "$ERR_FILE"
+            rm -f "$ERR_FILE"
+            exit 1
+        fi
+        rm -f "$ERR_FILE"
     done
 
     # Enable WebSockets on relay
@@ -75,7 +101,7 @@ if $DO_CREATE; then
     az webapp config set \
         --resource-group "$RESOURCE_GROUP" \
         --name "$RELAY_APP_NAME" \
-        --web-sockets-enabled true
+        --web-sockets-enabled true >/dev/null
 
     echo ""
 fi
@@ -84,12 +110,16 @@ fi
 configure_settings() {
     echo "=== Configuring App Settings ==="
 
-    # Viewer settings
+    # Viewer settings — uses Azure Blob storage backend in App Services.
+    # The viewer-server.js defaults to STORAGE_BACKEND=local for dev; we
+    # explicitly set it to azure here so the deployed instance reads/writes
+    # blobs instead of the (empty) container's local filesystem.
     echo "  Viewer ($VIEWER_APP_NAME)..."
     az webapp config appsettings set \
         --resource-group "$RESOURCE_GROUP" \
         --name "$VIEWER_APP_NAME" \
         --settings \
+            STORAGE_BACKEND="azure" \
             FILE_STORAGE_URL="$VIEWER_URL" \
             EDITOR_URL="$EDITOR_URL" \
             RELAY_URL="$RELAY_URL" \
@@ -139,13 +169,15 @@ fi
 # Always configure settings before deploying
 configure_settings
 
-# ── Helper: stage, zip, deploy ───────────────────────────────────
+# ── Helper: stage, zip, deploy, smoke-test ──────────────────────
 deploy_app() {
     local APP_NAME=$1
     local DEPLOY_DIR=$2
+    local SMOKE_PATH=${3:-/}            # path to GET for smoke test (default: /)
     local ZIP_PATH="${DEPLOY_DIR}.zip"
 
     echo "  Zipping $DEPLOY_DIR..."
+    rm -f "$ZIP_PATH"
     (cd "$DEPLOY_DIR" && zip -qr "$ZIP_PATH" .)
 
     echo "  Deploying to $APP_NAME..."
@@ -155,8 +187,24 @@ deploy_app() {
         --type zip \
         --src-path "$ZIP_PATH"
 
-    echo "  Done: https://${APP_NAME}.azurewebsites.net"
+    # Smoke test: poll the app for up to 90s waiting for a 2xx/3xx.
+    local URL="https://${APP_NAME}.azurewebsites.net${SMOKE_PATH}"
+    echo "  Smoke test: GET $URL"
+    local i HTTP
+    for i in $(seq 1 18); do
+        HTTP="$(curl -ks -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo 000)"
+        if [[ "$HTTP" =~ ^[23] ]]; then
+            echo "    OK (HTTP $HTTP after ${i}*5s)"
+            echo "  Done: https://${APP_NAME}.azurewebsites.net"
+            echo ""
+            return 0
+        fi
+        sleep 5
+    done
+    echo "  WARNING: smoke test failed (last HTTP=$HTTP). Check logs:"
+    echo "    az webapp log tail --resource-group $RESOURCE_GROUP --name $APP_NAME"
     echo ""
+    return 1
 }
 
 # ── Deploy Viewer ────────────────────────────────────────────────
@@ -168,6 +216,14 @@ if $DO_VIEWER; then
 
     # Server + package.json
     cp "$SCRIPT_DIR/viewer-server.js" "$VDIR/server.js"
+
+    # Storage backend abstraction (lib/storage/{index,local,azure}.js).
+    # Keep the directory layout so `require('./lib/storage')` resolves.
+    mkdir -p "$VDIR/lib/storage"
+    cp "$SCRIPT_DIR/lib/storage/index.js" "$VDIR/lib/storage/"
+    cp "$SCRIPT_DIR/lib/storage/local.js" "$VDIR/lib/storage/"
+    cp "$SCRIPT_DIR/lib/storage/azure.js" "$VDIR/lib/storage/"
+
     cat > "$VDIR/package.json" <<'VJSON'
 {
   "name": "cool-wasm-viewer",
@@ -188,7 +244,7 @@ VJSON
     echo "  Installing npm dependencies..."
     (cd "$VDIR" && npm install --production --silent)
 
-    deploy_app "$VIEWER_APP_NAME" "$VDIR"
+    deploy_app "$VIEWER_APP_NAME" "$VDIR" "/config"
 fi
 
 # ── Deploy Relay ─────────────────────────────────────────────────
@@ -216,7 +272,7 @@ RJSON
     echo "  Installing npm dependencies..."
     (cd "$RDIR" && npm install --production --silent)
 
-    deploy_app "$RELAY_APP_NAME" "$RDIR"
+    deploy_app "$RELAY_APP_NAME" "$RDIR" "/"
 fi
 
 # ── Deploy Editor ────────────────────────────────────────────────
@@ -275,7 +331,7 @@ EJSON
     echo "  Installing npm dependencies..."
     (cd "$EDIR" && npm install --production --silent)
 
-    deploy_app "$EDITOR_APP_NAME" "$EDIR"
+    deploy_app "$EDITOR_APP_NAME" "$EDIR" "/"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────

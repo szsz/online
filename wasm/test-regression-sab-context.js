@@ -22,9 +22,10 @@ const __cl = require('./lib/inject-checklist');
 
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
-const RELAY = 'wss://wasm.atgpartners.info:9091';
+const BASE = env.EDITOR_URL;
+const RELAY = env.RELAY_URL;
 const TIMEOUT = 180000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-sab';
 
@@ -91,17 +92,17 @@ async function typeChars(page, label, chars) {
         const ROOM_OK   = 'sab-ok-' + Date.now();
         const ROOM_BAD  = 'sab-bad-' + Date.now();
         const FILE = 'sab-test.txt';
+        // Relay file endpoint is the same host but over HTTPS, not WSS.
+        const RELAY_HTTP = RELAY.replace(/^wss?:/, m => m === 'wss:' ? 'https:' : 'http:');
         const up = await browser.newPage();
         await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
         for (const room of [ROOM_OK, ROOM_BAD]) {
-            await up.evaluate(async (url, room, file, content) => {
+            await up.evaluate(async (url, relayHttp, room, file, content) => {
                 await fetch(url + '/wasm/' + file, { method: 'POST',
                     body: new Blob([content], { type: 'application/octet-stream' })});
-                await fetch(`${url.replace(':6932', ':9091').replace('https', 'https')}/room/${encodeURIComponent(room)}/file`.replace('https://wasm', 'https://wasm') ,
-                    { method: 'POST', body: new Blob([content]) }).catch(() => {});
-                await fetch('https://wasm.atgpartners.info:9091/room/' + encodeURIComponent(room) + '/file',
+                await fetch(`${relayHttp}/room/${encodeURIComponent(room)}/file`,
                     { method: 'POST', body: new Blob([content]) });
-            }, BASE, room, FILE, 'Hello');
+            }, BASE, RELAY_HTTP, room, FILE, 'Hello');
         }
         await up.close();
         log('Doc uploaded + relay seeded for both rooms');

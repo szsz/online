@@ -39,9 +39,22 @@ app.use((req, res, next) => {
     next();
 });
 
-// CORS — viewer on a different domain needs access
+// CORS — viewer on a different domain pushes file uploads to /wasm/:name.
+// Defaults to FILE_STORAGE_URL (the only origin that legitimately POSTs files).
+// Override with ALLOWED_ORIGINS as a comma-separated list, or `*` to disable.
+const FILE_STORAGE_URL = process.env.FILE_STORAGE_URL || '';
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || FILE_STORAGE_URL)
+    .split(',').map(s => s.trim()).filter(Boolean);
+const ALLOW_ANY = ALLOWED_ORIGINS.length === 1 && ALLOWED_ORIGINS[0] === '*';
+
 app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin;
+    if (ALLOW_ANY) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (origin && ALLOWED_ORIGINS.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
