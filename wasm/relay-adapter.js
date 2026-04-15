@@ -288,14 +288,14 @@
         // messages during init (toolbar enabled/disabled etc.) — forwarding
         // those would corrupt the primary view's UI state.
         var shouldForward = text.startsWith('invalidatetiles:');
-        // NOTE: .uno:StateWordCount is intentionally NOT forwarded. The
-        // local WASM emits its own StateWordCount based on the local doc,
-        // which is the authoritative value for the local UI. Forwarding
-        // remote-peer wc updates causes the local widget to flip-flop and,
-        // worse, during a hot-switch from doc1→doc2 the local UI gets
-        // clobbered by the remote peer's old-doc wc (seen as a 60s wc
-        // freeze in test-regression-room-switch.js).
-        // Modified status is document-level and safe to forward.
+        // Word count and modified status are document-level and must be
+        // forwarded: COOL's Kit emits .uno:StateWordCount through the
+        // remote-client channel even for the LOCAL view, so if we don't
+        // forward it the #StateWordCount widget never updates. (This was
+        // briefly removed in an attempt to avoid a cross-doc clobber
+        // during hot-switch, but that broke the wc widget for everyone —
+        // see test-regression-room-switch which reads wc for validation.)
+        if (text.indexOf('.uno:StateWordCount=') >= 0) shouldForward = true;
         if (text.indexOf('.uno:ModifiedStatus=') >= 0) shouldForward = true;
 
         if (shouldForward) {

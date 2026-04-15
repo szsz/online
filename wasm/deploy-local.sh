@@ -117,9 +117,12 @@ print_artifact() {
         echo "  ${RED}MISSING${RST} $p"
     fi
 }
+# Files that are required for the editor to run. online.data is only
+# present when build-wasm.sh is configured with --preload-file, which
+# this build is not — it uses soffice.data for the LO asset bundle.
 print_artifact "$EDITOR_BROWSER_DIR/online.wasm"
 print_artifact "$EDITOR_BROWSER_DIR/online.js"
-print_artifact "$EDITOR_BROWSER_DIR/online.data"
+print_artifact "$EDITOR_BROWSER_DIR/online.worker.js"
 print_artifact "$EDITOR_BROWSER_DIR/soffice.data"
 echo ""
 echo "  These come from wasm/build-wasm.sh (multi-hour Docker build)."
