@@ -468,30 +468,41 @@
     //      stores the bytes so the editor can re-load them. Late-join
     //      sync into the viewer's storage will be broken in this mode.
     function getFileStorageUrl(wopiSrc) {
-        var encoded = encodeURIComponent(wopiSrc);
-        // 1. Explicit param from the viewer
+        return resolveFileStorageBase() + '/api/files/' + encodeURIComponent(wopiSrc);
+    }
+
+    // Build the URL for a content-addressable blob. Returns null if we
+    // can't resolve the file-storage origin AND the caller should fall
+    // back to /api/files/<name>.
+    function getBlobUrl(hash) {
+        if (!hash) return null;
+        var base = resolveFileStorageBase();
+        if (!base) return null;
+        return base + '/api/blobs/' + encodeURIComponent(hash);
+    }
+
+    // Resolve the base URL of the viewer (which serves both /api/files/
+    // and /api/blobs/). Same resolution order as the old getFileStorageUrl.
+    function resolveFileStorageBase() {
         var explicit = params.get('fileStorageUrl');
         if (explicit) {
-            // Trim trailing slash so we don't produce double //
             if (explicit.charAt(explicit.length - 1) === '/') explicit = explicit.slice(0, -1);
-            return explicit + '/api/files/' + encoded;
+            return explicit;
         }
-        // 2. Same-origin parent
         try {
             if (window.parent !== window) {
                 var origin = window.parent.location.origin;
-                if (origin && origin !== 'null') return origin + '/api/files/' + encoded;
+                if (origin && origin !== 'null') return origin;
             }
         } catch(e) {}
-        // 3. Referrer
         if (document.referrer) {
-            try {
-                return new URL(document.referrer).origin + '/api/files/' + encoded;
-            } catch(e) {}
+            try { return new URL(document.referrer).origin; } catch(e) {}
         }
-        // 4. Editor-local fallback
-        console.warn('[relay] getFileStorageUrl: no fileStorageUrl param, no same-origin parent, no referrer — falling back to editor /wasm/ (late-joiners will see stale content)');
-        return window.location.origin + '/wasm/' + encoded;
+        // Last resort: the editor's own origin. /api/blobs/ doesn't live
+        // there, so getBlobUrl will return a 404 and the late-joiner code
+        // will fall back to /wasm/ via the source list.
+        console.warn('[relay] resolveFileStorageBase: no fileStorageUrl param, no same-origin parent, no referrer');
+        return window.location.origin;
     }
 
     // --- Process a sequenced UI message ---
@@ -595,42 +606,57 @@
                         return;
                     }
 
-                    // Late joiner — download checkpoint file.
-                    // The checkpoint was saved to both the file storage server
-                    // AND the editor's /wasm/ endpoint. We download from the
-                    // file storage (canonical) and overwrite the local WOPI
-                    // file so the WASM loads the right version.
+                    // Late joiner — download the checkpoint by HASH from
+                    // the content-addressable blob endpoint. The relay
+                    // promised this hash; the blob endpoint returns
+                    // exactly those bytes; the SHA-256 we compute will
+                    // match — no chance of drift, no 0x0A re-download
+                    // dance, no stale-hash deadlock.
                     //
-                    // joinFileHash is the SHA-256 hex of the bytes WE
-                    // actually loaded — computed locally, not echoed from
-                    // info.hash. The relay's expected hash (info.hash) is
-                    // only logged here for debug; if our hash differs the
-                    // relay sends a 0x0A "checkpoint mismatch" and we
-                    // re-download.
+                    // Falls back to /api/files/<name> + /wasm/<name> if
+                    // the blob endpoint is unavailable (older deploys).
                     joinFileSeq = info.seq;
                     var wopiSrc = params.get('WOPISrc') || '';
                     var editorWopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                    console.log('[relay] Join-response: relay-expected hash=' + (info.hash||'').substring(0, 16) + '… seq=' + info.seq + ' — downloading checkpoint');
+                    var blobUrl = info.hash ? getBlobUrl(info.hash) : null;
+                    var nameUrl = getFileStorageUrl(wopiSrc);
+                    console.log('[relay] Join-response: relay-expected hash=' + (info.hash||'').substring(0, 16) + '… seq=' + info.seq +
+                        (blobUrl ? ' — fetching by hash from ' + blobUrl.replace(/\/[a-f0-9]{16,}.*$/, '/<hash>') : ' — fetching by name'));
 
-                    // First try file storage (canonical), fall back to editor's /wasm/
-                    var fileStorageUrl = getFileStorageUrl(wopiSrc);
-                    origFetch(fileStorageUrl, { mode: 'cors' }).then(function(r) {
-                        if (!r.ok) throw new Error('File storage ' + r.status);
-                        return r.arrayBuffer();
-                    }).catch(function() {
-                        // Fallback: download from editor's own /wasm/ endpoint
-                        console.log('[relay] File storage unavailable, using editor /wasm/');
-                        return origFetch(editorWopiUrl).then(function(r) { return r.arrayBuffer(); });
-                    }).then(function(buf) {
-                        // Compute SHA-256 of the bytes we actually loaded.
+                    // Try sources in order: blob-by-hash → name → editor's own /wasm/.
+                    var sources = [];
+                    if (blobUrl) sources.push({ kind: 'blob', url: blobUrl });
+                    sources.push({ kind: 'name', url: nameUrl });
+                    sources.push({ kind: 'editor-wasm', url: editorWopiUrl });
+
+                    function tryNext(idx) {
+                        if (idx >= sources.length) {
+                            return Promise.reject(new Error('all sources exhausted'));
+                        }
+                        var s = sources[idx];
+                        var opts = s.kind === 'editor-wasm' ? {} : { mode: 'cors' };
+                        return origFetch(s.url, opts).then(function(r) {
+                            if (!r.ok) throw new Error(s.kind + ' ' + r.status);
+                            return r.arrayBuffer();
+                        }).catch(function(e) {
+                            console.log('[relay] Source "' + s.kind + '" failed (' + e.message + '), trying next');
+                            return tryNext(idx + 1);
+                        });
+                    }
+                    tryNext(0).then(function(buf) {
+                        // Compute SHA-256 of what we actually loaded — keeps
+                        // the integrity check honest even when we go via
+                        // /api/blobs (where it's tautological).
                         var bytes = new Uint8Array(buf);
                         return crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
                             var hashArr = new Uint8Array(hashBuf);
                             joinFileHash = Array.from(hashArr).map(function(b) {
                                 return b.toString(16).padStart(2, '0');
                             }).join('');
+                            var matches = info.hash && info.hash === joinFileHash;
                             console.log('[relay] Downloaded ' + buf.byteLength + 'B; computed hash=' + joinFileHash.substring(0, 16) + '…' +
-                                (info.hash && info.hash !== joinFileHash ? ' (relay expected ' + info.hash.substring(0, 16) + '… — mismatch likely)' : ''));
+                                (matches ? ' (matches relay expected)' :
+                                 info.hash ? ' (relay expected ' + info.hash.substring(0, 16) + '… — mismatch will be resolved by relay)' : ''));
                             lateJoinFileReady = true;
                             return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
                         });

@@ -319,40 +319,37 @@ server.on('upgrade', (req, socket, head) => {
                 ws._viewId = viewId;
                 console.log(`[${roomId}] JOIN viewId=${viewId} active=${room.activeClients.size} checkpoint=${!!room.checkpointHash} unsaved=${room.messageLog.length}`);
 
-                // The relay no longer stores file bytes — only the checkpoint
-                // hash. Any non-null hash means a checkpoint exists and the
-                // joiner should sync to it. (The legacy `room.checkpoint`
-                // field is only set by the deprecated createCheckpoint(buf)
-                // path and is always null in the hash-only flow, which would
-                // misclassify every joiner as "first client" and break
-                // late-join sync.)
-                if (!room.checkpointHash) {
-                    // No checkpoint at all — first client ever
-                    console.log(`[${roomId}]   → First client (no checkpoint)`);
+                // Classification rules (in order):
+                //   1. No active peers AND no checkpoint → genuinely first.
+                //      Activate immediately; the client owns the doc.
+                //   2. Active peers exist → late joiner, regardless of
+                //      whether a checkpoint exists yet. We trigger a fresh
+                //      save on the active peer and serve the resulting
+                //      checkpoint. (The previous code missed this when
+                //      checkpointHash was still null — both tabs of a doc
+                //      racing each other ended up classified as "first",
+                //      so neither saw the other's edits.)
+                //   3. No active peers but a checkpoint exists → late
+                //      joiner, no save needed, serve cached.
+                if (room.activeClients.size === 0 && !room.checkpointHash) {
+                    console.log(`[${roomId}]   → First client (no peers, no checkpoint)`);
                     room.sendControl(ws, 0x05, 0, JSON.stringify({ first: true, seq: 0 }));
                     ws._joining = false;
                     room.activeClients.add(ws);
                     return;
                 }
-
-                // ALWAYS trigger a fresh save when a new browser joins (if there are active peers)
-                // This ensures the checkpoint includes ALL prior edits.
-                // If no changes since last checkpoint, the save will produce the same file.
                 if (room.activeClients.size === 0) {
-                    // No active peers — serve current checkpoint directly
                     console.log(`[${roomId}]   → No active peers, serving cached checkpoint`);
                     room.serveCheckpoint(ws);
                     return;
                 }
-
-                // Wait for a fresh save before serving
-                console.log(`[${roomId}]   → Requesting fresh save (unsaved=${room.messageLog.length})`);
+                // Active peer(s) — wait for a fresh save (which may be the
+                // active peer's very first save if no checkpoint exists yet).
+                console.log(`[${roomId}]   → Active peer present, requesting fresh save (unsaved=${room.messageLog.length}, hasCheckpoint=${!!room.checkpointHash})`);
                 ws._waitingForSave = true;
                 if (!room.savePending) {
                     room.triggerSave();
                 }
-                // 0x07 handler serves checkpoint to all waiting joiners
-                // Timeout fallback in triggerSave
                 return;
             }
 

@@ -1,5 +1,13 @@
 // Azure Blob Storage backend for the viewer / file-storage server.
 //
+// Layout (content-addressable — see the local backend for the rationale):
+//   _blobs/<sha256>          — immutable content blob (BlockBlob)
+//   _meta/<urlencoded-name>.json — {hash, size, updatedAt}
+//   <name>                   — legacy plain-name blob, read-only fallback;
+//                              the first read promotes it into the new
+//                              layout (computes hash, copies to _blobs/,
+//                              writes _meta/).
+//
 // Two auth modes:
 //   1) SAS URL  — set DOC_STORAGE_SAS_URL to a full container-scoped SAS URL
 //      (e.g. https://acct.blob.core.windows.net/container?sv=…&sig=…).
@@ -8,6 +16,7 @@
 //      DOC_STORAGE_CONTAINER (default: "documents").
 
 const { BlobServiceClient, ContainerClient, StorageSharedKeyCredential } = require('@azure/storage-blob');
+const crypto = require('crypto');
 
 const sasUrl        = process.env.DOC_STORAGE_SAS_URL;
 const accountName   = process.env.DOC_STORAGE_ACCOUNT;
@@ -18,7 +27,6 @@ let container;
 let describeSource;
 
 if (sasUrl) {
-    // SAS URL is container-scoped: https://{account}.blob.core.windows.net/{container}?{sasQuery}
     container = new ContainerClient(sasUrl);
     describeSource = `azure SAS (${container.accountName}/${container.containerName})`;
 } else if (accountName && accountKey) {
@@ -32,70 +40,16 @@ if (sasUrl) {
     throw new Error('Azure storage backend requires DOC_STORAGE_SAS_URL or DOC_STORAGE_ACCOUNT+DOC_STORAGE_KEY');
 }
 
-async function list() {
-    const out = [];
-    for await (const blob of container.listBlobsFlat()) {
-        out.push({ name: blob.name, size: blob.properties.contentLength });
-    }
-    return out;
+function safeName(name) {
+    // Strip any path traversal — names with "/" become flat keys.
+    return name.replace(/\.\.+\//g, '').replace(/^\/+/, '');
 }
-
-async function getBuffer(name) {
-    try {
-        const blob = container.getBlobClient(name);
-        const dl = await blob.download(0);
-        return await streamToBuffer(dl.readableStreamBody);
-    } catch (err) {
-        if (err.statusCode === 404) return null;
-        throw err;
-    }
+function blobKey(hash) {
+    if (!/^[0-9a-f]{16,128}$/i.test(hash || '')) return null;
+    return '_blobs/' + hash.toLowerCase();
 }
-
-async function pipeTo(name, res, contentType) {
-    try {
-        const blob = container.getBlobClient(name);
-        const dl = await blob.download(0);
-        res.setHeader('Content-Type', contentType || dl.contentType || 'application/octet-stream');
-        dl.readableStreamBody.pipe(res);
-    } catch (err) {
-        if (err.statusCode === 404) { res.statusCode = 404; res.end('Not found'); return; }
-        throw err;
-    }
-}
-
-async function put(name, buffer) {
-    const blob = container.getBlockBlobClient(name);
-    await blob.upload(buffer, buffer.length, {
-        blobHTTPHeaders: { blobContentType: 'application/octet-stream' },
-    });
-    return { name, size: buffer.length };
-}
-
-// Cheap "does it exist + ETag/Last-Modified" probe so the viewer can
-// answer 304 without downloading the body. Azure Blob ships its own ETag
-// and Last-Modified in getProperties — we use those directly.
-async function stat(name) {
-    try {
-        const blob = container.getBlobClient(name);
-        const props = await blob.getProperties();
-        // Azure's etag comes wrapped in 0x… or "…", strip quotes if present
-        // to match the local-FS shape; the viewer wraps it in W/"…" before
-        // sending.
-        let etag = props.etag || '';
-        if (etag.startsWith('"') && etag.endsWith('"')) etag = etag.slice(1, -1);
-        return {
-            size: props.contentLength,
-            etag: etag,
-            lastModified: props.lastModified,
-        };
-    } catch (err) {
-        if (err.statusCode === 404) return null;
-        throw err;
-    }
-}
-
-function describe() {
-    return describeSource;
+function metaKey(name) {
+    return '_meta/' + encodeURIComponent(safeName(name)) + '.json';
 }
 
 function streamToBuffer(stream) {
@@ -107,4 +61,191 @@ function streamToBuffer(stream) {
     });
 }
 
-module.exports = { list, getBuffer, pipeTo, put, describe, stat };
+function sha256Hex(buf) {
+    return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+// ── Blobs (content-addressable) ────────────────────────────────────
+async function putBlob(buffer) {
+    const hash = sha256Hex(buffer);
+    const key = blobKey(hash);
+    const blob = container.getBlockBlobClient(key);
+    // exists() lets us skip the upload when the same content is already
+    // stored — saves time and PUT cost when many users save unchanged docs.
+    const exists = await blob.exists();
+    if (!exists) {
+        await blob.upload(buffer, buffer.length, {
+            blobHTTPHeaders: { blobContentType: 'application/octet-stream' },
+        });
+    }
+    return { hash, size: buffer.length };
+}
+
+async function statBlob(hash) {
+    const key = blobKey(hash);
+    if (!key) return null;
+    try {
+        const blob = container.getBlobClient(key);
+        const props = await blob.getProperties();
+        return { size: props.contentLength, etag: hash, lastModified: props.lastModified };
+    } catch (err) {
+        if (err.statusCode === 404) return null;
+        throw err;
+    }
+}
+
+async function getBlobBuffer(hash) {
+    const key = blobKey(hash);
+    if (!key) return null;
+    try {
+        const blob = container.getBlobClient(key);
+        const dl = await blob.download(0);
+        return await streamToBuffer(dl.readableStreamBody);
+    } catch (err) {
+        if (err.statusCode === 404) return null;
+        throw err;
+    }
+}
+
+async function pipeBlobTo(hash, res, contentType) {
+    const key = blobKey(hash);
+    if (!key) { res.statusCode = 404; res.end('Bad hash'); return; }
+    try {
+        const blob = container.getBlobClient(key);
+        const dl = await blob.download(0);
+        res.setHeader('Content-Type', contentType || dl.contentType || 'application/octet-stream');
+        dl.readableStreamBody.pipe(res);
+    } catch (err) {
+        if (err.statusCode === 404) { res.statusCode = 404; res.end('Not found'); return; }
+        throw err;
+    }
+}
+
+// ── Name → hash metadata ───────────────────────────────────────────
+async function readMeta(name) {
+    try {
+        const blob = container.getBlobClient(metaKey(name));
+        const dl = await blob.download(0);
+        const buf = await streamToBuffer(dl.readableStreamBody);
+        return JSON.parse(buf.toString('utf8'));
+    } catch (err) {
+        if (err.statusCode === 404) return null;
+        return null;
+    }
+}
+async function writeMeta(name, meta) {
+    const blob = container.getBlockBlobClient(metaKey(name));
+    const body = Buffer.from(JSON.stringify(meta), 'utf8');
+    await blob.upload(body, body.length, {
+        blobHTTPHeaders: { blobContentType: 'application/json' },
+    });
+}
+
+// Self-healing migration: a legacy plain-name blob with no metadata.
+// Compute hash, write to _blobs/, write metadata.
+async function maybeMigrateLegacy(name) {
+    const sn = safeName(name);
+    try {
+        const blob = container.getBlobClient(sn);
+        const dl = await blob.download(0);
+        const buf = await streamToBuffer(dl.readableStreamBody);
+        const { hash, size } = await putBlob(buf);
+        const meta = {
+            hash, size,
+            updatedAt: dl.lastModified ? dl.lastModified.toISOString() : new Date().toISOString(),
+            migrated: true,
+        };
+        await writeMeta(sn, meta);
+        return meta;
+    } catch (err) {
+        if (err.statusCode === 404) return null;
+        throw err;
+    }
+}
+
+async function getName(name) {
+    const meta = await readMeta(name);
+    if (meta) return meta;
+    return maybeMigrateLegacy(name);
+}
+
+async function setName(name, hash, size) {
+    const meta = { hash, size, updatedAt: new Date().toISOString() };
+    await writeMeta(safeName(name), meta);
+    return meta;
+}
+
+async function listNames() {
+    // Iterate metadata blobs only; legacy plain-name blobs without metadata
+    // would need an extra pass. We list those too so the UI stays complete.
+    const out = [];
+    const known = new Set();
+    for await (const blob of container.listBlobsFlat({ prefix: '_meta/' })) {
+        const fn = blob.name.slice('_meta/'.length);
+        if (!fn.endsWith('.json')) continue;
+        const name = decodeURIComponent(fn.slice(0, -5));
+        try {
+            const meta = await readMeta(name);
+            if (meta) {
+                out.push({ name, hash: meta.hash, size: meta.size, updatedAt: meta.updatedAt });
+                known.add(name);
+            }
+        } catch (e) {}
+    }
+    for await (const blob of container.listBlobsFlat()) {
+        if (blob.name.startsWith('_blobs/') || blob.name.startsWith('_meta/')) continue;
+        if (known.has(blob.name)) continue;
+        out.push({
+            name: blob.name,
+            hash: null,
+            size: blob.properties.contentLength,
+            updatedAt: blob.properties.lastModified
+                ? blob.properties.lastModified.toISOString() : null,
+            legacy: true,
+        });
+    }
+    return out;
+}
+
+// ── Backward-compat facades ────────────────────────────────────────
+async function put(name, buffer) {
+    const { hash, size } = await putBlob(buffer);
+    await setName(safeName(name), hash, size);
+    return { name: safeName(name), size, hash };
+}
+
+async function getBuffer(name) {
+    const meta = await getName(name);
+    if (!meta || !meta.hash) return null;
+    return getBlobBuffer(meta.hash);
+}
+
+async function pipeTo(name, res, contentType) {
+    const meta = await getName(name);
+    if (!meta || !meta.hash) { res.statusCode = 404; res.end('Not found'); return; }
+    res.setHeader('X-Content-Hash', meta.hash);
+    return pipeBlobTo(meta.hash, res, contentType);
+}
+
+async function stat(name) {
+    const meta = await getName(name);
+    if (!meta || !meta.hash) return null;
+    const blobMeta = await statBlob(meta.hash);
+    if (!blobMeta) return null;
+    return {
+        size: blobMeta.size,
+        etag: meta.hash,
+        lastModified: meta.updatedAt ? new Date(meta.updatedAt) : blobMeta.lastModified,
+    };
+}
+
+async function list() { return listNames(); }
+
+function describe() { return describeSource; }
+
+module.exports = {
+    putBlob, getBlobBuffer, pipeBlobTo, statBlob,
+    setName, getName, listNames,
+    list, getBuffer, pipeTo, put, stat,
+    describe,
+};

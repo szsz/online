@@ -131,42 +131,84 @@ app.get('/upload', (req, res) => {
     res.sendFile(htmlPath);
 });
 
-// ── GET /api/files/ — list files ────────────────────────────────
+// ── GET /api/files/ — list files (with current hashes) ─────────
 app.get('/api/files/', async (req, res) => {
     try {
-        res.json(await storage.list());
+        // listNames returns [{name, hash, size, updatedAt}] from the
+        // content-addressable layer; legacy plain-name blobs without
+        // metadata appear with hash=null.
+        const items = typeof storage.listNames === 'function'
+            ? await storage.listNames() : await storage.list();
+        res.json(items);
     } catch (err) {
         console.error('List files error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// ── GET /api/files/:name — download file ────────────────────────
-// Cache contract for stored documents:
-//   - Cache-Control: no-cache  (browser MUST revalidate before reuse)
-//   - ETag + Last-Modified set from the storage backend
-//   - If-None-Match / If-Modified-Since → 304 with body suppressed
-// Documents are mutable (co-editing saves back here), so we never let the
-// browser skip revalidation, but a fresh ETag round-trip is much cheaper
-// than re-streaming the file body from the storage backend on every click.
+// ── GET /api/blobs/:hash — content-addressable blob ─────────────
+// The actual document bytes, addressed by their SHA-256 hash. Same hash
+// → same bytes, forever — so this is the cleanest immutable resource on
+// the server: max-age=1y + immutable + ETag = the hash itself. Late
+// joiners download from here so the bytes they get can never drift from
+// what the relay's checkpoint hash promised.
+app.get('/api/blobs/:hash', async (req, res) => {
+    try {
+        const hash = req.params.hash;
+        if (!/^[0-9a-f]{16,128}$/i.test(hash)) {
+            res.status(400).json({ error: 'Bad hash format' });
+            return;
+        }
+        // Conditional GET shortcut — content-addressable URLs never change
+        // body, so ETag = hash always matches.
+        if (req.headers['if-none-match'] === '"' + hash + '"') {
+            res.status(304).end(); return;
+        }
+        const blobMeta = typeof storage.statBlob === 'function'
+            ? await storage.statBlob(hash) : null;
+        if (!blobMeta) { res.status(404).json({ error: 'No such blob' }); return; }
+        res.setHeader('ETag', '"' + hash + '"');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Content-Length', blobMeta.size);
+        // Body type is opaque (the editor knows the doc type from the name);
+        // application/octet-stream avoids any browser content-sniffing.
+        await storage.pipeBlobTo(hash, res, 'application/octet-stream');
+    } catch (err) {
+        console.error('Blob download error:', err.message);
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+});
+
+// ── GET /api/files/:name — download current version of `name` ──
+// Resolves the name to its current hash via metadata, then proxies the
+// blob bytes. Sends `X-Content-Hash: <hash>` so the caller knows which
+// content version it got (handy for the relay-adapter — and for tests).
+//
+// Cache contract: Cache-Control: no-cache. The mapping name→hash is
+// mutable (co-editing saves update it), so we always revalidate. The
+// underlying blob fetch is a 304 on hash-match, but the name's own
+// ETag rotates with each save.
 app.get('/api/files/:name', async (req, res) => {
     try {
-        if (typeof storage.stat === 'function') {
-            const meta = await storage.stat(req.params.name);
-            if (meta) {
-                const etag = 'W/"' + meta.etag + '"';
-                const lastMod = meta.lastModified ? new Date(meta.lastModified).toUTCString() : null;
-                res.setHeader('ETag', etag);
-                if (lastMod) res.setHeader('Last-Modified', lastMod);
-                res.setHeader('Cache-Control', 'no-cache');
-                // Conditional GET: honour ETag first, fall back to mtime.
-                const ims = req.headers['if-modified-since'];
-                const imsHit = lastMod && ims &&
-                    new Date(ims).getTime() >= new Date(lastMod).getTime();
-                if (req.headers['if-none-match'] === etag || imsHit) {
-                    res.status(304).end();
-                    return;
-                }
+        const meta = typeof storage.getName === 'function'
+            ? await storage.getName(req.params.name)
+            : (typeof storage.stat === 'function' ? await storage.stat(req.params.name) : null);
+        if (!meta) { res.status(404).json({ error: 'Not found' }); return; }
+        const hash = meta.hash || meta.etag;   // legacy stat() returns etag
+        if (hash) {
+            const wEtag = 'W/"' + hash + '"';
+            res.setHeader('ETag', wEtag);
+            res.setHeader('X-Content-Hash', hash);
+            const lastMod = meta.updatedAt
+                ? new Date(meta.updatedAt).toUTCString()
+                : (meta.lastModified ? new Date(meta.lastModified).toUTCString() : null);
+            if (lastMod) res.setHeader('Last-Modified', lastMod);
+            res.setHeader('Cache-Control', 'no-cache');
+            const ims = req.headers['if-modified-since'];
+            const imsHit = lastMod && ims &&
+                new Date(ims).getTime() >= new Date(lastMod).getTime();
+            if (req.headers['if-none-match'] === wEtag || imsHit) {
+                res.status(304).end(); return;
             }
         }
         await storage.pipeTo(req.params.name, res);
@@ -176,7 +218,10 @@ app.get('/api/files/:name', async (req, res) => {
     }
 });
 
-// ── POST /api/files/:name — upload/overwrite file ───────────────
+// ── POST /api/files/:name — upload new version of `name` ───────
+// Computes the SHA-256 server-side, stores under /_blobs/<hash>, and
+// updates the name → hash mapping. Returns {name, size, hash} so the
+// uploader knows the canonical hash without re-computing.
 app.post('/api/files/:name', (req, res) => {
     const chunks = [];
     req.on('data', c => chunks.push(c));
@@ -184,7 +229,7 @@ app.post('/api/files/:name', (req, res) => {
         try {
             const data = Buffer.concat(chunks);
             const result = await storage.put(req.params.name, data);
-            res.json(result);
+            res.json(result);  // {name, size, hash}
         } catch (err) {
             console.error('Upload error:', err.message);
             res.status(500).json({ error: err.message });
