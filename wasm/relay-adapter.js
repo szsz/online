@@ -47,10 +47,14 @@
             var newDoc = msg.Values.docName;
             console.log('[relay] Room switch: ' + relayUrl + ' → ' + newRoom);
 
-            // Close old connection
-            if (ws && ws.readyState <= 1) {
-                ws.onclose = null; // prevent reconnect logic
-                ws.close();
+            // Close old connection — null ALL handlers to prevent stale
+            // messages from being processed against the new room's state
+            if (ws) {
+                ws.onmessage = null;
+                ws.onopen = null;
+                ws.onclose = null;
+                ws.onerror = null;
+                if (ws.readyState <= 1) ws.close();
             }
 
             // Reset state for new room
@@ -62,6 +66,8 @@
             lastSeq = 0;
             sendQueue = [];
             recvQueue = [];
+            kitQueue = []; // drop any pending messages from old room
+            lateJoinFileReady = false;
             // Keep remoteClients — they'll be cleaned up when new room announces joins
             for (var vid in remoteClients) {
                 if (remoteClients[vid].clientId > 0) {
@@ -80,6 +86,12 @@
             ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
 
             console.log('[relay] Connecting to new room: ' + newRoom);
+
+            // Restart the activation polling — it self-cleared when we
+            // activated in the previous room. For hot-switch late join,
+            // coolwsdReady is already true (prewarm), so activation needs
+            // to happen as soon as we know we can join.
+            startActivationPoll();
         } catch(e) {}
     });
 
@@ -633,12 +645,20 @@
     ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
 
     // --- Activation when COOLWSD is ready (for late joiners) ---
-    // Late joiners: wait for both COOLWSD ready AND file downloaded
-    var activationPollInterval = setInterval(function() {
-        if (activated) { clearInterval(activationPollInterval); return; }
-        if (coolwsdReady && lateJoinFileReady && !activated) {
-            activateClient();
-            clearInterval(activationPollInterval);
-        }
-    }, 500);
+    // Late joiners: wait for both COOLWSD ready AND file downloaded.
+    // This needs to be restartable for room switches: after switching to
+    // a new room, the previous activation poll has already cleared itself.
+    var activationPollInterval = null;
+    function startActivationPoll() {
+        if (activationPollInterval) clearInterval(activationPollInterval);
+        activationPollInterval = setInterval(function() {
+            if (activated) { clearInterval(activationPollInterval); activationPollInterval = null; return; }
+            if (coolwsdReady && lateJoinFileReady && !activated) {
+                activateClient();
+                clearInterval(activationPollInterval);
+                activationPollInterval = null;
+            }
+        }, 500);
+    }
+    startActivationPoll();
 })();
