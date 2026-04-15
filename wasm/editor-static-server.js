@@ -153,7 +153,9 @@ function handler(req, res) {
     const etag = '"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"';
     headers['ETag'] = etag;
     headers['Last-Modified'] = stat.mtime.toUTCString();
-    if (pathname.endsWith('.html')) {
+    if (pathname.endsWith('.html') || pathname.endsWith('/sw.js')) {
+        // SW must always revalidate so a code update rolls out within
+        // 24h max instead of being pinned by the immutable rule below.
         headers['Cache-Control'] = 'no-cache';
     } else if (IMMUTABLE.some(n => pathname.endsWith(n))) {
         headers['Cache-Control'] = 'public, max-age=31536000, immutable';

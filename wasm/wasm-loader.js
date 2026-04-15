@@ -22,6 +22,38 @@
 
     mark('loader:start', 'doc=' + docType + ' ext=' + ext);
 
+    // ───── SERVICE WORKER REGISTRATION ─────
+    // Register sw.js to lock the heavy WASM assets into Cache Storage.
+    // Why this is at the top of wasm-loader rather than inline in cool.html:
+    // wasm-loader runs the moment cool.html starts, so the SW is installed
+    // before any of online.wasm / soffice.data starts streaming. The first
+    // visit still goes to network (SW only takes effect on the SECOND
+    // navigation by default; we use clients.claim() in sw.js to take over
+    // sooner where possible). Subsequent visits hit the SW cache regardless
+    // of HTTP-cache pressure — see test-regression-wasm-cache-pressure.js.
+    if ('serviceWorker' in navigator) {
+        // Scope is /browser/ (the directory the SW lives in). That's
+        // exactly where online.wasm + soffice.data live, so the scope
+        // covers all heavy assets. Use a relative path so it works
+        // regardless of which (sub-)origin we're served from.
+        navigator.serviceWorker.register('sw.js').then(function(reg) {
+            mark('sw:registered', 'scope=' + reg.scope);
+            // If the page loaded before the SW could take control, ask
+            // the new worker to claim immediately. This affects the very
+            // first visit; subsequent visits are already controlled.
+            if (!navigator.serviceWorker.controller && reg.active) {
+                mark('sw:no_controller_first_visit');
+            }
+        }).catch(function(err) {
+            // SW is a defense-in-depth optimisation; failing to register
+            // is non-fatal (we still have HTTP cache headers as the
+            // primary mechanism).
+            mark('sw:register_failed', err.message);
+        });
+    } else {
+        mark('sw:unavailable', 'navigator.serviceWorker missing');
+    }
+
     // Unique fingerprint for THIS WASM runtime instance. Survives only as
     // long as the iframe doesn't reload; if a test sees the same value
     // before AND after a switchdocument it knows the runtime was reused
