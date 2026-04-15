@@ -243,6 +243,18 @@
 
         function interceptedSend(data) {
             var text = typeof data === 'string' ? data : '';
+            // Mouse-move is a high-frequency local-only signal (hover
+            // feedback, drag-to-select). Deliver it straight to the local
+            // Kit and DO NOT relay or log it — relaying would burn
+            // bandwidth on every pixel of cursor motion across every peer.
+            // Mouse buttondown/buttonup still go through the normal
+            // user-input path so remote-cursor sync stays intact.
+            // Match `mouse type=move ` exactly to avoid catching unrelated
+            // event names like type=hover or future type=movefoo.
+            if (text.startsWith('mouse type=move ') || text === 'mouse type=move') {
+                if (globalThis.postMobileMessage) globalThis.postMobileMessage(data);
+                return;
+            }
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
                 text.startsWith('textinput ') || text.startsWith('windowkey ') ||
                 text.startsWith('uno ');
@@ -389,22 +401,36 @@
             var editorFileUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
             origFetch(editorFileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
                 var bytes = new Uint8Array(buf);
-                // 2. Compute hash
+                // 2. Compute the full SHA-256 hex of the document.
                 return crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
                     var hashArr = new Uint8Array(hashBuf);
-                    var hash = Array.from(hashArr.slice(0, 8)).map(function(b) {
+                    var hashHex = Array.from(hashArr).map(function(b) {
                         return b.toString(16).padStart(2, '0');
                     }).join('');
-                    // 3. Upload file to FILE STORAGE SERVER (the viewer)
+                    // 3. Upload file to FILE STORAGE SERVER (the viewer).
+                    //    This is the canonical store; late-joiners read from
+                    //    here. The relay only learns the hash + seq for
+                    //    coordination — it never stores file bytes.
                     var viewerFileUrl = getFileStorageUrl(wopiSrc);
                     return origFetch(viewerFileUrl, {
                         method: 'POST',
                         body: new Blob([bytes]),
                         mode: 'cors',
                     }).then(function() {
-                        // 4. Report to relay — send file bytes for backward
-                        // compat with old relay servers. Future: send hash only.
-                        var frame = new Uint8Array(5 + 4 + bytes.length);
+                        // 4. Report to relay. Frame layout:
+                        //      [0]   type (0x07)
+                        //      [1-4] viewId (uint32 BE)
+                        //      [5-8] saveAtSeq (uint32 BE)
+                        //      [9..] hash hex string (UTF-8, 64 ASCII chars)
+                        //
+                        //    We send only the hash here — NOT the file bytes.
+                        //    Sending the body would burn `filesize` bytes of
+                        //    WebSocket traffic per save (the file already
+                        //    went to /api/files in step 3). The relay's
+                        //    0x07 handler reads buf.slice(9).toString() as
+                        //    the hash.
+                        var hashBytes = new TextEncoder().encode(hashHex);
+                        var frame = new Uint8Array(5 + 4 + hashBytes.length);
                         frame[0] = 0x07;
                         frame[1] = (myViewId >>> 24) & 0xFF;
                         frame[2] = (myViewId >>> 16) & 0xFF;
@@ -414,9 +440,10 @@
                         frame[6] = (saveAtSeq >>> 16) & 0xFF;
                         frame[7] = (saveAtSeq >>> 8) & 0xFF;
                         frame[8] = saveAtSeq & 0xFF;
-                        frame.set(bytes, 9);
+                        frame.set(hashBytes, 9);
                         ws.send(frame);
-                        console.log('[relay] Checkpoint: ' + bytes.length + 'b hash=' + hash + ' seq=' + saveAtSeq + ' → file storage + relay');
+                        console.log('[relay] Checkpoint: file=' + bytes.length + 'B → /api/files; ' +
+                                    'sent hash=' + hashHex.substring(0, 16) + '… (' + frame.length + 'B frame) seq=' + saveAtSeq);
                     });
                 });
             }).catch(function(e) {
