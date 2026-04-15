@@ -472,6 +472,25 @@
                         Values: { Status: 'Initialized' }
                     }), '*');
                 } catch(e) {}
+                // For COLD-reload doc opens (new iframe, initial doc) we
+                // also post WasmDocReady so the viewer's shield drops.
+                // For HOT-switches we do NOT — `trySendSwitch`'s
+                // docReadyInterval is the authoritative source there
+                // (it gates on actual canvas-pixel change, whereas this
+                // docPoll's `postSwitchAccept` flag fires merely 500 ms
+                // after switchSendT and can race in before the new
+                // doc's canvas has painted).
+                var midSwitch = window.__switchSendT &&
+                                (performance.now() - window.__switchSendT) < 60000;
+                if (!midSwitch) {
+                    var qWopi = new URLSearchParams(window.location.search).get('WOPISrc') || '';
+                    try {
+                        parent.postMessage(JSON.stringify({
+                            MessageId: 'WasmDocReady',
+                            Values: { filename: qWopi, ms: 0, source: 'docPoll' }
+                        }), '*');
+                    } catch(e) {}
+                }
             }
         }, 200);
     }

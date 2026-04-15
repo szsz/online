@@ -35,6 +35,7 @@ const SLUG_TO_SHOTS = {
     'regression-checkpoint-timing':    'shots-regression-checkpoint',
     'regression-xlsx-hotswitch':       'shots-regression-xlsx-hotswitch',
     'regression-calc-impress-edits':   'shots-regression-calc-impress',
+    'regression-shield-timing':        'shots-regression-shield-timing',
 };
 const shotsName = SLUG_TO_SHOTS[slug] !== undefined ? SLUG_TO_SHOTS[slug] : ('shots-' + slug);
 const shotsDir = shotsName ? '/tmp/static-deploy/public/' + shotsName : '/tmp/static-deploy/public/shots-' + slug;
