@@ -184,7 +184,13 @@
         } catch(e) {
             mark('bridge:switchdoc_error', e.message);
         }
-        // Poll for visible content
+        // Poll for visible content (canvas pixels differ from baseline).
+        // After the canvas changes — i.e. the new doc has actually rendered
+        // — start a second poll for "interactive" (status bar populated)
+        // and post WasmDocReady to the parent. Gating on canvas-change is
+        // important: it ensures we don't fire WasmDocReady on the
+        // PREVIOUS doc's still-displayed status text right after a
+        // switchdocument cmd is sent but before the new doc has painted.
         var watchStart = performance.now();
         var visiblePollInterval = setInterval(function() {
             var sample = snapshotCanvas();
@@ -198,18 +204,9 @@
                         Values: { filename: filename, ms: +dt }
                     }), '*');
                 } catch(e) {}
-                // Drop the iframe's own loading overlay too — without this the
-                // user keeps seeing the spinner inside the iframe even though
-                // the canvas already shows the new doc, and the parent shield
-                // is gone. The iframe overlay was previously only torn down
-                // on the (much later) WC-text update.
                 if (typeof hideOverlay === 'function') hideOverlay();
 
-                // Now poll for "fully loaded": status bar populated with word/
-                // character count or sheet/slide info. The viewer keeps its
-                // shield up until this fires, so the spinner stays on screen
-                // until the document is interactive (toolbar + status bar
-                // ready), not just first canvas paint.
+                // After canvas change, wait for status bar to populate.
                 var readyStart = performance.now();
                 var docReadyInterval = setInterval(function() {
                     var wc = document.querySelector('#StateWordCount');
@@ -228,8 +225,6 @@
                         } catch(e) {}
                     }
                     if (performance.now() - readyStart > 60000) {
-                        // Give up after 60s — at least drop the shield so the
-                        // user is never stuck behind it forever.
                         clearInterval(docReadyInterval);
                         try {
                             parent.postMessage(JSON.stringify({
