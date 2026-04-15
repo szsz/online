@@ -346,10 +346,16 @@ EJSON
         fi
     done
 
-    # Relay adapter and wasm-loader
-    for f in relay-adapter.js wasm-loader.js; do
+    # cool.html loads these via relative <script src="..."> tags, so they
+    # must sit alongside cool.html in browser/dist/. We also leave them at
+    # the editor root so /wasm-loader.js etc. (legacy absolute references)
+    # keep working.
+    for f in relay-adapter.js wasm-loader.js sw.js; do
         if [[ -f "$SCRIPT_DIR/$f" ]]; then
             cp "$SCRIPT_DIR/$f" "$EDIR/"
+            cp "$SCRIPT_DIR/$f" "$EDIR/browser/dist/"
+        else
+            echo "    WARNING: $f not found"
         fi
     done
 
