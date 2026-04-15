@@ -69,6 +69,7 @@ TESTS=(
     "regression-wasm-cache-revisit|test-regression-wasm-cache-revisit.js|Regression: WASM Cache Revisit|Close browser entirely and re-launch (persistent userDataDir) — heavy assets must come from disk cache, not the wire|shots-regression-wasm-cache-revisit"
     "regression-viewer-cache|test-regression-viewer-cache.js|Regression: Viewer Document Cache|/api/files/<doc> + /blank.docx must send ETag/Last-Modified and answer 304 on conditional GET (covers the doc storage path)|none"
     "regression-wasm-cache-pressure|test-regression-wasm-cache-pressure.js|Regression: WASM Cache Under Pressure|Heavy WASM survives Chrome disk-cache LRU eviction (limited --disk-cache-size=50MB) thanks to the Service Worker / Cache Storage fallback|shots-regression-wasm-cache-pressure"
+    "regression-select-delete-coedit|test-regression-select-delete-coedit.js|Regression: Select+Delete Co-Edit|A double-clicks a word + presses Delete; B must converge to the same shorter doc (deletion must propagate)|shots-regression-select-delete"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
