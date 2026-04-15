@@ -45,8 +45,12 @@ if (shotsDir && fs.existsSync(shotsDir)) {
 
 // Compute the relative path from the report HTML to the shots directory.
 // Both live under /tmp/static-deploy/public/ so we use path.relative.
+// Force forward slashes — the output HTML is served to a browser, which
+// doesn't accept Windows backslashes in src attributes.
 const reportDir = path.dirname(output);
-const relShotsDir = shotsDir ? path.relative(reportDir, shotsDir) : '';
+const relShotsDir = shotsDir
+    ? path.relative(reportDir, shotsDir).split(path.sep).join('/')
+    : '';
 
 // ---------------------------------------------------------------------------
 // Build the timestamp

@@ -6,12 +6,37 @@
 
 set -uo pipefail
 
+# Prevent MSYS/Git-Bash from rewriting Unix-style paths when we pass them
+# to Node. Without this, `node foo.js --shots /tmp/...` arrives in node
+# as a Windows path the test scripts don't write to, and every report
+# says "No screenshots found".
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPORTS_DIR="/tmp/static-deploy/public/reports"
-SHOTS_BASE="/tmp/static-deploy/public"
+
+# The test scripts (node) write screenshots with paths like
+# '/tmp/static-deploy/public/shots-…' which, on Windows, node resolves
+# to C:\tmp\static-deploy\public\shots-…. On Linux the same literal path
+# resolves to /tmp/… — so we just need to pick a consistent base for
+# THIS script (bash) that matches what node sees, then pass it through.
+#
+# On MSYS/Git-Bash, `/tmp` is mounted to %TEMP% (AppData\Local\Temp),
+# which is NOT the same as what node sees. Use `cygpath` to resolve the
+# Windows path the shell will also see if it exists; fall back to /tmp.
+if command -v cygpath >/dev/null 2>&1; then
+    # /tmp/… resolved the way node sees it on Windows
+    TEST_OUTPUT_ROOT="${TEST_OUTPUT_ROOT:-C:/tmp/static-deploy/public}"
+else
+    TEST_OUTPUT_ROOT="${TEST_OUTPUT_ROOT:-/tmp/static-deploy/public}"
+fi
+
+REPORTS_DIR="$TEST_OUTPUT_ROOT/reports"
+SHOTS_BASE="$TEST_OUTPUT_ROOT"
 GENERATOR="$SCRIPT_DIR/generate-report.js"
 
 mkdir -p "$REPORTS_DIR"
+echo "Test output root: $TEST_OUTPUT_ROOT"
 
 # ── Test definitions ────────────────────────────────────────────────────
 # Each entry:  slug | script | human name | description | shots_dir_name

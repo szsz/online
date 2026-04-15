@@ -8,6 +8,13 @@
 #   bash wasm/deploy-azure.sh --relay          # deploy relay only
 #   bash wasm/deploy-azure.sh --editor         # deploy editor only
 #   bash wasm/deploy-azure.sh --settings       # update app settings only
+#
+# Authentication
+# --------------
+# The script uses whatever identity `az` CLI is currently logged in as —
+# run `az login` once on the machine (or configure `AZURE_*` env vars for
+# a service principal before invoking `az login --service-principal`).
+# The script itself does not perform a login step.
 
 set -euo pipefail
 
@@ -17,7 +24,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Load config ──────────────────────────────────────────────────
 ENV_FILE="${SCRIPT_DIR}/.env.deploy"
 if [[ ! -f "$ENV_FILE" ]]; then
-    echo "ERROR: $ENV_FILE not found. Copy .env.deploy and fill in secrets."
+    echo "ERROR: $ENV_FILE not found. Copy .env.deploy.example and fill it in."
     exit 1
 fi
 # shellcheck disable=SC1090
@@ -31,6 +38,20 @@ for var in RESOURCE_GROUP APP_SERVICE_PLAN VIEWER_APP_NAME RELAY_APP_NAME EDITOR
         exit 1
     fi
 done
+
+# Fail early if az CLI isn't logged in — every code path uses it.
+if ! az account show --only-show-errors >/dev/null 2>&1; then
+    echo "ERROR: Azure CLI is not logged in. Run \`az login\` first."
+    echo "       Alternatively, the CI runner should be configured with a"
+    echo "       service principal via \`az login --service-principal ...\`"
+    echo "       before this script is invoked."
+    exit 1
+fi
+
+# If the env file names a specific subscription, make it active.
+if [[ -n "${AZURE_SUBSCRIPTION:-}" ]]; then
+    az account set --subscription "$AZURE_SUBSCRIPTION" --only-show-errors
+fi
 
 # ── Parse flags ──────────────────────────────────────────────────
 DO_CREATE=false
@@ -199,7 +220,7 @@ deploy_app() {
     else
         echo "  Smoke test: GET $URL"
     fi
-    local i HTTP BODY
+    local i HTTP
     for i in $(seq 1 18); do
         BODY_FILE="$(mktemp)"
         HTTP="$(curl -ks -o "$BODY_FILE" -w '%{http_code}' --max-time 10 "$URL" || echo 000)"
@@ -308,7 +329,9 @@ if $DO_EDITOR; then
     rm -rf "$EDIR"
     mkdir -p "$EDIR"
 
-    # Server + package.json
+    # Server + package.json. No `compression` dep — the editor serves
+    # pre-compressed .br files (written below) instead of paying the
+    # CPU cost of runtime compression.
     cp "$SCRIPT_DIR/editor-server.js" "$EDIR/server.js"
     cat > "$EDIR/package.json" <<'EJSON'
 {
@@ -317,8 +340,7 @@ if $DO_EDITOR; then
   "private": true,
   "scripts": { "start": "node server.js" },
   "dependencies": {
-    "express": "^4.21.0",
-    "compression": "^1.7.5"
+    "express": "^4.21.0"
   }
 }
 EJSON
@@ -346,16 +368,38 @@ EJSON
         fi
     done
 
-    # Relay adapter and wasm-loader
+    # Relay adapter and wasm-loader — copied to both the editor root (for
+    # any legacy /relay-adapter.js references) AND under browser/dist/ so
+    # cool.html's relative `<script src="wasm-loader.js">` resolves via the
+    # /browser/ static route.
     for f in relay-adapter.js wasm-loader.js; do
         if [[ -f "$SCRIPT_DIR/$f" ]]; then
             cp "$SCRIPT_DIR/$f" "$EDIR/"
+            cp "$SCRIPT_DIR/$f" "$EDIR/browser/dist/"
+        else
+            echo "    WARNING: $f not found — viewer hot-switch will hang without it"
         fi
     done
 
     # Install dependencies
     echo "  Installing npm dependencies..."
     (cd "$EDIR" && npm install --production --silent)
+
+    # Pre-compress large static assets with brotli (quality 11). This
+    # is slow the first time (~2-3 min for 260MB online.wasm) but the
+    # result is cached in the staging dir, so only changed files get
+    # recompressed on subsequent deploys. The editor server serves the
+    # .br counterpart whenever the client sends Accept-Encoding: br.
+    echo "  Pre-compressing assets with brotli..."
+    node "$SCRIPT_DIR/tools/precompress-br.js" "$EDIR" \
+        online.wasm online.data online.worker.js online.js \
+        soffice.data soffice.data.js.metadata \
+        relay-adapter.js wasm-loader.js \
+        browser/dist/online.wasm browser/dist/online.data \
+        browser/dist/online.worker.js browser/dist/online.js \
+        browser/dist/bundle.js browser/dist/bundle.css \
+        browser/dist/soffice.data browser/dist/soffice.data.js.metadata \
+        browser/dist/wasm-loader.js browser/dist/relay-adapter.js
 
     deploy_app "$EDITOR_APP_NAME" "$EDIR" "/"
 fi
