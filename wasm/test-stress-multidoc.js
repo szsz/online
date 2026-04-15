@@ -130,52 +130,61 @@ async function getStatusDocPos(page) {
 // growing proves the edit propagated.
 async function installEditObserver(page) {
     const fr = await getEditorFrame(page);
-    if (!fr) return;
-    // Retry — the relay-adapter installs its own ws.onmessage hook
-    // asynchronously after WASM init, so our hook can race in or be
-    // clobbered. We poll for TheFakeWebSocket.onmessage to exist before
-    // wrapping it; if it gets replaced later we re-wrap.
+    if (!fr) return false;
+    // The relay-adapter installs its own ws.onmessage hook asynchronously
+    // after WASM init, so our hook can race in or be clobbered. We must:
+    //   (a) wait until TheFakeWebSocket.onmessage exists (someone installed it)
+    //   (b) wrap it
+    //   (c) keep monitoring for a few seconds in case the adapter replaces
+    //       onmessage again, and re-wrap if so
+    // Crucially, we await until at least the FIRST wrap has succeeded so the
+    // test doesn't proceed to type before we're hooked in.
     try {
-        await fr.evaluate(() => {
-            if (window.__editObserverInstalled) return;
-            window.__editObserverInstalled = true;
-            window.__editTick = 0;
+        return await fr.evaluate(async () => {
+            window.__editTick = window.__editTick || 0;
 
+            function isOurs(fn) {
+                return typeof fn === 'function' && fn.__editTickHook === true;
+            }
             function wrap(ws) {
-                if (!ws || ws.__editTickWrapped) return false;
+                if (!ws || !ws.onmessage || isOurs(ws.onmessage)) return false;
                 var orig = ws.onmessage;
-                if (!orig) return false;
-                ws.__editTickWrapped = true;
-                ws.onmessage = function(ev) {
+                var hooked = function(ev) {
                     try {
                         var s = typeof ev.data === 'string' ? ev.data : '';
-                        if (s.indexOf('invalidatetiles:') === 0 ||
-                            s.indexOf('tile ') === 0) {
+                        if (s.indexOf('invalidatetiles:') === 0)
                             window.__editTick++;
-                        }
                     } catch (e) {}
                     return orig.apply(this, arguments);
                 };
+                hooked.__editTickHook = true;
+                ws.onmessage = hooked;
                 return true;
             }
 
-            // Try immediately, then every 200ms for up to 10s.
-            var attempts = 0;
-            var iv = setInterval(function() {
-                attempts++;
-                var ws = globalThis.TheFakeWebSocket;
-                // Re-wrap if onmessage was reassigned by another installer
-                // (relay-adapter does this asynchronously).
-                if (ws && (!ws.__editTickWrapped ||
-                           ws.onmessage.toString().indexOf('__editTick') < 0)) {
-                    ws.__editTickWrapped = false;
-                    if (wrap(ws)) { clearInterval(iv); return; }
-                }
-                if (attempts > 50) clearInterval(iv); // 10s max
-            }, 200);
-            wrap(globalThis.TheFakeWebSocket);
+            // Phase 1: wait synchronously (in the iframe's event loop) up to
+            // 10s for TheFakeWebSocket.onmessage to be set, then wrap. This
+            // is awaited by the parent so the test doesn't continue before
+            // we're hooked.
+            var firstWrapped = false;
+            for (var i = 0; i < 100; i++) {
+                if (wrap(globalThis.TheFakeWebSocket)) { firstWrapped = true; break; }
+                await new Promise(r => setTimeout(r, 100));
+            }
+
+            // Phase 2: install a watchdog that re-wraps if the relay-adapter
+            // (or anything else) replaces onmessage later.
+            if (firstWrapped && !window.__editTickWatchdog) {
+                window.__editTickWatchdog = setInterval(function() {
+                    var ws = globalThis.TheFakeWebSocket;
+                    if (ws && ws.onmessage && !isOurs(ws.onmessage)) {
+                        wrap(ws);
+                    }
+                }, 250);
+            }
+            return firstWrapped;
         });
-    } catch (e) {}
+    } catch (e) { return false; }
 }
 
 async function getEditTick(page) {

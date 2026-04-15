@@ -434,8 +434,22 @@
             // For switches, require the displayed text to have CHANGED from
             // when we re-armed (otherwise the old blank-doc count satisfies
             // the loaded check immediately).
-            var changed = !startTextWordCount || (wc && wc.textContent !== startTextWordCount) ||
-                          (dp && dp.textContent !== startTextDocPos);
+            var textChanged = !startTextWordCount || (wc && wc.textContent !== startTextWordCount) ||
+                              (dp && dp.textContent !== startTextDocPos);
+            // Two similar docs of the same type can produce IDENTICAL status
+            // text (e.g. two 1-sheet xlsx files both showing "Sheet 1 of 1"
+            // or two 1-slide pptx files both showing "Slide 1 of 1"). In
+            // that case textChanged stays false forever even though the
+            // switch succeeded. Once trySendSwitch has dispatched the
+            // switchdocument command and a few hundred ms have passed, we
+            // trust that the switch did happen and accept the current
+            // status as "new doc ready" regardless of whether the text
+            // literally differs.
+            var switchDispatchedAgo = window.__switchSendT
+                ? (performance.now() - window.__switchSendT)
+                : -1;
+            var postSwitchAccept = switchDispatchedAgo > 500 && switchDispatchedAgo < 60000;
+            var changed = textChanged || postSwitchAccept;
             if (loaded && changed && !seenContent) {
                 seenContent = true;
                 mark('doc:loaded', wc ? wc.textContent.trim() : (dp ? dp.textContent.trim() : ''));
