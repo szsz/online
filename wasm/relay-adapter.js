@@ -216,9 +216,11 @@
     function activateClient() {
         if (activated) return;
         activated = true;
-        // Send join-ready with checkpoint hash for verification
+        // Send join-ready with the SHA-256 hex of the document we loaded.
+        // Truncate the log preview so a 64-char hash doesn't drown the console.
         var readyPayload = joinFileHash ? JSON.stringify({ hash: joinFileHash }) : '';
-        console.log('[relay] Activating — sending join-ready hash=' + (joinFileHash || 'none'));
+        var hashPreview = joinFileHash ? joinFileHash.substring(0, 16) + '…' : 'none';
+        console.log('[relay] Activating — sending join-ready hash=' + hashPreview);
         sendToRelay(0x06, myViewId, readyPayload);
 
         // Announce presence
@@ -585,13 +587,19 @@
                     // Late joiner — download checkpoint file.
                     // The checkpoint was saved to both the file storage server
                     // AND the editor's /wasm/ endpoint. We download from the
-                    // editor (same origin, no CORS issues) and overwrite the
-                    // local WOPI file so the WASM loads the right version.
-                    joinFileHash = info.hash;
+                    // file storage (canonical) and overwrite the local WOPI
+                    // file so the WASM loads the right version.
+                    //
+                    // joinFileHash is the SHA-256 hex of the bytes WE
+                    // actually loaded — computed locally, not echoed from
+                    // info.hash. The relay's expected hash (info.hash) is
+                    // only logged here for debug; if our hash differs the
+                    // relay sends a 0x0A "checkpoint mismatch" and we
+                    // re-download.
                     joinFileSeq = info.seq;
                     var wopiSrc = params.get('WOPISrc') || '';
                     var editorWopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                    console.log('[relay] Join-response: hash=' + info.hash + ' seq=' + info.seq + ' — downloading checkpoint');
+                    console.log('[relay] Join-response: relay-expected hash=' + (info.hash||'').substring(0, 16) + '… seq=' + info.seq + ' — downloading checkpoint');
 
                     // First try file storage (canonical), fall back to editor's /wasm/
                     var fileStorageUrl = getFileStorageUrl(wopiSrc);
@@ -603,9 +611,18 @@
                         console.log('[relay] File storage unavailable, using editor /wasm/');
                         return origFetch(editorWopiUrl).then(function(r) { return r.arrayBuffer(); });
                     }).then(function(buf) {
-                        console.log('[relay] Downloaded ' + buf.byteLength + 'b (hash=' + joinFileHash + ')');
-                        lateJoinFileReady = true;
-                        return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
+                        // Compute SHA-256 of the bytes we actually loaded.
+                        var bytes = new Uint8Array(buf);
+                        return crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
+                            var hashArr = new Uint8Array(hashBuf);
+                            joinFileHash = Array.from(hashArr).map(function(b) {
+                                return b.toString(16).padStart(2, '0');
+                            }).join('');
+                            console.log('[relay] Downloaded ' + buf.byteLength + 'B; computed hash=' + joinFileHash.substring(0, 16) + '…' +
+                                (info.hash && info.hash !== joinFileHash ? ' (relay expected ' + info.hash.substring(0, 16) + '… — mismatch likely)' : ''));
+                            lateJoinFileReady = true;
+                            return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
+                        });
                     }).then(function() {
                         console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
                     }).catch(function(e) {
