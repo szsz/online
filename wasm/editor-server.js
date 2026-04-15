@@ -9,7 +9,6 @@
 // or empty strings).
 
 const express = require('express');
-const compression = require('compression');
 const path = require('path');
 const fs = require('fs');
 
@@ -27,15 +26,15 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const app = express();
 
-app.use(compression());
-
-// Cache headers:
+// Cache headers (runs before the brotli chooser so the chosen response
+// carries cache info):
 //   - sw.js → no-cache. The Service Worker updates itself by re-fetching
 //     this file on every navigation; if it's frozen by max-age the fix
 //     for any SW bug would never reach existing clients.
 //   - HTML → no-cache (cool.html does template substitution; never stale-OK).
 //   - WASM payloads + bundled JS → immutable, 1y. Browser HTTP cache will
-//     try its best; the SW (sw.js) backstops with Cache Storage.
+//     try its best; the SW (sw.js) backstops with Cache Storage when the
+//     HTTP cache evicts under pressure.
 app.use((req, res, next) => {
     if (req.path.endsWith('/sw.js') || req.path === '/sw.js') {
         res.setHeader('Cache-Control', 'no-cache');
@@ -70,19 +69,73 @@ app.use((req, res, next) => {
 });
 
 // Cross-origin isolation — required for SharedArrayBuffer (WASM threads).
-// All resources served by this app are same-origin with cool.html and
-// get CORP:same-origin. The document content loaded from /wasm/:name
-// is also same-origin. No cross-origin fetches happen once cool.html
-// is loaded, so COEP:require-corp is safe.
+// The editor runs inside an iframe on the viewer domain, so cool.html and
+// all its subresources must be loadable cross-origin. We therefore set
+// CORP:cross-origin. Once cool.html is loaded, every subresource it fetches
+// (bundle.js, online.wasm, /wasm/:name, etc.) is same-origin with the
+// iframe document, so COEP:require-corp is satisfied by our own CORP header.
 app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     next();
 });
 
 // Favicon — return empty 204 to silence the 404 in logs.
 app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+// ── Brotli chooser ──────────────────────────────────────────────
+// Deploy-time pre-compression (wasm/tools/precompress-br.js) writes a
+// <file>.br next to each large asset. If the client sends
+// `Accept-Encoding: br`, serve that and advertise Content-Encoding: br.
+// We deliberately avoid runtime compression — brotli-11 of a 260MB wasm
+// is ~60s of CPU per request, which would melt the App Service.
+//
+// MUST run AFTER the CORS/COEP/CORP middlewares above so the streamed
+// response inherits those headers — otherwise workers and fetches get
+// ERR_BLOCKED_BY_RESPONSE when cross-origin isolation is enforced.
+const BR_MIME = {
+    '.wasm': 'application/wasm',
+    '.data': 'application/octet-stream',
+    '.js':   'application/javascript; charset=utf-8',
+    '.css':  'text/css; charset=utf-8',
+    '.metadata': 'application/octet-stream',
+    '.html': 'text/html; charset=utf-8',
+};
+function mimeFor(p) {
+    if (p.endsWith('.js.metadata')) return BR_MIME['.metadata'];
+    return BR_MIME[path.extname(p)] || 'application/octet-stream';
+}
+app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    const ae = req.headers['accept-encoding'] || '';
+    if (!ae.includes('br')) return next();
+    const urlPath = req.path.split('?')[0];
+    if (!/\.(wasm|data|js|css|metadata)$/.test(urlPath)) return next();
+
+    // Resolve request path → on-disk .br file. Both /browser/* and
+    // root-level paths (/online.wasm etc.) are served by this app so
+    // we check both layouts.
+    const candidates = [];
+    if (urlPath.startsWith('/browser/')) {
+        candidates.push(path.join(BROWSER_DIST, urlPath.slice('/browser/'.length) + '.br'));
+    } else {
+        candidates.push(path.join(WASM_DIR, urlPath + '.br'));
+        candidates.push(path.join(BROWSER_DIST, urlPath + '.br'));
+    }
+    for (const f of candidates) {
+        if (fs.existsSync(f)) {
+            const stat = fs.statSync(f);
+            res.setHeader('Content-Encoding', 'br');
+            res.setHeader('Content-Type', mimeFor(urlPath));
+            res.setHeader('Content-Length', stat.size);
+            res.setHeader('Vary', 'Accept-Encoding');
+            fs.createReadStream(f).pipe(res);
+            return;
+        }
+    }
+    next();
+});
 
 // Parse form-urlencoded body (needed to read access_token from editor.html form POST)
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
@@ -121,10 +174,47 @@ for (const f of wasmFiles) {
     });
 }
 
-// ── cool.html with template substitution ─────────────────────────
-// Replaces %ACCESS_TOKEN%, %BRANDING_THEME%, etc. with values from POST
-// body (or empty strings). Without substitution, WASM tries to fetch
-// document URLs containing literal "%ACCESS_TOKEN%" which fails.
+// ── cool.html with template substitution + wasm-loader injection ─
+// 1. Replaces %ACCESS_TOKEN%, %BRANDING_THEME%, etc. with values from
+//    POST body (or empty strings). Without substitution WASM tries to
+//    fetch document URLs containing literal "%ACCESS_TOKEN%" which fails.
+// 2. Injects a loading overlay + <script>s for wasm-loader.js and
+//    relay-adapter.js, which the sidebar viewer depends on for the
+//    hot-switch / prewarm / progress protocol (postMessage WasmProgress,
+//    WasmDocReady, WasmSwitchVisible, RelaySwitchRoom).
+const WASM_LOADER_INJECT = `
+<style id="wasm-loading-style">
+  #wasm-loading-overlay {
+    position: fixed; inset: 0; background: #f5f5f5; z-index: 999999;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; color: #333;
+  }
+  #wasm-spinner {
+    width: 64px; height: 64px; border: 6px solid #ddd; border-top-color: #4a90e2;
+    border-radius: 50%; animation: wasmspin 1s linear infinite;
+    margin-bottom: 16px;
+  }
+  @keyframes wasmspin { to { transform: rotate(360deg); } }
+  #wasm-progress-label { font-size: 15px; font-weight: 500; margin-bottom: 8px; }
+  #wasm-progress-bar {
+    width: 300px; height: 12px; background: #e0e0e0; border-radius: 6px; overflow: hidden; margin-bottom: 6px;
+  }
+  #wasm-progress-bar-fill {
+    height: 100%; background: linear-gradient(90deg, #4a90e2, #357abd); width: 0%;
+    transition: width 0.3s ease;
+  }
+  #wasm-progress-detail { font-size: 12px; color: #666; }
+</style>
+<div id="wasm-loading-overlay">
+  <div id="wasm-spinner"></div>
+  <div id="wasm-progress-label">Loading editor…</div>
+  <div id="wasm-progress-bar"><div id="wasm-progress-bar-fill"></div></div>
+  <div id="wasm-progress-detail"></div>
+</div>
+<script type="text/javascript" src="wasm-loader.js"></script>
+<script type="text/javascript" src="relay-adapter.js"></script>
+`;
+
 function serveCoolHtml(req, res) {
     const coolHtml = path.join(BROWSER_DIST, 'cool.html');
     if (!fs.existsSync(coolHtml)) return res.status(404).send('cool.html not built');
@@ -150,6 +240,18 @@ function serveCoolHtml(req, res) {
 
     for (const [key, val] of Object.entries(subs)) {
         html = html.split(key).join(val);
+    }
+
+    // Inject the wasm-loader block once. The anchor is the EMSCRIPTEN hidden
+    // input that the build reliably emits; if it's missing we prepend before
+    // </body> as a fallback. Skip if the build already embeds wasm-loader.
+    if (!html.includes('wasm-loader.js')) {
+        const anchor = '<input type="hidden" id="init-mobile-app-os-type" value="EMSCRIPTEN" />';
+        if (html.includes(anchor)) {
+            html = html.replace(anchor, anchor + '\n' + WASM_LOADER_INJECT);
+        } else {
+            html = html.replace('</body>', WASM_LOADER_INJECT + '</body>');
+        }
     }
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
