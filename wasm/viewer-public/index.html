@@ -319,9 +319,22 @@ async function uploadFile() {
     refresh();
 }
 
+// URL fragment format: #file=<url-encoded filename>.
+// Updated whenever we open a file, so the URL is shareable and deep-linkable,
+// and browser back/forward navigates between recently opened files.
+function currentHashFile() {
+    const m = /^#file=(.+)$/.exec(location.hash);
+    return m ? decodeURIComponent(m[1]) : null;
+}
+
 async function openFile(name) {
     const t0 = Date.now();
     currentFile = name;
+    // Keep the URL in sync with the open file. The hashchange listener below
+    // guards against re-entering openFile() when we triggered the change
+    // ourselves (hash already matches currentFile).
+    const wantHash = '#file=' + encodeURIComponent(name);
+    if (location.hash !== wantHash) location.hash = wantHash;
     const willHotSwitch = prewarmReady && (docTypeFor(name) === currentDocType);
 
     // Collapse the file sidebar so the editor gets the full viewport.
@@ -394,9 +407,27 @@ async function openFile(name) {
     window.__viewerState.lastOpenStart = t0;
 }
 
-// Kick off
-refresh();
-startPrewarm();
+// Browser navigation (back/forward, or the user editing the hash directly):
+// if the hash now names a DIFFERENT file, open it. Same-file is a no-op so
+// we don't re-open the doc we just opened via click.
+window.addEventListener('hashchange', function() {
+    const name = currentHashFile();
+    if (name && name !== currentFile) openFile(name);
+});
+
+// Kick off. If the page loads with #file=<name>, open it directly and skip
+// the prewarm (prewarm would just get thrown away when we hot-reload into
+// the target doc). Otherwise do the usual blank-doc prewarm so the first
+// click-to-open is fast.
+(async function init() {
+    await refresh();
+    const hashFile = currentHashFile();
+    if (hashFile) {
+        openFile(hashFile);
+    } else {
+        startPrewarm();
+    }
+})();
 </script>
 </body>
 </html>
