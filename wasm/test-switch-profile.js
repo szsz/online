@@ -5,9 +5,10 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const VIEWER = 'https://viewer.szebeni.hu:6934';
-const EDITOR = 'https://wasm.atgpartners.info:6932';
+const VIEWER = env.FILE_STORAGE_URL;
+const EDITOR = env.EDITOR_URL;
 const DOC_NAME = 'profile-switch.odt';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', '3pages.odt');
 

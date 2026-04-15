@@ -4,8 +4,9 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const env = require('./lib/test-env');
 
-const VIEWER = 'https://viewer.szebeni.hu:6934';
+const VIEWER = env.FILE_STORAGE_URL;
 
 (async () => {
     const browser = await puppeteer.launch({

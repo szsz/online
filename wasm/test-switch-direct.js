@@ -1,8 +1,9 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const EDITOR = 'https://wasm.atgpartners.info:6932';
+const EDITOR = env.EDITOR_URL;
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -30,7 +31,7 @@ async function waitForDoc(frame, timeout) {
     try {
         // Upload two docs
         const up = await browser.newPage();
-        await up.goto(EDITOR + '/editor.html', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
+        await up.goto(EDITOR, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
         const doc1 = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'test document.docx'));
         const doc2 = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', '3pages.odt'));
         await up.evaluate(async (u, arr1, arr2) => {

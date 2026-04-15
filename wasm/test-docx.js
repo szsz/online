@@ -4,8 +4,10 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-docx';
 const DOC_NAME = 'test document.docx';
@@ -99,7 +101,7 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
         // Upload docx via HTTP POST
         log('Uploading ' + DOC_NAME + ' (' + fs.statSync(DOC_PATH).size + ' bytes)');
         const up = await browser.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await up.goto(BASE, { waitUntil: 'networkidle0' });
         const docBytes = fs.readFileSync(DOC_PATH);
         await up.evaluate(async (url, name, bytesArr) => {
             const bytes = new Uint8Array(bytesArr);
@@ -112,7 +114,7 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
         log('Uploaded');
 
         let ROOM = 'docx-' + Date.now();
-        let relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+        let relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
         let coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(DOC_NAME)}&relay=${relay}&access_token=test`;
 
         async function openDoc(label, retries) {
@@ -167,7 +169,7 @@ async function waitForReady(page, label, count, screenshotDuringWait) {
         for (let roomAttempt = 1; roomAttempt <= 3; roomAttempt++) {
             try {
                 ROOM = 'docx-' + Date.now();
-                relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+                relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
                 coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(DOC_NAME)}&relay=${relay}&access_token=test`;
                 log(`Room attempt ${roomAttempt}: ${ROOM}`);
                 pageA = await openDoc('A', 3);

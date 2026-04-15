@@ -6,8 +6,9 @@ const __cl = require('./lib/inject-checklist');
 // - Verify: sequence numbers are monotonically increasing
 
 const WebSocket = require('ws');
+const env = require('./lib/test-env');
 
-const RELAY = 'wss://wasm.atgpartners.info:9091/room/test-room-' + Date.now();
+const RELAY = env.RELAY_URL + '/room/test-room-' + Date.now();
 
 function makeFrame(type, viewId, text) {
     const payload = Buffer.from(text || '');

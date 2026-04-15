@@ -18,9 +18,10 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const VIEWER = 'https://viewer.szebeni.hu:6934';
-const EDITOR = 'https://wasm.atgpartners.info:6932';
+const VIEWER = env.FILE_STORAGE_URL;
+const EDITOR = env.EDITOR_URL;
 const PREWARM_TIMEOUT = 180000;
 const RENDER_TIMEOUT = 90000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-prewarm';

@@ -11,8 +11,10 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-extreme';
 const TEST_DIR = path.join(__dirname, '..', 'test', 'data');
@@ -56,18 +58,18 @@ function check(label, condition) { __cl.recordCheck(label, condition);
 
 async function uploadFile(browser, name, filePath, room) {
     const up = await browser.newPage();
-    await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+    await up.goto(BASE, { waitUntil: 'networkidle0' });
     const bytes = fs.readFileSync(filePath);
-    await up.evaluate(async (url, n, arr, r) => {
+    await up.evaluate(async (url, n, arr, r, relayBase) => {
         const body = new Blob([new Uint8Array(arr)]);
         await fetch(url + '/wasm/' + encodeURIComponent(n), { method: 'POST', body });
         // Pre-seed relay
         if (r) {
-            await fetch('https://wasm.atgpartners.info:9091/room/' + encodeURIComponent(r) + '/file', {
+            await fetch(relayBase + '/room/' + encodeURIComponent(r) + '/file', {
                 method: 'POST', body: new Blob([new Uint8Array(arr)]),
             });
         }
-    }, BASE, name, Array.from(bytes), room || '');
+    }, BASE, name, Array.from(bytes), room || '', RELAY_BASE);
     await up.close();
     log(`  Uploaded ${name} (${(bytes.length/1024).toFixed(0)}KB)`);
 }
@@ -135,7 +137,7 @@ async function typeText(page, label, text) {
     const DOCX_NAME = 'test document.docx';
     const DOCX_PATH = path.join(TEST_DIR, DOCX_NAME);
     const DOCX_ROOM = 'extreme-docx-' + Date.now();
-    const docxRelay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${DOCX_ROOM}`);
+    const docxRelay = encodeURIComponent(`${RELAY_BASE}/room/${DOCX_ROOM}`);
     const docxUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(DOCX_NAME)}&relay=${docxRelay}&access_token=test`;
 
     await uploadFile(browser, DOCX_NAME, DOCX_PATH, DOCX_ROOM);
@@ -267,7 +269,7 @@ async function typeText(page, label, text) {
         log('  SKIP: xlsx test file not found');
     } else {
         const XLSX_ROOM = 'extreme-xlsx-' + Date.now();
-        const xlsxRelay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${XLSX_ROOM}`);
+        const xlsxRelay = encodeURIComponent(`${RELAY_BASE}/room/${XLSX_ROOM}`);
         const xlsxUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(XLSX_NAME)}&relay=${xlsxRelay}&access_token=test`;
 
         await uploadFile(browser, XLSX_NAME, XLSX_PATH, XLSX_ROOM);
@@ -364,7 +366,7 @@ async function typeText(page, label, text) {
         check('PPTX: skipped (no test file)', true);
     } else {
         const PPTX_ROOM = 'extreme-pptx-' + Date.now();
-        const pptxRelay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${PPTX_ROOM}`);
+        const pptxRelay = encodeURIComponent(`${RELAY_BASE}/room/${PPTX_ROOM}`);
         const pptxUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(PPTX_NAME)}&relay=${pptxRelay}&access_token=test`;
 
         await uploadFile(browser, PPTX_NAME, PPTX_PATH, PPTX_ROOM);

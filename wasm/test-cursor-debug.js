@@ -3,8 +3,10 @@ const __cl = require('./lib/inject-checklist');
 // Expected: "ABCHello WorldXYZ" = 17 chars, identical on both browsers
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots';
 
@@ -89,7 +91,7 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
 
     try {
         const up = await browser.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await up.goto(BASE, { waitUntil: 'networkidle0' });
         await up.evaluate(async (url) => {
             await fetch(url + '/wasm/cotest.txt', {
                 method: 'POST',
@@ -100,7 +102,7 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
         console.log('[setup] Uploaded "Hello World"\n');
 
         const ROOM = 'cotest-' + Date.now();
-        const relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+        const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
         const coolUrl = `${BASE}/browser/cool.html?WOPISrc=cotest.txt&relay=${relay}&access_token=test`;
 
         async function openDoc(label) {

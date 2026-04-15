@@ -15,8 +15,10 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-stress';
 const DOC_NAME = 'test document.docx';
@@ -85,7 +87,7 @@ async function waitForReady(page, label, count) {
     }
 
     const ROOM = 'stress-' + Date.now();
-    const relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+    const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
     const coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(DOC_NAME)}&relay=${relay}&access_token=test`;
 
     async function openDoc(label) {
@@ -135,17 +137,17 @@ async function waitForReady(page, label, count) {
     // Upload
     log('Uploading ' + DOC_NAME);
     const up = await browser.newPage();
-    await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+    await up.goto(BASE, { waitUntil: 'networkidle0' });
     const docBytes = fs.readFileSync(DOC_PATH);
-    await up.evaluate(async (url, name, arr, room) => {
+    await up.evaluate(async (url, name, arr, room, relayBase) => {
         await fetch(url + '/wasm/' + encodeURIComponent(name), {
             method: 'POST', body: new Blob([new Uint8Array(arr)])
         });
         // Pre-seed relay server so late joiners get this file immediately
-        await fetch('https://wasm.atgpartners.info:9091/room/' + encodeURIComponent(room) + '/file', {
+        await fetch(relayBase + '/room/' + encodeURIComponent(room) + '/file', {
             method: 'POST', body: new Blob([new Uint8Array(arr)])
         });
-    }, BASE, DOC_NAME, Array.from(docBytes), ROOM);
+    }, BASE, DOC_NAME, Array.from(docBytes), ROOM, RELAY_BASE);
     await up.close();
     log('Uploaded (WOPI + relay)');
 

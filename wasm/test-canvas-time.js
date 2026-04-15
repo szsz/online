@@ -1,7 +1,8 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const VIEWER = 'https://viewer.szebeni.hu:6934';
+const env = require('./lib/test-env');
+const VIEWER = env.FILE_STORAGE_URL;
 const DOC_NAME = 'profile-canvas.odt';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

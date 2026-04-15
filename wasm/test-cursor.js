@@ -3,8 +3,10 @@
 // Expected: "AAAHello WorldBBB" (not "Hello WorldAAABBB")
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -36,7 +38,7 @@ async function getStatus(page) {
     try {
         // Upload
         const up = await browser.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await up.goto(BASE, { waitUntil: 'networkidle0' });
         await up.evaluate(async (url) => {
             await fetch(url + '/wasm/cursor-test.txt', {
                 method: 'POST',
@@ -47,7 +49,7 @@ async function getStatus(page) {
         console.log('[setup] Uploaded "cursor-test.txt" = "Hello World"\n');
 
         const ROOM = 'cursor-' + Date.now();
-        const relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+        const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
         const coolUrl = `${BASE}/browser/cool.html?WOPISrc=cursor-test.txt&relay=${relay}&access_token=test`;
 
         async function openDoc(label) {
