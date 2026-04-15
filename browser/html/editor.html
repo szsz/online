@@ -188,8 +188,10 @@
             // Generate room ID from filename + random suffix
             var roomId = file.name.replace(/[^a-zA-Z0-9]/g, '-') + '-' + Math.random().toString(36).substr(2, 6);
 
-            // Show share link
-            var shareUrl = window.location.origin + '/?file=' + encodeURIComponent(file.name) + '&room=' + encodeURIComponent(roomId);
+            // Share link uses the viewer's deep-link hash (#file=...).
+            // Per-file relay rooms are derived from the filename in the new
+            // viewer, so no separate &room= is needed.
+            var shareUrl = window.location.origin + '/#file=' + encodeURIComponent(file.name);
             document.getElementById('share-url').value = shareUrl;
             document.getElementById('share-link').style.display = 'block';
 

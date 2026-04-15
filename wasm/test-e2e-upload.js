@@ -47,9 +47,12 @@ function check(label, condition) { __cl.recordCheck(label, condition);
 
     try {
         // --- Step 1: Open landing page ---
+        // The legacy upload page (drop-zone + share URL flow) lives at /upload;
+        // the root / now serves the sidebar viewer. This test exercises the
+        // upload-and-share flow specifically.
         log('\n--- Step 1: Landing page ---');
         const pageA = await browserA.newPage();
-        await pageA.goto(VIEWER, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await pageA.goto(VIEWER + '/upload', { waitUntil: 'domcontentloaded', timeout: 30000 });
         await snap(pageA, 'landing');
 
         // --- Step 2: Upload at 3 seconds ---
@@ -72,18 +75,36 @@ function check(label, condition) { __cl.recordCheck(label, condition);
         log(`  Share URL: ${shareUrl}`);
 
         // --- Step 3: Click Open immediately ---
+        // The Open button now navigates to the viewer's deep-link
+        // (/#file=<name>) — the editor lives in a cross-origin iframe inside
+        // the viewer, so we have to find #StateWordCount in the iframe.
         log('\n--- Step 3: Open document ---');
         const t0 = Date.now();
         await pageA.evaluate(() => document.getElementById('btn-open').click());
+
+        // Helper: locate the cool.html frame on either page (cross-origin)
+        async function findEditorFrame(p) {
+            for (const fr of p.frames()) {
+                if (fr.url().includes('cool.html')) return fr;
+            }
+            return null;
+        }
+        async function readStatusBar(p) {
+            const fr = await findEditorFrame(p);
+            if (!fr) return { label: '', wc: '' };
+            try {
+                return await fr.evaluate(() => ({
+                    label: document.getElementById('wasm-progress-label')?.textContent || '',
+                    wc: document.querySelector('#StateWordCount')?.textContent || '',
+                }));
+            } catch(e) { return { label: '', wc: '', err: e.message }; }
+        }
 
         // Screenshot every 2s during load
         let docLoaded = false;
         for (let i = 0; i < 90 && !docLoaded; i++) {
             await sleep(2000);
-            const s = await pageA.evaluate(() => ({
-                label: document.getElementById('wasm-progress-label')?.textContent || '',
-                wc: document.querySelector('#StateWordCount')?.textContent || '',
-            }));
+            const s = await readStatusBar(pageA);
             if (i <= 4 || i % 3 === 0) await snap(pageA, `loading_${((Date.now()-T0)/1000).toFixed(0)}s`);
             if (s.label) log(`  ${s.label}`);
             if (s.wc.includes('word')) {
@@ -96,7 +117,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
         if (docLoaded) {
             await sleep(2000);
             await snap(pageA, 'document_A');
-            const content = await pageA.evaluate(() => document.querySelector('#StateWordCount')?.textContent);
+            const content = (await readStatusBar(pageA)).wc;
             check('Content visible (A)', content?.includes('word'));
             log(`  ${content}`);
         }
@@ -108,19 +129,29 @@ function check(label, condition) { __cl.recordCheck(label, condition);
         await pageB.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
 
         try {
-            await pageB.waitForFunction(() =>
-                document.querySelector('#StateWordCount')?.textContent?.includes('word'),
-                { timeout: 180000 });
+            // Poll the iframe (we can't use waitForFunction across frames
+            // when the frame doesn't exist yet, so loop manually).
+            const deadline = Date.now() + 180000;
+            let bLoaded = false;
+            while (Date.now() < deadline) {
+                const s = await readStatusBar(pageB);
+                if (s.wc.includes('word')) { bLoaded = true; break; }
+                await sleep(2000);
+            }
+            if (!bLoaded) throw new Error('B never reached word count');
             log(`  B joined in ${((Date.now()-t1)/1000).toFixed(0)}s`);
             check('Browser B loaded', true);
             await sleep(2000);
             await snap(pageB, 'document_B');
 
+            const frB = await findEditorFrame(pageB);
             for (const ch of 'HELLO') {
-                await pageB.evaluate((c) => {
-                    if (globalThis.TheFakeWebSocket)
-                        TheFakeWebSocket.send('key type=input char=' + c.charCodeAt(0) + ' key=0');
-                }, ch);
+                if (frB) {
+                    await frB.evaluate((c) => {
+                        if (globalThis.TheFakeWebSocket)
+                            TheFakeWebSocket.send('key type=input char=' + c.charCodeAt(0) + ' key=0');
+                    }, ch);
+                }
                 await sleep(500);
             }
             await sleep(3000);
