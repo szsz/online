@@ -29,6 +29,10 @@ const SLUG_TO_SHOTS = {
     'e2e-upload':    'shots-e2e-upload',
     'extreme':       'shots-extreme',
     'prewarm':       'shots-prewarm',
+    'regression-sidebar':            'shots-regression-sidebar',
+    'regression-sab-context':        'shots-regression-sab',
+    'regression-room-switch':        'shots-regression-room-switch',
+    'regression-checkpoint-timing':  'shots-regression-checkpoint',
 };
 const shotsName = SLUG_TO_SHOTS[slug] !== undefined ? SLUG_TO_SHOTS[slug] : ('shots-' + slug);
 const shotsDir = shotsName ? '/tmp/static-deploy/public/' + shotsName : '/tmp/static-deploy/public/shots-' + slug;
