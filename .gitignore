@@ -267,3 +267,9 @@ wasm/online-build/
 node_modules/
 .wasm-docs/
 wasm/.tmp-core-download/
+
+# Emscripten/WASM build outputs copied into the deploy bundle
+wasm/online.worker.js
+
+# TypeScript incremental-build cache (written by `tsc --build`)
+browser/tsconfig.tsbuildinfo
