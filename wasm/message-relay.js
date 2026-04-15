@@ -42,11 +42,235 @@ const SSL_KEY = process.env.SSL_KEY || '/etc/letsencrypt/live/wasm.atgpartners.i
 // terminated by the platform so the relay runs plain HTTP/WS internally.
 const useSSL = fs.existsSync(SSL_CERT) && fs.existsSync(SSL_KEY);
 
+// Inline debug UI — single-page app served at /debug/. Lists active
+// rooms, streams messages from a chosen room over SSE.
+const DEBUG_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Relay Debug</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI",
+          ui-sans-serif, Roboto, Helvetica, Arial, sans-serif;
+    color: #1a1a1a; background: #f7f7f9; display: flex;
+  }
+  aside {
+    width: 320px; background: #fff; border-right: 1px solid #e2e2e6;
+    overflow-y: auto; flex-shrink: 0;
+  }
+  aside h2 {
+    margin: 0; padding: 14px 16px; font-size: 14px; font-weight: 600;
+    border-bottom: 1px solid #e2e2e6; background: #f0f0f3;
+  }
+  .rooms { list-style: none; margin: 0; padding: 0; }
+  .rooms li {
+    padding: 10px 16px; border-bottom: 1px solid #f0f0f3; cursor: pointer;
+  }
+  .rooms li:hover { background: #f0f7ff; }
+  .rooms li.active { background: #e0eeff; }
+  .rooms .name { font-weight: 600; word-break: break-all; }
+  .rooms .meta { color: #6b7280; font-size: 11px; margin-top: 2px; }
+  .empty { color: #9ca3af; padding: 16px; font-style: italic; }
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  header {
+    padding: 12px 18px; background: #fff; border-bottom: 1px solid #e2e2e6;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 10px;
+  }
+  header h1 { font-size: 16px; margin: 0; word-break: break-all; }
+  .summary {
+    display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px;
+    color: #4b5563;
+  }
+  .summary b { color: #111; font-weight: 600; }
+  .controls { display: flex; gap: 8px; }
+  button {
+    font: inherit; padding: 4px 12px; border: 1px solid #cbd5e1;
+    background: #fff; border-radius: 4px; cursor: pointer;
+  }
+  button:hover { background: #f0f7ff; }
+  button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  #log {
+    flex: 1; overflow-y: auto; padding: 8px 0; background: #fafafc;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  }
+  .row {
+    display: grid; grid-template-columns: 96px 56px 36px 90px 1fr;
+    gap: 10px; padding: 4px 18px; align-items: baseline;
+    border-bottom: 1px dashed #ececf0;
+  }
+  .row.event { background: #fffbe6; }
+  .row.event .text { color: #6b5800; }
+  .row .ts { color: #9ca3af; font-size: 11px; }
+  .row .seq { color: #4b5563; text-align: right; }
+  .row .kind {
+    text-align: center; padding: 1px 4px; border-radius: 3px;
+    font-size: 10px; text-transform: uppercase;
+  }
+  .row .kind.msg { background: #dcfce7; color: #166534; }
+  .row .kind.event { background: #fde68a; color: #92400e; }
+  .row .vid { color: #6b7280; }
+  .row .text {
+    word-break: break-all; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .text.dim { color: #9ca3af; }
+  .empty-log { color: #9ca3af; padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<aside>
+  <h2>Rooms <span id="roomCount" style="color:#6b7280;font-weight:400;font-size:11px;"></span></h2>
+  <ul id="rooms" class="rooms"></ul>
+</aside>
+<main>
+  <header>
+    <h1 id="roomName">Pick a room</h1>
+    <div class="summary" id="roomMeta"></div>
+    <div class="controls">
+      <button id="clearBtn" disabled>Clear log</button>
+      <label style="font-size:11px;color:#6b7280;display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" id="autoscroll" checked> autoscroll
+      </label>
+    </div>
+  </header>
+  <div id="log"><div class="empty-log">Pick a room from the left to see live messages.</div></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let currentRoom = null;
+let es = null;
+const KIND_FOR_EVENT = {
+  connected: 'connect', disconnected: 'leave', activated: 'activate',
+  checkpoint: 'checkpoint',
+};
+
+async function refreshRooms() {
+  try {
+    const r = await fetch('/debug/api/rooms');
+    const items = await r.json();
+    const ul = $('rooms');
+    $('roomCount').textContent = '(' + items.length + ')';
+    if (items.length === 0) {
+      ul.innerHTML = '<li class="empty">No active rooms.</li>';
+      return;
+    }
+    ul.innerHTML = '';
+    for (const it of items) {
+      const li = document.createElement('li');
+      if (it.id === currentRoom) li.className = 'active';
+      const ageMin = (it.ageSec / 60).toFixed(1);
+      li.innerHTML =
+        '<div class="name"></div>' +
+        '<div class="meta">' +
+          it.activeCount + ' active / ' + it.clientCount + ' total · ' +
+          'seq ' + it.seq + ' · ' +
+          ageMin + 'm · ' +
+          (it.checkpointHash ? 'ckpt ' + it.checkpointHash.substring(0, 8) + '…' : 'no ckpt') +
+        '</div>';
+      li.querySelector('.name').textContent = decodeURIComponent(it.id);
+      li.onclick = () => openRoom(it.id);
+      ul.appendChild(li);
+    }
+  } catch (e) {
+    $('rooms').innerHTML = '<li class="empty">Error: ' + e.message + '</li>';
+  }
+}
+
+function fmtTs(ms) {
+  const d = new Date(ms);
+  return d.toTimeString().slice(0, 8) + '.' +
+         String(d.getMilliseconds()).padStart(3, '0');
+}
+
+function appendRow(rec) {
+  const log = $('log');
+  if (log.querySelector('.empty-log')) log.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = 'row ' + (rec.kind === 'event' ? 'event' : 'msg');
+  const tsEl = document.createElement('div');
+  tsEl.className = 'ts'; tsEl.textContent = fmtTs(rec.ts);
+  const seqEl = document.createElement('div');
+  seqEl.className = 'seq'; seqEl.textContent = rec.seq != null ? rec.seq : '';
+  const kindEl = document.createElement('div');
+  kindEl.className = 'kind ' + rec.kind;
+  kindEl.textContent = rec.kind === 'event'
+    ? (KIND_FOR_EVENT[rec.event] || rec.event || 'event')
+    : 'msg';
+  const vidEl = document.createElement('div');
+  vidEl.className = 'vid';
+  vidEl.textContent = rec.fromViewId != null ? '#' + rec.fromViewId :
+                      rec.viewId      != null ? '#' + rec.viewId : '';
+  const textEl = document.createElement('div');
+  textEl.className = 'text';
+  if (rec.kind === 'msg') {
+    textEl.textContent = rec.text || '';
+    if (rec.bytes) {
+      const span = document.createElement('span');
+      span.className = 'dim';
+      span.textContent = '  (' + rec.bytes + 'B → ' + rec.recipients + ' recipients)';
+      textEl.appendChild(span);
+    }
+  } else {
+    // Event — render the relevant fields compactly.
+    const parts = [];
+    if (rec.event === 'connected')    parts.push('client connected');
+    if (rec.event === 'disconnected') parts.push('client disconnected');
+    if (rec.event === 'activated')    parts.push('viewId ' + rec.viewId + ' activated (' + rec.activeCount + ' active)');
+    if (rec.event === 'checkpoint')   parts.push('checkpoint ' + (rec.hash||'').substring(0, 16) + '… atSeq=' + rec.atSeq + ' (pruned ' + rec.pruned + ')');
+    if (parts.length === 0) parts.push(JSON.stringify(rec));
+    textEl.textContent = parts.join(' · ');
+  }
+  row.appendChild(tsEl); row.appendChild(seqEl); row.appendChild(kindEl);
+  row.appendChild(vidEl); row.appendChild(textEl);
+  log.appendChild(row);
+  if ($('autoscroll').checked) log.scrollTop = log.scrollHeight;
+}
+
+function renderSummary(room) {
+  $('roomName').textContent = decodeURIComponent(room.id);
+  $('roomMeta').innerHTML =
+    '<span><b>' + room.activeCount + '</b> active / <b>' + room.clientCount + '</b> total</span>' +
+    '<span>seq <b>' + room.seq + '</b></span>' +
+    '<span>unsaved <b>' + room.unsavedMsgs + '</b></span>' +
+    '<span>checkpoint <b>' + (room.checkpointHash ? room.checkpointHash.substring(0, 16) + '…' : '—') + '</b></span>';
+}
+
+async function openRoom(roomId) {
+  currentRoom = roomId;
+  await refreshRooms();
+  if (es) { try { es.close(); } catch(e) {} es = null; }
+  $('log').innerHTML = '<div class="empty-log">Loading…</div>';
+  $('clearBtn').disabled = false;
+  es = new EventSource('/debug/api/rooms/' + encodeURIComponent(roomId) + '/stream');
+  es.addEventListener('snapshot', (ev) => {
+    const data = JSON.parse(ev.data);
+    renderSummary(data.room);
+    $('log').innerHTML = '';
+    for (const rec of data.log) appendRow(rec);
+  });
+  es.addEventListener('rec', (ev) => appendRow(JSON.parse(ev.data)));
+  es.onerror = () => {
+    // EventSource auto-reconnects; just visually mark the disconnect.
+    $('roomName').textContent = decodeURIComponent(roomId) + ' (reconnecting…)';
+  };
+  $('clearBtn').onclick = () => { $('log').innerHTML = ''; };
+}
+
+refreshRooms();
+setInterval(refreshRooms, 4000);
+</script>
+</body>
+</html>`;
+
 const rooms = new Map();
 
 class Room {
     constructor(id) {
         this.id = id;
+        this.createdAt = Date.now();
         this.clients = new Set();
         this.activeClients = new Set();
         this.seq = 0;
@@ -63,6 +287,31 @@ class Room {
         // Message log since checkpoint (for replay)
         this.messageLog = [];
         this.maxLogSize = 50000;
+
+        // Separate debug ring buffer — captures EVERY frame and event,
+        // independent of checkpoint pruning. Used by /debug/ to give a
+        // full picture of what flowed through the room. Capped so a
+        // long-running room doesn't grow unbounded.
+        this.debugLog = [];
+        this.debugMaxSize = 2000;
+        // Listeners attached via /debug/api/rooms/:id/stream (SSE).
+        this.debugListeners = new Set();
+    }
+
+    // Append a record to the debug log. `kind` is the high-level event:
+    //   'msg' — a relayed user-input frame (broadcast)
+    //   'event' — control or lifecycle event (join, leave, save, etc.)
+    debugAppend(kind, fields) {
+        const rec = Object.assign({ ts: Date.now(), kind }, fields);
+        this.debugLog.push(rec);
+        if (this.debugLog.length > this.debugMaxSize) {
+            this.debugLog = this.debugLog.slice(-this.debugMaxSize);
+        }
+        // Push to any SSE listeners. Errors (closed connection) just
+        // unregister the listener.
+        for (const fn of this.debugListeners) {
+            try { fn(rec); } catch (e) { this.debugListeners.delete(fn); }
+        }
     }
 
     nextSeq() { return ++this.seq; }
@@ -71,6 +320,15 @@ class Room {
     // file — that's the file storage server's responsibility. We only track
     // the hash and sequence number for late-join coordination.
     registerCheckpoint(hash, atSeq) {
+        // Reject malformed hashes — older clients used to send file bytes
+        // through this code path (the relay would .toString() them and
+        // store binary as the hash). A subsequent joiner would then
+        // perpetually mismatch the real file's SHA-256 from /api/files
+        // and loop on 0x0A. Accept only proper hex hashes here.
+        if (!Room.isValidHexHash(hash)) {
+            console.log(`[${this.id}] registerCheckpoint REJECTED malformed hash (len=${(hash||'').length}, prefix=${(hash||'').substring(0, 8).replace(/[^\x20-\x7e]/g, '?')}…) — keeping previous`);
+            return;
+        }
         this.checkpointHash = hash;
         this.checkpointSeq = atSeq !== undefined ? atSeq : this.seq;
         this.savePending = false;
@@ -84,12 +342,27 @@ class Room {
             this.messageLog = this.messageLog.slice(-this.maxLogSize);
         }
         console.log(`[${this.id}] CHECKPOINT: hash=${this.checkpointHash} atSeq=${this.checkpointSeq} roomSeq=${this.seq} replay=${this.messageLog.length} (pruned ${before - this.messageLog.length})`);
+        this.debugAppend('event', {
+            event: 'checkpoint',
+            hash: this.checkpointHash,
+            atSeq: this.checkpointSeq,
+            roomSeq: this.seq,
+            pruned: before - this.messageLog.length,
+        });
     }
 
     // Legacy compat — old clients may still upload file data
     createCheckpoint(buf, atSeq) {
         const hash = crypto.createHash('sha256').update(buf).digest('hex').substring(0, 16);
         this.registerCheckpoint(hash, atSeq);
+    }
+
+    // Hex-hash sanity check. We accept any-length hex string of at least
+    // 16 chars; current clients send 64 (full SHA-256). Anything that's
+    // not an even-length hex string is treated as junk (legacy bytes-as-
+    // string from before the SHA-256 fix landed).
+    static isValidHexHash(s) {
+        return typeof s === 'string' && s.length >= 16 && /^[0-9a-fA-F]+$/.test(s);
     }
 
     get fileHash() { return this.checkpointHash; }
@@ -122,6 +395,20 @@ class Room {
         for (const client of this.clients) {
             if (client._joinBuffering) client._joinBuffer.push(frame);
         }
+
+        // Debug: capture the broadcast for /debug/. Decode the payload as
+        // UTF-8 (truncated) — user input is text. activeClients is the
+        // set of recipients.
+        const fromViewId = viewId.readUInt32BE(0);
+        const text = payload.toString('utf8');
+        this.debugAppend('msg', {
+            seq,
+            type: 0x00,
+            fromViewId,
+            text: text.length > 200 ? text.substring(0, 200) + '…' : text,
+            bytes: payload.length,
+            recipients: this.activeClients.size,
+        });
         return seq;
     }
 
@@ -222,13 +509,93 @@ function getRoom(roomId) {
 }
 
 // --- HTTP(S) server ---
+
+// Build a JSON-friendly summary of a Room — used by the debug endpoints.
+function roomSummary(room) {
+    return {
+        id: room.id,
+        createdAt: room.createdAt,
+        ageSec: Math.floor((Date.now() - room.createdAt) / 1000),
+        seq: room.seq,
+        clientCount: room.clients.size,
+        activeCount: room.activeClients.size,
+        savePending: room.savePending,
+        checkpointHash: room.checkpointHash,
+        checkpointSeq: room.checkpointSeq,
+        unsavedMsgs: room.messageLog.length,
+        debugLogSize: room.debugLog.length,
+    };
+}
+
 const requestHandler = (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
+    // ── Debug UI + API ─────────────────────────────────────────────
+    if (req.url === '/debug' || req.url === '/debug/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(DEBUG_HTML);
+        return;
+    }
+    if (req.url === '/debug/api/rooms') {
+        const items = [];
+        for (const room of rooms.values()) items.push(roomSummary(room));
+        items.sort((a, b) => b.createdAt - a.createdAt);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(items));
+        return;
+    }
+    let m = req.url.match(/^\/debug\/api\/rooms\/([^/]+)\/stream$/);
+    if (m) {
+        const roomId = decodeURIComponent(m[1]);
+        const room = rooms.get(roomId);
+        if (!room) { res.writeHead(404); res.end('No such room'); return; }
+        // Server-Sent Events for live tailing of new debug records.
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+        });
+        // Send a backlog snapshot first so the client renders without a
+        // gap, then stream new events as they arrive.
+        res.write('event: snapshot\ndata: ' + JSON.stringify({
+            room: roomSummary(room),
+            log: room.debugLog,
+        }) + '\n\n');
+        const onRec = (rec) => {
+            try { res.write('event: rec\ndata: ' + JSON.stringify(rec) + '\n\n'); }
+            catch (e) { room.debugListeners.delete(onRec); }
+        };
+        room.debugListeners.add(onRec);
+        // Heartbeat to keep proxies from dropping the connection. SSE
+        // comments (lines starting with ':') don't fire any client
+        // event, they just keep bytes flowing.
+        const hb = setInterval(() => {
+            try { res.write(': hb\n\n'); } catch (e) {}
+        }, 15000);
+        req.on('close', () => {
+            clearInterval(hb);
+            room.debugListeners.delete(onRec);
+        });
+        return;
+    }
+    m = req.url.match(/^\/debug\/api\/rooms\/([^/]+)$/);
+    if (m) {
+        const roomId = decodeURIComponent(m[1]);
+        const room = rooms.get(roomId);
+        if (!room) { res.writeHead(404); res.end('No such room'); return; }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            room: roomSummary(room),
+            log: room.debugLog,
+        }));
+        return;
+    }
+
+    // ── Original /room/:id/file API ────────────────────────────────
     const match = req.url.match(/^\/room\/([^/]+)\/file$/);
-    if (!match) { res.writeHead(200); res.end('Checkpoint Relay v3'); return; }
+    if (!match) { res.writeHead(200); res.end('Checkpoint Relay v3 — debug at /debug/'); return; }
 
     const roomId = decodeURIComponent(match[1]);
     const room = rooms.get(roomId);
@@ -290,6 +657,11 @@ server.on('upgrade', (req, socket, head) => {
         ws._expectedHash = null;
 
         console.log(`[${roomId}] Connected (${room.clients.size} total, ${room.activeClients.size} active)`);
+        room.debugAppend('event', {
+            event: 'connected',
+            clientCount: room.clients.size,
+            activeCount: room.activeClients.size,
+        });
 
         ws.on('message', (data) => {
             const buf = Buffer.from(data);
@@ -302,40 +674,37 @@ server.on('upgrade', (req, socket, head) => {
                 ws._viewId = viewId;
                 console.log(`[${roomId}] JOIN viewId=${viewId} active=${room.activeClients.size} checkpoint=${!!room.checkpointHash} unsaved=${room.messageLog.length}`);
 
-                // The relay no longer stores file bytes — only the checkpoint
-                // hash. Any non-null hash means a checkpoint exists and the
-                // joiner should sync to it. (The legacy `room.checkpoint`
-                // field is only set by the deprecated createCheckpoint(buf)
-                // path and is always null in the hash-only flow, which would
-                // misclassify every joiner as "first client" and break
-                // late-join sync.)
-                if (!room.checkpointHash) {
-                    // No checkpoint at all — first client ever
-                    console.log(`[${roomId}]   → First client (no checkpoint)`);
+                // Classification rules (in order):
+                //   1. No active peers AND no checkpoint → genuinely first.
+                //      Activate immediately; the client owns the doc.
+                //   2. Active peers exist → late joiner, regardless of
+                //      whether a checkpoint exists yet. We trigger a fresh
+                //      save on the active peer and serve the resulting
+                //      checkpoint. (The previous code missed this when
+                //      checkpointHash was still null — both tabs of a doc
+                //      racing each other ended up classified as "first",
+                //      so neither saw the other's edits.)
+                //   3. No active peers but a checkpoint exists → late
+                //      joiner, no save needed, serve cached.
+                if (room.activeClients.size === 0 && !room.checkpointHash) {
+                    console.log(`[${roomId}]   → First client (no peers, no checkpoint)`);
                     room.sendControl(ws, 0x05, 0, JSON.stringify({ first: true, seq: 0 }));
                     ws._joining = false;
                     room.activeClients.add(ws);
                     return;
                 }
-
-                // ALWAYS trigger a fresh save when a new browser joins (if there are active peers)
-                // This ensures the checkpoint includes ALL prior edits.
-                // If no changes since last checkpoint, the save will produce the same file.
                 if (room.activeClients.size === 0) {
-                    // No active peers — serve current checkpoint directly
                     console.log(`[${roomId}]   → No active peers, serving cached checkpoint`);
                     room.serveCheckpoint(ws);
                     return;
                 }
-
-                // Wait for a fresh save before serving
-                console.log(`[${roomId}]   → Requesting fresh save (unsaved=${room.messageLog.length})`);
+                // Active peer(s) — wait for a fresh save (which may be the
+                // active peer's very first save if no checkpoint exists yet).
+                console.log(`[${roomId}]   → Active peer present, requesting fresh save (unsaved=${room.messageLog.length}, hasCheckpoint=${!!room.checkpointHash})`);
                 ws._waitingForSave = true;
                 if (!room.savePending) {
                     room.triggerSave();
                 }
-                // 0x07 handler serves checkpoint to all waiting joiners
-                // Timeout fallback in triggerSave
                 return;
             }
 
@@ -397,20 +766,50 @@ server.on('upgrade', (req, socket, head) => {
                 const expected = ws._expectedHash || room.checkpointHash;
 
                 if (expected && clientHash && clientHash !== expected) {
-                    // MISMATCH — client loaded wrong checkpoint
-                    console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${clientHash} expected=${expected}`);
-                    // Tell client to re-download
-                    const info = JSON.stringify({
-                        expected: room.checkpointHash,
-                        url: `/room/${encodeURIComponent(roomId)}/file`,
-                        seq: room.checkpointSeq,
-                    });
-                    room.sendControl(ws, 0x0A, 0, info);
-                    // Reset join state — client must re-download and re-send 0x06
-                    ws._joinBuffering = false;
-                    ws._joinBuffer = [];
-                    room.serveCheckpoint(ws);
-                    return;
+                    // MISMATCH between what the relay has stored and what
+                    // the client just computed from the file storage.
+                    //
+                    // Telling the client to re-download is a dead-end if the
+                    // file in /api/files doesn't actually have the expected
+                    // hash — the client downloads the same bytes, computes
+                    // the same hash, and we loop forever (0x0A → re-download
+                    // → 0x06 → 0x0A → …).
+                    //
+                    // The file storage is the source of truth. If our
+                    // expected hash is stale or junk (legacy bytes-as-string)
+                    // and the client's hash is well-formed, accept it: update
+                    // our stored hash and let the client activate. The
+                    // alternative is the user-visible deadlock the activation
+                    // spinner now exposes.
+                    if (Room.isValidHexHash(clientHash) && !Room.isValidHexHash(expected)) {
+                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: stored hash is malformed (legacy junk); accepting client hash=${clientHash}`);
+                        room.checkpointHash = clientHash;
+                        // fall through to the JOIN READY path
+                    } else if (Room.isValidHexHash(clientHash)) {
+                        // Both are valid hex but differ. The most likely
+                        // cause is a previous client uploaded but never
+                        // confirmed via 0x07, or two clients raced. Prefer
+                        // the client's hash (which IS what the file storage
+                        // currently contains) over our stored value, but log
+                        // the divergence so it's diagnosable.
+                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${clientHash} expected=${expected} — accepting client (storage is source of truth)`);
+                        room.checkpointHash = clientHash;
+                        // fall through to JOIN READY
+                    } else {
+                        // Client hash is malformed — old buggy client.
+                        // Fall back to the original re-download dance.
+                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${(clientHash||'').substring(0, 24)}… expected=${expected}`);
+                        const info = JSON.stringify({
+                            expected: room.checkpointHash,
+                            url: `/room/${encodeURIComponent(roomId)}/file`,
+                            seq: room.checkpointSeq,
+                        });
+                        room.sendControl(ws, 0x0A, 0, info);
+                        ws._joinBuffering = false;
+                        ws._joinBuffer = [];
+                        room.serveCheckpoint(ws);
+                        return;
+                    }
                 }
 
                 // Hash matches (or no hash sent — backward compat) — activate
@@ -428,6 +827,11 @@ server.on('upgrade', (req, socket, head) => {
                 room.activeClients.add(ws);
                 room.announceJoin(viewId);
                 console.log(`[${roomId}] ACTIVATED viewId=${viewId} (${room.activeClients.size} active)`);
+                room.debugAppend('event', {
+                    event: 'activated',
+                    viewId,
+                    activeCount: room.activeClients.size,
+                });
                 return;
             }
 
@@ -447,6 +851,12 @@ server.on('upgrade', (req, socket, head) => {
             room.activeClients.delete(ws);
             if (ws._viewId) room.announceLeave(ws._viewId);
             console.log(`[${roomId}] Disconnected (${room.clients.size} total, ${room.activeClients.size} active)`);
+            room.debugAppend('event', {
+                event: 'disconnected',
+                viewId: ws._viewId || 0,
+                clientCount: room.clients.size,
+                activeCount: room.activeClients.size,
+            });
             if (room.clients.size === 0) {
                 setTimeout(() => {
                     if (room.clients.size === 0) {

@@ -216,10 +216,23 @@
     function activateClient() {
         if (activated) return;
         activated = true;
-        // Send join-ready with checkpoint hash for verification
+        // Send join-ready with the SHA-256 hex of the document we loaded.
+        // Truncate the log preview so a 64-char hash doesn't drown the console.
         var readyPayload = joinFileHash ? JSON.stringify({ hash: joinFileHash }) : '';
-        console.log('[relay] Activating — sending join-ready hash=' + (joinFileHash || 'none'));
+        var hashPreview = joinFileHash ? joinFileHash.substring(0, 16) + '…' : 'none';
+        console.log('[relay] Activating — sending join-ready hash=' + hashPreview);
         sendToRelay(0x06, myViewId, readyPayload);
+
+        // Tell the parent viewer that input is now accepted. Until this
+        // fires the viewer keeps its loading shield up — otherwise the
+        // user would see the document but typing would silently disappear
+        // ("Dropping input not activated yet").
+        try {
+            parent.postMessage(JSON.stringify({
+                MessageId: 'RelayActivated',
+                Values: { viewId: myViewId, isFirstClient: isFirstClient }
+            }), '*');
+        } catch(e) {}
 
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
@@ -243,15 +256,84 @@
 
         function interceptedSend(data) {
             var text = typeof data === 'string' ? data : '';
+            // User-input prefixes that MUST go through the relay so all
+            // peers see the same edit. Adding any new doc-mutating prefix
+            // here is a NORMAL co-edit fix; missing one means the action
+            // works locally for the actor but is invisible to peers (the
+            // class of bugs that produced the Delete-key bug).
+            //
+            // Categories covered:
+            //   key / mouse / textinput / windowkey / uno
+            //     The classic input messages from Map.Keyboard / mouse /
+            //     toolbar / shortcut paths.
+            //   removetextcontext / removetextcontent
+            //     Delete and Backspace go through TextInput.js's
+            //     beforeinput handler, which sends `removetextcontext`
+            //     (note the typo — TextInput.js's TODO promises it'll be
+            //     renamed to `removetextcontent`; cover both).
+            //   contentcontrolevent
+            //     Form-field interactions: date picker, dropdown, picture
+            //     content controls. Each event mutates the doc.
+            //   moveselectedclientparts
+            //     Reorder slides (Impress) or sheets (Calc). Pure doc
+            //     mutation — peers MUST apply the same reorder.
+            //   completefunction
+            //     Calc autocomplete inserts a function name into the
+            //     active formula cell.
+            //   selecttext / resetselection
+            //     Selection state. Each peer renders the others' cursors
+            //     and selections via a remote-client Kit; for that mirror
+            //     to show the right highlighted range, A's selection
+            //     events MUST reach B's remote-Kit-for-A. Sources:
+            //     CanvasTileLayer._postSelectTextEvent (selection-handle
+            //     drag → TextSelectionHandleSection / TableSelectMarker /
+            //     CellSelectionHandle); Parts.js / SearchService /
+            //     PartsPreview send `resetselection`.
+            //
+            // NOT relayed (intentionally — per-user view / server-side):
+            //   setclientpart / selectclientpart / setpage  → each user
+            //     can view a different slide or sheet
+            //   windowmouse / windowgesture / windowcommand → clicks
+            //     inside per-user dialogs; doc-side effect comes via uno
+            //   clientzoom, tileprocessed, commandvalues,
+            //   gettextselection, paintwindow → local view state / queries
+            //   attemptlock, closedocument, versionrestore, downloadas,
+            //   exportas, renamefile → server-side WOPI ops
+            //   insertfile → would relay a name, but the file bytes only
+            //     live on the originating peer's editor; cross-peer file
+            //     insert needs a separate sync mechanism — known limitation
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
                 text.startsWith('textinput ') || text.startsWith('windowkey ') ||
-                text.startsWith('uno ');
+                text.startsWith('uno ') ||
+                text.startsWith('removetextcontext ') ||
+                text.startsWith('removetextcontent ') ||
+                text.startsWith('contentcontrolevent ') ||
+                text.startsWith('moveselectedclientparts ') ||
+                text.startsWith('completefunction ') ||
+                text.startsWith('selecttext ') ||
+                text === 'resetselection';
             if (isUserInput) {
                 if (!activated) {
                     console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
                     return;
                 }
                 sendToRelay(0x00, myViewId, data);
+
+                // User-initiated save (Ctrl+S → COOL emits `uno .uno:Save`):
+                // create a checkpoint and upload the saved file to storage.
+                // Only the ORIGINATOR runs this — other peers receive the
+                // same uno via relay, save locally, but don't double-upload
+                // (their processUIMessage path doesn't schedule a save).
+                //
+                // saveAndUploadCheckpoint waits 1.5s for Kit to flush the
+                // save before reading /wasm/<name>; if Ctrl+S is hammered,
+                // each call queues its own delayed upload — wasteful but
+                // not harmful (each uploads the same final bytes).
+                if (isUserSaveCommand(text)) {
+                    console.log('[relay] User save detected (' + text.substring(0, 40) +
+                                ') — scheduling checkpoint + upload');
+                    saveAndUploadCheckpoint();
+                }
             } else {
                 // Non-user-input (tileprocessed, clientzoom, etc.) goes
                 // directly to Kit SYNCHRONOUSLY via postMobileMessage.
@@ -376,6 +458,18 @@
         saveAndUploadCheckpoint();
     }
 
+    // True when the COOL JS layer dispatches a user-initiated save.
+    // Ctrl+S, the toolbar Save button, and File→Save all funnel through
+    // the same .uno:Save command. The Sidebar/Auto-save also produce
+    // .uno:Save — that's still legit "user wants to persist this" intent.
+    function isUserSaveCommand(text) {
+        if (!text || !text.startsWith('uno ')) return false;
+        var cmd = text.substring(4).split('?')[0].split(/\s/)[0];
+        // Accept the bare Save plus the explicit-as variants. We do NOT
+        // include FileSave (legacy alias) — COOL maps that internally.
+        return cmd === '.uno:Save' || cmd === '.uno:SaveAs';
+    }
+
     function saveAndUploadCheckpoint() {
         if (!connected) return;
         sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
@@ -389,22 +483,36 @@
             var editorFileUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
             origFetch(editorFileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
                 var bytes = new Uint8Array(buf);
-                // 2. Compute hash
+                // 2. Compute the full SHA-256 hex of the document.
                 return crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
                     var hashArr = new Uint8Array(hashBuf);
-                    var hash = Array.from(hashArr.slice(0, 8)).map(function(b) {
+                    var hashHex = Array.from(hashArr).map(function(b) {
                         return b.toString(16).padStart(2, '0');
                     }).join('');
-                    // 3. Upload file to FILE STORAGE SERVER (the viewer)
+                    // 3. Upload file to FILE STORAGE SERVER (the viewer).
+                    //    This is the canonical store; late-joiners read from
+                    //    here. The relay only learns the hash + seq for
+                    //    coordination — it never stores file bytes.
                     var viewerFileUrl = getFileStorageUrl(wopiSrc);
                     return origFetch(viewerFileUrl, {
                         method: 'POST',
                         body: new Blob([bytes]),
                         mode: 'cors',
                     }).then(function() {
-                        // 4. Report to relay — send file bytes for backward
-                        // compat with old relay servers. Future: send hash only.
-                        var frame = new Uint8Array(5 + 4 + bytes.length);
+                        // 4. Report to relay. Frame layout:
+                        //      [0]   type (0x07)
+                        //      [1-4] viewId (uint32 BE)
+                        //      [5-8] saveAtSeq (uint32 BE)
+                        //      [9..] hash hex string (UTF-8, 64 ASCII chars)
+                        //
+                        //    We send only the hash here — NOT the file bytes.
+                        //    Sending the body would burn `filesize` bytes of
+                        //    WebSocket traffic per save (the file already
+                        //    went to /api/files in step 3). The relay's
+                        //    0x07 handler reads buf.slice(9).toString() as
+                        //    the hash.
+                        var hashBytes = new TextEncoder().encode(hashHex);
+                        var frame = new Uint8Array(5 + 4 + hashBytes.length);
                         frame[0] = 0x07;
                         frame[1] = (myViewId >>> 24) & 0xFF;
                         frame[2] = (myViewId >>> 16) & 0xFF;
@@ -414,9 +522,10 @@
                         frame[6] = (saveAtSeq >>> 16) & 0xFF;
                         frame[7] = (saveAtSeq >>> 8) & 0xFF;
                         frame[8] = saveAtSeq & 0xFF;
-                        frame.set(bytes, 9);
+                        frame.set(hashBytes, 9);
                         ws.send(frame);
-                        console.log('[relay] Checkpoint: ' + bytes.length + 'b hash=' + hash + ' seq=' + saveAtSeq + ' → file storage + relay');
+                        console.log('[relay] Checkpoint: file=' + bytes.length + 'B → /api/files; ' +
+                                    'sent hash=' + hashHex.substring(0, 16) + '… (' + frame.length + 'B frame) seq=' + saveAtSeq);
                     });
                 });
             }).catch(function(e) {
@@ -440,30 +549,41 @@
     //      stores the bytes so the editor can re-load them. Late-join
     //      sync into the viewer's storage will be broken in this mode.
     function getFileStorageUrl(wopiSrc) {
-        var encoded = encodeURIComponent(wopiSrc);
-        // 1. Explicit param from the viewer
+        return resolveFileStorageBase() + '/api/files/' + encodeURIComponent(wopiSrc);
+    }
+
+    // Build the URL for a content-addressable blob. Returns null if we
+    // can't resolve the file-storage origin AND the caller should fall
+    // back to /api/files/<name>.
+    function getBlobUrl(hash) {
+        if (!hash) return null;
+        var base = resolveFileStorageBase();
+        if (!base) return null;
+        return base + '/api/blobs/' + encodeURIComponent(hash);
+    }
+
+    // Resolve the base URL of the viewer (which serves both /api/files/
+    // and /api/blobs/). Same resolution order as the old getFileStorageUrl.
+    function resolveFileStorageBase() {
         var explicit = params.get('fileStorageUrl');
         if (explicit) {
-            // Trim trailing slash so we don't produce double //
             if (explicit.charAt(explicit.length - 1) === '/') explicit = explicit.slice(0, -1);
-            return explicit + '/api/files/' + encoded;
+            return explicit;
         }
-        // 2. Same-origin parent
         try {
             if (window.parent !== window) {
                 var origin = window.parent.location.origin;
-                if (origin && origin !== 'null') return origin + '/api/files/' + encoded;
+                if (origin && origin !== 'null') return origin;
             }
         } catch(e) {}
-        // 3. Referrer
         if (document.referrer) {
-            try {
-                return new URL(document.referrer).origin + '/api/files/' + encoded;
-            } catch(e) {}
+            try { return new URL(document.referrer).origin; } catch(e) {}
         }
-        // 4. Editor-local fallback
-        console.warn('[relay] getFileStorageUrl: no fileStorageUrl param, no same-origin parent, no referrer — falling back to editor /wasm/ (late-joiners will see stale content)');
-        return window.location.origin + '/wasm/' + encoded;
+        // Last resort: the editor's own origin. /api/blobs/ doesn't live
+        // there, so getBlobUrl will return a 404 and the late-joiner code
+        // will fall back to /wasm/ via the source list.
+        console.warn('[relay] resolveFileStorageBase: no fileStorageUrl param, no same-origin parent, no referrer');
+        return window.location.origin;
     }
 
     // --- Process a sequenced UI message ---
@@ -483,9 +603,19 @@
             return;
         }
 
+        // Keep the receive-side filter in sync with interceptedSend above
+        // — see the long comment there for which prefixes mutate the doc
+        // and which are intentionally per-user.
         var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
             text.startsWith('textinput ') || text.startsWith('windowkey ') ||
-            text.startsWith('uno ');
+            text.startsWith('uno ') ||
+            text.startsWith('removetextcontext ') ||
+            text.startsWith('removetextcontent ') ||
+            text.startsWith('contentcontrolevent ') ||
+            text.startsWith('moveselectedclientparts ') ||
+            text.startsWith('completefunction ') ||
+            text.startsWith('selecttext ') ||
+            text === 'resetselection';
         if (!isUserInput) return;
 
         if (text.startsWith('uno ')) {
@@ -567,30 +697,60 @@
                         return;
                     }
 
-                    // Late joiner — download checkpoint file.
-                    // The checkpoint was saved to both the file storage server
-                    // AND the editor's /wasm/ endpoint. We download from the
-                    // editor (same origin, no CORS issues) and overwrite the
-                    // local WOPI file so the WASM loads the right version.
-                    joinFileHash = info.hash;
+                    // Late joiner — download the checkpoint by HASH from
+                    // the content-addressable blob endpoint. The relay
+                    // promised this hash; the blob endpoint returns
+                    // exactly those bytes; the SHA-256 we compute will
+                    // match — no chance of drift, no 0x0A re-download
+                    // dance, no stale-hash deadlock.
+                    //
+                    // Falls back to /api/files/<name> + /wasm/<name> if
+                    // the blob endpoint is unavailable (older deploys).
                     joinFileSeq = info.seq;
                     var wopiSrc = params.get('WOPISrc') || '';
                     var editorWopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                    console.log('[relay] Join-response: hash=' + info.hash + ' seq=' + info.seq + ' — downloading checkpoint');
+                    var blobUrl = info.hash ? getBlobUrl(info.hash) : null;
+                    var nameUrl = getFileStorageUrl(wopiSrc);
+                    console.log('[relay] Join-response: relay-expected hash=' + (info.hash||'').substring(0, 16) + '… seq=' + info.seq +
+                        (blobUrl ? ' — fetching by hash from ' + blobUrl.replace(/\/[a-f0-9]{16,}.*$/, '/<hash>') : ' — fetching by name'));
 
-                    // First try file storage (canonical), fall back to editor's /wasm/
-                    var fileStorageUrl = getFileStorageUrl(wopiSrc);
-                    origFetch(fileStorageUrl, { mode: 'cors' }).then(function(r) {
-                        if (!r.ok) throw new Error('File storage ' + r.status);
-                        return r.arrayBuffer();
-                    }).catch(function() {
-                        // Fallback: download from editor's own /wasm/ endpoint
-                        console.log('[relay] File storage unavailable, using editor /wasm/');
-                        return origFetch(editorWopiUrl).then(function(r) { return r.arrayBuffer(); });
-                    }).then(function(buf) {
-                        console.log('[relay] Downloaded ' + buf.byteLength + 'b (hash=' + joinFileHash + ')');
-                        lateJoinFileReady = true;
-                        return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
+                    // Try sources in order: blob-by-hash → name → editor's own /wasm/.
+                    var sources = [];
+                    if (blobUrl) sources.push({ kind: 'blob', url: blobUrl });
+                    sources.push({ kind: 'name', url: nameUrl });
+                    sources.push({ kind: 'editor-wasm', url: editorWopiUrl });
+
+                    function tryNext(idx) {
+                        if (idx >= sources.length) {
+                            return Promise.reject(new Error('all sources exhausted'));
+                        }
+                        var s = sources[idx];
+                        var opts = s.kind === 'editor-wasm' ? {} : { mode: 'cors' };
+                        return origFetch(s.url, opts).then(function(r) {
+                            if (!r.ok) throw new Error(s.kind + ' ' + r.status);
+                            return r.arrayBuffer();
+                        }).catch(function(e) {
+                            console.log('[relay] Source "' + s.kind + '" failed (' + e.message + '), trying next');
+                            return tryNext(idx + 1);
+                        });
+                    }
+                    tryNext(0).then(function(buf) {
+                        // Compute SHA-256 of what we actually loaded — keeps
+                        // the integrity check honest even when we go via
+                        // /api/blobs (where it's tautological).
+                        var bytes = new Uint8Array(buf);
+                        return crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
+                            var hashArr = new Uint8Array(hashBuf);
+                            joinFileHash = Array.from(hashArr).map(function(b) {
+                                return b.toString(16).padStart(2, '0');
+                            }).join('');
+                            var matches = info.hash && info.hash === joinFileHash;
+                            console.log('[relay] Downloaded ' + buf.byteLength + 'B; computed hash=' + joinFileHash.substring(0, 16) + '…' +
+                                (matches ? ' (matches relay expected)' :
+                                 info.hash ? ' (relay expected ' + info.hash.substring(0, 16) + '… — mismatch will be resolved by relay)' : ''));
+                            lateJoinFileReady = true;
+                            return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
+                        });
                     }).then(function() {
                         console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
                     }).catch(function(e) {
@@ -671,12 +831,30 @@
     var activationPollInterval = null;
     function startActivationPoll() {
         if (activationPollInterval) clearInterval(activationPollInterval);
+        var pollStart = Date.now();
+        var lastReportedReason = '';
         activationPollInterval = setInterval(function() {
             if (activated) { clearInterval(activationPollInterval); activationPollInterval = null; return; }
             if (coolwsdReady && lateJoinFileReady && !activated) {
                 activateClient();
                 clearInterval(activationPollInterval);
                 activationPollInterval = null;
+                return;
+            }
+            // Report what we're still waiting on so a stuck activation is
+            // diagnosable from the console (and so the parent viewer can
+            // surface "Joining session…" instead of looking frozen).
+            var waiting = !coolwsdReady ? 'editor' : 'checkpoint download';
+            var elapsed = ((Date.now() - pollStart) / 1000).toFixed(0);
+            if (waiting !== lastReportedReason || (elapsed % 5 === 0 && elapsed > 0)) {
+                lastReportedReason = waiting;
+                console.log('[relay] Activation pending: waiting for ' + waiting + ' (' + elapsed + 's)');
+                try {
+                    parent.postMessage(JSON.stringify({
+                        MessageId: 'RelayActivating',
+                        Values: { waitingFor: waiting, elapsedSec: parseInt(elapsed, 10) }
+                    }), '*');
+                } catch(e) {}
             }
         }, 500);
     }
