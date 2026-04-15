@@ -243,18 +243,6 @@
 
         function interceptedSend(data) {
             var text = typeof data === 'string' ? data : '';
-            // Mouse-move is a high-frequency local-only signal (hover
-            // feedback, drag-to-select). Deliver it straight to the local
-            // Kit and DO NOT relay or log it — relaying would burn
-            // bandwidth on every pixel of cursor motion across every peer.
-            // Mouse buttondown/buttonup still go through the normal
-            // user-input path so remote-cursor sync stays intact.
-            // Match `mouse type=move ` exactly to avoid catching unrelated
-            // event names like type=hover or future type=movefoo.
-            if (text.startsWith('mouse type=move ') || text === 'mouse type=move') {
-                if (globalThis.postMobileMessage) globalThis.postMobileMessage(data);
-                return;
-            }
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
                 text.startsWith('textinput ') || text.startsWith('windowkey ') ||
                 text.startsWith('uno ');
