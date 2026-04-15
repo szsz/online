@@ -174,6 +174,7 @@ deploy_app() {
     local APP_NAME=$1
     local DEPLOY_DIR=$2
     local SMOKE_PATH=${3:-/}            # path to GET for smoke test (default: /)
+    local SMOKE_CONTAINS=${4:-}         # optional body substring to require
     local ZIP_PATH="${DEPLOY_DIR}.zip"
 
     echo "  Zipping $DEPLOY_DIR..."
@@ -187,18 +188,32 @@ deploy_app() {
         --type zip \
         --src-path "$ZIP_PATH"
 
-    # Smoke test: poll the app for up to 90s waiting for a 2xx/3xx.
+    # Smoke test: poll the app for up to 90s waiting for a 2xx/3xx response,
+    # and (if SMOKE_CONTAINS is set) requiring the body to contain the
+    # given substring. The body check catches "served the wrong page" bugs
+    # — e.g. if the bundle accidentally serves editor.html at / instead of
+    # the sidebar viewer.
     local URL="https://${APP_NAME}.azurewebsites.net${SMOKE_PATH}"
-    echo "  Smoke test: GET $URL"
-    local i HTTP
+    if [[ -n "$SMOKE_CONTAINS" ]]; then
+        echo "  Smoke test: GET $URL  (must contain '$SMOKE_CONTAINS')"
+    else
+        echo "  Smoke test: GET $URL"
+    fi
+    local i HTTP BODY
     for i in $(seq 1 18); do
-        HTTP="$(curl -ks -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo 000)"
+        BODY_FILE="$(mktemp)"
+        HTTP="$(curl -ks -o "$BODY_FILE" -w '%{http_code}' --max-time 10 "$URL" || echo 000)"
         if [[ "$HTTP" =~ ^[23] ]]; then
-            echo "    OK (HTTP $HTTP after ${i}*5s)"
-            echo "  Done: https://${APP_NAME}.azurewebsites.net"
-            echo ""
-            return 0
+            if [[ -z "$SMOKE_CONTAINS" ]] || grep -q -- "$SMOKE_CONTAINS" "$BODY_FILE"; then
+                rm -f "$BODY_FILE"
+                echo "    OK (HTTP $HTTP after ${i}*5s)"
+                echo "  Done: https://${APP_NAME}.azurewebsites.net"
+                echo ""
+                return 0
+            fi
+            echo "    HTTP $HTTP but body missing '$SMOKE_CONTAINS' — wrong page served?"
         fi
+        rm -f "$BODY_FILE"
         sleep 5
     done
     echo "  WARNING: smoke test failed (last HTTP=$HTTP). Check logs:"
@@ -237,14 +252,25 @@ if $DO_VIEWER; then
 }
 VJSON
 
-    # editor.html
+    # Sidebar viewer UI (index.html + bundled blank.docx for prewarm).
+    # Served by viewer-server.js at / and as the prewarm-doc fallback for
+    # /blank.docx when storage doesn't have one.
+    mkdir -p "$VDIR/viewer-public"
+    cp "$SCRIPT_DIR/viewer-public/index.html"  "$VDIR/viewer-public/"
+    cp "$SCRIPT_DIR/viewer-public/blank.docx"  "$VDIR/viewer-public/"
+
+    # Legacy upload-only UI (editor.html). Served at /upload for
+    # backwards compatibility with old share links.
     cp "$REPO_ROOT/browser/html/editor.html" "$VDIR/"
 
     # Install dependencies
     echo "  Installing npm dependencies..."
     (cd "$VDIR" && npm install --production --silent)
 
-    deploy_app "$VIEWER_APP_NAME" "$VDIR" "/config"
+    # Smoke-test path "/" should return the sidebar UI (look for the
+    # files panel marker). If a deploy ever serves editor.html at / by
+    # accident, the smoke test catches it.
+    deploy_app "$VIEWER_APP_NAME" "$VDIR" "/" 'id="files"'
 fi
 
 # ── Deploy Relay ─────────────────────────────────────────────────

@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Viewer</title>
+<style>
+body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+#files {
+    width: 300px; border-right: 1px solid #ccc; padding: 10px;
+    overflow-y: auto; box-sizing: border-box; flex-shrink: 0;
+    transition: width 0.2s, padding 0.2s; background: #fff;
+    z-index: 50;
+}
+body.docs-collapsed #files {
+    width: 12px; padding: 0; cursor: pointer;
+    background: #e5e7eb; border-right: 1px solid #9ca3af;
+}
+body.docs-collapsed #files > * { display: none; }
+body.docs-collapsed #files::before {
+    content: "‹‹"; display: block; text-align: center;
+    color: #6b7280; font-size: 14px; padding-top: 50vh; line-height: 12px;
+}
+body.docs-collapsed #files:hover {
+    background: #d1d5db;
+}
+/* When user hovers near the left edge or clicks the bar, expand */
+body.docs-collapsed.docs-hover #files {
+    width: 300px; padding: 10px;
+    background: #fff; border-right: 1px solid #ccc;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+    position: absolute; top: 0; bottom: 0;
+}
+body.docs-collapsed.docs-hover #files > * { display: block; }
+body.docs-collapsed.docs-hover #files::before { display: none; }
+/* Hover hot-zone — invisible div on the left edge */
+#sidebar-hover-zone {
+    position: fixed; top: 0; left: 0; width: 8px; bottom: 0;
+    z-index: 60; display: none;
+}
+body.docs-collapsed #sidebar-hover-zone { display: block; }
+#editor-pane { flex: 1; position: relative; min-width: 0; }
+#editor-frame { width: 100%; height: 100%; border: none; }
+#editor-shield {
+    /* Fully opaque so the user NEVER sees the pre-warm blank document */
+    position: absolute; inset: 0; background: #f5f5f5;
+    display: none; z-index: 100;
+    flex-direction: column; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    pointer-events: all;
+}
+#editor-shield.active { display: flex; }
+#editor-shield-spinner {
+    width: 56px; height: 56px; border: 5px solid #ddd; border-top-color: #4a90e2;
+    border-radius: 50%; animation: shspin 1s linear infinite; margin-bottom: 14px;
+}
+@keyframes shspin { to { transform: rotate(360deg); } }
+#editor-shield-label { font-size: 15px; font-weight: 500; color: #333; margin-bottom: 6px; }
+#editor-shield-detail { font-size: 12px; color: #666; }
+.file { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; }
+.file:hover { background: #e8f4ff; }
+.file.active { background: #d0e8ff; }
+#prewarm-status { padding: 8px; font-size: 12px; color: #666; border-bottom: 1px solid #ccc; }
+#prewarm-status.ready { background: #e0f8e0; color: #060; }
+#status-bar { padding: 5px 10px; background: #f5f5f5; font-size: 12px; border-top: 1px solid #ccc; display: flex; align-items: center; gap: 6px; }
+.status-spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid #ddd; border-top-color: #4a90e2;
+    border-radius: 50%; animation: shspin 0.8s linear infinite;
+}
+h3 { margin: 5px 0; }
+</style>
+</head>
+<body>
+<div id="sidebar-hover-zone"></div>
+<div id="files">
+    <h3>Files</h3>
+    <div id="prewarm-status">🔄 Pre-warming editor...</div>
+    <input type="file" id="upload" onchange="uploadFile()">
+    <div id="list"></div>
+</div>
+<div id="editor-pane">
+    <iframe id="editor-frame"
+            allow="cross-origin-isolated; clipboard-read; clipboard-write"
+            referrerpolicy="no-referrer"></iframe>
+    <div id="editor-shield" class="active">
+        <div id="editor-shield-spinner"></div>
+        <div id="editor-shield-label">Loading editor…</div>
+        <div id="editor-shield-bar"
+             style="width:300px;height:10px;background:#e0e0e0;border-radius:5px;overflow:hidden;margin:4px 0 6px;">
+            <div id="editor-shield-bar-fill"
+                 style="height:100%;background:linear-gradient(90deg,#4a90e2,#357abd);width:0%;transition:width 0.3s;"></div>
+        </div>
+        <div id="editor-shield-detail"></div>
+    </div>
+    <div id="status-bar">Ready</div>
+</div>
+<script src="/config.js"></script>
+<script>
+// --- Sidebar collapse/expand ---
+(function() {
+    const filesEl = document.getElementById('files');
+    const hoverZone = document.getElementById('sidebar-hover-zone');
+    let hoverHideTimer = null;
+
+    function expand() {
+        if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+        document.body.classList.add('docs-hover');
+    }
+    function scheduleCollapse() {
+        if (hoverHideTimer) clearTimeout(hoverHideTimer);
+        hoverHideTimer = setTimeout(() => {
+            document.body.classList.remove('docs-hover');
+        }, 500);
+    }
+
+    hoverZone.addEventListener('mouseenter', expand);
+    filesEl.addEventListener('mouseenter', expand);
+    // We use document-level `mouseover` (which bubbles, unlike mouseleave) to
+    // detect when the cursor is anywhere outside the sidebar — including
+    // inside the editor iframe, which would otherwise swallow subsequent
+    // mouse events before #files.mouseleave can fire.
+    document.addEventListener('mouseover', function(e) {
+        if (!document.body.classList.contains('docs-collapsed')) return;
+        const t = e.target;
+        if (t === filesEl || filesEl.contains(t) || t === hoverZone) return;
+        scheduleCollapse();
+    });
+    // Click on the collapsed thin bar expands the sidebar.
+    // We only react to clicks on the bar background itself (e.target === filesEl)
+    // — not on file entries inside it. Otherwise clicking a file in the
+    // expanded sidebar would let the click bubble up after openFile() called
+    // collapseSidebar(), and we'd immediately re-expand it.
+    filesEl.addEventListener('click', function(e) {
+        if (e.target !== filesEl) return;
+        if (document.body.classList.contains('docs-collapsed') &&
+            !document.body.classList.contains('docs-hover')) {
+            expand();
+        }
+    });
+})();
+
+// Collapse the sidebar when the user opens a document
+function collapseSidebar() {
+    document.body.classList.add('docs-collapsed');
+    document.body.classList.remove('docs-hover');
+}
+
+// Domain URLs injected by the viewer server at /config.js
+// Falls back to defaults if config not loaded
+const EDITOR = window.__CONFIG?.EDITOR_URL || 'https://wasm.atgpartners.info:6932';
+const RELAY  = window.__CONFIG?.RELAY_URL  || 'wss://wasm.atgpartners.info:9091';
+const BLANK_FILENAME = '__prewarm_blank.docx';
+
+// Build the relay room URL for a given document name. Each document gets
+// its own room so that only browsers viewing the same file exchange edits.
+function relayRoom(docName) {
+    // Sanitize the name into a URL-safe room key
+    const key = encodeURIComponent(docName).replace(/%/g, '_');
+    return RELAY + '/room/' + key;
+}
+
+// Pre-warm state
+let prewarmReady = false;
+let currentFile = null;
+// Track the doc type currently loaded in the iframe so we can detect when a
+// hot-switch would cross document types (writer↔calc↔impress). The JS
+// docLayer is type-specific; switching types in-place corrupts state, so we
+// force a cold iframe reload for cross-type opens.
+let currentDocType = 'writer'; // pre-warm starts with blank.docx
+
+function docTypeFor(filename) {
+    const ext = filename.split('.').pop().toLowerCase().split('?')[0];
+    if (['xlsx','xls','ods','csv','tsv'].indexOf(ext) >= 0) return 'calc';
+    if (['pptx','ppt','odp','ppsx','pps'].indexOf(ext) >= 0) return 'impress';
+    return 'writer';
+}
+
+// Expose for tests
+window.__viewerState = {
+    get prewarmReady() { return prewarmReady; },
+    get currentFile() { return currentFile; },
+    get currentDocType() { return currentDocType; },
+};
+
+function setStatus(msg) {
+    document.getElementById('status-bar').textContent = msg;
+}
+function showShield(label, detail) {
+    document.getElementById('editor-shield-label').textContent = label || 'Working…';
+    document.getElementById('editor-shield-detail').textContent = detail || '';
+    document.getElementById('editor-shield-bar-fill').style.width = '0%';
+    var sh = document.getElementById('editor-shield');
+    sh.classList.add('active');
+    sh.style.display = 'flex';
+}
+function hideShield() {
+    var sh = document.getElementById('editor-shield');
+    sh.classList.remove('active');
+    sh.style.display = 'none';
+}
+function updateShieldProgress(label, pct, detail) {
+    if (label) document.getElementById('editor-shield-label').textContent = label;
+    if (pct != null) document.getElementById('editor-shield-bar-fill').style.width =
+        Math.max(0, Math.min(100, pct)) + '%';
+    if (detail != null) document.getElementById('editor-shield-detail').textContent = detail;
+}
+
+function setPrewarmStatus(msg, ready) {
+    const el = document.getElementById('prewarm-status');
+    el.textContent = msg;
+    if (ready) el.classList.add('ready');
+}
+
+// Listen for pre-warm ready signal from editor iframe
+window.addEventListener('message', function(event) {
+    if (typeof event.data !== 'string') return;
+    try {
+        const msg = JSON.parse(event.data);
+        // Live progress from the iframe's wasm-loader.
+        if (msg.MessageId === 'WasmProgress' && msg.Values) {
+            var pct = msg.Values.pct;
+            var label = msg.Values.label || '';
+            var detail = msg.Values.detail || '';
+            // Map generic wasm-loader labels to user-friendly ones
+            if (label.includes('Downloading editor')) {
+                label = 'Initializing app…';
+                detail = 'Downloading editor components';
+                // Scale wasm-loader's 0-90% into our 30-80% range
+                if (pct != null) pct = 30 + (pct * 0.55);
+            } else if (label.includes('Opening') || label.includes('Switching')) {
+                label = 'Opening document…';
+                detail = currentFile || '';
+                if (pct != null) pct = Math.max(80, pct);
+            } else if (label === 'Ready') {
+                pct = 100;
+            }
+            updateShieldProgress(label, pct, detail);
+        }
+        // Iframe canvas first paint after switchdocument — doc is visible
+        // but the toolbar / word-count / status bar may still be loading.
+        // Keep the shield up; just update the progress message.
+        if (msg.MessageId === 'WasmSwitchVisible' && msg.Values && currentFile) {
+            var ms = msg.Values.ms;
+            console.log('[viewer] Switch visible after ' + ms + 'ms (waiting for doc-ready)');
+            updateShieldProgress('Rendering document…', 90, currentFile);
+        }
+
+        // Iframe reports the document is fully loaded (canvas pixels
+        // changed from baseline AND status bar populated). This is the
+        // ONLY signal we drop the shield on for post-prewarm document
+        // loads — App_LoadingStatus=Initialized fires from COOL JS when
+        // the editor chrome boots, which can happen before the new
+        // document's canvas has actually rendered (especially for
+        // hot-switches where the iframe is reused and the previous
+        // doc's status text matches the new one).
+        if (msg.MessageId === 'WasmDocReady' && msg.Values && currentFile) {
+            var rms = msg.Values.ms;
+            console.log('[viewer] Doc ready after ' + rms + 'ms' + (msg.Values.timeout ? ' (timeout)' : ''));
+            updateShieldProgress('Ready', 100, currentFile);
+            setTimeout(function() {
+                hideShield();
+                setStatus('Ready — ' + currentFile + (rms > 0 ? ' (' + (rms / 1000).toFixed(1) + 's)' : ''));
+            }, 200);
+        }
+
+        // App_LoadingStatus=Initialized fires once when COOL initializes.
+        // We only trust it for the very first prewarm — once we're past
+        // that, all subsequent doc-open shield-drops go through
+        // WasmDocReady (which actually waits for the new doc's canvas
+        // to paint). Without this gate, hot-switches between two similar
+        // docs (where docPoll's `postSwitchAccept` flag fires at 500 ms
+        // after switchSendT) drop the shield before the canvas updates.
+        if (msg.MessageId === 'App_LoadingStatus' && msg.Values && msg.Values.Status === 'Initialized') {
+            if (!prewarmReady) {
+                prewarmReady = true;
+                setPrewarmStatus('✅ Editor pre-warmed — pick a file', true);
+                console.log('[viewer] Pre-warm ready');
+                hideShield();
+                return;
+            }
+            console.log('[viewer] App_LoadingStatus=Initialized (post-prewarm) — IGNORED, waiting for WasmDocReady');
+        }
+    } catch(e) {}
+});
+
+// Start pre-warm immediately: fetch a blank .docx and load it in the iframe
+async function startPrewarm() {
+    showShield('Loading editor…', 'First-time pre-warm of WebAssembly runtime');
+    try {
+        // Fetch the blank .docx from viewer storage and upload to editor
+        const resp = await fetch('/blank.docx');
+        if (!resp.ok) throw new Error('blank.docx missing');
+        const buf = await resp.arrayBuffer();
+        await fetch(EDITOR + '/wasm/' + encodeURIComponent(BLANK_FILENAME), {
+            method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+        });
+        // Load cool.html with the blank doc — this triggers full WASM init
+        const iframe = document.getElementById('editor-frame');
+        iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME) + '&access_token=test&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME));
+        console.log('[viewer] Pre-warm started');
+    } catch (e) {
+        setPrewarmStatus('❌ Pre-warm failed: ' + e.message);
+    }
+}
+
+async function refresh() {
+    const r = await fetch('/api/files/');
+    const list = await r.json();
+    document.getElementById('list').innerHTML = list.filter(f => f.name !== BLANK_FILENAME).map(f =>
+        `<div class="file" data-name="${f.name}" onclick="openFile('${f.name.replace(/'/g, "\\'")}')">${f.name} (${(f.size/1024).toFixed(1)}KB)</div>`).join('');
+}
+
+async function uploadFile() {
+    const f = document.getElementById('upload').files[0];
+    if (!f) return;
+    setStatus('Uploading ' + f.name);
+    await fetch('/api/files/' + encodeURIComponent(f.name), { method: 'POST', body: f });
+    setStatus('Uploaded ' + f.name);
+    refresh();
+}
+
+async function openFile(name) {
+    const t0 = Date.now();
+    currentFile = name;
+    const willHotSwitch = prewarmReady && (docTypeFor(name) === currentDocType);
+
+    // Collapse the file sidebar so the editor gets the full viewport.
+    // The user can re-open it by hovering the left edge or clicking the bar.
+    collapseSidebar();
+
+    // Always show the shield with spinner — user should see clear feedback
+    // for every document open, whether hot-switch (~1s) or cold reload (~30s).
+    showShield('Downloading file…', name);
+    document.getElementById('editor-shield-spinner').style.display = '';
+    document.getElementById('editor-shield-bar-fill').style.width = '5%';
+
+    document.querySelectorAll('.file').forEach(el => el.classList.toggle('active', el.dataset.name === name));
+
+    // Step 1: Download from file storage
+    const resp = await fetch('/api/files/' + encodeURIComponent(name));
+    if (!resp.ok) { hideShield(); setStatus('Error: ' + resp.status); return; }
+    const buf = await resp.arrayBuffer();
+    const sizeMB = (buf.byteLength / 1048576).toFixed(1);
+    updateShieldProgress('Transferring to editor…', 20, name + ' (' + sizeMB + ' MB)');
+
+    // Step 2: Transfer to editor via CORS
+    await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
+        method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+    });
+
+    if (willHotSwitch) {
+        updateShieldProgress('Opening document…', 50, 'Switching to ' + name);
+    } else {
+        updateShieldProgress('Initializing app…', 30, 'Loading WebAssembly editor');
+    }
+
+    const iframe = document.getElementById('editor-frame');
+    const newDocType = docTypeFor(name);
+    const sameType = newDocType === currentDocType;
+
+    if (sameType && prewarmReady) {
+        // HOT SWITCH — reuse the live WASM (~200ms).
+        // 1. Tell the relay-adapter inside the iframe to switch rooms
+        // 2. Change the hash to trigger switchdocument in wasm-loader
+        const newRoom = relayRoom(name);
+        iframe.contentWindow.postMessage(JSON.stringify({
+            MessageId: 'RelaySwitchRoom',
+            Values: { room: newRoom, docName: name }
+        }), '*');
+        const base = iframe.src.split('#')[0];
+        iframe.src = base + '#switchdoc=' + encodeURIComponent(name);
+        setStatus('Opening ' + name);
+        window.__viewerState.lastOpenMode = 'hot';
+    } else {
+        // COLD RELOAD — cross-type or no prewarm.
+        const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
+                      + '&access_token=test'
+                      + '&relay=' + encodeURIComponent(relayRoom(name));
+        // Cross-type or no prewarm: destroy and re-create iframe to
+        // ensure clean WASM teardown.
+        const newIframe = document.createElement('iframe');
+        newIframe.id = 'editor-frame';
+        newIframe.setAttribute('allow', 'cross-origin-isolated; clipboard-read; clipboard-write');
+        newIframe.setAttribute('referrerpolicy', 'no-referrer');
+        newIframe.style.width = '100%';
+        newIframe.style.height = '100%';
+        newIframe.style.border = 'none';
+        iframe.parentNode.replaceChild(newIframe, iframe);
+        newIframe.src = coolUrl;
+        setStatus('Loading ' + name + (sameType ? '' : ' (type change ' + currentDocType + '→' + newDocType + ')'));
+        window.__viewerState.lastOpenMode = 'cold-typechange';
+    }
+    currentDocType = newDocType;
+    window.__viewerState.lastOpenStart = t0;
+}
+
+// Kick off
+refresh();
+startPrewarm();
+</script>
+</body>
+</html>

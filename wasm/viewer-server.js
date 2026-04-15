@@ -1,10 +1,19 @@
 // Viewer / File Storage server for COOL WASM co-editing.
-// Serves editor.html (upload/share UI) and a REST API for file CRUD.
 //
-// Storage backend is pluggable — see wasm/lib/storage/index.js.
-// Switch with STORAGE_BACKEND=local|azure (default: local).
-//   local  → filesystem under LOCAL_STORAGE_DIR (default ./storage)
-//   azure  → Azure Blob, requires DOC_STORAGE_ACCOUNT / DOC_STORAGE_KEY
+// Serves the sidebar viewer UI (file list + iframe editor + hot-switch
+// flow + loading shield) from wasm/viewer-public/, plus a REST API for
+// file CRUD that's pluggable across storage backends.
+//
+// Storage backend selection — see wasm/lib/storage/index.js.
+//   STORAGE_BACKEND=local   filesystem under LOCAL_STORAGE_DIR (default ./storage)
+//   STORAGE_BACKEND=azure   Azure Blob, requires DOC_STORAGE_ACCOUNT / DOC_STORAGE_KEY
+//
+// The deployed package layout (created by wasm/deploy-azure.sh) is:
+//   server.js            (this file, copied from wasm/viewer-server.js)
+//   viewer-public/       (sidebar UI assets, copied from wasm/viewer-public/)
+//   editor.html          (legacy upload-only UI, served at /upload)
+//   lib/storage/         (backend abstraction)
+//   node_modules/        (express, optionally @azure/storage-blob)
 
 const express = require('express');
 const path = require('path');
@@ -13,7 +22,7 @@ const storage = require('./lib/storage');
 
 const PORT = process.env.PORT || 6934;
 
-// ── URLs injected into editor.html ──────────────────────────────
+// ── URLs injected into the viewer page via /config.js ───────────
 const EDITOR_URL = process.env.EDITOR_URL || '';
 const RELAY_URL  = process.env.RELAY_URL  || '';
 const VIEWER_URL = process.env.FILE_STORAGE_URL || '';
@@ -26,8 +35,34 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS
     .split(',').map(s => s.trim()).filter(Boolean);
 const ALLOW_ANY = ALLOWED_ORIGINS.length === 1 && ALLOWED_ORIGINS[0] === '*';
 
+// Where the sidebar UI assets live. In a deployed bundle they sit next to
+// server.js; in a dev tree they live at wasm/viewer-public/.
+const VIEWER_PUBLIC = (function () {
+    const deployPath = path.join(__dirname, 'viewer-public');
+    const devPath    = path.join(__dirname, 'viewer-public');  // wasm/viewer-public
+    return fs.existsSync(deployPath) ? deployPath : devPath;
+})();
+
 const app = express();
 
+// ── Cross-origin isolation ──────────────────────────────────────
+// SharedArrayBuffer (used by the editor iframe's WASM threads) requires
+// the top-level page to be cross-origin isolated:
+//   COOP: same-origin
+//   COEP: require-corp
+// And we delegate cross-origin-isolated to the editor iframe origin via
+// Permissions-Policy so the editor can use SAB inside our iframe.
+app.use((req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    if (EDITOR_URL) {
+        res.setHeader('Permissions-Policy',
+            'cross-origin-isolated=(self "' + EDITOR_URL + '")');
+    }
+    next();
+});
+
+// ── CORS ────────────────────────────────────────────────────────
 app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (ALLOW_ANY) {
@@ -42,25 +77,49 @@ app.use((req, res, next) => {
     next();
 });
 
-// ── GET / — serve editor.html with injected config ──────────────
+// ── GET / — the sidebar viewer UI ───────────────────────────────
 app.get('/', (req, res) => {
-    // In deployed package, editor.html is in the same directory as server.js.
-    // In development, fall back to browser/html/editor.html.
-    const deployPath = path.join(__dirname, 'editor.html');
-    const devPath = path.join(__dirname, '..', 'browser', 'html', 'editor.html');
-    const htmlPath = fs.existsSync(deployPath) ? deployPath : devPath;
-    res.sendFile(htmlPath, (err) => {
-        if (err) res.status(500).send('Cannot load editor.html');
-    });
+    const indexPath = path.join(VIEWER_PUBLIC, 'index.html');
+    if (!fs.existsSync(indexPath)) {
+        return res.status(500).send('viewer-public/index.html missing — broken bundle');
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(fs.readFileSync(indexPath));
 });
 
-// ── GET /config — return deployment URLs as JSON ────────────────
+// ── GET /config.js — inject deployment URLs into the viewer ────
+// The viewer's index.html does <script src="/config.js"></script>
+// before its own JS runs, so window.__CONFIG.EDITOR_URL / .RELAY_URL
+// are set before any code reads them.
+app.get('/config.js', (req, res) => {
+    res.setHeader('Content-Type', 'application/javascript');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send('window.__CONFIG = ' + JSON.stringify({
+        EDITOR_URL,
+        RELAY_URL,
+        VIEWER_URL,
+    }) + ';');
+});
+
+// ── GET /config — same data as JSON, used by editor.html ───────
 app.get('/config', (req, res) => {
     res.json({
         editorUrl: EDITOR_URL,
         relayUrl: RELAY_URL,
         viewerUrl: VIEWER_URL,
     });
+});
+
+// ── GET /upload — legacy upload-only UI (editor.html) ──────────
+// Kept for backwards compatibility with share links generated by the
+// upload page. Most users land on / (the sidebar viewer) instead.
+app.get('/upload', (req, res) => {
+    const deployPath = path.join(__dirname, 'editor.html');
+    const devPath    = path.join(__dirname, '..', 'browser', 'html', 'editor.html');
+    const htmlPath   = fs.existsSync(deployPath) ? deployPath : devPath;
+    if (!fs.existsSync(htmlPath)) return res.status(404).send('editor.html not bundled');
+    res.sendFile(htmlPath);
 });
 
 // ── GET /api/files/ — list files ────────────────────────────────
@@ -99,18 +158,33 @@ app.post('/api/files/:name', (req, res) => {
     });
 });
 
-// ── GET /blank.docx — blank document for pre-warm ───────────────
+// ── GET /blank.docx — blank document for prewarm ────────────────
+// Try storage first (so an admin can swap the prewarm doc by uploading a
+// `blank.docx`), then fall back to the bundled viewer-public/blank.docx.
 app.get('/blank.docx', async (req, res) => {
     try {
-        await storage.pipeTo('blank.docx', res,
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        const buf = await storage.getBuffer('blank.docx');
+        if (buf) {
+            res.setHeader('Content-Type',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+            return res.end(buf);
+        }
     } catch (err) {
-        if (!res.headersSent) res.status(500).json({ error: err.message });
+        console.error('blank.docx storage lookup error:', err.message);
     }
+    // Fallback: bundled blank.docx
+    const bundled = path.join(VIEWER_PUBLIC, 'blank.docx');
+    if (fs.existsSync(bundled)) {
+        res.setHeader('Content-Type',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        return res.end(fs.readFileSync(bundled));
+    }
+    res.status(404).send('blank.docx not available (neither in storage nor bundled)');
 });
 
 app.listen(PORT, () => {
     console.log(`Viewer server on port ${PORT}`);
+    console.log(`  UI:         ${VIEWER_PUBLIC}`);
     console.log(`  Storage:    ${storage.describe()}`);
     console.log(`  Editor:     ${EDITOR_URL}`);
     console.log(`  Relay:      ${RELAY_URL}`);
