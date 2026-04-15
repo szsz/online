@@ -64,6 +64,11 @@ TESTS=(
     "regression-calc-impress-edits|test-regression-calc-impress-edits.js|Regression: Calc/Impress Edit Propagation|Calc cell edits and Impress text edits fire invalidatetiles AND propagate to remote peers|shots-regression-calc-impress"
     "regression-shield-timing|test-regression-shield-timing.js|Regression: Loading Shield Timing|Viewer shield must stay up until the new doc's canvas pixels actually paint, never before|shots-regression-shield-timing"
     "regression-hash-deeplink|test-regression-hash-deeplink.js|Regression: Hash Deep Link|Per-file URL fragment: clicking a file updates #file=<name>; /#file=X opens X directly; back/forward navigates|shots-regression-hash-deeplink"
+    "regression-shield-prewarm-race|test-regression-shield-prewarm-race.js|Regression: Shield Prewarm Race|Loading shield must stay up across prewarm/click race; deep-link and click-during-prewarm|shots-regression-shield-prewarm-race"
+    "regression-wasm-cache-crosstype|test-regression-wasm-cache-crosstype.js|Regression: WASM Cache Cross-Type|online.wasm + soffice.data must come from cache (not the wire) on writer→calc→impress switches and after page reload|shots-regression-wasm-cache-crosstype"
+    "regression-wasm-cache-revisit|test-regression-wasm-cache-revisit.js|Regression: WASM Cache Revisit|Close browser entirely and re-launch (persistent userDataDir) — heavy assets must come from disk cache, not the wire|shots-regression-wasm-cache-revisit"
+    "regression-viewer-cache|test-regression-viewer-cache.js|Regression: Viewer Document Cache|/api/files/<doc> + /blank.docx must send ETag/Last-Modified and answer 304 on conditional GET (covers the doc storage path)|none"
+    "regression-wasm-cache-pressure|test-regression-wasm-cache-pressure.js|Regression: WASM Cache Under Pressure|Heavy WASM survives Chrome disk-cache LRU eviction (limited --disk-cache-size=50MB) thanks to the Service Worker / Cache Storage fallback|shots-regression-wasm-cache-pressure"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────

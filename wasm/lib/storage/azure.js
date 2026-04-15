@@ -71,6 +71,29 @@ async function put(name, buffer) {
     return { name, size: buffer.length };
 }
 
+// Cheap "does it exist + ETag/Last-Modified" probe so the viewer can
+// answer 304 without downloading the body. Azure Blob ships its own ETag
+// and Last-Modified in getProperties — we use those directly.
+async function stat(name) {
+    try {
+        const blob = container.getBlobClient(name);
+        const props = await blob.getProperties();
+        // Azure's etag comes wrapped in 0x… or "…", strip quotes if present
+        // to match the local-FS shape; the viewer wraps it in W/"…" before
+        // sending.
+        let etag = props.etag || '';
+        if (etag.startsWith('"') && etag.endsWith('"')) etag = etag.slice(1, -1);
+        return {
+            size: props.contentLength,
+            etag: etag,
+            lastModified: props.lastModified,
+        };
+    } catch (err) {
+        if (err.statusCode === 404) return null;
+        throw err;
+    }
+}
+
 function describe() {
     return describeSource;
 }
@@ -84,4 +107,4 @@ function streamToBuffer(stream) {
     });
 }
 
-module.exports = { list, getBuffer, pipeTo, put, describe };
+module.exports = { list, getBuffer, pipeTo, put, describe, stat };

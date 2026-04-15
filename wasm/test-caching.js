@@ -56,7 +56,11 @@ function check(label, condition) { __cl.recordCheck(label, condition);
 
 async function uploadFile(browser, name, filePath) {
     const upPage = await browser.newPage();
-    await upPage.goto(VIEWER, { waitUntil: 'networkidle0' });
+    // domcontentloaded — not networkidle0. The viewer kicks off a 57MB
+    // WASM prewarm in the background; waiting for the network to idle
+    // would mean waiting for that to finish (often >30s), but all we
+    // need is the page's JS so we can call its fetch API.
+    await upPage.goto(VIEWER, { waitUntil: 'domcontentloaded' });
     const docBytes = fs.readFileSync(filePath);
     // Upload to both viewer (persistence) and editor (WASM loading)
     await upPage.evaluate(async (viewerUrl, editorUrl, n, arr) => {

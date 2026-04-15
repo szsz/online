@@ -97,6 +97,10 @@ echo ""
 echo "${CYAN}→ editor-static  $EDITOR_BROWSER_DIR${RST}"
 sync_file "$SCRIPT_DIR/wasm-loader.js"   "$EDITOR_BROWSER_DIR/wasm-loader.js"   yes
 sync_file "$SCRIPT_DIR/relay-adapter.js" "$EDITOR_BROWSER_DIR/relay-adapter.js" yes
+# sw.js: no brotli — SW updates need to land fast, brotli'd .br could be
+# served stale by the browser if Vary processing misbehaves. The file is
+# tiny (~3 KB) so compression saves nothing.
+sync_file "$SCRIPT_DIR/sw.js"            "$EDITOR_BROWSER_DIR/sw.js"            no
 
 # ── 2. Viewer UI assets (no brotli needed; viewer-server doesn't precompress) ──
 echo ""

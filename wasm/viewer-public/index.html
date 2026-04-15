@@ -279,7 +279,13 @@ window.addEventListener('message', function(event) {
                 prewarmReady = true;
                 setPrewarmStatus('✅ Editor pre-warmed — pick a file', true);
                 console.log('[viewer] Pre-warm ready');
-                hideShield();
+                // Only drop the shield if no document open is in progress.
+                // If the user clicked a file while prewarm was finishing
+                // (or the page loaded with a deep link), openFile() has
+                // already shown its own "Opening document…" shield and
+                // will hide it on WasmDocReady. Hiding here would expose
+                // the prewarm blank doc until the real doc paints.
+                if (!currentFile) hideShield();
                 return;
             }
             console.log('[viewer] App_LoadingStatus=Initialized (post-prewarm) — IGNORED, waiting for WasmDocReady');

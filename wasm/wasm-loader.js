@@ -22,6 +22,38 @@
 
     mark('loader:start', 'doc=' + docType + ' ext=' + ext);
 
+    // ───── SERVICE WORKER REGISTRATION ─────
+    // Register sw.js to lock the heavy WASM assets into Cache Storage.
+    // Why this is at the top of wasm-loader rather than inline in cool.html:
+    // wasm-loader runs the moment cool.html starts, so the SW is installed
+    // before any of online.wasm / soffice.data starts streaming. The first
+    // visit still goes to network (SW only takes effect on the SECOND
+    // navigation by default; we use clients.claim() in sw.js to take over
+    // sooner where possible). Subsequent visits hit the SW cache regardless
+    // of HTTP-cache pressure — see test-regression-wasm-cache-pressure.js.
+    if ('serviceWorker' in navigator) {
+        // Scope is /browser/ (the directory the SW lives in). That's
+        // exactly where online.wasm + soffice.data live, so the scope
+        // covers all heavy assets. Use a relative path so it works
+        // regardless of which (sub-)origin we're served from.
+        navigator.serviceWorker.register('sw.js').then(function(reg) {
+            mark('sw:registered', 'scope=' + reg.scope);
+            // If the page loaded before the SW could take control, ask
+            // the new worker to claim immediately. This affects the very
+            // first visit; subsequent visits are already controlled.
+            if (!navigator.serviceWorker.controller && reg.active) {
+                mark('sw:no_controller_first_visit');
+            }
+        }).catch(function(err) {
+            // SW is a defense-in-depth optimisation; failing to register
+            // is non-fatal (we still have HTTP cache headers as the
+            // primary mechanism).
+            mark('sw:register_failed', err.message);
+        });
+    } else {
+        mark('sw:unavailable', 'navigator.serviceWorker missing');
+    }
+
     // Unique fingerprint for THIS WASM runtime instance. Survives only as
     // long as the iframe doesn't reload; if a test sees the same value
     // before AND after a switchdocument it knows the runtime was reused
@@ -313,6 +345,31 @@
         updateProgress('Downloading editor assets…', pct, detail);
     }
 
+    // Look up the perf entry written for `url` after the fetch completed.
+    // transferSize === 0 (with decodedBodySize > 0) is Chrome's signal for
+    // "served from disk cache, no bytes left the server". We log this so
+    // a developer with the console open can confirm at a glance whether
+    // a particular load was a cache hit or a real download.
+    function logCacheState(url, name, fetchDurationMs) {
+        // The perf entry is appended asynchronously after the response
+        // is consumed; one tick later is enough.
+        setTimeout(function() {
+            try {
+                var entries = performance.getEntriesByName(url);
+                if (!entries.length) return;
+                var e = entries[entries.length - 1];
+                var fromCache = e.transferSize === 0 && e.decodedBodySize > 0;
+                var label = fromCache ? '[cache] CACHE HIT  ' : '[cache] from network';
+                console.log(label + ' ' + name +
+                    ' (transfer=' + (e.transferSize/1024).toFixed(0) + 'KB,' +
+                    ' decoded=' + (e.decodedBodySize/1048576).toFixed(1) + 'MB,' +
+                    ' fetchTook=' + fetchDurationMs.toFixed(0) + 'ms)');
+                mark(fromCache ? 'cache:hit' : 'cache:miss',
+                    name + ' transfer=' + e.transferSize + ' decoded=' + e.decodedBodySize);
+            } catch(err) {}
+        }, 0);
+    }
+
     var origFetch = window.fetch;
     window.fetch = function(url, opts) {
         var key = (typeof url === 'string' ? url : url.url) || '';
@@ -325,6 +382,7 @@
                 if (!r.body || !r.body.getReader) {
                     progressState.fileDone[name] = 1;
                     mark('net:fetch_end', name + ' ' + (performance.now()-tStart).toFixed(0) + 'ms status=' + r.status);
+                    logCacheState(key, name, performance.now() - tStart);
                     return r;
                 }
                 var cl = parseInt(r.headers.get('content-length') || '0');
@@ -336,7 +394,9 @@
                             reader.read().then(function(res) {
                                 if (res.done) {
                                     progressState.fileDone[name] = 1;
-                                    mark('net:fetch_end', name + ' ' + (performance.now()-tStart).toFixed(0) + 'ms loaded=' + loaded);
+                                    var dur = performance.now() - tStart;
+                                    mark('net:fetch_end', name + ' ' + dur.toFixed(0) + 'ms loaded=' + loaded);
+                                    logCacheState(key, name, dur);
                                     controller.close();
                                     return;
                                 }
