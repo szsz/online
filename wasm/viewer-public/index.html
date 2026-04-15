@@ -166,6 +166,14 @@ function relayRoom(docName) {
 // Pre-warm state
 let prewarmReady = false;
 let currentFile = null;
+// Track whether the iframe's relay-adapter has activated (sent join-ready
+// + accepted by the relay). Until activated, any keystroke the user types
+// is dropped on the floor with a "Dropping input not activated yet" log
+// — so we keep the shield up to make that wait visible. WasmDocReady alone
+// is no longer enough: the doc may be visually rendered but typing
+// silently disappears.
+let relayActivated = false;
+let docReady = false;
 // Track the doc type currently loaded in the iframe so we can detect when a
 // hot-switch would cross document types (writer↔calc↔impress). The JS
 // docLayer is type-specific; switching types in-place corrupts state, so we
@@ -207,6 +215,31 @@ function updateShieldProgress(label, pct, detail) {
     if (pct != null) document.getElementById('editor-shield-bar-fill').style.width =
         Math.max(0, Math.min(100, pct)) + '%';
     if (detail != null) document.getElementById('editor-shield-detail').textContent = detail;
+}
+
+// Drop the shield only when BOTH the doc is rendered AND the relay-adapter
+// has activated. Either signal alone is misleading: WasmDocReady without
+// RelayActivated leaves the user staring at a doc that silently refuses
+// to accept input; RelayActivated without WasmDocReady would expose the
+// blank prewarm doc.
+function tryDropShield(reason, docMs) {
+    if (!currentFile) return;
+    if (docReady && relayActivated) {
+        updateShieldProgress('Ready', 100, currentFile);
+        setTimeout(function() {
+            hideShield();
+            setStatus('Ready — ' + currentFile +
+                (docMs > 0 ? ' (' + (docMs / 1000).toFixed(1) + 's)' : ''));
+        }, 200);
+        return;
+    }
+    if (!docReady) {
+        updateShieldProgress('Loading document…', 92, currentFile);
+    } else if (!relayActivated) {
+        updateShieldProgress('Joining session…', 96, 'Waiting for relay activation');
+    }
+    console.log('[viewer] tryDropShield (' + reason + '): docReady=' + docReady +
+                ' relayActivated=' + relayActivated + ' — keeping shield up');
 }
 
 function setPrewarmStatus(msg, ready) {
@@ -260,11 +293,28 @@ window.addEventListener('message', function(event) {
         if (msg.MessageId === 'WasmDocReady' && msg.Values && currentFile) {
             var rms = msg.Values.ms;
             console.log('[viewer] Doc ready after ' + rms + 'ms' + (msg.Values.timeout ? ' (timeout)' : ''));
-            updateShieldProgress('Ready', 100, currentFile);
-            setTimeout(function() {
-                hideShield();
-                setStatus('Ready — ' + currentFile + (rms > 0 ? ' (' + (rms / 1000).toFixed(1) + 's)' : ''));
-            }, 200);
+            docReady = true;
+            tryDropShield('doc-ready', rms);
+        }
+        // Iframe's relay-adapter has finished joining the room. Until this
+        // arrives, the editor refuses input ("Dropping input not activated
+        // yet") so the user CAN'T type even if the doc looks rendered.
+        if (msg.MessageId === 'RelayActivated') {
+            console.log('[viewer] Relay activated (viewId=' + msg.Values.viewId +
+                        ', firstClient=' + msg.Values.isFirstClient + ')');
+            relayActivated = true;
+            tryDropShield('relay-activated');
+        }
+        // Periodic update from the iframe while it's still waiting to
+        // activate. Lets us tell the user WHAT we're waiting for instead
+        // of leaving a stale spinner.
+        if (msg.MessageId === 'RelayActivating' && currentFile && !relayActivated) {
+            var waitingFor = msg.Values.waitingFor;
+            var elapsed = msg.Values.elapsedSec;
+            updateShieldProgress(
+                'Joining session…',
+                Math.min(99, 95 + Math.min(elapsed, 4)),  // creep toward 99 as time passes
+                'Waiting for ' + waitingFor + (elapsed > 2 ? ' (' + elapsed + 's)' : ''));
         }
 
         // App_LoadingStatus=Initialized fires once when COOL initializes.
@@ -343,6 +393,12 @@ function currentHashFile() {
 async function openFile(name) {
     const t0 = Date.now();
     currentFile = name;
+    // Reset shield-drop signals — the new doc has its own DocReady and
+    // its own RelayActivated to wait for. Without this reset a hot-switch
+    // would inherit the previous doc's "true" flags and drop the shield
+    // before the new doc finished loading.
+    docReady = false;
+    relayActivated = false;
     // Keep the URL in sync with the open file. The hashchange listener below
     // guards against re-entering openFile() when we triggered the change
     // ourselves (hash already matches currentFile).

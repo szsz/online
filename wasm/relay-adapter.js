@@ -223,6 +223,17 @@
         console.log('[relay] Activating — sending join-ready hash=' + hashPreview);
         sendToRelay(0x06, myViewId, readyPayload);
 
+        // Tell the parent viewer that input is now accepted. Until this
+        // fires the viewer keeps its loading shield up — otherwise the
+        // user would see the document but typing would silently disappear
+        // ("Dropping input not activated yet").
+        try {
+            parent.postMessage(JSON.stringify({
+                MessageId: 'RelayActivated',
+                Values: { viewId: myViewId, isFirstClient: isFirstClient }
+            }), '*');
+        } catch(e) {}
+
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
 
@@ -703,12 +714,30 @@
     var activationPollInterval = null;
     function startActivationPoll() {
         if (activationPollInterval) clearInterval(activationPollInterval);
+        var pollStart = Date.now();
+        var lastReportedReason = '';
         activationPollInterval = setInterval(function() {
             if (activated) { clearInterval(activationPollInterval); activationPollInterval = null; return; }
             if (coolwsdReady && lateJoinFileReady && !activated) {
                 activateClient();
                 clearInterval(activationPollInterval);
                 activationPollInterval = null;
+                return;
+            }
+            // Report what we're still waiting on so a stuck activation is
+            // diagnosable from the console (and so the parent viewer can
+            // surface "Joining session…" instead of looking frozen).
+            var waiting = !coolwsdReady ? 'editor' : 'checkpoint download';
+            var elapsed = ((Date.now() - pollStart) / 1000).toFixed(0);
+            if (waiting !== lastReportedReason || (elapsed % 5 === 0 && elapsed > 0)) {
+                lastReportedReason = waiting;
+                console.log('[relay] Activation pending: waiting for ' + waiting + ' (' + elapsed + 's)');
+                try {
+                    parent.postMessage(JSON.stringify({
+                        MessageId: 'RelayActivating',
+                        Values: { waitingFor: waiting, elapsedSec: parseInt(elapsed, 10) }
+                    }), '*');
+                } catch(e) {}
             }
         }, 500);
     }

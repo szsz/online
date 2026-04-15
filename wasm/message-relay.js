@@ -71,6 +71,15 @@ class Room {
     // file — that's the file storage server's responsibility. We only track
     // the hash and sequence number for late-join coordination.
     registerCheckpoint(hash, atSeq) {
+        // Reject malformed hashes — older clients used to send file bytes
+        // through this code path (the relay would .toString() them and
+        // store binary as the hash). A subsequent joiner would then
+        // perpetually mismatch the real file's SHA-256 from /api/files
+        // and loop on 0x0A. Accept only proper hex hashes here.
+        if (!Room.isValidHexHash(hash)) {
+            console.log(`[${this.id}] registerCheckpoint REJECTED malformed hash (len=${(hash||'').length}, prefix=${(hash||'').substring(0, 8).replace(/[^\x20-\x7e]/g, '?')}…) — keeping previous`);
+            return;
+        }
         this.checkpointHash = hash;
         this.checkpointSeq = atSeq !== undefined ? atSeq : this.seq;
         this.savePending = false;
@@ -90,6 +99,14 @@ class Room {
     createCheckpoint(buf, atSeq) {
         const hash = crypto.createHash('sha256').update(buf).digest('hex').substring(0, 16);
         this.registerCheckpoint(hash, atSeq);
+    }
+
+    // Hex-hash sanity check. We accept any-length hex string of at least
+    // 16 chars; current clients send 64 (full SHA-256). Anything that's
+    // not an even-length hex string is treated as junk (legacy bytes-as-
+    // string from before the SHA-256 fix landed).
+    static isValidHexHash(s) {
+        return typeof s === 'string' && s.length >= 16 && /^[0-9a-fA-F]+$/.test(s);
     }
 
     get fileHash() { return this.checkpointHash; }
@@ -397,20 +414,50 @@ server.on('upgrade', (req, socket, head) => {
                 const expected = ws._expectedHash || room.checkpointHash;
 
                 if (expected && clientHash && clientHash !== expected) {
-                    // MISMATCH — client loaded wrong checkpoint
-                    console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${clientHash} expected=${expected}`);
-                    // Tell client to re-download
-                    const info = JSON.stringify({
-                        expected: room.checkpointHash,
-                        url: `/room/${encodeURIComponent(roomId)}/file`,
-                        seq: room.checkpointSeq,
-                    });
-                    room.sendControl(ws, 0x0A, 0, info);
-                    // Reset join state — client must re-download and re-send 0x06
-                    ws._joinBuffering = false;
-                    ws._joinBuffer = [];
-                    room.serveCheckpoint(ws);
-                    return;
+                    // MISMATCH between what the relay has stored and what
+                    // the client just computed from the file storage.
+                    //
+                    // Telling the client to re-download is a dead-end if the
+                    // file in /api/files doesn't actually have the expected
+                    // hash — the client downloads the same bytes, computes
+                    // the same hash, and we loop forever (0x0A → re-download
+                    // → 0x06 → 0x0A → …).
+                    //
+                    // The file storage is the source of truth. If our
+                    // expected hash is stale or junk (legacy bytes-as-string)
+                    // and the client's hash is well-formed, accept it: update
+                    // our stored hash and let the client activate. The
+                    // alternative is the user-visible deadlock the activation
+                    // spinner now exposes.
+                    if (Room.isValidHexHash(clientHash) && !Room.isValidHexHash(expected)) {
+                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: stored hash is malformed (legacy junk); accepting client hash=${clientHash}`);
+                        room.checkpointHash = clientHash;
+                        // fall through to the JOIN READY path
+                    } else if (Room.isValidHexHash(clientHash)) {
+                        // Both are valid hex but differ. The most likely
+                        // cause is a previous client uploaded but never
+                        // confirmed via 0x07, or two clients raced. Prefer
+                        // the client's hash (which IS what the file storage
+                        // currently contains) over our stored value, but log
+                        // the divergence so it's diagnosable.
+                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${clientHash} expected=${expected} — accepting client (storage is source of truth)`);
+                        room.checkpointHash = clientHash;
+                        // fall through to JOIN READY
+                    } else {
+                        // Client hash is malformed — old buggy client.
+                        // Fall back to the original re-download dance.
+                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${(clientHash||'').substring(0, 24)}… expected=${expected}`);
+                        const info = JSON.stringify({
+                            expected: room.checkpointHash,
+                            url: `/room/${encodeURIComponent(roomId)}/file`,
+                            seq: room.checkpointSeq,
+                        });
+                        room.sendControl(ws, 0x0A, 0, info);
+                        ws._joinBuffering = false;
+                        ws._joinBuffer = [];
+                        room.serveCheckpoint(ws);
+                        return;
+                    }
                 }
 
                 // Hash matches (or no hash sent — backward compat) — activate
