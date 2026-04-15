@@ -274,6 +274,22 @@
                     return;
                 }
                 sendToRelay(0x00, myViewId, data);
+
+                // User-initiated save (Ctrl+S → COOL emits `uno .uno:Save`):
+                // create a checkpoint and upload the saved file to storage.
+                // Only the ORIGINATOR runs this — other peers receive the
+                // same uno via relay, save locally, but don't double-upload
+                // (their processUIMessage path doesn't schedule a save).
+                //
+                // saveAndUploadCheckpoint waits 1.5s for Kit to flush the
+                // save before reading /wasm/<name>; if Ctrl+S is hammered,
+                // each call queues its own delayed upload — wasteful but
+                // not harmful (each uploads the same final bytes).
+                if (isUserSaveCommand(text)) {
+                    console.log('[relay] User save detected (' + text.substring(0, 40) +
+                                ') — scheduling checkpoint + upload');
+                    saveAndUploadCheckpoint();
+                }
             } else {
                 // Non-user-input (tileprocessed, clientzoom, etc.) goes
                 // directly to Kit SYNCHRONOUSLY via postMobileMessage.
@@ -396,6 +412,18 @@
     function handleSaveTrigger() {
         console.log('[relay] Save-trigger received');
         saveAndUploadCheckpoint();
+    }
+
+    // True when the COOL JS layer dispatches a user-initiated save.
+    // Ctrl+S, the toolbar Save button, and File→Save all funnel through
+    // the same .uno:Save command. The Sidebar/Auto-save also produce
+    // .uno:Save — that's still legit "user wants to persist this" intent.
+    function isUserSaveCommand(text) {
+        if (!text || !text.startsWith('uno ')) return false;
+        var cmd = text.substring(4).split('?')[0].split(/\s/)[0];
+        // Accept the bare Save plus the explicit-as variants. We do NOT
+        // include FileSave (legacy alias) — COOL maps that internally.
+        return cmd === '.uno:Save' || cmd === '.uno:SaveAs';
     }
 
     function saveAndUploadCheckpoint() {

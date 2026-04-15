@@ -71,6 +71,7 @@ TESTS=(
     "regression-wasm-cache-pressure|test-regression-wasm-cache-pressure.js|Regression: WASM Cache Under Pressure|Heavy WASM survives Chrome disk-cache LRU eviction (limited --disk-cache-size=50MB) thanks to the Service Worker / Cache Storage fallback|shots-regression-wasm-cache-pressure"
     "regression-select-delete-coedit|test-regression-select-delete-coedit.js|Regression: Select+Delete Co-Edit|A double-clicks a word + presses Delete; B must converge to the same shorter doc (deletion must propagate)|shots-regression-select-delete"
     "regression-delete-key-coedit|test-regression-delete-key-coedit.js|Regression: Delete Key Co-Edit|Delete key generates `removetextcontext id=…` (not `key`); the relay-adapter must recognize it as user-input and forward to peers|shots-regression-delete-key"
+    "regression-user-save-checkpoint|test-regression-user-save-checkpoint.js|Regression: User Save → Checkpoint + Storage|.uno:Save (Ctrl+S) creates a fresh relay checkpoint AND uploads the saved file to /api/files; both hashes must match|none"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
