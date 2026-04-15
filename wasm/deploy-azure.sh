@@ -368,16 +368,17 @@ EJSON
         fi
     done
 
-    # Relay adapter and wasm-loader — copied to both the editor root (for
-    # any legacy /relay-adapter.js references) AND under browser/dist/ so
-    # cool.html's relative `<script src="wasm-loader.js">` resolves via the
+    # Relay adapter, wasm-loader, and the Service Worker — copied to both
+    # the editor root (for any legacy /relay-adapter.js references) AND
+    # under browser/dist/ so cool.html's relative `<script src="…">` and
+    # `navigator.serviceWorker.register('sw.js')` resolve via the
     # /browser/ static route.
-    for f in relay-adapter.js wasm-loader.js; do
+    for f in relay-adapter.js wasm-loader.js sw.js; do
         if [[ -f "$SCRIPT_DIR/$f" ]]; then
             cp "$SCRIPT_DIR/$f" "$EDIR/"
             cp "$SCRIPT_DIR/$f" "$EDIR/browser/dist/"
         else
-            echo "    WARNING: $f not found — viewer hot-switch will hang without it"
+            echo "    WARNING: $f not found — viewer hot-switch / SW cache will fail without it"
         fi
     done
 

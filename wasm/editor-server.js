@@ -26,10 +26,19 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const app = express();
 
-// Cache headers: immutable for large assets, no-cache for HTML.
-// Runs before the brotli chooser so the chosen response carries cache info.
+// Cache headers (runs before the brotli chooser so the chosen response
+// carries cache info):
+//   - sw.js → no-cache. The Service Worker updates itself by re-fetching
+//     this file on every navigation; if it's frozen by max-age the fix
+//     for any SW bug would never reach existing clients.
+//   - HTML → no-cache (cool.html does template substitution; never stale-OK).
+//   - WASM payloads + bundled JS → immutable, 1y. Browser HTTP cache will
+//     try its best; the SW (sw.js) backstops with Cache Storage when the
+//     HTTP cache evicts under pressure.
 app.use((req, res, next) => {
-    if (/\.(wasm|data|js\.metadata)$/.test(req.path)) {
+    if (req.path.endsWith('/sw.js') || req.path === '/sw.js') {
+        res.setHeader('Cache-Control', 'no-cache');
+    } else if (/\.(wasm|data|js\.metadata)$/.test(req.path)) {
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     } else if (/\.html$/.test(req.path) || req.path === '/') {
         res.setHeader('Cache-Control', 'no-cache');
