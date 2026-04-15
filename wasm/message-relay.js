@@ -300,9 +300,16 @@ server.on('upgrade', (req, socket, head) => {
             // ── 0x04: Join request ──
             if (type === 0x04) {
                 ws._viewId = viewId;
-                console.log(`[${roomId}] JOIN viewId=${viewId} active=${room.activeClients.size} checkpoint=${!!room.checkpoint} unsaved=${room.messageLog.length}`);
+                console.log(`[${roomId}] JOIN viewId=${viewId} active=${room.activeClients.size} checkpoint=${!!room.checkpointHash} unsaved=${room.messageLog.length}`);
 
-                if (!room.checkpoint) {
+                // The relay no longer stores file bytes — only the checkpoint
+                // hash. Any non-null hash means a checkpoint exists and the
+                // joiner should sync to it. (The legacy `room.checkpoint`
+                // field is only set by the deprecated createCheckpoint(buf)
+                // path and is always null in the hash-only flow, which would
+                // misclassify every joiner as "first client" and break
+                // late-join sync.)
+                if (!room.checkpointHash) {
                     // No checkpoint at all — first client ever
                     console.log(`[${roomId}]   → First client (no checkpoint)`);
                     room.sendControl(ws, 0x05, 0, JSON.stringify({ first: true, seq: 0 }));

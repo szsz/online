@@ -149,6 +149,10 @@ function collapseSidebar() {
 // Falls back to defaults if config not loaded
 const EDITOR = window.__CONFIG?.EDITOR_URL || 'https://wasm.atgpartners.info:6932';
 const RELAY  = window.__CONFIG?.RELAY_URL  || 'wss://wasm.atgpartners.info:9091';
+// Pass our own origin to the iframe so the relay-adapter knows where to
+// upload checkpoint saves (the cross-origin iframe can't read parent.origin
+// and the referrer is suppressed by referrerpolicy="no-referrer").
+const FILE_STORAGE_URL = window.__CONFIG?.VIEWER_URL || window.location.origin;
 const BLANK_FILENAME = '__prewarm_blank.docx';
 
 // Build the relay room URL for a given document name. Each document gets
@@ -296,7 +300,10 @@ async function startPrewarm() {
         });
         // Load cool.html with the blank doc — this triggers full WASM init
         const iframe = document.getElementById('editor-frame');
-        iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME) + '&access_token=test&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME));
+        iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
+                   + '&access_token=test'
+                   + '&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME))
+                   + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL);
         console.log('[viewer] Pre-warm started');
     } catch (e) {
         setPrewarmStatus('❌ Pre-warm failed: ' + e.message);
@@ -388,7 +395,8 @@ async function openFile(name) {
         // COLD RELOAD — cross-type or no prewarm.
         const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
                       + '&access_token=test'
-                      + '&relay=' + encodeURIComponent(relayRoom(name));
+                      + '&relay=' + encodeURIComponent(relayRoom(name))
+                      + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL);
         // Cross-type or no prewarm: destroy and re-create iframe to
         // ensure clean WASM teardown.
         const newIframe = document.createElement('iframe');

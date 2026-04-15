@@ -426,28 +426,43 @@
     }
 
     // Resolve the file storage URL for a given WOPISrc.
-    // The viewer's /api/files/ endpoint is the canonical file store.
-    // Since the iframe is cross-origin, we derive the viewer origin from
-    // the relay URL (same host family) or document.referrer.
+    //
+    // The viewer's /api/files/ endpoint is the source-of-truth file store.
+    // We need this URL so saved checkpoints can be uploaded back here (so
+    // late-joiners see the latest content). Resolution order:
+    //   1. fileStorageUrl query param — set by the viewer when it builds the
+    //      iframe URL. The robust path; works regardless of referrer policy
+    //      or cross-origin restrictions.
+    //   2. parent.location.origin — works only when same-origin.
+    //   3. document.referrer — set unless `referrerpolicy="no-referrer"`.
+    //   4. Fallback: the editor's own /wasm/ endpoint. This is wrong for
+    //      the source-of-truth (the viewer never sees it) but at least
+    //      stores the bytes so the editor can re-load them. Late-join
+    //      sync into the viewer's storage will be broken in this mode.
     function getFileStorageUrl(wopiSrc) {
         var encoded = encodeURIComponent(wopiSrc);
-        // Try parent origin (works if same-origin or permissions allow)
+        // 1. Explicit param from the viewer
+        var explicit = params.get('fileStorageUrl');
+        if (explicit) {
+            // Trim trailing slash so we don't produce double //
+            if (explicit.charAt(explicit.length - 1) === '/') explicit = explicit.slice(0, -1);
+            return explicit + '/api/files/' + encoded;
+        }
+        // 2. Same-origin parent
         try {
             if (window.parent !== window) {
                 var origin = window.parent.location.origin;
                 if (origin && origin !== 'null') return origin + '/api/files/' + encoded;
             }
         } catch(e) {}
-        // Try referrer (set when iframe is created by the viewer)
+        // 3. Referrer
         if (document.referrer) {
             try {
                 return new URL(document.referrer).origin + '/api/files/' + encoded;
             } catch(e) {}
         }
-        // Derive from relay URL: relay is on the editor domain,
-        // but the file storage server is the viewer. We can't derive
-        // it without configuration. Fall back to the editor's /wasm/
-        // endpoint which also stores files.
+        // 4. Editor-local fallback
+        console.warn('[relay] getFileStorageUrl: no fileStorageUrl param, no same-origin parent, no referrer — falling back to editor /wasm/ (late-joiners will see stale content)');
         return window.location.origin + '/wasm/' + encoded;
     }
 

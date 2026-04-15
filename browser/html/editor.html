@@ -230,8 +230,11 @@
         var relayUrl = (_relayBase || 'wss://' + window.location.hostname + ':9091')
             + '/room/' + encodeURIComponent(roomId);
         var base = _editorOrigin || '';
+        // Pass our own origin so the relay-adapter knows where to upload
+        // checkpoint saves (cross-origin iframe can't read parent.origin).
         return base + '/browser/cool.html?WOPISrc=' + encodeURIComponent(fileName)
-            + '&relay=' + encodeURIComponent(relayUrl);
+            + '&relay=' + encodeURIComponent(relayUrl)
+            + '&fileStorageUrl=' + encodeURIComponent(window.location.origin);
     }
 
     function openInCool(fileName, roomId) {
