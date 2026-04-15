@@ -257,17 +257,51 @@
         function interceptedSend(data) {
             var text = typeof data === 'string' ? data : '';
             // User-input prefixes that MUST go through the relay so all
-            // peers see the same edit. COOL routes Delete and Backspace
-            // through TextInput.js _removeTextContent which sends
-            // `removetextcontext id=… before=N after=N` — the second
-            // prefix below. The TODO in TextInput says the message will
-            // eventually be renamed to `removetextcontent`; cover both
-            // so we don't regress when that lands.
+            // peers see the same edit. Adding any new doc-mutating prefix
+            // here is a NORMAL co-edit fix; missing one means the action
+            // works locally for the actor but is invisible to peers (the
+            // class of bugs that produced the Delete-key bug).
+            //
+            // Categories covered:
+            //   key / mouse / textinput / windowkey / uno
+            //     The classic input messages from Map.Keyboard / mouse /
+            //     toolbar / shortcut paths.
+            //   removetextcontext / removetextcontent
+            //     Delete and Backspace go through TextInput.js's
+            //     beforeinput handler, which sends `removetextcontext`
+            //     (note the typo — TextInput.js's TODO promises it'll be
+            //     renamed to `removetextcontent`; cover both).
+            //   contentcontrolevent
+            //     Form-field interactions: date picker, dropdown, picture
+            //     content controls. Each event mutates the doc.
+            //   moveselectedclientparts
+            //     Reorder slides (Impress) or sheets (Calc). Pure doc
+            //     mutation — peers MUST apply the same reorder.
+            //   completefunction
+            //     Calc autocomplete inserts a function name into the
+            //     active formula cell.
+            //
+            // NOT relayed (intentionally — per-user view / server-side):
+            //   setclientpart / selectclientpart / setpage  → each user
+            //     can view a different slide or sheet
+            //   selecttext / resetselection → per-user cursor
+            //   windowmouse / windowgesture / windowcommand → clicks
+            //     inside per-user dialogs; doc-side effect comes via uno
+            //   clientzoom, tileprocessed, commandvalues,
+            //   gettextselection, paintwindow → local view state / queries
+            //   attemptlock, closedocument, versionrestore, downloadas,
+            //   exportas, renamefile → server-side WOPI ops
+            //   insertfile → would relay a name, but the file bytes only
+            //     live on the originating peer's editor; cross-peer file
+            //     insert needs a separate sync mechanism — known limitation
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
                 text.startsWith('textinput ') || text.startsWith('windowkey ') ||
                 text.startsWith('uno ') ||
                 text.startsWith('removetextcontext ') ||
-                text.startsWith('removetextcontent ');
+                text.startsWith('removetextcontent ') ||
+                text.startsWith('contentcontrolevent ') ||
+                text.startsWith('moveselectedclientparts ') ||
+                text.startsWith('completefunction ');
             if (isUserInput) {
                 if (!activated) {
                     console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
@@ -559,14 +593,17 @@
             return;
         }
 
-        // Keep the receive-side filter in sync with interceptedSend above —
-        // including the removetextcontext/-content paths so peers actually
-        // apply Delete/Backspace edits we relay to them.
+        // Keep the receive-side filter in sync with interceptedSend above
+        // — see the long comment there for which prefixes mutate the doc
+        // and which are intentionally per-user.
         var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
             text.startsWith('textinput ') || text.startsWith('windowkey ') ||
             text.startsWith('uno ') ||
             text.startsWith('removetextcontext ') ||
-            text.startsWith('removetextcontent ');
+            text.startsWith('removetextcontent ') ||
+            text.startsWith('contentcontrolevent ') ||
+            text.startsWith('moveselectedclientparts ') ||
+            text.startsWith('completefunction ');
         if (!isUserInput) return;
 
         if (text.startsWith('uno ')) {
