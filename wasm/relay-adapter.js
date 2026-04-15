@@ -256,9 +256,18 @@
 
         function interceptedSend(data) {
             var text = typeof data === 'string' ? data : '';
+            // User-input prefixes that MUST go through the relay so all
+            // peers see the same edit. COOL routes Delete and Backspace
+            // through TextInput.js _removeTextContent which sends
+            // `removetextcontext id=… before=N after=N` — the second
+            // prefix below. The TODO in TextInput says the message will
+            // eventually be renamed to `removetextcontent`; cover both
+            // so we don't regress when that lands.
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
                 text.startsWith('textinput ') || text.startsWith('windowkey ') ||
-                text.startsWith('uno ');
+                text.startsWith('uno ') ||
+                text.startsWith('removetextcontext ') ||
+                text.startsWith('removetextcontent ');
             if (isUserInput) {
                 if (!activated) {
                     console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
@@ -522,9 +531,14 @@
             return;
         }
 
+        // Keep the receive-side filter in sync with interceptedSend above —
+        // including the removetextcontext/-content paths so peers actually
+        // apply Delete/Backspace edits we relay to them.
         var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
             text.startsWith('textinput ') || text.startsWith('windowkey ') ||
-            text.startsWith('uno ');
+            text.startsWith('uno ') ||
+            text.startsWith('removetextcontext ') ||
+            text.startsWith('removetextcontent ');
         if (!isUserInput) return;
 
         if (text.startsWith('uno ')) {
