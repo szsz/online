@@ -280,11 +280,19 @@
             //   completefunction
             //     Calc autocomplete inserts a function name into the
             //     active formula cell.
+            //   selecttext / resetselection
+            //     Selection state. Each peer renders the others' cursors
+            //     and selections via a remote-client Kit; for that mirror
+            //     to show the right highlighted range, A's selection
+            //     events MUST reach B's remote-Kit-for-A. Sources:
+            //     CanvasTileLayer._postSelectTextEvent (selection-handle
+            //     drag → TextSelectionHandleSection / TableSelectMarker /
+            //     CellSelectionHandle); Parts.js / SearchService /
+            //     PartsPreview send `resetselection`.
             //
             // NOT relayed (intentionally — per-user view / server-side):
             //   setclientpart / selectclientpart / setpage  → each user
             //     can view a different slide or sheet
-            //   selecttext / resetselection → per-user cursor
             //   windowmouse / windowgesture / windowcommand → clicks
             //     inside per-user dialogs; doc-side effect comes via uno
             //   clientzoom, tileprocessed, commandvalues,
@@ -301,7 +309,9 @@
                 text.startsWith('removetextcontent ') ||
                 text.startsWith('contentcontrolevent ') ||
                 text.startsWith('moveselectedclientparts ') ||
-                text.startsWith('completefunction ');
+                text.startsWith('completefunction ') ||
+                text.startsWith('selecttext ') ||
+                text === 'resetselection';
             if (isUserInput) {
                 if (!activated) {
                     console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
@@ -603,7 +613,9 @@
             text.startsWith('removetextcontent ') ||
             text.startsWith('contentcontrolevent ') ||
             text.startsWith('moveselectedclientparts ') ||
-            text.startsWith('completefunction ');
+            text.startsWith('completefunction ') ||
+            text.startsWith('selecttext ') ||
+            text === 'resetselection';
         if (!isUserInput) return;
 
         if (text.startsWith('uno ')) {
