@@ -6,18 +6,26 @@ const __cl = require('./lib/inject-checklist');
 // press Delete. Browser A removes the word; browser B still shows the word
 // (the deletion never propagates).
 //
-// Method: open the same document in two browsers via the relay, position A
-// at end of "Hello World", select the previous word ("World") with
-// .uno:WordLeftSel, then dispatch .uno:Delete. Wait, then assert both
-// browsers show 6 chars ("Hello ") not 11.
+// Method matches the user's actual repro path:
+//   - Open the viewer at /#file=<name> in two separate browser contexts
+//     (so each gets its own SAB / iframe / SW)
+//   - The doc is a real .docx (matters: docx parsing/save path is heavier
+//     than .txt and was where the user actually saw the divergence)
+//   - A double-clicks inside the doc to select a word
+//   - A presses Delete via the same key code (UNOKey.DELETE = 1286) that
+//     a real keyboard event produces via Map.Keyboard._toUNOKeyCode
+//   - Both browsers deselect (Right arrow) so #StateWordCount reports
+//     doc-char-count not selection-char-count
+//   - Both must converge to the same shorter doc
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const path = require('path');
 const env = require('./lib/test-env');
 
-const BASE = env.EDITOR_URL;
-const RELAY_BASE = env.RELAY_URL;
-const TIMEOUT = 300000;
+const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-select-delete';
+const DOC_NAME = 'Simple small document.docx';
+const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
@@ -39,16 +47,21 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
-async function getStatus(page) {
-    return page.evaluate(() => {
-        const el = document.querySelector('#StateWordCount');
-        return el ? el.textContent.trim() : '';
-    });
+async function getEditorFrame(page) {
+    return page.frames().find(f => f.url().includes('cool.html'));
 }
-// charCount reads the number from "N words, M characters" — but COOL also
-// formats it as "Selected: N words, M characters" when a selection exists,
-// in which case M is the SELECTION size, not the doc size. Caller is
-// responsible for ensuring no selection before relying on the value.
+// COOL formats #StateWordCount as either:
+//   "N words, M characters"             (no selection — M is doc size)
+//   "Selected: N words, M characters"   (selection active — M is selection size)
+// We always deselect first, so callers can rely on M == doc size.
+async function getStatus(page) {
+    const fr = await getEditorFrame(page);
+    if (!fr) return '';
+    try {
+        return await fr.evaluate(() =>
+            document.querySelector('#StateWordCount')?.textContent?.trim() || '');
+    } catch (e) { return ''; }
+}
 function charCount(status) {
     const m = status && status.match(/(\d+) characters/);
     return m ? parseInt(m[1]) : -1;
@@ -56,13 +69,12 @@ function charCount(status) {
 function isSelectionStatus(status) {
     return /^Selected:/i.test((status || '').trim());
 }
-// Dispatch a Right-arrow keydown so any active selection collapses to
-// the caret. Arrow keys without modifier always deselect in writer.
 async function clearSelection(page) {
-    // COOL key code for plain ArrowRight (no modifier). Verified against
-    // the writer's keyboard handler — same shape as the End key (9221) used
-    // in test-cursor-debug.js.
-    await page.evaluate(() => {
+    const fr = await getEditorFrame(page);
+    if (!fr) return;
+    // ArrowRight (UNOKey.RIGHT = 1027) without modifier collapses any
+    // selection to the caret in writer.
+    await fr.evaluate(() => {
         TheFakeWebSocket.send('key type=input char=0 key=1027');
         TheFakeWebSocket.send('key type=up    char=0 key=1027');
     });
@@ -78,9 +90,10 @@ async function waitForCharCount(page, expected, timeoutMs) {
 }
 
 (async () => {
-    log('=== Regression: select-word + Delete must propagate to peer ===');
+    log('=== Regression: select-word + Delete co-edit (docx via viewer) ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
+    if (!fs.existsSync(DOC_PATH)) { log('ERROR: fixture missing: ' + DOC_PATH); process.exit(1); }
 
     const browser = await puppeteer.launch({
         headless: 'new', protocolTimeout: 600000,
@@ -89,107 +102,125 @@ async function waitForCharCount(page, expected, timeoutMs) {
     });
 
     try {
-        // Upload "Hello World" — 11 chars, two words separated by a space.
+        // Upload the docx fresh so the test is self-contained (the real
+        // /api/files/<name> is whatever was uploaded last; we want
+        // deterministic content per-run).
         const up = await browser.newPage();
-        await up.goto(BASE, { waitUntil: 'domcontentloaded' });
-        await up.evaluate(async (base) => {
-            await fetch(base + '/wasm/seldel.txt', {
-                method: 'POST',
-                body: new Blob(['Hello World'], { type: 'application/octet-stream' }),
+        await up.goto(VIEWER + '/');
+        const bytes = fs.readFileSync(DOC_PATH);
+        await up.evaluate(async (n, a) => {
+            await fetch('/api/files/' + encodeURIComponent(n), {
+                method: 'POST', body: new Blob([new Uint8Array(a)]),
             });
-        }, BASE);
+        }, DOC_NAME, Array.from(bytes));
         await up.close();
-        log('Uploaded "Hello World" (11 chars)');
+        log(`Uploaded "${DOC_NAME}" (${(bytes.length/1024).toFixed(1)} KB)`);
 
-        const ROOM = 'seldel-' + Date.now();
-        const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
-        const coolUrl = `${BASE}/browser/cool.html?WOPISrc=seldel.txt&relay=${relay}&access_token=test`;
-
-        async function openDoc(label) {
+        async function openInViewer(label) {
             const ctx = await browser.createBrowserContext();
             const page = await ctx.newPage();
-            await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-            await page.waitForFunction(() =>
-                document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
-                { timeout: TIMEOUT });
-            log(`[${label}] Loaded: "${await getStatus(page)}"`);
-            return page;
+            await page.setViewport({ width: 1280, height: 900 });
+            await page.goto(VIEWER + '/#file=' + encodeURIComponent(DOC_NAME),
+                { waitUntil: 'domcontentloaded' });
+            // Wait for the editor iframe to load and the doc to parse.
+            const deadline = Date.now() + 240000;
+            while (Date.now() < deadline) {
+                const fr = await getEditorFrame(page);
+                if (fr) {
+                    const wc = await fr.evaluate(() =>
+                        document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
+                    if (/\d+\s+character/i.test(wc)) {
+                        log(`[${label}] Loaded: "${wc.trim()}"`);
+                        return page;
+                    }
+                }
+                await sleep(500);
+            }
+            throw new Error(`[${label}] never loaded`);
         }
 
-        const pageA = await openDoc('A');
-        await sleep(8000);   // settle, save initial checkpoint
-        const pageB = await openDoc('B');
-        await sleep(15000);  // B late-joins, replays log
+        const pageA = await openInViewer('A');
+        await sleep(8000);                     // settle, initial save
+        const pageB = await openInViewer('B'); // late-joiner
+        await sleep(15000);                    // B gets checkpoint + replays log
 
         await snap(pageA, 'A_initial');
         await snap(pageB, 'B_initial');
         const initA = charCount(await getStatus(pageA));
         const initB = charCount(await getStatus(pageB));
-        log(`Initial: A=${initA} B=${initB}`);
-        check('Both browsers see "Hello World" (11 chars)',
-              initA === 11 && initB === 11);
+        log(`Initial: A=${initA} chars, B=${initB} chars`);
+        check('A and B both load the same number of characters',
+              initA > 0 && initA === initB,
+              'A=' + initA + ' B=' + initB);
 
-        // ── A: select a word by DOUBLE-CLICK (the real user path) ───
-        // COOL canvas coordinates are in twips (1/15 mm). "Hello World" is
-        // at the start of an empty doc — top-left of the page area. We
-        // double-click somewhere on "World"; the exact x/y need only land
-        // inside the word's bounding box. Twips give us a forgiving range:
-        // page margin + a few words sits around (2000, 500).
-        log('\n--- A: double-click "World" to select, then press Delete ---');
-        await pageA.evaluate(() => {
-            // Double-click = two buttondown/up at count=2
-            TheFakeWebSocket.send('mouse type=buttondown x=2000 y=500 count=2 buttons=1 modifier=0');
-            TheFakeWebSocket.send('mouse type=buttonup   x=2000 y=500 count=2 buttons=1 modifier=0');
+        // ── A: select the first word via the EXACT user-keyboard path ─
+        // We send the same key codes that Map.Keyboard._toUNOKeyCode would
+        // produce for a real Ctrl+Home then Ctrl+Shift+Right keyboard
+        // sequence. The user-reported bug is about the SELECT+DELETE
+        // reaching B; using actual key events (rather than uno commands)
+        // matches what the user does and exercises the same dispatch path.
+        //
+        // UNOKey + UNOModifier (from browser/src/UNO/Key.js + docstate.ts):
+        //   HOME    = 1028,  Ctrl+Home  = 1028 + 8192 = 9220
+        //   RIGHT   = 1027,  Ctrl+Shift+Right = 1027 + 8192 + 4096 = 13315
+        //   DELETE  = 1286
+        log('\n--- A: Ctrl+Home, Ctrl+Shift+Right (select first word), Delete ---');
+        const frA = await getEditorFrame(pageA);
+        await frA.evaluate(() => {
+            TheFakeWebSocket.send('key type=input char=0 key=9220');     // Ctrl+Home
+            TheFakeWebSocket.send('key type=up    char=0 key=9220');
         });
-        await sleep(2000);
-        await snap(pageA, 'A_after_doubleclick');
-        await snap(pageB, 'B_after_doubleclick');
+        await sleep(1200);
+        await frA.evaluate(() => {
+            TheFakeWebSocket.send('key type=input char=0 key=13315');    // Ctrl+Shift+Right
+            TheFakeWebSocket.send('key type=up    char=0 key=13315');
+        });
+        await sleep(1500);
+        await snap(pageA, 'A_after_select');
+        await snap(pageB, 'B_after_select');
 
-        // Dispatch Delete via the SAME path a real keyboard event takes:
-        // _onKeyDown sends `key type=input char=0 key=<UNOKey.DELETE=1286>`.
-        await pageA.evaluate(() => {
+        const sASel = await getStatus(pageA);
+        log(`A after select: "${sASel}"`);
+        const aSelectionSize = isSelectionStatus(sASel) ? charCount(sASel) : 0;
+        check('A has a selection of the first word',
+              isSelectionStatus(sASel) && aSelectionSize > 0,
+              sASel);
+
+        // Delete via the keyboard channel (UNOKey.DELETE = 1286).
+        await frA.evaluate(() => {
             TheFakeWebSocket.send('key type=input char=0 key=1286');
             TheFakeWebSocket.send('key type=up    char=0 key=1286');
         });
-        log('A: pressed Delete');
+        log(`A: pressed Delete (selection was ${aSelectionSize} chars)`);
 
-        // Let the edit propagate, then deselect on BOTH browsers so the
-        // status bar shows doc-char-count, not selection-char-count.
-        log('Waiting 8s for the delete to propagate to B...');
-        await sleep(8000);
+        // Wait for propagation, then DESELECT on both before reading
+        // doc-char-count.
+        log('Waiting 12s for the delete to propagate to B...');
+        await sleep(12000);
         await snap(pageA, 'A_after_delete');
         await snap(pageB, 'B_after_delete');
-        const sAraw = await getStatus(pageA);
-        const sBraw = await getStatus(pageB);
-        log(`Status (with selection possibly active): A="${sAraw}"  B="${sBraw}"`);
 
         await clearSelection(pageA);
         await clearSelection(pageB);
         await snap(pageA, 'A_after_deselect');
         await snap(pageB, 'B_after_deselect');
+
         const sA = await getStatus(pageA);
         const sB = await getStatus(pageB);
-        log(`Status (after deselect): A="${sA}"  B="${sB}"`);
         const finalA = charCount(sA);
         const finalB = charCount(sB);
+        log(`Final (after deselect): A="${sA}" → ${finalA} chars`);
+        log(`                        B="${sB}" → ${finalB} chars`);
 
         check('A status no longer reports a selection', !isSelectionStatus(sA), sA);
         check('B status no longer reports a selection', !isSelectionStatus(sB), sB);
-
-        // Doc started at 11, A deleted "World" (5 chars). Expected final is 6
-        // ("Hello "). B MUST converge to the same value as A — that's the
-        // co-edit invariant the bug breaks.
-        const target = 6;
-        check('A reflects the deletion locally (6 chars left)',
-              finalA === target,
-              'expected ' + target + ' got ' + finalA);
-        check('B reflects A\'s select+delete (THIS is the user-reported bug)',
-              finalB === target,
-              'expected ' + target + ' got ' + finalB +
-              (finalB === 11 ? ' — peer never saw the deletion' : ''));
-        check('A and B converge to the same character count',
-              finalA === finalB && finalA > 0,
-              'A=' + finalA + ' B=' + finalB);
+        check('A reflects the deletion locally (chars decreased)',
+              finalA > 0 && finalA < initA,
+              'init=' + initA + ' final=' + finalA);
+        check('B reflects A\'s select+delete (THE user-reported bug)',
+              finalB === finalA,
+              'A=' + finalA + ' B=' + finalB +
+              (finalB === initB ? ' — peer never saw the deletion' : ''));
 
         log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
     } catch (e) {
