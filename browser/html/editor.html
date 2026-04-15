@@ -122,9 +122,27 @@
     var joinFile = params.get('file');
     var joinRoom = params.get('room');
     if (joinFile && joinRoom) {
-        // Joining — skip upload, go straight to editor
+        // Joining — download file from storage, upload to editor, then open
         status.textContent = 'Joining session...';
-        openInCool(decodeURIComponent(joinFile), joinRoom);
+        getConfig().then(function() {
+            var fileName = decodeURIComponent(joinFile);
+            // Download from file storage
+            return fetch('/api/files/' + encodeURIComponent(fileName)).then(function(r) {
+                if (!r.ok) throw new Error('File not found');
+                return r.blob();
+            }).then(function(blob) {
+                // Upload to editor app so WASM can load it
+                var editorBase = _editorOrigin || '';
+                return fetch(editorBase + '/wasm/' + encodeURIComponent(fileName), {
+                    method: 'POST', body: blob,
+                });
+            }).then(function() {
+                openInCool(fileName, joinRoom);
+            });
+        }).catch(function(err) {
+            status.className = 'status error';
+            status.textContent = 'Join failed: ' + err.message;
+        });
     }
 
     dropZone.addEventListener('click', function() { fileInput.click(); });
@@ -146,25 +164,40 @@
         status.className = 'status';
         status.textContent = 'Uploading ' + file.name + '...';
 
-        fetch('/wasm/' + encodeURIComponent(file.name), {
-            method: 'POST',
-            body: file,
-        }).then(function(resp) {
-            if (!resp.ok) throw new Error('Upload failed: ' + resp.status);
+        getConfig().then(function() {
+            // Upload to file storage (viewer) for persistence
+            var storageUpload = fetch('/api/files/' + encodeURIComponent(file.name), {
+                method: 'POST',
+                body: file,
+            });
+
+            // Upload to editor app for WASM to load (cross-origin when deployed)
+            var editorBase = _editorOrigin || '';
+            var editorUpload = fetch(editorBase + '/wasm/' + encodeURIComponent(file.name), {
+                method: 'POST',
+                body: file,
+            });
+
+            return Promise.all([storageUpload, editorUpload]);
+        }).then(function(responses) {
+            for (var i = 0; i < responses.length; i++) {
+                if (!responses[i].ok) throw new Error('Upload failed: ' + responses[i].status);
+            }
             status.textContent = 'Ready to open ' + file.name;
 
             // Generate room ID from filename + random suffix
             var roomId = file.name.replace(/[^a-zA-Z0-9]/g, '-') + '-' + Math.random().toString(36).substr(2, 6);
 
             // Show share link
-            var shareUrl = window.location.origin + '/editor.html?file=' + encodeURIComponent(file.name) + '&room=' + encodeURIComponent(roomId);
+            var shareUrl = window.location.origin + '/?file=' + encodeURIComponent(file.name) + '&room=' + encodeURIComponent(roomId);
             document.getElementById('share-url').value = shareUrl;
             document.getElementById('share-link').style.display = 'block';
 
-            // Show open button
+            // Show open button — navigate to the share URL so the button
+            // and the share link open the same page.
             var btn = document.getElementById('btn-open');
             btn.style.display = 'block';
-            btn.onclick = function() { openInCool(file.name, roomId); };
+            btn.onclick = function() { window.location.href = shareUrl; };
 
             pendingCoolUrl = buildCoolUrl(file.name, roomId);
         }).catch(function(err) {
@@ -173,18 +206,39 @@
         });
     }
 
+    // Relay URL is loaded from /config (set by viewer server) or falls
+    // back to wss://hostname:9091 for local development.
+    var _relayBase = null;
+    var _editorOrigin = null;
+
+    function getConfig() {
+        if (_relayBase !== null) return Promise.resolve();
+        return fetch('/config').then(function(r) { return r.json(); }).then(function(cfg) {
+            _relayBase = cfg.relayUrl || ('wss://' + window.location.hostname + ':9091');
+            _editorOrigin = cfg.editorUrl || '';
+        }).catch(function() {
+            _relayBase = 'wss://' + window.location.hostname + ':9091';
+            _editorOrigin = '';
+        });
+    }
+    // Pre-fetch config on page load
+    getConfig();
+
     function buildCoolUrl(fileName, roomId) {
-        var relayHost = window.location.hostname;
-        var relayUrl = 'wss://' + relayHost + ':9091/room/' + encodeURIComponent(roomId);
-        return '/browser/cool.html?WOPISrc=' + encodeURIComponent(fileName)
+        var relayUrl = (_relayBase || 'wss://' + window.location.hostname + ':9091')
+            + '/room/' + encodeURIComponent(roomId);
+        var base = _editorOrigin || '';
+        return base + '/browser/cool.html?WOPISrc=' + encodeURIComponent(fileName)
             + '&relay=' + encodeURIComponent(relayUrl);
     }
 
     function openInCool(fileName, roomId) {
-        var coolUrl = buildCoolUrl(fileName, roomId);
-        var form = document.getElementById('cool-form');
-        form.action = coolUrl;
-        form.submit();
+        getConfig().then(function() {
+            var coolUrl = buildCoolUrl(fileName, roomId);
+            var form = document.getElementById('cool-form');
+            form.action = coolUrl;
+            form.submit();
+        });
     }
 
     function copyShareLink() {

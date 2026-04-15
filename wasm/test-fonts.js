@@ -8,8 +8,9 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-fonts';
 
@@ -46,7 +47,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
     try {
         // Upload test files
         const up = await browser.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await up.goto(BASE, { waitUntil: 'networkidle0' });
         for (const name of ['rare-fonts.docx', 'rare-fonts.xlsx', 'rare-fonts.pptx']) {
             const filePath = path.resolve(__dirname, '../test/data', name);
             if (!fs.existsSync(filePath)) { log(`SKIP: ${name}`); continue; }
@@ -136,7 +137,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
             permissions: ['localFonts']
         });
 
-        await pageF.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await pageF.goto(BASE, { waitUntil: 'networkidle0' });
 
         const fontAccess = await pageF.evaluate(async () => {
             if (!('queryLocalFonts' in window)) return { api: false };
@@ -180,7 +181,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
         // --- Test 5: Server font endpoint ---
         log('\n--- Test 5: Server font lazy loading ---');
         const pageS = await browser.newPage();
-        await pageS.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await pageS.goto(BASE, { waitUntil: 'networkidle0' });
         const serverFonts = ['LinLibertine_R_G.ttf', 'NotoSerif-Regular.ttf', 'Amiri-Regular.ttf'];
         for (const fontFile of serverFonts) {
             const status = await pageS.evaluate(async (file) => {

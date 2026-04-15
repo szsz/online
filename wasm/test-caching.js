@@ -13,8 +13,10 @@ const puppeteer = require('puppeteer');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-caching';
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -54,13 +56,16 @@ function check(label, condition) { __cl.recordCheck(label, condition);
 
 async function uploadFile(browser, name, filePath) {
     const upPage = await browser.newPage();
-    await upPage.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+    await upPage.goto(VIEWER, { waitUntil: 'networkidle0' });
     const docBytes = fs.readFileSync(filePath);
-    await upPage.evaluate(async (url, n, arr) => {
-        await fetch(url + '/wasm/' + encodeURIComponent(n), {
-            method: 'POST', body: new Blob([new Uint8Array(arr)]),
-        });
-    }, BASE, name, Array.from(docBytes));
+    // Upload to both viewer (persistence) and editor (WASM loading)
+    await upPage.evaluate(async (viewerUrl, editorUrl, n, arr) => {
+        const blob = new Blob([new Uint8Array(arr)]);
+        await Promise.all([
+            fetch(viewerUrl + '/api/files/' + encodeURIComponent(n), { method: 'POST', body: blob }),
+            fetch(editorUrl + '/wasm/' + encodeURIComponent(n), { method: 'POST', body: blob }),
+        ]);
+    }, VIEWER, BASE, name, Array.from(docBytes));
     await upPage.close();
     log(`Uploaded ${name} (${(docBytes.length/1024).toFixed(0)}KB)`);
 }

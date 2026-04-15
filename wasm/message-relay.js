@@ -30,12 +30,17 @@
 
 const WebSocket = require('ws');
 const https = require('https');
+const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 
-const PORT = process.env.RELAY_PORT || 9091;
+const PORT = process.env.PORT || process.env.RELAY_PORT || 9091;
 const SSL_CERT = process.env.SSL_CERT || '/etc/letsencrypt/live/wasm.atgpartners.info/fullchain.pem';
 const SSL_KEY = process.env.SSL_KEY || '/etc/letsencrypt/live/wasm.atgpartners.info/privkey.pem';
+
+// Detect whether SSL certs are available. On Azure App Service, TLS is
+// terminated by the platform so the relay runs plain HTTP/WS internally.
+const useSSL = fs.existsSync(SSL_CERT) && fs.existsSync(SSL_KEY);
 
 const rooms = new Map();
 
@@ -216,11 +221,8 @@ function getRoom(roomId) {
     return rooms.get(roomId);
 }
 
-// --- HTTPS server ---
-const server = https.createServer({
-    cert: fs.readFileSync(SSL_CERT),
-    key: fs.readFileSync(SSL_KEY),
-}, (req, res) => {
+// --- HTTP(S) server ---
+const requestHandler = (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
@@ -263,7 +265,11 @@ const server = https.createServer({
         return;
     }
     res.writeHead(405); res.end();
-});
+};
+
+const server = useSSL
+    ? https.createServer({ cert: fs.readFileSync(SSL_CERT), key: fs.readFileSync(SSL_KEY) }, requestHandler)
+    : http.createServer(requestHandler);
 
 // --- WebSocket server ---
 const wss = new WebSocket.Server({ noServer: true });
@@ -447,5 +453,5 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 server.listen(PORT, () => {
-    console.log(`Checkpoint relay on port ${PORT} (v3)`);
+    console.log(`Checkpoint relay on port ${PORT} (v3) [${useSSL ? 'HTTPS' : 'HTTP'}]`);
 });

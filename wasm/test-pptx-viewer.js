@@ -7,8 +7,9 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const VIEWER = 'https://viewer.szebeni.hu:6934';
+const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx-viewer';
 const DOC_NAME = 'pptx-slides-test.pptx';
 // Use a real multi-slide pptx

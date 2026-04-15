@@ -7,9 +7,10 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const EDITOR = 'https://wasm.atgpartners.info:6932';
-const VIEWER = 'https://viewer.szebeni.hu:6934';
+const EDITOR = env.EDITOR_URL;
+const VIEWER = env.FILE_STORAGE_URL;
 const DOC_NAME = 'profile-doc.docx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'test document.docx');
 const RENDER_TIMEOUT = 120000;
@@ -171,7 +172,7 @@ async function profileLoad(browser, label, url, useCdp) {
     try {
         // Upload the doc
         const up = await browser.newPage();
-        await up.goto(EDITOR + '/editor.html', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
+        await up.goto(EDITOR, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
         const bytes = fs.readFileSync(DOC_PATH);
         await up.evaluate(async (url, name, arr) => {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {

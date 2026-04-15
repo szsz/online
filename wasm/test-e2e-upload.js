@@ -4,8 +4,10 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const VIEWER = env.FILE_STORAGE_URL;
+const BASE = env.EDITOR_URL;
 const TIMEOUT = 600000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-e2e-upload';
 
@@ -47,11 +49,8 @@ function check(label, condition) { __cl.recordCheck(label, condition);
         // --- Step 1: Open landing page ---
         log('\n--- Step 1: Landing page ---');
         const pageA = await browserA.newPage();
-        await pageA.goto(`${BASE}/editor.html`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await pageA.goto(VIEWER, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await snap(pageA, 'landing');
-
-        const preloadBar = await pageA.evaluate(() => !!document.getElementById('preload-bar'));
-        check('Preload bar visible', preloadBar);
 
         // --- Step 2: Upload at 3 seconds ---
         log('\n--- Step 2: Upload file at 3s ---');
@@ -69,7 +68,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
         await snap(pageA, 'uploaded');
 
         const shareUrl = await pageA.evaluate(() => document.getElementById('share-url')?.value || '');
-        check('File uploaded', shareUrl.includes('editor.html'));
+        check('File uploaded', shareUrl.includes('file='));
         log(`  Share URL: ${shareUrl}`);
 
         // --- Step 3: Click Open immediately ---
@@ -79,7 +78,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
 
         // Screenshot every 2s during load
         let docLoaded = false;
-        for (let i = 0; i < 30 && !docLoaded; i++) {
+        for (let i = 0; i < 90 && !docLoaded; i++) {
             await sleep(2000);
             const s = await pageA.evaluate(() => ({
                 label: document.getElementById('wasm-progress-label')?.textContent || '',

@@ -7,8 +7,9 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx';
 const DOC_NAME = 'testdoc.pptx';
@@ -105,7 +106,7 @@ async function waitForImpress(page, label, timeout) {
     try {
         // Upload
         const up = await browser.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await up.goto(BASE, { waitUntil: 'networkidle0' });
         const bytes = fs.readFileSync(DOC_PATH);
         await up.evaluate(async (url, name, arr) => {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {

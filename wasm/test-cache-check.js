@@ -1,8 +1,9 @@
 // Test whether online.wasm + soffice.data are cached across two page loads in
 // the same browser context. Pinpoints exactly why Chrome re-downloads.
 const puppeteer = require('puppeteer');
+const env = require('./lib/test-env');
 
-const EDITOR = 'https://wasm.atgpartners.info:6932';
+const EDITOR = env.EDITOR_URL;
 const DOC = 'cache-test.txt';
 
 (async () => {
@@ -49,7 +50,7 @@ const DOC = 'cache-test.txt';
 
         // Upload tiny doc first pass
         if (label.includes('FIRST')) {
-            await page.goto(EDITOR + '/editor.html', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
+            await page.goto(EDITOR, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
             await page.evaluate(async (u, n) => {
                 await fetch(u + '/wasm/' + encodeURIComponent(n), { method: 'POST', body: new Blob(['hello']) });
             }, EDITOR, DOC);

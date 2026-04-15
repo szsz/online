@@ -5,8 +5,10 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-formats';
 
@@ -79,7 +81,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
 
     // Upload
     const up = await browser.newPage();
-    await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+    await up.goto(BASE, { waitUntil: 'networkidle0' });
     const docBytes = fs.readFileSync(docPath);
     await up.evaluate(async (url, name, arr) => {
         await fetch(url + '/wasm/' + encodeURIComponent(name), {
@@ -90,7 +92,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
     log(`Uploaded ${docName} (${docBytes.length} bytes)`);
 
     const ROOM = `fmt-${formatLabel}-${Date.now()}`;
-    const relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+    const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
     let coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(docName)}&relay=${relay}&access_token=test`;
 
     async function openDoc(label) {
@@ -125,7 +127,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
         while (roomAttempt++ < 3) {
             try {
                 const newRoom = `fmt-${formatLabel}-${Date.now()}`;
-                const newRelay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${newRoom}`);
+                const newRelay = encodeURIComponent(`${RELAY_BASE}/room/${newRoom}`);
                 coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(docName)}&relay=${newRelay}&access_token=test`;
                 pageA = await openDoc('A');
                 await sleep(10000);

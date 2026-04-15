@@ -1,7 +1,8 @@
 const puppeteer = require('puppeteer');
-const VIEWER = 'https://viewer.szebeni.hu:6934';
+const VIEWER = env.FILE_STORAGE_URL;
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
 (async () => {
     const browser = await puppeteer.launch({

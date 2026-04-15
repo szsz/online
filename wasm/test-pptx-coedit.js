@@ -4,8 +4,10 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx-coedit';
 const DOC_NAME = 'testdoc.pptx';
@@ -75,7 +77,7 @@ async function waitForImpress(page, label) {
     try {
         // Upload
         const up = await browserA.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await up.goto(BASE, { waitUntil: 'networkidle0' });
         const bytes = fs.readFileSync(DOC_PATH);
         await up.evaluate(async (url, name, arr) => {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {
@@ -86,7 +88,7 @@ async function waitForImpress(page, label) {
         log('Uploaded ' + DOC_NAME);
 
         const ROOM = 'pptx-coedit-' + Date.now();
-        const relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+        const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
         const coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(DOC_NAME)}&relay=${relay}&access_token=test`;
 
         // Open Browser A

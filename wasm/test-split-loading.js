@@ -4,8 +4,9 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
@@ -37,7 +38,7 @@ const TEST_FILES = [
         // Upload
         if (fs.existsSync(tf.src)) {
             const up = await browser.newPage();
-            await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+            await up.goto(BASE, { waitUntil: 'networkidle0' });
             const bytes = fs.readFileSync(tf.src);
             await up.evaluate(async (url, name, arr) => {
                 await fetch(url + '/wasm/' + encodeURIComponent(name), {

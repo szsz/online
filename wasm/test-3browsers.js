@@ -6,8 +6,10 @@ const __cl = require('./lib/inject-checklist');
 // All input goes through relay. Sequential phases with convergence waits.
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
+const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots3';
 
@@ -91,19 +93,19 @@ async function waitForAnyCharCount(pages, expected, timeout) {
     try {
         // Upload
         const up = await browser.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await up.goto(BASE, { waitUntil: 'networkidle0' });
         let ROOM = 'test3-' + Date.now();
-        await up.evaluate(async (url, room) => {
+        await up.evaluate(async (url, room, relayBase) => {
             const body = new Blob(['Hello World'], { type: 'application/octet-stream' });
             await fetch(url + '/wasm/test3.txt', { method: 'POST', body });
             // Pre-seed relay so late joiners get this file immediately
-            await fetch('https://wasm.atgpartners.info:9091/room/' + encodeURIComponent(room) + '/file', {
+            await fetch(relayBase + '/room/' + encodeURIComponent(room) + '/file', {
                 method: 'POST', body: new Blob(['Hello World']),
             });
-        }, BASE, ROOM);
+        }, BASE, ROOM, RELAY_BASE);
         await up.close();
         console.log('[setup] Uploaded "Hello World" (WOPI + relay)\n');
-        let relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+        let relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
         let coolUrl = `${BASE}/browser/cool.html?WOPISrc=test3.txt&relay=${relay}&access_token=test`;
 
         async function openDoc(label, retries) {
@@ -142,7 +144,7 @@ async function waitForAnyCharCount(pages, expected, timeout) {
         for (let roomAttempt = 1; roomAttempt <= 3; roomAttempt++) {
             try {
                 ROOM = 'test3-' + Date.now();
-                relay = encodeURIComponent(`wss://wasm.atgpartners.info:9091/room/${ROOM}`);
+                relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
                 coolUrl = `${BASE}/browser/cool.html?WOPISrc=test3.txt&relay=${relay}&access_token=test`;
                 console.log(`\n--- Room attempt ${roomAttempt}: ${ROOM} ---`);
                 pageA = await openDoc('A', 1);

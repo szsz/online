@@ -4,8 +4,9 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const env = require('./lib/test-env');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+const BASE = env.EDITOR_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-chart';
 
@@ -42,7 +43,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
     try {
         // Upload test files
         const up = await browser.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
+        await up.goto(BASE, { waitUntil: 'networkidle0' });
 
         for (const name of ['chart-test.docx', 'chart-test.xlsx']) {
             const filePath = path.resolve(__dirname, '../test/data', name);
