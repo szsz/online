@@ -11,6 +11,9 @@
 #   bash wasm/build-wasm.sh --build-core   # auto-select local LO Core build (no prompt)
 #   bash wasm/build-wasm.sh --download    # auto-select Azure blob download (no prompt)
 #   bash wasm/build-wasm.sh --container-name=my-test  # override container name
+#   bash wasm/build-wasm.sh --impress     # force a local core rebuild with
+#                                         # Impress enabled (required for .pptx).
+#                                         # Implies --rebuild-core --build-core.
 #
 # Azure credentials (for --download / option 2):
 #   Create wasm/.env.blobdownload with a SAS URL for the pre-built core blob:
@@ -39,6 +42,11 @@ CLEAN=false
 REBUILD_CORE=false
 BUILD_CORE=false
 DOWNLOAD=false
+IMPRESS=false
+# The LO modules compiled into the WASM binary. Keep Writer + Calc as the
+# always-on minimum; Impress is opt-in via --impress because it roughly
+# doubles link time and bloats online.wasm. Override with LO_WASM_MODULES.
+WASM_MODULES="${LO_WASM_MODULES:-writer calc}"
 for arg in "$@"; do
     case "$arg" in
         --setup) SETUP_ONLY=true ;;
@@ -46,6 +54,15 @@ for arg in "$@"; do
         --rebuild-core) REBUILD_CORE=true ;;
         --build-core) BUILD_CORE=true ;;
         --download) DOWNLOAD=true ;;
+        --impress)
+            IMPRESS=true
+            # An Impress-capable WASM must have Impress baked into LO Core.
+            # The Azure prebuilt blob doesn't, so we force a local rebuild.
+            REBUILD_CORE=true
+            BUILD_CORE=true
+            DOWNLOAD=false
+            WASM_MODULES="writer calc impress"
+            ;;
         --container-name=*) CONTAINER="${arg#*=}" ;;
     esac
 done
@@ -212,14 +229,14 @@ if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 
                     git clone --depth 1 --branch '$LO_CORE_BRANCH' '$LO_CORE_REPO' /lo/core
                 "
             fi
-            echo "--- Configuring LibreOffice Core ---"
-            docker exec "$CONTAINER" bash -c "
+            echo "--- Configuring LibreOffice Core (modules: $WASM_MODULES) ---"
+            docker exec -e WASM_MODULES="$WASM_MODULES" "$CONTAINER" bash -c "
                 # Ensure gcc-12 is default (required by latest LO Core)
                 update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 2>/dev/null
                 update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100 2>/dev/null
                 source /home/builder/emsdk/emsdk_env.sh
                 mkdir -p /lo/core-build && cd /lo/core-build
-                /lo/core/autogen.sh --with-distro=LibreOfficeWASM32 --with-wasm-module='writer calc impress'
+                /lo/core/autogen.sh --with-distro=LibreOfficeWASM32 --with-wasm-module=\"\$WASM_MODULES\"
             "
             echo "--- Building LibreOffice Core ---"
             docker exec "$CONTAINER" bash -c "
@@ -307,6 +324,40 @@ echo "=== Build complete ==="
 echo ""
 echo "  Artifacts:"
 ls -lh "$REPO_DIR/wasm/online-build/wasm"/online.* 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
+
+# ---------- Sync artefacts into wasm/ and browser/dist/ ----------
+# deploy-azure.sh reads online.wasm, online.js, etc. from wasm/ and from
+# browser/dist/ — NOT from the build directory. Without this step a
+# fresh build never reaches Azure because the staging script copies
+# the previous artefacts. Any of the output files may be missing (e.g.
+# online.worker.js is a tiny stub that may not rebuild), so we tolerate
+# each copy failing independently.
+echo ""
+echo "--- Syncing artefacts to wasm/ and browser/dist/ ---"
+ONLINE_OUT="$REPO_DIR/wasm/online-build/wasm"
+DIST_OUT="$REPO_DIR/wasm/online-build/browser/dist"
+mkdir -p "$REPO_DIR/browser/dist"
+for f in online.js online.wasm online.data online.worker.js; do
+    if [ -f "$ONLINE_OUT/$f" ]; then
+        cp -f "$ONLINE_OUT/$f" "$REPO_DIR/wasm/$f" && echo "  wasm/$f"
+        cp -f "$ONLINE_OUT/$f" "$REPO_DIR/browser/dist/$f" && echo "  browser/dist/$f"
+    fi
+done
+# soffice.data + metadata sit under browser/dist in the build output.
+for f in soffice.data soffice.data.js.metadata; do
+    if [ -f "$DIST_OUT/$f" ]; then
+        cp -f "$DIST_OUT/$f" "$REPO_DIR/wasm/$f" && echo "  wasm/$f"
+        cp -f "$DIST_OUT/$f" "$REPO_DIR/browser/dist/$f" && echo "  browser/dist/$f"
+    fi
+done
+# The rest of the browser dist (cool.html, bundle.js, CSS, images, l10n).
+if [ -d "$DIST_OUT" ]; then
+    cp -rf "$DIST_OUT/"* "$REPO_DIR/browser/dist/" 2>/dev/null || true
+    echo "  browser/dist/ (cool.html, bundle.js, CSS, images, l10n)"
+fi
+# Nuke stale .br siblings so wasm/tools/precompress-br.js regenerates them.
+find "$REPO_DIR/wasm" "$REPO_DIR/browser/dist" -maxdepth 2 -name '*.br' -delete 2>/dev/null || true
+echo "[OK] Artefacts synced"
 
 # ---------- Stop container ----------
 echo ""
