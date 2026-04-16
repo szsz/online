@@ -485,6 +485,63 @@
         return origFetch.apply(this, arguments);
     };
 
+    // ── XHR clipboard POST interceptor ────────────────────────────
+    // COOL's _doAsyncDownload uses XMLHttpRequest (NOT fetch), so our
+    // fetch wrapper above never sees the clipboard POST. Wrap XHR.open
+    // to intercept POSTs to /cool/clipboard.
+    var _origXHROpen = XMLHttpRequest.prototype.open;
+    var _origXHRSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        this._coolUrl = url;
+        this._coolMethod = method;
+        return _origXHROpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function(body) {
+        if (this._coolMethod === 'POST' && this._coolUrl &&
+            this._coolUrl.indexOf('/cool/clipboard') >= 0) {
+            mark('clipboard:xhr_post_intercepted');
+            // Read the FormData body. The clipboard HTML is in a field
+            // named 'file'. Extract it and send as a paste blob.
+            var xhr = this;
+            (async function() {
+                try {
+                    var htmlText = '';
+                    if (body instanceof FormData) {
+                        var file = body.get('file');
+                        if (file instanceof Blob) htmlText = await file.text();
+                    } else if (body instanceof Blob) {
+                        htmlText = await body.text();
+                    } else if (typeof body === 'string') {
+                        htmlText = body;
+                    }
+                    if (htmlText && htmlText.trim()) {
+                        console.log('[wasm-loader] XHR clipboard POST intercepted: ' + htmlText.length + ' chars HTML');
+                        var blob = new Blob(['paste mimetype=text/html\n', htmlText]);
+                        if (globalThis.TheFakeWebSocket) {
+                            globalThis.TheFakeWebSocket.send(blob);
+                        }
+                        globalThis._suppressNextPaste = true;
+                        setTimeout(function() { globalThis._suppressNextPaste = false; }, 5000);
+                    }
+                } catch(e) {
+                    console.error('[wasm-loader] XHR clipboard intercept error:', e);
+                }
+            })();
+            // Fake a successful response so COOL doesn't error out
+            Object.defineProperty(xhr, 'status', { get: function() { return 200; } });
+            Object.defineProperty(xhr, 'readyState', { get: function() { return 4; } });
+            Object.defineProperty(xhr, 'response', {
+                get: function() { return new Blob(['OK']); }
+            });
+            setTimeout(function() {
+                if (xhr.onreadystatechange) xhr.onreadystatechange();
+                if (xhr.onload) xhr.onload();
+            }, 50);
+            return; // Don't actually send the XHR
+        }
+        return _origXHRSend.apply(this, arguments);
+    };
+
     var OrigXHR = window.XMLHttpRequest;
     window.XMLHttpRequest = function() {
         var x = new OrigXHR();
