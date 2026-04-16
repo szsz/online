@@ -355,6 +355,17 @@
                 if (globalThis.postMobileMessage) {
                     globalThis.postMobileMessage(data);
                 }
+                // The toolbar Save button sends `save dontTerminateEdit=…`
+                // (lowercase, no uno: prefix) — this goes to Kit directly
+                // (not relayed, which is correct: the save is a local Kit
+                // operation). BUT we still need to create a checkpoint and
+                // upload the result to storage so other peers and the file
+                // listing stay in sync. Schedule saveAndUploadCheckpoint
+                // the same way we do for `uno .uno:Save` (Ctrl+S).
+                if (text.startsWith('save ') && text.includes('dontTerminateEdit')) {
+                    console.log('[relay] Toolbar save detected — scheduling checkpoint + upload');
+                    saveAndUploadCheckpoint();
+                }
             }
         }
 
