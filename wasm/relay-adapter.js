@@ -328,26 +328,19 @@
                         tmp.innerHTML = html;
                         var plainText = (tmp.textContent || tmp.innerText || '').trim();
                         console.log('[relay] Converting HTML paste → textinput (' + plainText.length + ' chars)');
-                        if (plainText) {
-                            // Deliver to local Kit directly (char-by-char key events)
-                            for (var tci = 0; tci < plainText.length; tci++) {
-                                var tcc = plainText.charCodeAt(tci);
-                                sendToKit('key type=input char=' + tcc + ' key=0');
-                                sendToKit('key type=up char=0 key=0');
-                            }
-                            // Relay to peers
-                            if (activated) sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainText);
+                        if (plainText && activated) {
+                            // Send through relay ONLY. The relay echo comes back
+                            // to processUIMessage which delivers to local Kit
+                            // via sendToKit (char-by-char key events). We must
+                            // NOT also deliver locally here — that would double
+                            // the text (local + echo).
+                            sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainText);
                         }
                     } else if (mime.startsWith('text/plain')) {
                         var plainTxt = new TextDecoder().decode(payload).trim();
                         console.log('[relay] Converting plain-text paste → textinput (' + plainTxt.length + ' chars)');
-                        if (plainTxt) {
-                            for (var pci = 0; pci < plainTxt.length; pci++) {
-                                var pcc = plainTxt.charCodeAt(pci);
-                                sendToKit('key type=input char=' + pcc + ' key=0');
-                                sendToKit('key type=up char=0 key=0');
-                            }
-                            if (activated) sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainTxt);
+                        if (plainTxt && activated) {
+                            sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainTxt);
                         }
                     } else {
                         // Unknown mimetype — try sending raw to Kit as last resort

@@ -74,6 +74,7 @@ TESTS=(
     "regression-user-save-checkpoint|test-regression-user-save-checkpoint.js|Regression: User Save → Checkpoint + Storage|.uno:Save (Ctrl+S) creates a fresh relay checkpoint AND uploads the saved file to /api/files; both hashes must match|none"
     "regression-docname-switch|test-regression-docname-switch.js|Regression: Doc Name Updates on Switch|Hot-switch to a different doc must update the title bar from the old name to the new one|shots-regression-docname-switch"
     "regression-image-insert|test-regression-image-insert.js|Regression: Image Insert into docx|Insert a 1x1 PNG via postMobileMessage insertfile; saved docx must grow (image embedded in the zip)|shots-regression-image-insert"
+    "regression-paste-coedit|test-regression-paste-coedit.js|Regression: Paste Co-Edit|Text and image paste in 2-browser co-edit (docx); text in both browsers, image embedded in saved file|shots-regression-paste-coedit"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
