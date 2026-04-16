@@ -426,6 +426,62 @@
                 });
             });
         }
+        // ── Clipboard POST interceptor ────────────────────────────
+        // COOL's Clipboard.js in WASM mode POSTs clipboard HTML to
+        // /collabora-online-mobile/cool/clipboard then calls .uno:Paste.
+        // But the WASM Kit can't read from the HTTP clipboard endpoint
+        // so .uno:Paste finds an empty clipboard. Intercept the POST:
+        // extract text from the uploaded HTML, inject as textinput via
+        // TheFakeWebSocket.send (our relay-adapter intercepts Blob
+        // messages and routes through the relay). Then return 200 to
+        // COOL so it doesn't error out. When COOL subsequently sends
+        // .uno:Paste, Kit's clipboard is empty → no-op (the text was
+        // already inserted via textinput).
+        if (typeof key === 'string' && key.includes('/cool/clipboard') && opts && opts.method === 'POST') {
+            mark('clipboard:post_intercepted');
+            // Read the body (FormData or Blob or string)
+            var clipBody = opts.body;
+            if (clipBody) {
+                (async function() {
+                    try {
+                        var htmlText = '';
+                        if (clipBody instanceof FormData) {
+                            var file = clipBody.get('file');
+                            if (file && file instanceof Blob) {
+                                htmlText = await file.text();
+                            }
+                        } else if (clipBody instanceof Blob) {
+                            htmlText = await clipBody.text();
+                        } else if (typeof clipBody === 'string') {
+                            htmlText = clipBody;
+                        }
+                        if (htmlText) {
+                            // Strip HTML tags to get plain text
+                            var div = document.createElement('div');
+                            div.innerHTML = htmlText;
+                            var plain = (div.textContent || div.innerText || '').trim();
+                            if (plain) {
+                                console.log('[wasm-loader] Clipboard POST intercepted: ' + plain.length + ' chars extracted');
+                                // Send as paste blob → our relay-adapter converts
+                                // to textinput via relay.
+                                var blob = new Blob(['paste mimetype=text/html\n', htmlText]);
+                                if (globalThis.TheFakeWebSocket) {
+                                    globalThis.TheFakeWebSocket.send(blob);
+                                }
+                            }
+                        }
+                    } catch(e) {
+                        console.error('[wasm-loader] Clipboard POST intercept error:', e);
+                    }
+                })();
+            }
+            // Return fake 200 so COOL doesn't show an error
+            return Promise.resolve(new Response('{"ok":true}', {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }));
+        }
+
         return origFetch.apply(this, arguments);
     };
 

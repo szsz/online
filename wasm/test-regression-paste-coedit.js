@@ -89,12 +89,21 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
         log(`Initial: A=${initA} B=${initB}`);
         check('Both browsers loaded same docx', initA > 0 && initA === initB);
 
-        // ── 1. Paste text (HTML blob) from A ────────────────────────
-        log('\n--- A: paste text (HTML blob) ---');
+        // ── 1. Paste text via the REAL browser path ─────────────────
+        // The real Ctrl+V flow: COOL POSTs clipboard HTML to
+        // /collabora-online-mobile/cool/clipboard, then sends .uno:Paste.
+        // Our fetch wrapper intercepts the POST, extracts text, injects
+        // via textinput through the relay.
+        log('\n--- A: paste text (real clipboard POST path) ---');
         await pageA.evaluate(() => {
+            // Simulate what COOL's _sendToInternalClipboard does
             var html = '<html><body><p>PASTED_TEXT</p></body></html>';
-            var blob = new Blob(['paste mimetype=text/html\n', html]);
-            TheFakeWebSocket.send(blob);
+            var formData = new FormData();
+            formData.append('file', new Blob([html], { type: 'text/html' }));
+            // POST to the clipboard endpoint (our fetch wrapper intercepts it)
+            fetch('/collabora-online-mobile/cool/clipboard?Tag=test', {
+                method: 'POST', body: formData,
+            });
         });
         await sleep(8000);
 
