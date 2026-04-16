@@ -91,18 +91,18 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
         log(`Initial: A=${initA} B=${initB}`);
         check('Both browsers loaded same docx', initA > 0 && initA === initB);
 
-        // ── 1. Paste text via the REAL browser path ─────────────────
+        // ── 1. Paste RICH TEXT via the REAL browser path ──────────────
         // The real Ctrl+V flow: COOL POSTs clipboard HTML to
-        // /collabora-online-mobile/cool/clipboard, then sends .uno:Paste.
-        // Our fetch wrapper intercepts the POST, extracts text, injects
-        // via textinput through the relay.
-        log('\n--- A: paste text (real clipboard POST path) ---');
+        // /collabora-online-mobile/cool/clipboard. Our fetch wrapper in
+        // wasm-loader.js intercepts the POST, sends the FULL HTML as a
+        // paste blob → relay-adapter relays as
+        // `paste mimetype=text/html\n<html>` → Kit preserves formatting.
+        log('\n--- A: paste rich text (bold + italic from external app) ---');
         await pageA.evaluate(() => {
-            // Simulate what COOL's _sendToInternalClipboard does
-            var html = '<html><body><p>PASTED_TEXT</p></body></html>';
+            // Rich HTML with bold and italic — simulates paste from Word/Docs
+            var html = '<html><body><p><b>Bold</b> and <i>italic</i> pasted</p></body></html>';
             var formData = new FormData();
             formData.append('file', new Blob([html], { type: 'text/html' }));
-            // POST to the clipboard endpoint (our fetch wrapper intercepts it)
             fetch('/collabora-online-mobile/cool/clipboard?Tag=test', {
                 method: 'POST', body: formData,
             });

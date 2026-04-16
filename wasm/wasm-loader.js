@@ -455,19 +455,16 @@
                         } else if (typeof clipBody === 'string') {
                             htmlText = clipBody;
                         }
-                        if (htmlText) {
-                            // Strip HTML tags to get plain text
-                            var div = document.createElement('div');
-                            div.innerHTML = htmlText;
-                            var plain = (div.textContent || div.innerText || '').trim();
-                            if (plain) {
-                                console.log('[wasm-loader] Clipboard POST intercepted: ' + plain.length + ' chars extracted');
-                                // Send as paste blob → our relay-adapter converts
-                                // to textinput via relay.
-                                var blob = new Blob(['paste mimetype=text/html\n', htmlText]);
-                                if (globalThis.TheFakeWebSocket) {
-                                    globalThis.TheFakeWebSocket.send(blob);
-                                }
+                        if (htmlText && htmlText.trim()) {
+                            console.log('[wasm-loader] Clipboard POST intercepted: ' + htmlText.length + ' chars HTML');
+                            // Send as paste blob with the FULL HTML so Kit
+                            // preserves formatting (bold, italic, underline).
+                            // Our relay-adapter's Blob interceptor parses the
+                            // mimetype header and relays the paste command as a
+                            // string through the relay → all peers see it.
+                            var blob = new Blob(['paste mimetype=text/html\n', htmlText]);
+                            if (globalThis.TheFakeWebSocket) {
+                                globalThis.TheFakeWebSocket.send(blob);
                             }
                         }
                     } catch(e) {

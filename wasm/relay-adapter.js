@@ -313,26 +313,17 @@
                         // RELAY ONLY — local Kit gets it via the echo
                         // (processUIMessage → sendToKit). No direct delivery.
                         if (activated) sendToRelay(0x00, myViewId, msg);
-                    } else if (mime.startsWith('text/html')) {
-                        // Extract visible text from HTML and paste as textinput.
-                        var html = new TextDecoder().decode(payload);
-                        var tmp = document.createElement('div');
-                        tmp.innerHTML = html;
-                        var plainText = (tmp.textContent || tmp.innerText || '').trim();
-                        console.log('[relay] Converting HTML paste → textinput (' + plainText.length + ' chars)');
-                        if (plainText && activated) {
-                            // Send through relay ONLY. The relay echo comes back
-                            // to processUIMessage which delivers to local Kit
-                            // via sendToKit (char-by-char key events). We must
-                            // NOT also deliver locally here — that would double
-                            // the text (local + echo).
-                            sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainText);
-                        }
-                    } else if (mime.startsWith('text/plain')) {
-                        var plainTxt = new TextDecoder().decode(payload).trim();
-                        console.log('[relay] Converting plain-text paste → textinput (' + plainTxt.length + ' chars)');
-                        if (plainTxt && activated) {
-                            sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainTxt);
+                    } else if (mime.startsWith('text/html') || mime.startsWith('text/plain')) {
+                        // Send the FULL paste command as a string through the
+                        // relay. Kit's paste handler (ChildSession::paste)
+                        // processes `paste mimetype=text/html\n<html>` and
+                        // preserves formatting (bold, italic, underline, etc.).
+                        // Stripping to textinput would lose all formatting.
+                        var textPayload = new TextDecoder().decode(payload);
+                        var pasteCmd = 'paste mimetype=' + mime + '\n' + textPayload;
+                        console.log('[relay] Relaying rich paste (' + mime + ', ' + textPayload.length + ' chars)');
+                        if (activated) {
+                            sendToRelay(0x00, myViewId, pasteCmd);
                         }
                     } else {
                         // Unknown mimetype — try the text extraction path
@@ -418,6 +409,7 @@
                 text.startsWith('completefunction ') ||
                 text.startsWith('selecttext ') ||
                 text.startsWith('insertfile ') ||
+                text.startsWith('paste mimetype=') ||
                 text === 'resetselection';
             if (isUserInput) {
                 if (!activated) {
@@ -785,6 +777,7 @@
             text.startsWith('completefunction ') ||
             text.startsWith('selecttext ') ||
             text.startsWith('insertfile ') ||
+            text.startsWith('paste mimetype=') ||
             text === 'resetselection';
         if (!isUserInput) return;
 
