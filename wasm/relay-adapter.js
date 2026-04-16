@@ -283,18 +283,16 @@
                         if (bytes[i] === 0x0A) { nlIdx = i; break; }
                     }
                     if (nlIdx < 0) {
-                        // Not a paste blob — send raw to Kit
-                        globalThis._deliveringToKit = true;
-                        try { if (globalThis.postMobileMessage) globalThis.postMobileMessage(bytes); }
-                        finally { globalThis._deliveringToKit = false; }
+                        // Not a recognized paste blob — drop it. Everything
+                        // must go through the relay, and we can't relay raw
+                        // binary without a protocol for it.
+                        console.log('[relay] Blob without newline header — dropping (' + bytes.length + 'B)');
                         return;
                     }
                     var header = new TextDecoder().decode(bytes.slice(0, nlIdx));
                     var mimeMatch = header.match(/^paste mimetype=(.+)/);
                     if (!mimeMatch) {
-                        globalThis._deliveringToKit = true;
-                        try { if (globalThis.postMobileMessage) globalThis.postMobileMessage(bytes); }
-                        finally { globalThis._deliveringToKit = false; }
+                        console.log('[relay] Blob with unrecognized header "' + header.substring(0, 40) + '" — dropping');
                         return;
                     }
                     var mime = mimeMatch[1].trim();
@@ -312,14 +310,8 @@
                         var ext = mime.split('/')[1] || 'png';
                         var msg = 'insertfile name=clipboard-paste.' + ext + ' type=graphic data=' + b64;
                         console.log('[relay] Converting image paste → insertfile (' + msg.length + ' chars)');
-                        // Deliver to LOCAL Kit first so the paste appears
-                        // immediately, then relay to peers. Using origPostMobile
-                        // bypasses the wrapper (which would re-intercept and
-                        // only send to relay, never to Kit).
-                        globalThis._deliveringToKit = true;
-                        try { if (origPostMobile) origPostMobile(msg); }
-                        finally { globalThis._deliveringToKit = false; }
-                        // Relay to peers
+                        // RELAY ONLY — local Kit gets it via the echo
+                        // (processUIMessage → sendToKit). No direct delivery.
                         if (activated) sendToRelay(0x00, myViewId, msg);
                     } else if (mime.startsWith('text/html')) {
                         // Extract visible text from HTML and paste as textinput.
@@ -343,11 +335,19 @@
                             sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainTxt);
                         }
                     } else {
-                        // Unknown mimetype — try sending raw to Kit as last resort
-                        console.log('[relay] Unknown paste mimetype "' + mime + '" — sending raw to Kit');
-                        globalThis._deliveringToKit = true;
-                        try { if (globalThis.postMobileMessage) globalThis.postMobileMessage(bytes); }
-                        finally { globalThis._deliveringToKit = false; }
+                        // Unknown mimetype — try the text extraction path
+                        // as a best-effort. If it has readable text, relay
+                        // it as textinput. Otherwise drop (we can't relay
+                        // raw binary via the text protocol).
+                        console.log('[relay] Unknown paste mimetype "' + mime + '" — attempting text extraction');
+                        try {
+                            var unknownText = new TextDecoder().decode(payload).trim();
+                            if (unknownText && activated) {
+                                sendToRelay(0x00, myViewId, 'textinput id=0 text=' + unknownText);
+                            }
+                        } catch(e) {
+                            console.log('[relay] Could not extract text from unknown paste — dropping');
+                        }
                     }
                 });
                 return;
