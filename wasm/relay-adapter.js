@@ -262,38 +262,85 @@
         function interceptedSend(data) {
             // Binary paste (Blob): COOL's _pasteTypedBlob sends
             //   `paste mimetype=image/png\n<binary>` as a Blob via
-            //   app.socket.sendMessage. We need to:
-            //   1. Deliver to local Kit (so the paste works locally)
-            //   2. Base64-encode and relay as text so peers also apply it
+            //   app.socket.sendMessage.
+            //
+            // The WASM Kit does NOT process the `paste mimetype=…`
+            // protocol message (ChildSession::paste is not wired up).
+            // So we convert into the paths that DO work:
+            //   - image/* → `insertfile name=clipboard.png type=graphic data=<base64>`
+            //     (via postMobileMessage, same as the toolbar Insert Image path)
+            //   - text/html → extract plain text, feed through `textinput`
+            //   - text/plain → feed through `textinput`
+            //
+            // The converted message also goes through the relay so peers
+            // see the paste.
             if (data instanceof Blob) {
-                // Always deliver binary to local Kit first
-                if (globalThis.postMobileMessage) {
-                    data.arrayBuffer().then(function(ab) {
-                        // Kit expects the binary as an ArrayBuffer
+                data.arrayBuffer().then(function(ab) {
+                    var bytes = new Uint8Array(ab);
+                    // Parse the header: "paste mimetype=<type>\n"
+                    var nlIdx = -1;
+                    for (var i = 0; i < Math.min(200, bytes.length); i++) {
+                        if (bytes[i] === 0x0A) { nlIdx = i; break; }
+                    }
+                    if (nlIdx < 0) {
+                        // Not a paste blob — send raw to Kit
                         globalThis._deliveringToKit = true;
-                        try { globalThis.postMobileMessage(new Uint8Array(ab)); }
+                        try { if (globalThis.postMobileMessage) globalThis.postMobileMessage(bytes); }
                         finally { globalThis._deliveringToKit = false; }
+                        return;
+                    }
+                    var header = new TextDecoder().decode(bytes.slice(0, nlIdx));
+                    var mimeMatch = header.match(/^paste mimetype=(.+)/);
+                    if (!mimeMatch) {
+                        globalThis._deliveringToKit = true;
+                        try { if (globalThis.postMobileMessage) globalThis.postMobileMessage(bytes); }
+                        finally { globalThis._deliveringToKit = false; }
+                        return;
+                    }
+                    var mime = mimeMatch[1].trim();
+                    var payload = bytes.slice(nlIdx + 1);
+                    console.log('[relay] Paste blob: mimetype=' + mime + ' payload=' + payload.length + 'B');
 
-                        // Relay: base64-encode for peers (text transport)
-                        if (activated) {
-                            var bytes = new Uint8Array(ab);
-                            // Check if it's a paste command
-                            var headerEnd = Math.min(50, bytes.length);
-                            var headerText = new TextDecoder().decode(bytes.slice(0, headerEnd));
-                            if (headerText.startsWith('paste mimetype=')) {
-                                var b64 = '';
-                                var CHUNK = 32768;
-                                for (var i = 0; i < bytes.length; i += CHUNK) {
-                                    b64 += String.fromCharCode.apply(null, bytes.slice(i, Math.min(i + CHUNK, bytes.length)));
-                                }
-                                b64 = btoa(b64);
-                                var relayMsg = 'pasteb64 ' + b64;
-                                console.log('[relay] Relaying binary paste (' + bytes.length + 'B → ' + relayMsg.length + ' chars b64)');
-                                sendToRelay(0x00, myViewId, relayMsg);
-                            }
+                    if (mime.startsWith('image/')) {
+                        // Convert to insertfile (the path that works in WASM)
+                        var b64 = '';
+                        var CHUNK = 32768;
+                        for (var ci = 0; ci < payload.length; ci += CHUNK) {
+                            b64 += String.fromCharCode.apply(null, payload.slice(ci, Math.min(ci + CHUNK, payload.length)));
                         }
-                    });
-                }
+                        b64 = btoa(b64);
+                        var ext = mime.split('/')[1] || 'png';
+                        var msg = 'insertfile name=clipboard-paste.' + ext + ' type=graphic data=' + b64;
+                        console.log('[relay] Converting image paste → insertfile (' + msg.length + ' chars)');
+                        // Route through postMobileMessage (our wrapper intercepts
+                        // insertfile and relays it to peers).
+                        if (globalThis.postMobileMessage) globalThis.postMobileMessage(msg);
+                    } else if (mime.startsWith('text/html')) {
+                        // Extract visible text from HTML and paste as textinput.
+                        var html = new TextDecoder().decode(payload);
+                        // Use a temporary DOM element to strip tags.
+                        var tmp = document.createElement('div');
+                        tmp.innerHTML = html;
+                        var plainText = (tmp.textContent || tmp.innerText || '').trim();
+                        console.log('[relay] Converting HTML paste → textinput (' + plainText.length + ' chars)');
+                        if (plainText && activated) {
+                            // Send through the relay so peers see it too.
+                            sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainText);
+                        }
+                    } else if (mime.startsWith('text/plain')) {
+                        var text = new TextDecoder().decode(payload).trim();
+                        console.log('[relay] Converting plain-text paste → textinput (' + text.length + ' chars)');
+                        if (text && activated) {
+                            sendToRelay(0x00, myViewId, 'textinput id=0 text=' + text);
+                        }
+                    } else {
+                        // Unknown mimetype — try sending raw to Kit as last resort
+                        console.log('[relay] Unknown paste mimetype "' + mime + '" — sending raw to Kit');
+                        globalThis._deliveringToKit = true;
+                        try { if (globalThis.postMobileMessage) globalThis.postMobileMessage(bytes); }
+                        finally { globalThis._deliveringToKit = false; }
+                    }
+                });
                 return;
             }
 
@@ -711,25 +758,10 @@
             return;
         }
 
-        // Handle base64-encoded binary paste from peers. Decode and deliver
-        // to local Kit as the original binary `paste mimetype=…\n<bytes>`.
-        if (text.startsWith('pasteb64 ')) {
-            var b64Data = text.substring('pasteb64 '.length);
-            try {
-                var raw = atob(b64Data);
-                var bytes = new Uint8Array(raw.length);
-                for (var bi = 0; bi < raw.length; bi++) bytes[bi] = raw.charCodeAt(bi);
-                console.log('[relay] Received binary paste from peer (' + bytes.length + 'B)');
-                if (vid === myViewId) {
-                    // Own echo — already applied locally when we sent it
-                    return;
-                }
-                sendToKit(bytes);
-            } catch(e) {
-                console.error('[relay] Failed to decode pasteb64: ' + e.message);
-            }
-            return;
-        }
+        // pasteb64 is no longer sent (paste blobs are now converted to
+        // insertfile or textinput before relaying). Keep the handler as a
+        // no-op for backward compat with any in-flight messages.
+        if (text.startsWith('pasteb64 ')) return;
 
         // Keep the receive-side filter in sync with interceptedSend above
         // — see the long comment there for which prefixes mutate the doc
