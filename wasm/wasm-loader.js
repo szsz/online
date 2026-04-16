@@ -213,6 +213,19 @@
             globalThis.postMobileMessage(cmd);
             window.__bridgeSwitchSent = true;
             mark('bridge:switchdoc_sent', filename);
+            // Update the COOL title bar / WOPI metadata to reflect the
+            // new filename. COOL reads the title from wopi.BaseFileName
+            // and renders it in #document-name-input. Without this the
+            // title stays on the prewarm blank or the first doc opened.
+            try {
+                if (window.app && window.app.map && window.app.map['wopi']) {
+                    window.app.map['wopi'].BaseFileName = filename;
+                    window.app.map['wopi'].BreadcrumbDocName = filename;
+                }
+                var nameInput = document.querySelector('#document-name-input');
+                if (nameInput) nameInput.value = filename;
+                document.title = filename;
+            } catch(e) {}
         } catch(e) {
             mark('bridge:switchdoc_error', e.message);
         }
