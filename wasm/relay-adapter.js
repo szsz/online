@@ -302,7 +302,7 @@
                     console.log('[relay] Paste blob: mimetype=' + mime + ' payload=' + payload.length + 'B');
 
                     if (mime.startsWith('image/')) {
-                        // Convert to insertfile (the path that works in WASM)
+                        // Convert to insertfile (the path that works in WASM).
                         var b64 = '';
                         var CHUNK = 32768;
                         for (var ci = 0; ci < payload.length; ci += CHUNK) {
@@ -312,26 +312,42 @@
                         var ext = mime.split('/')[1] || 'png';
                         var msg = 'insertfile name=clipboard-paste.' + ext + ' type=graphic data=' + b64;
                         console.log('[relay] Converting image paste → insertfile (' + msg.length + ' chars)');
-                        // Route through postMobileMessage (our wrapper intercepts
-                        // insertfile and relays it to peers).
-                        if (globalThis.postMobileMessage) globalThis.postMobileMessage(msg);
+                        // Deliver to LOCAL Kit first so the paste appears
+                        // immediately, then relay to peers. Using origPostMobile
+                        // bypasses the wrapper (which would re-intercept and
+                        // only send to relay, never to Kit).
+                        globalThis._deliveringToKit = true;
+                        try { if (origPostMobile) origPostMobile(msg); }
+                        finally { globalThis._deliveringToKit = false; }
+                        // Relay to peers
+                        if (activated) sendToRelay(0x00, myViewId, msg);
                     } else if (mime.startsWith('text/html')) {
                         // Extract visible text from HTML and paste as textinput.
                         var html = new TextDecoder().decode(payload);
-                        // Use a temporary DOM element to strip tags.
                         var tmp = document.createElement('div');
                         tmp.innerHTML = html;
                         var plainText = (tmp.textContent || tmp.innerText || '').trim();
                         console.log('[relay] Converting HTML paste → textinput (' + plainText.length + ' chars)');
-                        if (plainText && activated) {
-                            // Send through the relay so peers see it too.
-                            sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainText);
+                        if (plainText) {
+                            // Deliver to local Kit directly (char-by-char key events)
+                            for (var tci = 0; tci < plainText.length; tci++) {
+                                var tcc = plainText.charCodeAt(tci);
+                                sendToKit('key type=input char=' + tcc + ' key=0');
+                                sendToKit('key type=up char=0 key=0');
+                            }
+                            // Relay to peers
+                            if (activated) sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainText);
                         }
                     } else if (mime.startsWith('text/plain')) {
-                        var text = new TextDecoder().decode(payload).trim();
-                        console.log('[relay] Converting plain-text paste → textinput (' + text.length + ' chars)');
-                        if (text && activated) {
-                            sendToRelay(0x00, myViewId, 'textinput id=0 text=' + text);
+                        var plainTxt = new TextDecoder().decode(payload).trim();
+                        console.log('[relay] Converting plain-text paste → textinput (' + plainTxt.length + ' chars)');
+                        if (plainTxt) {
+                            for (var pci = 0; pci < plainTxt.length; pci++) {
+                                var pcc = plainTxt.charCodeAt(pci);
+                                sendToKit('key type=input char=' + pcc + ' key=0');
+                                sendToKit('key type=up char=0 key=0');
+                            }
+                            if (activated) sendToRelay(0x00, myViewId, 'textinput id=0 text=' + plainTxt);
                         }
                     } else {
                         // Unknown mimetype — try sending raw to Kit as last resort
