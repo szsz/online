@@ -84,6 +84,8 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
         const pageB = await openDoc('B');
         await sleep(15000);
 
+        await pageA.screenshot({ path: `${SHOT_DIR}/01_before_A.png` });
+        await pageB.screenshot({ path: `${SHOT_DIR}/02_before_B.png` });
         const initA = charCount(await getWc(pageA));
         const initB = charCount(await getWc(pageB));
         log(`Initial: A=${initA} B=${initB}`);
@@ -110,7 +112,8 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
         const afterTextA = charCount(await getWc(pageA));
         const afterTextB = charCount(await getWc(pageB));
         log(`After text paste: A=${afterTextA} B=${afterTextB} (was ${initA})`);
-        await pageA.screenshot({ path: `${SHOT_DIR}/01_after_text_paste_A.png` }).catch(() => {});
+        await pageA.screenshot({ path: `${SHOT_DIR}/03_after_text_paste_A.png` });
+        await pageB.screenshot({ path: `${SHOT_DIR}/04_after_text_paste_B.png` });
 
         check('A: text paste increased char count',
               afterTextA > initA,
@@ -169,6 +172,8 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
             if (savedSize > preImageSize + 50) break;
         }
         log(`Post-image save: ${savedSize} bytes (pre-image: ${preImageSize})`);
+        await pageA.screenshot({ path: `${SHOT_DIR}/05_after_image_paste_A.png` });
+        await pageB.screenshot({ path: `${SHOT_DIR}/06_after_image_paste_B.png` });
         check('Docx grew after image paste (image embedded)',
               savedSize > preImageSize,
               'pre=' + preImageSize + ' post=' + savedSize + ' delta=' + (savedSize - preImageSize));
@@ -194,6 +199,8 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
         const finalB = await getWc(pageB);
         log(`Final: A="${finalA}" B="${finalB}"`);
 
+        await pageA.screenshot({ path: `${SHOT_DIR}/07_final_A.png` });
+        await pageB.screenshot({ path: `${SHOT_DIR}/08_final_B.png` });
         check('Both browsers have content after paste ops',
               charCount(finalA) > 0 && charCount(finalB) > 0,
               'A=' + charCount(finalA) + ' B=' + charCount(finalB));
