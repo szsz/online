@@ -153,7 +153,12 @@
             if (typeof msg === 'string' && msg.startsWith('key ')) {
                 console.log('[relay] Kit←relay: ' + msg.substring(0, 50));
             }
-            globalThis.postMobileMessage(msg);
+            // Set guard flag so the postMobileMessage wrapper doesn't
+            // re-intercept relay echoes delivered to Kit (which would
+            // cause an insertfile → relay → self → Kit → relay loop).
+            globalThis._deliveringToKit = true;
+            try { globalThis.postMobileMessage(msg); }
+            finally { globalThis._deliveringToKit = false; }
         } else {
             console.error('[relay] NO postMobileMessage!');
         }
@@ -290,6 +295,17 @@
             //     CellSelectionHandle); Parts.js / SearchService /
             //     PartsPreview send `resetselection`.
             //
+            //   insertfile
+            //     Image / media insertion. In WASM mode the base64 data=
+            //     payload is embedded in the message itself (not on a
+            //     server that peers could HTTP-fetch), so relaying the
+            //     full message gives every peer the image bytes.
+            //     NOTE: insertfile in WASM mode goes through
+            //     postMobileMessage (not fws.send), so it's intercepted
+            //     by the postMobileMessage wrapper below, not here.
+            //     It IS in the list so the receive-side filter passes it
+            //     through to remote-client Kits.
+            //
             // NOT relayed (intentionally — per-user view / server-side):
             //   setclientpart / selectclientpart / setpage  → each user
             //     can view a different slide or sheet
@@ -299,9 +315,6 @@
             //   gettextselection, paintwindow → local view state / queries
             //   attemptlock, closedocument, versionrestore, downloadas,
             //   exportas, renamefile → server-side WOPI ops
-            //   insertfile → would relay a name, but the file bytes only
-            //     live on the originating peer's editor; cross-peer file
-            //     insert needs a separate sync mechanism — known limitation
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
                 text.startsWith('textinput ') || text.startsWith('windowkey ') ||
                 text.startsWith('uno ') ||
@@ -311,6 +324,7 @@
                 text.startsWith('moveselectedclientparts ') ||
                 text.startsWith('completefunction ') ||
                 text.startsWith('selecttext ') ||
+                text.startsWith('insertfile ') ||
                 text === 'resetselection';
             if (isUserInput) {
                 if (!activated) {
@@ -348,6 +362,52 @@
         if (FWS && FWS.prototype) FWS.prototype.send = interceptedSend;
         fws.send = interceptedSend;
         console.log('[relay] Send interceptor installed');
+
+        // ── postMobileMessage wrapper ──────────────────────────────
+        // COOL's FileInserter in WASM mode calls postMobileMessage
+        // directly (not fws.send), sending:
+        //   insertfile name=<n> type=graphic data=<base64>
+        // This bypasses interceptedSend entirely. We wrap
+        // postMobileMessage so `insertfile` messages are routed
+        // through the relay (they carry the full base64 payload, so
+        // every peer receives the image bytes). All other messages
+        // pass through to the Kit unchanged.
+        // ── postMobileMessage wrapper ──────────────────────────────
+        // COOL's FileInserter in WASM mode calls postMobileMessage
+        // directly (not fws.send), sending:
+        //   insertfile name=<n> type=graphic data=<base64>
+        // This bypasses interceptedSend entirely. We wrap
+        // postMobileMessage so `insertfile` messages are routed
+        // through the relay (they carry the full base64 payload, so
+        // every peer receives the image bytes). All other messages
+        // pass through to the Kit unchanged.
+        //
+        // Guard: when OUR OWN processUIMessage delivers a relay echo
+        // back to the local Kit (via sendToKit → postMobileMessage),
+        // we must NOT re-intercept it — that would create an infinite
+        // relay→self→relay loop. The `_deliveringToKit` flag is set
+        // in processOneKitMessage to suppress re-interception.
+        if (typeof globalThis.postMobileMessage === 'function') {
+            var origPostMobile = globalThis.postMobileMessage;
+            globalThis.postMobileMessage = function(msg) {
+                // Skip re-interception when delivering a relay echo to Kit.
+                if (globalThis._deliveringToKit) {
+                    return origPostMobile(msg);
+                }
+                if (typeof msg === 'string' && msg.startsWith('insertfile ')) {
+                    if (!activated) {
+                        console.log('[relay] Dropping insertfile (not activated yet)');
+                        return;
+                    }
+                    console.log('[relay] Intercepted insertfile via postMobileMessage (' +
+                                msg.length + ' chars) — routing through relay');
+                    sendToRelay(0x00, myViewId, msg);
+                    return;
+                }
+                return origPostMobile(msg);
+            };
+            console.log('[relay] postMobileMessage wrapper installed (catches insertfile)');
+        }
     }
 
     // --- Remote client management ---
@@ -615,6 +675,7 @@
             text.startsWith('moveselectedclientparts ') ||
             text.startsWith('completefunction ') ||
             text.startsWith('selecttext ') ||
+            text.startsWith('insertfile ') ||
             text === 'resetselection';
         if (!isUserInput) return;
 
