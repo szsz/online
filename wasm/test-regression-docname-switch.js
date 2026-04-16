@@ -134,6 +134,76 @@ async function getDocTitle(page) {
               titleB.inputValue.includes('docname-B'),
               'inputValue=' + titleB.inputValue);
 
+        // ── Case 2: Prewarm flow (user lands on / without deep link,
+        // prewarm runs __prewarm_blank.docx, user clicks A, then B) ──
+        log('\n--- Case 2: prewarm flow (no deep link) ---');
+        const p2 = await browser.newPage();
+        await p2.setViewport({ width: 1280, height: 900 });
+        await p2.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
+        // Wait for prewarm to complete
+        for (let i = 0; i < 240; i++) {
+            await sleep(500);
+            const fr = await getEditorFrame(p2);
+            if (fr && await fr.evaluate(() => !!window.__wasmPrewarmReady).catch(() => false)) {
+                log('Prewarm ready');
+                break;
+            }
+        }
+        // Before clicking anything: title should be the prewarm blank
+        const titlePrewarm = await getDocTitle(p2);
+        log('After prewarm: input="' + titlePrewarm.inputValue + '"');
+
+        // Click doc A
+        await p2.waitForFunction(n =>
+            !!document.querySelector(`.file[data-name="${n}"]`),
+            { timeout: 15000 }, DOC_A);
+        await p2.evaluate(n =>
+            document.querySelector(`.file[data-name="${n}"]`).click(), DOC_A);
+        await sleep(5000);
+        for (let i = 0; i < 30; i++) {
+            const fr = await getEditorFrame(p2);
+            if (fr) {
+                const wc = await fr.evaluate(() =>
+                    document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
+                if (/\d+\s+character/i.test(wc)) break;
+            }
+            await sleep(500);
+        }
+        await sleep(2000);
+        const titleA2 = await getDocTitle(p2);
+        log('After clicking A: input="' + titleA2.inputValue + '"');
+        check('Prewarm→A: title shows "docname-A" after first click',
+              titleA2.inputValue.includes('docname-A'),
+              'inputValue=' + titleA2.inputValue);
+
+        // Click doc B
+        // Expand sidebar first (it collapsed when we clicked A)
+        await p2.evaluate(() => {
+            document.body.classList.remove('docs-collapsed');
+            document.body.classList.remove('docs-hover');
+        });
+        await sleep(500);
+        await p2.evaluate(n =>
+            document.querySelector(`.file[data-name="${n}"]`).click(), DOC_B);
+        await sleep(5000);
+        for (let i = 0; i < 30; i++) {
+            const fr = await getEditorFrame(p2);
+            if (fr) {
+                const wc = await fr.evaluate(() =>
+                    document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
+                if (/\d+\s+character/i.test(wc)) break;
+            }
+            await sleep(500);
+        }
+        await sleep(2000);
+        const titleB2 = await getDocTitle(p2);
+        log('After clicking B: input="' + titleB2.inputValue + '"');
+        check('A→B: title shows "docname-B" after switching',
+              titleB2.inputValue.includes('docname-B'),
+              'inputValue=' + titleB2.inputValue +
+              (titleB2.inputValue.includes('docname-A') ? ' — still shows A' :
+               titleB2.inputValue.includes('prewarm') ? ' — still shows prewarm' : ''));
+
         log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
     } catch (e) {
         log('Error: ' + (e.stack || e.message));
