@@ -72,6 +72,8 @@ TESTS=(
     "regression-select-delete-coedit|test-regression-select-delete-coedit.js|Regression: Select+Delete Co-Edit|A double-clicks a word + presses Delete; B must converge to the same shorter doc (deletion must propagate)|shots-regression-select-delete"
     "regression-delete-key-coedit|test-regression-delete-key-coedit.js|Regression: Delete Key Co-Edit|Delete key generates removetextcontext (not key); the relay-adapter must recognize it as user-input and forward to peers|shots-regression-delete-key"
     "regression-user-save-checkpoint|test-regression-user-save-checkpoint.js|Regression: User Save → Checkpoint + Storage|.uno:Save (Ctrl+S) creates a fresh relay checkpoint AND uploads the saved file to /api/files; both hashes must match|none"
+    "regression-docname-switch|test-regression-docname-switch.js|Regression: Doc Name Updates on Switch|Hot-switch to a different doc must update the title bar from the old name to the new one|shots-regression-docname-switch"
+    "regression-image-insert|test-regression-image-insert.js|Regression: Image Insert into docx|Insert a 1x1 PNG via postMobileMessage insertfile; saved docx must grow (image embedded in the zip)|shots-regression-image-insert"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
