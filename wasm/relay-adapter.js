@@ -416,6 +416,13 @@
                     console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
                     return;
                 }
+                // Suppress the duplicate uno:Paste that COOL sends after
+                // our clipboard POST interceptor already pasted the HTML.
+                if (globalThis._suppressNextPaste && text === 'uno .uno:Paste') {
+                    console.log('[relay] Suppressing duplicate uno:Paste (already pasted via blob)');
+                    globalThis._suppressNextPaste = false;
+                    return;
+                }
                 sendToRelay(0x00, myViewId, data);
 
                 // User-initiated save (Ctrl+S → COOL emits `uno .uno:Save`):

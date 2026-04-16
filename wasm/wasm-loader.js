@@ -459,13 +459,16 @@
                             console.log('[wasm-loader] Clipboard POST intercepted: ' + htmlText.length + ' chars HTML');
                             // Send as paste blob with the FULL HTML so Kit
                             // preserves formatting (bold, italic, underline).
-                            // Our relay-adapter's Blob interceptor parses the
-                            // mimetype header and relays the paste command as a
-                            // string through the relay → all peers see it.
                             var blob = new Blob(['paste mimetype=text/html\n', htmlText]);
                             if (globalThis.TheFakeWebSocket) {
                                 globalThis.TheFakeWebSocket.send(blob);
                             }
+                            // COOL will follow up with _doInternalPaste →
+                            // `uno .uno:Paste`. We already pasted via the
+                            // blob above, so suppress the duplicate. Set a
+                            // flag that interceptedSend checks.
+                            globalThis._suppressNextPaste = true;
+                            setTimeout(function() { globalThis._suppressNextPaste = false; }, 5000);
                         }
                     } catch(e) {
                         console.error('[wasm-loader] Clipboard POST intercept error:', e);
