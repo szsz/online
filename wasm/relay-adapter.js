@@ -260,6 +260,43 @@
         originalSend = fws.send.bind(fws);
 
         function interceptedSend(data) {
+            // Binary paste (Blob): COOL's _pasteTypedBlob sends
+            //   `paste mimetype=image/png\n<binary>` as a Blob via
+            //   app.socket.sendMessage. We need to:
+            //   1. Deliver to local Kit (so the paste works locally)
+            //   2. Base64-encode and relay as text so peers also apply it
+            if (data instanceof Blob) {
+                // Always deliver binary to local Kit first
+                if (globalThis.postMobileMessage) {
+                    data.arrayBuffer().then(function(ab) {
+                        // Kit expects the binary as an ArrayBuffer
+                        globalThis._deliveringToKit = true;
+                        try { globalThis.postMobileMessage(new Uint8Array(ab)); }
+                        finally { globalThis._deliveringToKit = false; }
+
+                        // Relay: base64-encode for peers (text transport)
+                        if (activated) {
+                            var bytes = new Uint8Array(ab);
+                            // Check if it's a paste command
+                            var headerEnd = Math.min(50, bytes.length);
+                            var headerText = new TextDecoder().decode(bytes.slice(0, headerEnd));
+                            if (headerText.startsWith('paste mimetype=')) {
+                                var b64 = '';
+                                var CHUNK = 32768;
+                                for (var i = 0; i < bytes.length; i += CHUNK) {
+                                    b64 += String.fromCharCode.apply(null, bytes.slice(i, Math.min(i + CHUNK, bytes.length)));
+                                }
+                                b64 = btoa(b64);
+                                var relayMsg = 'pasteb64 ' + b64;
+                                console.log('[relay] Relaying binary paste (' + bytes.length + 'B → ' + relayMsg.length + ' chars b64)');
+                                sendToRelay(0x00, myViewId, relayMsg);
+                            }
+                        }
+                    });
+                }
+                return;
+            }
+
             var text = typeof data === 'string' ? data : '';
             // User-input prefixes that MUST go through the relay so all
             // peers see the same edit. Adding any new doc-mutating prefix
@@ -670,6 +707,26 @@
         if (text.startsWith('presence ')) {
             if (vid !== myViewId && !remoteClients[vid]) {
                 createRemoteClient(vid);
+            }
+            return;
+        }
+
+        // Handle base64-encoded binary paste from peers. Decode and deliver
+        // to local Kit as the original binary `paste mimetype=…\n<bytes>`.
+        if (text.startsWith('pasteb64 ')) {
+            var b64Data = text.substring('pasteb64 '.length);
+            try {
+                var raw = atob(b64Data);
+                var bytes = new Uint8Array(raw.length);
+                for (var bi = 0; bi < raw.length; bi++) bytes[bi] = raw.charCodeAt(bi);
+                console.log('[relay] Received binary paste from peer (' + bytes.length + 'B)');
+                if (vid === myViewId) {
+                    // Own echo — already applied locally when we sent it
+                    return;
+                }
+                sendToKit(bytes);
+            } catch(e) {
+                console.error('[relay] Failed to decode pasteb64: ' + e.message);
             }
             return;
         }

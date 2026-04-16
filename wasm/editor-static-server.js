@@ -90,6 +90,33 @@ function handler(req, res) {
     const parsed = url.parse(req.url);
     let pathname = decodeURIComponent(parsed.pathname);
 
+    // /collabora-online-mobile/cool/clipboard — COOL's Clipboard.js in
+    // WASM mode POSTs clipboard data here so the upload→paste cycle works
+    // for external rich-text paste. Simple in-memory store keyed by Tag.
+    if (pathname.startsWith('/collabora-online-mobile/cool/clipboard')) {
+        const qs = parsed.query || '';
+        const tag = (qs.match(/Tag=([^&]+)/) || [])[1] || 'default';
+        if (req.method === 'POST') {
+            const chunks = [];
+            req.on('data', c => chunks.push(c));
+            req.on('end', () => {
+                if (!handler._clipStore) handler._clipStore = new Map();
+                handler._clipStore.set(tag, Buffer.concat(chunks));
+                setTimeout(() => handler._clipStore && handler._clipStore.delete(tag), 60000);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end('{"ok":true}');
+            });
+            return;
+        }
+        if (req.method === 'GET') {
+            const data = handler._clipStore && handler._clipStore.get(tag);
+            if (!data) { res.writeHead(404); res.end('No clipboard'); return; }
+            res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': data.length });
+            res.end(data);
+            return;
+        }
+    }
+
     // /wasm/ — transient document storage for the editor's WOPI loader.
     // Uploaded by the viewer; read by the WASM editor at open time.
     if (pathname.startsWith('/wasm/')) {

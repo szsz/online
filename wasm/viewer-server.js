@@ -66,7 +66,9 @@ app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     if (EDITOR_URL) {
         res.setHeader('Permissions-Policy',
-            'cross-origin-isolated=(self "' + EDITOR_URL + '")');
+            'cross-origin-isolated=(self "' + EDITOR_URL + '"), ' +
+            'clipboard-read=(self "' + EDITOR_URL + '"), ' +
+            'clipboard-write=(self "' + EDITOR_URL + '")');
     }
     next();
 });
