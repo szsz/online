@@ -59,7 +59,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
 
 async function uploadFile(browser, name, filePath, room) {
     const up = await browser.newPage();
-    await up.goto(BASE, { waitUntil: 'networkidle0' });
+    await up.goto(BASE, { waitUntil: 'domcontentloaded' });
     const bytes = fs.readFileSync(filePath);
     await up.evaluate(async (url, n, arr, r, relayHttp) => {
         const body = new Blob([new Uint8Array(arr)]);
@@ -405,6 +405,237 @@ async function typeText(page, label, text) {
             log('  PPTX: Failed to load (Impress not supported in this build)');
             check('PPTX: skipped (Impress not in core)', true);
         }
+    }
+
+    // =================================================================
+    // SESSION 4: WRITER FEATURE EXERCISE — every editor operation
+    // =================================================================
+    log('\n================================================================');
+    log('  SESSION 4: Writer feature exercise — 2 browsers');
+    log('================================================================');
+
+    const FEAT_NAME = 'features-test.docx';
+    const FEAT_PATH = path.join(TEST_DIR, 'new.docx');
+    if (fs.existsSync(FEAT_PATH)) {
+        const FEAT_ROOM = 'extreme-feat-' + Date.now();
+        const featRelay = encodeURIComponent(`${RELAY_BASE}/room/${FEAT_ROOM}`);
+        const featUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(FEAT_NAME)}&relay=${featRelay}&access_token=test`;
+        await uploadFile(browser, FEAT_NAME, FEAT_PATH);
+
+        const fA = await openPage(browser, featUrl, 'FA', writerWait);
+        await sleep(8000);
+        const fB = await openPage(browser, featUrl, 'FB', writerWait);
+        await sleep(15000);
+
+        const fOpened = (fA ? 1 : 0) + (fB ? 1 : 0);
+        check('FEATURES: both browsers opened', fOpened === 2);
+
+        if (fA && fB) {
+            // Helper: dispatch a command on fA and verify fB stays alive
+            async function op(label, fn) {
+                try {
+                    await fn(fA);
+                    await sleep(1500);
+                    const sB = await getDocStatus(fB);
+                    const alive = sB.type !== 'error' && sB.text !== 'NOT FOUND';
+                    check(`FEAT: ${label} — B still alive`, alive);
+                    if (!alive) log(`    B status: ${JSON.stringify(sB)}`);
+                    totalEdits++;
+                } catch(e) {
+                    check(`FEAT: ${label} — no crash`, false);
+                    log(`    Error: ${e.message}`);
+                }
+            }
+
+            // 1. Type text
+            log('\n  --- Feature: text input ---');
+            await op('Type "Hello Features"', async (p) => {
+                await typeText(p, 'FA', 'Hello Features ');
+            });
+
+            // 2. Bold
+            await op('Bold (Ctrl+B)', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Bold'));
+            });
+
+            // 3. Type bold text
+            await op('Type bold text', async (p) => {
+                await typeText(p, 'FA', 'BOLD ');
+            });
+
+            // 4. Italic
+            await op('Italic (Ctrl+I)', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Italic'));
+            });
+
+            // 5. Type italic text
+            await op('Type italic text', async (p) => {
+                await typeText(p, 'FA', 'ITALIC ');
+            });
+
+            // 6. Underline
+            await op('Underline (Ctrl+U)', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Underline'));
+            });
+
+            // 7. Type underlined text
+            await op('Type underlined text', async (p) => {
+                await typeText(p, 'FA', 'UNDER ');
+            });
+
+            // 8. Turn off all formatting
+            await op('Reset formatting', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('uno .uno:Bold');
+                    TheFakeWebSocket.send('uno .uno:Italic');
+                    TheFakeWebSocket.send('uno .uno:Underline');
+                });
+            });
+
+            // 9. New line
+            await op('Enter (new paragraph)', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('key type=input char=13 key=1280');
+                    TheFakeWebSocket.send('key type=up char=0 key=1280');
+                });
+            });
+
+            // 10. Type more text
+            await op('Type second paragraph', async (p) => {
+                await typeText(p, 'FA', 'Second paragraph ');
+            });
+
+            // 11. Select All
+            await op('Select All (Ctrl+A)', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:SelectAll'));
+            });
+
+            // 12. Font size change
+            await op('Font size 18pt', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('uno .uno:FontHeight {"FontHeight.Height":{"type":"float","value":"18"}}');
+                });
+            });
+
+            // 13. Deselect (click somewhere)
+            await op('Deselect (Home key)', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('key type=input char=0 key=1028');  // Home
+                    TheFakeWebSocket.send('key type=up char=0 key=1028');
+                });
+            });
+
+            // 14. Undo
+            await op('Undo (Ctrl+Z)', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Undo'));
+            });
+
+            // 15. Redo
+            await op('Redo (Ctrl+Y)', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Redo'));
+            });
+
+            // 16. Delete a character (removetextcontext path)
+            await op('Delete key (removetextcontext)', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('removetextcontext id=0 before=0 after=1');
+                });
+            });
+
+            // 17. Backspace (removetextcontext before)
+            await op('Backspace (removetextcontext before)', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('removetextcontext id=0 before=1 after=0');
+                });
+            });
+
+            // 18. Insert bullet list
+            await op('Bullet list', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:DefaultBullet'));
+            });
+
+            // 19. Type list item
+            await op('Type list item', async (p) => {
+                await typeText(p, 'FA', 'List item 1');
+            });
+
+            // 20. Insert table (2x2)
+            await op('Insert table 2x2', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('uno .uno:InsertTable {"InsertTable.Columns":{"type":"long","value":2},"InsertTable.Rows":{"type":"long","value":2}}');
+                });
+            });
+
+            // 21. Insert image (via postMobileMessage)
+            await op('Insert image (PNG)', async (p) => {
+                await p.evaluate(() => {
+                    var b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+                    globalThis.postMobileMessage('insertfile name=test-extreme.png type=graphic data=' + b64);
+                });
+            });
+
+            // 22. Save (checkpoint)
+            await op('Save (checkpoint)', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Save'));
+                await sleep(3000); // extra time for save pipeline
+            });
+
+            // 23. Cursor movement (Ctrl+End)
+            await op('Ctrl+End (go to end)', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('key type=input char=0 key=9221');
+                    TheFakeWebSocket.send('key type=up char=0 key=9221');
+                });
+            });
+
+            // 24. Selection via keyboard (Ctrl+Shift+Home to select all)
+            await op('selecttext via keyboard (Ctrl+Shift+Home)', async (p) => {
+                await p.evaluate(() => {
+                    // Ctrl+Shift+Home = 1028 + 8192 + 4096 = 13316
+                    TheFakeWebSocket.send('key type=input char=0 key=13316');
+                    TheFakeWebSocket.send('key type=up char=0 key=13316');
+                });
+            });
+
+            // 25. Copy
+            await op('Copy (Ctrl+C)', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Copy'));
+            });
+
+            // 26. Go to end + Paste
+            await op('Paste (Ctrl+V)', async (p) => {
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('key type=input char=0 key=9221'); // End
+                    TheFakeWebSocket.send('key type=up char=0 key=9221');
+                });
+                await sleep(500);
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
+            });
+
+            // Final: snapshot both browsers
+            await sleep(5000);
+            await snap(fA, 'features_FA_final');
+            await snap(fB, 'features_FB_final');
+
+            // Verify B still has the document and is responsive
+            const finalB = await getDocStatus(fB);
+            log(`  Final B status: ${finalB.text}`);
+            check('FEATURES: B has content after all operations',
+                  finalB.type === 'writer' && charCount(finalB.text) > 0);
+
+            // Verify A and B have similar state (not exact — just both positive)
+            const finalA = await getDocStatus(fA);
+            log(`  Final A status: ${finalA.text}`);
+            check('FEATURES: A has content after all operations',
+                  finalA.type === 'writer' && charCount(finalA.text) > 0);
+        }
+
+        // Cleanup
+        if (fA) await fA.close().catch(() => {});
+        if (fB) await fB.close().catch(() => {});
+        await sleep(3000);
+    } else {
+        log('  SKIP: new.docx fixture not found');
     }
 
     // =================================================================
