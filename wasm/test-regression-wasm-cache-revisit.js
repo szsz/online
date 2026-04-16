@@ -130,9 +130,13 @@ async function waitForPrewarmReady(page, label, timeoutMs) {
                 `decoded=${(t.decodedBodySize/1048576).toFixed(2)}MB ` +
                 `${isCache ? 'CACHE HIT' : 'WIRE'}`);
         }
-        check('Session 1: heavy assets actually downloaded (cold cache)',
-              session1Bytes > 10 * 1048576,   // at least 10 MB (we expect ~74 MB)
-              (session1Bytes/1048576).toFixed(1) + 'MB');
+        // With the Service Worker, even session 1 may show transferSize=0
+        // (the SW serves from Cache Storage which is separate from HTTP
+        // disk cache). We just verify assets were detected; the real
+        // regression sentinel is session 2 having 0 bytes on the wire.
+        check('Session 1: heavy assets detected',
+              t1.length >= 1,
+              t1.length + ' entries, ' + (session1Bytes/1048576).toFixed(1) + 'MB');
 
         // Close ALL pages and the browser cleanly so the disk cache
         // is flushed.

@@ -58,6 +58,21 @@ clientA.on('message', (data) => {
         tryRunTest();
         return;
     }
+    if (msg.type === 0x08) {
+        // Save-trigger from the relay (another peer is joining and the
+        // relay wants us to produce a checkpoint). Send back a 0x07 with
+        // a dummy hash so the joining peer can proceed.
+        const fakeHash = 'deadbeef'.repeat(8);  // 64-char hex
+        const hashBuf = Buffer.from(fakeHash);
+        const frame = Buffer.alloc(5 + 4 + hashBuf.length);
+        frame[0] = 0x07;
+        frame.writeUInt32BE(viewIdA, 1);
+        frame.writeUInt32BE(0, 5);  // seq
+        hashBuf.copy(frame, 9);
+        clientA.send(frame);
+        console.log('A handled save-trigger (sent fake checkpoint)');
+        return;
+    }
     if (msg.type === 0x00) aReceived.push(msg);
 });
 
@@ -68,6 +83,18 @@ clientB.on('message', (data) => {
         clientB.send(makeFrame(0x06, viewIdB, ''));
         bActivated = true;
         tryRunTest();
+        return;
+    }
+    if (msg.type === 0x08) {
+        const fakeHash = 'deadbeef'.repeat(8);
+        const hashBuf = Buffer.from(fakeHash);
+        const frame = Buffer.alloc(5 + 4 + hashBuf.length);
+        frame[0] = 0x07;
+        frame.writeUInt32BE(viewIdB, 1);
+        frame.writeUInt32BE(0, 5);
+        hashBuf.copy(frame, 9);
+        clientB.send(frame);
+        console.log('B handled save-trigger (sent fake checkpoint)');
         return;
     }
     if (msg.type === 0x00) bReceived.push(msg);
