@@ -515,8 +515,31 @@
                         htmlText = body;
                     }
                     if (htmlText && htmlText.trim()) {
-                        console.log('[wasm-loader] XHR clipboard POST intercepted: ' + htmlText.length + ' chars HTML');
-                        var blob = new Blob(['paste mimetype=text/html\n', htmlText]);
+                        // The blob from _readContentSyncToBlob is multi-section:
+                        //   text/html\n<hex-size>\n<html>\ntext/plain\n<hex-size>\n<plain>\n
+                        // Parse and extract the best section (prefer text/html).
+                        var bestMime = null, bestContent = null;
+                        var sections = htmlText.split(/(?=text\/html\n|text\/plain\n)/);
+                        for (var si = 0; si < sections.length; si++) {
+                            var sec = sections[si];
+                            var nlPos = sec.indexOf('\n');
+                            if (nlPos < 0) continue;
+                            var secMime = sec.substring(0, nlPos).trim();
+                            if (secMime !== 'text/html' && secMime !== 'text/plain') continue;
+                            var rest = sec.substring(nlPos + 1);
+                            // Skip the hex-size line
+                            var nl2 = rest.indexOf('\n');
+                            var secContent = nl2 >= 0 ? rest.substring(nl2 + 1).replace(/\n$/, '') : rest;
+                            if (secMime === 'text/html' && secContent) {
+                                bestMime = 'text/html'; bestContent = secContent;
+                            } else if (secMime === 'text/plain' && !bestContent) {
+                                bestMime = 'text/plain'; bestContent = secContent;
+                            }
+                        }
+                        if (!bestContent) { bestMime = 'text/html'; bestContent = htmlText; }
+                        console.log('[wasm-loader] XHR clipboard POST intercepted: ' +
+                            bestContent.length + ' chars (' + bestMime + ')');
+                        var blob = new Blob(['paste mimetype=' + bestMime + '\n', bestContent]);
                         if (globalThis.TheFakeWebSocket) {
                             globalThis.TheFakeWebSocket.send(blob);
                         }
@@ -657,6 +680,55 @@
                         MessageId: 'App_LoadingStatus',
                         Values: { Status: 'Initialized' }
                     }), '*');
+                } catch(e) {}
+                // Fix Ctrl+C for WASM mode. COOL's mobile path just sends
+                // postMobileMessage('COPY') which copies to Kit's internal
+                // clipboard but never writes to the SYSTEM clipboard.
+                // Override: after Kit processes .uno:Copy, request the
+                // selection content, then write it to the system clipboard
+                // via the Clipboard API.
+                try {
+                    if (window.app && window.app.map && window.app.map._clip) {
+                        var clip = window.app.map._clip;
+                        document.oncopy = function(ev) {
+                            ev.preventDefault();
+                            // Request selection from Kit (populates _selectionContent)
+                            if (globalThis.postMobileMessage) {
+                                globalThis.postMobileMessage('gettextselection mimetype=text/html');
+                            }
+                            // Give Kit a moment to respond, then write to clipboard
+                            setTimeout(function() {
+                                var html = clip._selectionContent || '';
+                                var plain = clip._selectionPlainTextContent || '';
+                                if (!plain && html) {
+                                    var d = document.createElement('div');
+                                    d.innerHTML = html; plain = d.textContent || '';
+                                }
+                                if (navigator.clipboard && navigator.clipboard.write && html) {
+                                    navigator.clipboard.write([new ClipboardItem({
+                                        'text/html': new Blob([html], {type: 'text/html'}),
+                                        'text/plain': new Blob([plain], {type: 'text/plain'}),
+                                    })]).then(function() {
+                                        console.log('[wasm-loader] Copied to system clipboard (' + plain.length + ' chars)');
+                                    }).catch(function(e) {
+                                        console.error('[wasm-loader] Clipboard write failed:', e);
+                                    });
+                                } else if (plain) {
+                                    // Fallback: write plain text
+                                    navigator.clipboard.writeText(plain).catch(function(){});
+                                }
+                            }, 200);
+                            return false;
+                        };
+                        document.oncut = function(ev) {
+                            document.oncopy(ev);
+                            // Also send the cut command to Kit
+                            if (globalThis.TheFakeWebSocket)
+                                globalThis.TheFakeWebSocket.send('uno .uno:Cut');
+                            return false;
+                        };
+                        mark('clipboard:wasm_copy_override');
+                    }
                 } catch(e) {}
                 // For COLD-reload doc opens (new iframe, initial doc) we
                 // also post WasmDocReady so the viewer's shield drops.

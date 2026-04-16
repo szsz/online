@@ -93,7 +93,11 @@ function handler(req, res) {
     // /collabora-online-mobile/cool/clipboard — COOL's Clipboard.js in
     // WASM mode POSTs clipboard data here so the upload→paste cycle works
     // for external rich-text paste. Simple in-memory store keyed by Tag.
-    if (pathname.startsWith('/collabora-online-mobile/cool/clipboard')) {
+    // Handle both paths: COOL resolves the relative URL differently
+    // depending on context — POST comes from JS as a relative URL,
+    // GET comes from fetch inside cool.html at /browser/cool.html.
+    if (pathname.startsWith('/collabora-online-mobile/cool/clipboard') ||
+        pathname.startsWith('/browser/collabora-online-mobile/cool/clipboard')) {
         const qs = parsed.query || '';
         const tag = (qs.match(/Tag=([^&]+)/) || [])[1] || 'default';
         if (req.method === 'POST') {
