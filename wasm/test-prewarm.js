@@ -160,12 +160,21 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
         check('Top-level crossOriginIsolated', topCOI.crossOriginIsolated === true);
         check('Top-level has SharedArrayBuffer', topCOI.hasSAB === true);
 
-        // Wait for iframe to have a cool.html src (happens on startPrewarm)
+        // Wait for iframe to have a cool.html src (happens on startPrewarm).
+        // Then poll for the cross-origin frame to register in page.frames() —
+        // under resource pressure (32 prior tests in the suite) it can take
+        // several seconds for the OOPIF to show up, even after the iframe.src
+        // is set. A single snapshot after waitForFunction was failing 100% in
+        // the suite but passing standalone.
         await page.waitForFunction(
             () => document.getElementById('editor-frame').src.includes('cool.html'),
-            { timeout: 10000 });
-        const frames = page.frames();
-        const editorFrame = frames.find(f => f.url().includes('/browser/cool.html'));
+            { timeout: 15000 });
+        let editorFrame = null;
+        for (let fi = 0; fi < 30; fi++) {
+            editorFrame = page.frames().find(f => f.url().includes('/browser/cool.html'));
+            if (editorFrame) break;
+            await sleep(500);
+        }
         check('Editor iframe attached', !!editorFrame);
 
         if (editorFrame) {
