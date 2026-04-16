@@ -612,6 +612,76 @@ async function typeText(page, label, text) {
                 await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
             });
 
+            // ── Copy/Paste exercise (internal + binary) ────────────
+
+            // 27. Select a word, Copy, move to end, Paste
+            await op('Select word + Copy + Paste at end (internal cycle)', async (p) => {
+                // Home → select first word → Copy
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('key type=input char=0 key=9220'); // Ctrl+Home
+                    TheFakeWebSocket.send('key type=up char=0 key=9220');
+                });
+                await sleep(500);
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('key type=input char=0 key=13315'); // Ctrl+Shift+Right
+                    TheFakeWebSocket.send('key type=up char=0 key=13315');
+                });
+                await sleep(500);
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Copy'));
+                await sleep(500);
+                // End → Paste
+                await p.evaluate(() => {
+                    TheFakeWebSocket.send('key type=input char=0 key=9221'); // Ctrl+End
+                    TheFakeWebSocket.send('key type=up char=0 key=9221');
+                });
+                await sleep(500);
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
+            });
+
+            // 28. Cut + Paste back (should preserve content)
+            await op('Select All + Cut + Paste back', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:SelectAll'));
+                await sleep(500);
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Cut'));
+                await sleep(800);
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
+            });
+
+            // 29. Binary paste: simulate _pasteTypedBlob with HTML
+            //     (the path external rich-text paste takes)
+            await op('Binary paste (HTML via Blob)', async (p) => {
+                await p.evaluate(() => {
+                    var html = '<html><body><b>Pasted bold text</b></body></html>';
+                    var header = 'paste mimetype=text/html\n';
+                    var blob = new Blob([header, html]);
+                    TheFakeWebSocket.send(blob);
+                });
+            });
+
+            // 30. Binary paste: simulate image paste from clipboard
+            await op('Binary paste (PNG image from clipboard)', async (p) => {
+                await p.evaluate(() => {
+                    var b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+                    var raw = atob(b64);
+                    var bytes = new Uint8Array(raw.length);
+                    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                    var header = 'paste mimetype=image/png\n';
+                    var blob = new Blob([header, bytes]);
+                    TheFakeWebSocket.send(blob);
+                });
+            });
+
+            // 31. Paste Special (uno:PasteSpecial — opens dialog typically,
+            //     but tests the relay path for the command)
+            await op('PasteSpecial command', async (p) => {
+                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:PasteSpecial'));
+            });
+
+            // 32. Type after all paste operations (verify editor is still functional)
+            await op('Type after paste operations', async (p) => {
+                await typeText(p, 'FA', ' AFTER-PASTE ');
+            });
+
             // Final: snapshot both browsers
             await sleep(5000);
             await snap(fA, 'features_FA_final');
