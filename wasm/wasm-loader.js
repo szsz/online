@@ -499,12 +499,19 @@
     XMLHttpRequest.prototype.send = function(body) {
         if (this._coolMethod === 'POST' && this._coolUrl &&
             this._coolUrl.indexOf('/cool/clipboard') >= 0) {
+            // Only intercept for EXTERNAL paste (flag set by our native
+            // paste event listener above). For internal paste (COOL meta
+            // in clipboard), let the XHR through to COOL — its native
+            // flow handles it correctly via _doInternalPaste.
+            if (!globalThis._isExternalPaste) {
+                mark('clipboard:xhr_post_internal_passthrough');
+                console.log('[wasm-loader] Internal paste — letting XHR through to COOL');
+                return _origXHRSend.apply(xhr, [body]);
+            }
             mark('clipboard:xhr_post_intercepted');
-            // EXTERNAL paste detected. Map.Keyboard already sent
-            // `uno .uno:Paste` which pasted Kit's INTERNAL clipboard
-            // (wrong content). Undo that, then our blob pastes the
-            // correct external content.
-            // Also suppress the follow-up uno:Paste from _doInternalPaste.
+            // EXTERNAL paste. Map.Keyboard already sent `uno .uno:Paste`
+            // which pasted Kit's INTERNAL clipboard (wrong content).
+            // Undo it, then our blob pastes the correct external content.
             if (globalThis.TheFakeWebSocket) {
                 globalThis.TheFakeWebSocket.send('uno .uno:Undo');
             }
@@ -573,6 +580,25 @@
         }
         return _origXHRSend.apply(this, arguments);
     };
+
+    // Detect EXTERNAL paste early: listen for the native paste event
+    // in capture phase (fires before COOL's handler). If the clipboard
+    // HTML does NOT have COOL's meta-origin marker, it's an external
+    // paste → set flag so the XHR interceptor knows to intercept.
+    // If it HAS the marker, it's internal → don't touch.
+    globalThis._isExternalPaste = false;
+    document.addEventListener('paste', function(ev) {
+        globalThis._isExternalPaste = false;
+        if (ev.clipboardData) {
+            var html = ev.clipboardData.getData('text/html') || '';
+            if (html && html.indexOf('data-coolorigin') < 0 && html.indexOf('meta-origin') < 0) {
+                globalThis._isExternalPaste = true;
+                console.log('[wasm-loader] External paste detected (no COOL meta in clipboard)');
+            } else if (html) {
+                console.log('[wasm-loader] Internal paste detected (COOL meta found)');
+            }
+        }
+    }, true); // capture phase
 
     var OrigXHR = window.XMLHttpRequest;
     window.XMLHttpRequest = function() {
