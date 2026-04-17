@@ -152,6 +152,31 @@ async function getWc(page) {
               'chars=' + afterRichA + ' (init was ' + initA + ', added ~30 expected)');
 
         // ══════════════════════════════════════════════════════════════
+        // TEST 1b: Paste exact "ABC" and verify EXACTLY 3 chars added
+        // ══════════════════════════════════════════════════════════════
+        log('\n--- TEST 1b: Paste exactly "ABC" ---');
+        const beforeABC = charCount(await getWc(pageA));
+        await pageA.evaluate(() => {
+            TheFakeWebSocket.send('key type=input char=0 key=9221');
+            TheFakeWebSocket.send('key type=up char=0 key=9221');
+        });
+        await sleep(500);
+        await pageA.evaluate(() => {
+            var blob = new Blob(['paste mimetype=text/html\n', '<p>ABC</p>']);
+            TheFakeWebSocket.send(blob);
+        });
+        await sleep(8000);
+        const afterABC_A = charCount(await getWc(pageA));
+        const afterABC_B = charCount(await getWc(pageB));
+        log(`Paste ABC: A=${afterABC_A} B=${afterABC_B} (was ${beforeABC})`);
+        check('TEST1b: A gained exactly 3 chars (ABC)',
+              afterABC_A === beforeABC + 3,
+              'delta=' + (afterABC_A - beforeABC));
+        check('TEST1b: B gained exactly 3 chars (ABC)',
+              afterABC_B === beforeABC + 3,
+              'delta=' + (afterABC_B - beforeABC));
+
+        // ══════════════════════════════════════════════════════════════
         // TEST 2: Paste IMAGE from "external app"
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 2: Paste image (PNG) from external app ---');
@@ -319,6 +344,55 @@ async function getWc(page) {
               !finalA.startsWith('Selected:'), finalA);
         check('TEST5: Final B status not "Selected:"',
               !finalB.startsWith('Selected:'), finalB);
+
+        // ══════════════════════════════════════════════════════════════
+        // TEST 6: Double-paste guard — internal copy then external Ctrl+V
+        // After internal copy, Kit has the selection on its clipboard.
+        // Then external paste (Ctrl+V with new content) should produce
+        // ONLY the new content, not also the internal clipboard.
+        // ══════════════════════════════════════════════════════════════
+        log('\n--- TEST 6: Double-paste guard (internal copy → external Ctrl+V) ---');
+        // Type "MARKER" at end
+        await pageA.evaluate(() => {
+            TheFakeWebSocket.send('key type=input char=0 key=9221');
+            TheFakeWebSocket.send('key type=up char=0 key=9221');
+        });
+        await sleep(500);
+        for (const c of 'MARKER') {
+            await pageA.evaluate((ch) => TheFakeWebSocket.send('textinput id=0 text=' + ch), c);
+            await sleep(200);
+        }
+        await sleep(3000);
+        // Select "MARKER" and copy internally
+        for (let i = 0; i < 6; i++) {
+            await pageA.evaluate(() => {
+                TheFakeWebSocket.send('key type=input char=0 key=5122'); // Shift+Left
+                TheFakeWebSocket.send('key type=up char=0 key=5122');
+            });
+            await sleep(100);
+        }
+        await sleep(500);
+        await pageA.evaluate(() => TheFakeWebSocket.send('uno .uno:Copy'));
+        await sleep(2000);
+        // Deselect, go to end
+        await pageA.evaluate(() => {
+            TheFakeWebSocket.send('key type=input char=0 key=9221');
+            TheFakeWebSocket.send('key type=up char=0 key=9221');
+        });
+        await sleep(1000);
+        const beforeDbl = charCount(await getWc(pageA));
+        // Now paste "NEW" via blob (simulating external paste after internal copy)
+        await pageA.evaluate(() => {
+            var blob = new Blob(['paste mimetype=text/html\n', '<p>NEW</p>']);
+            TheFakeWebSocket.send(blob);
+        });
+        await sleep(8000);
+        const afterDbl = charCount(await getWc(pageA));
+        const dblDelta = afterDbl - beforeDbl;
+        log(`Double-paste test: ${beforeDbl} → ${afterDbl} (delta=${dblDelta})`);
+        check('TEST6: Only "NEW" pasted, not also "MARKER" (delta=3, not 9)',
+              dblDelta === 3,
+              'delta=' + dblDelta + (dblDelta === 9 ? ' — DOUBLE PASTE BUG' : ''));
 
         log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
     } catch (e) {
