@@ -437,12 +437,22 @@
             //   gettextselection, paintwindow → local view state / queries
             //   attemptlock, closedocument, versionrestore, downloadas,
             //   exportas, renamefile → server-side WOPI ops
-            // Mouse moves are high-frequency cursor tracking — they don't
-            // mutate the document and don't need to be relayed. Only
-            // buttondown/buttonup (clicks) matter for co-editing.
+            // Mouse moves: NEVER relay — just buffer the last position.
+            // The buffer is flushed to the relay right before any
+            // buttondown or buttonup so remote Kits know the cursor
+            // position at the moment of the click. This gives remotes
+            // the start and end points of a drag-selection without
+            // flooding the relay with every intermediate pixel.
             if (text.startsWith('mouse type=move ')) {
+                globalThis._lastMouseMove = data;
                 originalSend(data);
                 return;
+            }
+            // Before buttondown/buttonup, send the buffered move so
+            // remote Kits see the cursor position at click time.
+            if (text.startsWith('mouse type=button') && globalThis._lastMouseMove) {
+                sendToRelay(0x00, myViewId, globalThis._lastMouseMove);
+                globalThis._lastMouseMove = null;
             }
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
                 text.startsWith('textinput ') || text.startsWith('windowkey ') ||
