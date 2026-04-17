@@ -390,6 +390,22 @@
         if (PROGRESS_WEIGHTS[name] !== undefined) {
             var tStart = performance.now();
             mark('net:fetch_start', name);
+
+            // online.wasm: return the ORIGINAL Response untouched so
+            // WebAssembly.instantiateStreaming gets a "real" response.
+            // V8 caches the compiled WASM module keyed on the response
+            // identity; wrapping it in new Response() breaks the cache
+            // and forces a 21s recompile on every page load.
+            if (name === 'online.wasm') {
+                return origFetch.apply(this, arguments).then(function(r) {
+                    progressState.fileDone[name] = 1;
+                    var dur = performance.now() - tStart;
+                    mark('net:fetch_end', name + ' ' + dur.toFixed(0) + 'ms (unwrapped for V8 code cache)');
+                    logCacheState(key, name, dur);
+                    return r;  // original response — V8 can cache compiled module
+                });
+            }
+
             return origFetch.apply(this, arguments).then(function(r) {
                 // Stream the body so we can report progress
                 if (!r.body || !r.body.getReader) {
@@ -681,6 +697,15 @@
                 docPollInterval = null;
                 updateProgress('Ready', 100);
                 setTimeout(hideOverlay, 150);
+
+                // Note: WASM memory snapshot/restore was investigated but is
+                // not feasible with the current Emscripten build. The WASM
+                // module instantiation overwrites memory, and Emscripten's
+                // _start/main runs automatically. Skipping init requires
+                // changes to the C++ startup code. The V8 code cache fix
+                // already reduced compile time from 21s to ~1.7s. The
+                // remaining 22s is LibreOffice C++ initialization which
+                // can only be improved by modifying the LO source.
                 try {
                     parent.postMessage(JSON.stringify({
                         MessageId: 'App_LoadingStatus',

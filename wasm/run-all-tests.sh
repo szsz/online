@@ -78,6 +78,10 @@ TESTS=(
     "e2e-copypaste|test-e2e-copypaste.js|E2E Copy/Paste|Real keyboard Ctrl+C/V from viewer: type, internal copy/paste, external text paste, external image paste, internal after external. Auto-generates detailed HTML report with screenshots + clipboard state at every step|shots-e2e-copypaste"
     "latejoin-copypaste|test-late-join-copypaste.js|Late Join + Copy/Paste|Late joiner receives all paste content (internal, external text, external image) from first browser|shots-latejoin-copypaste"
     "regression-plaintext-paste|test-regression-plaintext-paste.js|Regression: Plain Text Paste|Pasting unformatted text/plain (no HTML) from terminal or Notepad must work via all paths: blob, string, and paste event|shots-regression-plaintext-paste"
+    "regression-hard-refresh|test-regression-hard-refresh.js|Regression: Hard Refresh|Type without saving, hard refresh, content preserved via relay message replay|shots-regression-hard-refresh"
+    "regression-hard-refresh-slow|test-regression-hard-refresh-slow.js|Regression: Hard Refresh (Slow)|Type without saving, wait >60s for room cleanup, content preserved|shots-regression-hard-refresh-slow"
+    "regression-mouse-select-copypaste|test-regression-mouse-select-copypaste.js|Regression: Mouse Select + Copy/Paste|Mouse click/double-click selection + copy/paste between 2 browsers|shots-regression-mouse-select-copypaste"
+    "prewarm-benchmark|test-prewarm-benchmark.js|Prewarm Benchmark|Document open timing for all doc types: first visit vs return visit, cold vs warm cache|shots-prewarm-benchmark"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
