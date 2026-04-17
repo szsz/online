@@ -34,7 +34,7 @@ const __cl = require('./lib/inject-checklist');
 // bug (2) means B's char count after typing is wildly inflated by replayed
 // frames.
 
-const puppeteer = require('puppeteer');
+const { launch, sleep, editorHelpers } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
 
@@ -42,7 +42,6 @@ const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = 180000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-room-switch';
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }
 
@@ -85,12 +84,15 @@ async function waitForDocLoaded(page, timeoutMs) {
     return -1;
 }
 
-async function typeViaIframe(page, label, chars) {
-    const fr = await getEditorFrame(page);
-    for (const c of chars) {
-        await fr.evaluate(ch => globalThis.TheFakeWebSocket.send('textinput id=0 text=' + ch), c);
-        await sleep(2000);
-    }
+async function clickCanvas(page) {
+    await page.mouse.click(640, 400);
+    await sleep(500);
+}
+
+async function typeViaKeyboard(page, label, chars) {
+    await clickCanvas(page);
+    await page.keyboard.type(chars, { delay: 50 });
+    await sleep(2000);
 }
 
 async function openViewerInContext(browser, label) {
@@ -126,11 +128,7 @@ async function openFileInViewer(page, fileName) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     // Two unique documents with the same type (writer) so the viewer does a
     // HOT-SWITCH (room change without iframe reload) — that's the path with
@@ -278,7 +276,7 @@ async function openFileInViewer(page, fileName) {
         // remote-statechange-clobbers-local-display bug that's outside this
         // test's scope).
         log('\n--- Phase 3: B types "XYZ" in ' + DOC2 + ' ---');
-        await typeViaIframe(B.page, 'B', 'XYZ');
+        await typeViaKeyboard(B.page, 'B', 'XYZ');
         await sleep(8000);
 
         const aFinal = await getCharCount(A.page);
@@ -306,7 +304,7 @@ async function openFileInViewer(page, fileName) {
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

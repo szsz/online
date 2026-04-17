@@ -5,7 +5,8 @@ const __cl = require('./lib/inject-checklist');
 // Phase 3: C late-joins while A+B active, types GAMMA
 // Phase 4: A leaves, D late-joins, types DELTA
 // All remaining browsers must converge to identical char count.
-const puppeteer = require('puppeteer');
+// ALL input via keyboard/mouse — no TheFakeWebSocket.send() calls.
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -17,8 +18,6 @@ const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-latejoin';
 const DOC_NAME = 'test document.docx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
-
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }
@@ -87,12 +86,7 @@ async function waitForChars(pages, expected, timeout) {
         process.exit(1);
     }
 
-    const browser = await puppeteer.launch({
-        headless: 'new',
-        protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     let allPassed = true;
     function check(label, condition) { __cl.recordCheck(label, condition);
@@ -137,12 +131,17 @@ async function waitForChars(pages, expected, timeout) {
         }
     }
 
+    // Click the editor canvas to focus it
+    async function clickCanvas(page) {
+        await page.mouse.click(640, 400);
+        await sleep(500);
+    }
+
     async function typeText(page, label, text) {
-        log(`[${label}] Typing "${text}"...`);
+        log(`[${label}] Typing "${text}" (real keyboard)...`);
+        await clickCanvas(page);
         for (const ch of text) {
-            await page.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await page.keyboard.type(ch, { delay: 50 });
             await sleep(2000);
         }
         await sleep(5000);
@@ -278,7 +277,7 @@ async function waitForChars(pages, expected, timeout) {
     } catch (e) {
         log('Error: ' + e.message);
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

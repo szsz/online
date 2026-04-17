@@ -1,7 +1,8 @@
 const __cl = require('./lib/inject-checklist');
-// Co-editing test: all input via relay, verify document content after each keystroke
-// Expected: "ABCHello WorldXYZ" = 17 chars, identical on both browsers
-const puppeteer = require('puppeteer');
+// Co-editing test: 2 browsers typing via real keyboard, verify convergence.
+// ALL input via keyboard/mouse — no TheFakeWebSocket.send() calls.
+// Expected: "ABCHello WorldXYZ" = 17 chars, identical on both browsers.
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
 
@@ -10,17 +11,16 @@ const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots';
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
 let shotNum = 0;
 async function snap(page, name) {
     fs.mkdirSync(SHOT_DIR, { recursive: true });
     await sleep(500);
-    const filename = `${String(++shotNum).padStart(2,'0')}_${name}.png`;
+    const filename = `${String(++shotNum).padStart(2, '0')}_${name}.png`;
     await page.screenshot({ path: `${SHOT_DIR}/${filename}` });
     console.log(`  [snap] ${filename}`);
 }
 
+// DOM read only — extract word count text
 async function getStatus(page) {
     return page.evaluate(() => {
         const el = document.querySelector('#StateWordCount');
@@ -28,7 +28,6 @@ async function getStatus(page) {
     });
 }
 
-// Extract character count as number
 function charCount(status) {
     const m = status.match(/(\d+) characters/);
     return m ? parseInt(m[1]) : -1;
@@ -42,7 +41,7 @@ async function waitForReady(page, label, count) {
             l.includes(') ready')
         ) : []);
         if (logs.length >= count) {
-            console.log(`[${label}] ${count} client(s) ready (${((Date.now()-t0)/1000).toFixed(1)}s)`);
+            console.log(`[${label}] ${count} client(s) ready (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
             return true;
         }
         await sleep(2000);
@@ -52,44 +51,23 @@ async function waitForReady(page, label, count) {
     return false;
 }
 
-// Wait until both pages show expected char count
-async function waitForCharCount(pageA, pageB, expected, timeout) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeout) {
-        const sA = await getStatus(pageA);
-        const sB = await getStatus(pageB);
-        if (charCount(sA) === expected && charCount(sB) === expected) {
-            return { a: sA, b: sB, ok: true };
-        }
-        await sleep(500);
-    }
-    return { a: await getStatus(pageA), b: await getStatus(pageB), ok: false };
-}
-
 (async () => {
-    console.log('=== Co-editing: all input via relay, content verification ===\n');
+    console.log('=== Co-editing: real keyboard input, content verification ===\n');
 
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new',
-        protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     let allPassed = true;
-    function check(label, condition) { __cl.recordCheck(label, condition);
-        if (condition) {
-            console.log(`  ✓ ${label}`);
-        } else {
-            console.log(`  ✗ FAIL: ${label}`);
-            allPassed = false;
-        }
+    function check(label, condition) {
+        __cl.recordCheck(label, condition);
+        if (condition) console.log(`  ✓ ${label}`);
+        else { console.log(`  ✗ FAIL: ${label}`); allPassed = false; }
     }
 
     try {
+        // Upload test document
         const up = await browser.newPage();
         await up.goto(BASE, { waitUntil: 'networkidle0' });
         await up.evaluate(async (url) => {
@@ -126,6 +104,12 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
             return page;
         }
 
+        // Click the editor canvas to focus it
+        async function clickCanvas(page) {
+            await page.mouse.click(640, 400);
+            await sleep(500);
+        }
+
         const pageA = await openDoc('A');
         await sleep(10000);
         const pageB = await openDoc('B');
@@ -133,7 +117,9 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
 
         await snap(pageA, 'A_initial');
         await snap(pageB, 'B_initial');
-        check('Initial: both 11 chars', charCount(await getStatus(pageA)) === 11 && charCount(await getStatus(pageB)) === 11);
+        check('Initial: both 11 chars',
+            charCount(await getStatus(pageA)) === 11 &&
+            charCount(await getStatus(pageB)) === 11);
 
         console.log('\n--- Waiting for remote clients ---');
         const readyA = await waitForReady(pageA, 'A', 1);
@@ -143,31 +129,23 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
         console.log('\n=== Typing ===\n');
         await sleep(2000);
 
-        // Both cursors start at position 0 (default for new remote clients).
-        // A stays at position 0 (beginning) — no key needed.
-        // B: move to end using End key AFTER all of A's typing is done.
-        // This ensures consistent cursor state across all Kit instances.
-        // For now, A types first, then B moves to end and types.
-
-        // Phase 1: A types ABC at cursor position 0 (default for new remote client)
+        // Phase 1: A types ABC at cursor position 0 (real keyboard)
+        await clickCanvas(pageA);
         for (const ch of ['A', 'B', 'C']) {
             console.log(`\n[A] Types "${ch}"...`);
-            await pageA.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await pageA.keyboard.type(ch, { delay: 50 });
             const expected = 11 + 'ABC'.indexOf(ch) + 1;
-            await sleep(8000); // generous wait for Kit propagation
+            await sleep(8000);
             await snap(pageA, `A_after_${ch}`);
             await snap(pageB, `B_after_${ch}`);
             const sA = await getStatus(pageA);
             const sB = await getStatus(pageB);
-            // B should see update; A may lag by 1
             check(`After "${ch}": B=${charCount(sB)} (expected ${expected})`,
                 charCount(sB) === expected);
             console.log(`  A="${sA}"  B="${sB}"`);
         }
 
-        // Wait for A to fully converge
+        // Wait for convergence
         console.log('\n[wait] 10s for A to converge...');
         await sleep(10000);
         let convA = await getStatus(pageA);
@@ -175,27 +153,23 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
         console.log(`[converge] A="${convA}" B="${convB}"`);
         check('Both at 14 after ABC', charCount(convA) === 14 && charCount(convB) === 14);
 
-        // Phase 2: B moves to end and types XYZ
-        // Now all Kit instances have "ABCHello World", so End goes to position 14 consistently
+        // Phase 2: B moves to end (Ctrl+End) and types XYZ (real keyboard)
         console.log('\n[B] Ctrl+End');
-        await pageB.evaluate(() => {
-            globalThis.TheFakeWebSocket.send('key type=input char=0 key=9221');
-            globalThis.TheFakeWebSocket.send('key type=up char=0 key=9221');
-        });
+        await clickCanvas(pageB);
+        await pageB.keyboard.down('Control');
+        await pageB.keyboard.press('End');
+        await pageB.keyboard.up('Control');
         await sleep(3000);
 
         for (const ch of ['X', 'Y', 'Z']) {
             console.log(`\n[B] Types "${ch}"...`);
-            await pageB.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await pageB.keyboard.type(ch, { delay: 50 });
             const expected = 14 + 'XYZ'.indexOf(ch) + 1;
             await sleep(8000);
             await snap(pageA, `A_after_${ch}`);
             await snap(pageB, `B_after_${ch}`);
             const sA = await getStatus(pageA);
             const sB = await getStatus(pageB);
-            // A has B's remote client, should see update
             check(`After "${ch}": A=${charCount(sA)} (expected ${expected})`,
                 charCount(sA) === expected);
             console.log(`  A="${sA}"  B="${sB}"`);
@@ -216,7 +190,7 @@ async function waitForCharCount(pageA, pageB, expected, timeout) {
     } catch (e) {
         console.error('Error:', e.message);
     } finally {
-        await browser.close();
+        await cleanup();
         console.log('\nDone.');
         process.exit(allPassed ? 0 : 1);
     }

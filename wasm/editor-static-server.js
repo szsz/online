@@ -23,6 +23,7 @@
 //     `<file>.br` sibling exists.
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
@@ -36,6 +37,49 @@ const SSL_KEY          = process.env.SSL_KEY          || '';
 const FILE_STORAGE_URL = process.env.FILE_STORAGE_URL || 'https://viewer.szebeni.hu';
 
 fs.mkdirSync(DOCS, { recursive: true });
+
+// ── Content-hashed JS filenames ─────────────────────────────────
+// On startup (and on SIGHUP), hash our custom JS files and create
+// <name>.<hash>.js symlinks. cool.html is rewritten on-the-fly to
+// reference the hashed filenames. The hashed files are served with
+// immutable cache headers so browsers never use stale code.
+const HASHED_JS = ['wasm-loader.js', 'relay-adapter.js'];
+const jsHashMap = {};  // 'wasm-loader.js' → 'wasm-loader.a1b2c3d4.js'
+
+function hashJsFiles() {
+    const browserDir = path.join(PUB, 'browser');
+    for (const name of HASHED_JS) {
+        const src = path.join(browserDir, name);
+        if (!fs.existsSync(src)) continue;
+        const content = fs.readFileSync(src);
+        const hash = crypto.createHash('sha256').update(content).digest('hex').substring(0, 8);
+        const base = name.replace('.js', '');
+        const hashed = `${base}.${hash}.js`;
+        jsHashMap[name] = hashed;
+        // Create/update the hashed symlink (or copy)
+        const dest = path.join(browserDir, hashed);
+        // Remove old hashed versions
+        try {
+            for (const f of fs.readdirSync(browserDir)) {
+                if (f.startsWith(base + '.') && f.endsWith('.js') && f !== name && f !== hashed) {
+                    fs.unlinkSync(path.join(browserDir, f));
+                }
+            }
+        } catch(e) {}
+        if (!fs.existsSync(dest)) {
+            try { fs.symlinkSync(name, dest); }
+            catch(e) { fs.copyFileSync(src, dest); }
+        }
+        console.log(`  ${name} → ${hashed}`);
+    }
+}
+console.log('Content-hashed JS files:');
+hashJsFiles();
+// Rebuild hashes on SIGHUP (useful after deploying new code)
+process.on('SIGHUP', () => {
+    console.log('SIGHUP — rehashing JS files');
+    hashJsFiles();
+});
 
 const MIME = {
     '.html': 'text/html',
@@ -171,6 +215,21 @@ function handler(req, res) {
         }
     }
 
+    // cool.html — rewrite JS references to content-hashed filenames.
+    // This ensures browsers always load the correct version after a deploy.
+    if (pathname.endsWith('/cool.html')) {
+        const filepath = path.join(PUB, pathname);
+        if (fs.existsSync(filepath)) {
+            let html = fs.readFileSync(filepath, 'utf8');
+            for (const [orig, hashed] of Object.entries(jsHashMap)) {
+                html = html.replace(new RegExp(orig.replace('.', '\\.'), 'g'), hashed);
+            }
+            res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
+            res.end(html);
+            return;
+        }
+    }
+
     const filepath = path.join(PUB, pathname);
     if (!fs.existsSync(filepath) || !fs.statSync(filepath).isFile()) {
         res.writeHead(404); res.end('Not found: ' + pathname); return;
@@ -190,6 +249,12 @@ function handler(req, res) {
         headers['Cache-Control'] = 'no-cache';
     } else if (IMMUTABLE.some(n => pathname.endsWith(n))) {
         headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+    } else if (Object.values(jsHashMap).some(h => pathname.endsWith('/' + h))) {
+        // Content-hashed JS: hash changes when content changes, so immutable.
+        headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+    } else if (pathname.endsWith('.js')) {
+        // Non-hashed JS: no-cache so code changes take effect immediately.
+        headers['Cache-Control'] = 'no-cache';
     } else {
         headers['Cache-Control'] = 'public, max-age=3600';
     }

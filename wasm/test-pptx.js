@@ -4,7 +4,8 @@ const __cl = require('./lib/inject-checklist');
 // 1. pptx file opens in Impress with slide content rendered
 // 2. Text input works on slides
 // 3. 2-browser co-editing syncs slide changes
-const puppeteer = require('puppeteer');
+// ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -15,7 +16,6 @@ const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx';
 const DOC_NAME = 'testdoc.pptx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
 
@@ -32,6 +32,12 @@ let allPassed = true;
 function check(label, condition) { __cl.recordCheck(label, condition);
     if (condition) { log(`✓ ${label}`); }
     else { log(`✗ FAIL: ${label}`); allPassed = false; }
+}
+
+// Click the editor canvas to focus it
+async function clickCanvas(page) {
+    await page.mouse.click(640, 400);
+    await sleep(500);
 }
 
 // Wait for Impress to fully load: overlay gone AND tiles rendered
@@ -77,7 +83,7 @@ async function waitForImpress(page, label, timeout) {
         }, { timeout: 120000 });
 
         // Give tiles a few more seconds to render
-        await new Promise(r => setTimeout(r, 5000));
+        await sleep(5000);
         log(`[${label}] Impress fully loaded`);
         return true;
     } catch (e) {
@@ -97,11 +103,7 @@ async function waitForImpress(page, label, timeout) {
         process.exit(1);
     }
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     try {
         // Upload
@@ -165,22 +167,14 @@ async function waitForImpress(page, label, timeout) {
             // --- Test 2: Type text on slide ---
             log('\n--- Test 2: Type text on slide ---');
             // Double-click on slide center to enter text editing
-            await pageA.evaluate(() => {
-                if (globalThis.TheFakeWebSocket) {
-                    TheFakeWebSocket.send('mouse type=buttondown x=5000 y=5000 count=2 buttons=1 modifier=0');
-                    TheFakeWebSocket.send('mouse type=buttonup x=5000 y=5000 count=2 buttons=1 modifier=0');
-                }
-            });
+            await clickCanvas(pageA);
+            await pageA.mouse.click(640, 400, { clickCount: 2 });
             await sleep(3000);
             await snap(pageA, 'after_dblclick');
 
-            // Type "HELLO" using key events (sync cursor advancement)
+            // Type "HELLO" using real keyboard
             for (const ch of 'HELLO') {
-                await pageA.evaluate((c) => {
-                    if (globalThis.TheFakeWebSocket) {
-                        TheFakeWebSocket.send('key type=input char=' + c.charCodeAt(0) + ' key=0');
-                    }
-                }, ch);
+                await pageA.keyboard.type(ch, { delay: 50 });
                 await sleep(800);
             }
             await sleep(3000);
@@ -201,7 +195,7 @@ async function waitForImpress(page, label, timeout) {
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

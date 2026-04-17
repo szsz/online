@@ -1,7 +1,8 @@
 const __cl = require('./lib/inject-checklist');
 // Test: 2-browser PPTX (Impress) co-editing
 // Verifies both browsers load the same pptx via relay and both have Impress UI
-const puppeteer = require('puppeteer');
+// ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -13,7 +14,6 @@ const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx-coedit';
 const DOC_NAME = 'testdoc.pptx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
 
@@ -29,6 +29,12 @@ let allPassed = true;
 function check(label, condition) { __cl.recordCheck(label, condition);
     if (condition) { log(`  ✓ ${label}`); }
     else { log(`  ✗ FAIL: ${label}`); allPassed = false; }
+}
+
+// Click the editor canvas to focus it
+async function clickCanvas(page) {
+    await page.mouse.click(640, 400);
+    await sleep(500);
 }
 
 async function waitForImpress(page, label) {
@@ -63,16 +69,8 @@ async function waitForImpress(page, label) {
     }
 
     // Use separate browser instances to avoid CPU starvation
-    const browserA = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
-    const browserB = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser: browserA, cleanup: cleanupA } = await launch();
+    const { browser: browserB, cleanup: cleanupB } = await launch();
 
     try {
         // Upload
@@ -139,19 +137,12 @@ async function waitForImpress(page, label) {
 
         // Browser A types on slide
         log('\n--- Browser A: typing ---');
-        await pageA.evaluate(() => {
-            if (globalThis.TheFakeWebSocket) {
-                TheFakeWebSocket.send('mouse type=buttondown x=5000 y=4000 count=2 buttons=1 modifier=0');
-                TheFakeWebSocket.send('mouse type=buttonup x=5000 y=4000 count=2 buttons=1 modifier=0');
-            }
-        });
+        await clickCanvas(pageA);
+        await pageA.mouse.click(640, 400, { clickCount: 2 });
         await sleep(3000);
 
         for (const ch of 'AAA') {
-            await pageA.evaluate((c) => {
-                if (globalThis.TheFakeWebSocket)
-                    TheFakeWebSocket.send('key type=input char=' + c.charCodeAt(0) + ' key=0');
-            }, ch);
+            await pageA.keyboard.type(ch, { delay: 50 });
             await sleep(1000);
         }
         log('[A] Typed AAA');
@@ -161,19 +152,12 @@ async function waitForImpress(page, label) {
 
         // Browser B types on slide
         log('\n--- Browser B: typing ---');
-        await pageB.evaluate(() => {
-            if (globalThis.TheFakeWebSocket) {
-                TheFakeWebSocket.send('mouse type=buttondown x=5000 y=7000 count=2 buttons=1 modifier=0');
-                TheFakeWebSocket.send('mouse type=buttonup x=5000 y=7000 count=2 buttons=1 modifier=0');
-            }
-        });
+        await clickCanvas(pageB);
+        await pageB.mouse.click(640, 400, { clickCount: 2 });
         await sleep(3000);
 
         for (const ch of 'BBB') {
-            await pageB.evaluate((c) => {
-                if (globalThis.TheFakeWebSocket)
-                    TheFakeWebSocket.send('key type=input char=' + c.charCodeAt(0) + ' key=0');
-            }, ch);
+            await pageB.keyboard.type(ch, { delay: 50 });
             await sleep(1000);
         }
         log('[B] Typed BBB');
@@ -202,8 +186,8 @@ async function waitForImpress(page, label) {
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browserA.close();
-        await browserB.close();
+        await cleanupA();
+        await cleanupB();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

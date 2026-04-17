@@ -75,6 +75,9 @@ TESTS=(
     "regression-docname-switch|test-regression-docname-switch.js|Regression: Doc Name Updates on Switch|Hot-switch to a different doc must update the title bar from the old name to the new one|shots-regression-docname-switch"
     "regression-image-insert|test-regression-image-insert.js|Regression: Image Insert into docx|Insert a 1x1 PNG via postMobileMessage insertfile; saved docx must grow (image embedded in the zip)|shots-regression-image-insert"
     "regression-paste-coedit|test-regression-paste-coedit.js|Regression: Paste Co-Edit|Text and image paste in 2-browser co-edit (docx); text in both browsers, image embedded in saved file|shots-regression-paste-coedit"
+    "e2e-copypaste|test-e2e-copypaste.js|E2E Copy/Paste|Real keyboard Ctrl+C/V from viewer: type, internal copy/paste, external text paste, external image paste, internal after external. Auto-generates detailed HTML report with screenshots + clipboard state at every step|shots-e2e-copypaste"
+    "latejoin-copypaste|test-late-join-copypaste.js|Late Join + Copy/Paste|Late joiner receives all paste content (internal, external text, external image) from first browser|shots-latejoin-copypaste"
+    "regression-plaintext-paste|test-regression-plaintext-paste.js|Regression: Plain Text Paste|Pasting unformatted text/plain (no HTML) from terminal or Notepad must work via all paths: blob, string, and paste event|shots-regression-plaintext-paste"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────

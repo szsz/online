@@ -8,7 +8,7 @@ const __cl = require('./lib/inject-checklist');
 //
 // Each session: open browsers, type, close some, reopen, type more, verify convergence.
 
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -20,7 +20,6 @@ const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-extreme';
 const TEST_DIR = path.join(__dirname, '..', 'test', 'data');
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }
 function log(msg) { console.log(`[${elapsed()}] ${msg}`); }
@@ -75,6 +74,15 @@ async function uploadFile(browser, name, filePath, room) {
     log(`  Uploaded ${name} (${(bytes.length/1024).toFixed(0)}KB)`);
 }
 
+async function clickCanvas(page) {
+    const canvas = await page.$('canvas');
+    if (canvas) {
+        const box = await canvas.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(300);
+}
+
 async function openPage(browser, url, label, waitFn, timeout) {
     for (let attempt = 1; attempt <= 3; attempt++) {
         const ctx = await browser.createBrowserContext();
@@ -101,14 +109,8 @@ async function openPage(browser, url, label, waitFn, timeout) {
 }
 
 async function typeText(page, label, text) {
-    for (const ch of text) {
-        try {
-            await page.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
-        } catch(e) { break; }
-        await sleep(300);
-    }
+    await clickCanvas(page);
+    await page.keyboard.type(text, { delay: 50 });
     await sleep(1000);
 }
 
@@ -120,11 +122,7 @@ async function typeText(page, label, text) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer', '--disable-dev-shm-usage'],
-    });
+    const { browser, cleanup } = await launch();
 
     let totalEdits = 0;
 
@@ -292,7 +290,7 @@ async function typeText(page, label, text) {
         const xlsxOpened = xlsxPages.filter(p => p).length;
         check(`XLSX: ${xlsxOpened}/3 browsers opened`, xlsxOpened >= 2);
 
-        // Type in calc (textinput works for cell content)
+        // Type in calc cells via real keyboard
         log('\n  --- XLSX Phase 1: 3 browsers type in cells ---');
         for (let i = 0; i < 3; i++) {
             if (xlsxPages[i]) {
@@ -301,10 +299,7 @@ async function typeText(page, label, text) {
                 totalEdits += 15;
                 // Press Enter to confirm cell
                 try {
-                    await xlsxPages[i].evaluate(() => {
-                        globalThis.TheFakeWebSocket.send('key type=input char=13 key=1280');
-                        globalThis.TheFakeWebSocket.send('key type=up char=0 key=1280');
-                    });
+                    await xlsxPages[i].keyboard.press('Enter');
                 } catch(e) {}
                 await sleep(2000);
             }
@@ -325,10 +320,7 @@ async function typeText(page, label, text) {
                 await typeText(xlsxPages[i], `X${i+1}`, 'More data ' + (i+1));
                 totalEdits += 12;
                 try {
-                    await xlsxPages[i].evaluate(() => {
-                        globalThis.TheFakeWebSocket.send('key type=input char=13 key=1280');
-                        globalThis.TheFakeWebSocket.send('key type=up char=0 key=1280');
-                    });
+                    await xlsxPages[i].keyboard.press('Enter');
                 } catch(e) {}
                 await sleep(2000);
             }
@@ -455,7 +447,10 @@ async function typeText(page, label, text) {
 
             // 2. Bold
             await op('Bold (Ctrl+B)', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Bold'));
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('b');
+                await p.keyboard.up('Control');
             });
 
             // 3. Type bold text
@@ -465,7 +460,10 @@ async function typeText(page, label, text) {
 
             // 4. Italic
             await op('Italic (Ctrl+I)', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Italic'));
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('i');
+                await p.keyboard.up('Control');
             });
 
             // 5. Type italic text
@@ -475,7 +473,10 @@ async function typeText(page, label, text) {
 
             // 6. Underline
             await op('Underline (Ctrl+U)', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Underline'));
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('u');
+                await p.keyboard.up('Control');
             });
 
             // 7. Type underlined text
@@ -485,19 +486,24 @@ async function typeText(page, label, text) {
 
             // 8. Turn off all formatting
             await op('Reset formatting', async (p) => {
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('uno .uno:Bold');
-                    TheFakeWebSocket.send('uno .uno:Italic');
-                    TheFakeWebSocket.send('uno .uno:Underline');
-                });
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('b');
+                await p.keyboard.up('Control');
+                await sleep(200);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('i');
+                await p.keyboard.up('Control');
+                await sleep(200);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('u');
+                await p.keyboard.up('Control');
             });
 
             // 9. New line
             await op('Enter (new paragraph)', async (p) => {
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('key type=input char=13 key=1280');
-                    TheFakeWebSocket.send('key type=up char=0 key=1280');
-                });
+                await clickCanvas(p);
+                await p.keyboard.press('Enter');
             });
 
             // 10. Type more text
@@ -507,49 +513,54 @@ async function typeText(page, label, text) {
 
             // 11. Select All
             await op('Select All (Ctrl+A)', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:SelectAll'));
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('a');
+                await p.keyboard.up('Control');
             });
 
-            // 12. Font size change
+            // 12. Font size change — no keyboard shortcut, keep TheFakeWebSocket
             await op('Font size 18pt', async (p) => {
                 await p.evaluate(() => {
                     TheFakeWebSocket.send('uno .uno:FontHeight {"FontHeight.Height":{"type":"float","value":"18"}}');
                 });
             });
 
-            // 13. Deselect (click somewhere)
+            // 13. Deselect (Home key)
             await op('Deselect (Home key)', async (p) => {
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('key type=input char=0 key=1028');  // Home
-                    TheFakeWebSocket.send('key type=up char=0 key=1028');
-                });
+                await clickCanvas(p);
+                await p.keyboard.press('Home');
             });
 
             // 14. Undo
             await op('Undo (Ctrl+Z)', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Undo'));
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('z');
+                await p.keyboard.up('Control');
             });
 
             // 15. Redo
             await op('Redo (Ctrl+Y)', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Redo'));
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('y');
+                await p.keyboard.up('Control');
             });
 
-            // 16. Delete a character (removetextcontext path)
-            await op('Delete key (removetextcontext)', async (p) => {
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('removetextcontext id=0 before=0 after=1');
-                });
+            // 16. Delete a character
+            await op('Delete key', async (p) => {
+                await clickCanvas(p);
+                await p.keyboard.press('Delete');
             });
 
-            // 17. Backspace (removetextcontext before)
-            await op('Backspace (removetextcontext before)', async (p) => {
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('removetextcontext id=0 before=1 after=0');
-                });
+            // 17. Backspace
+            await op('Backspace', async (p) => {
+                await clickCanvas(p);
+                await p.keyboard.press('Backspace');
             });
 
-            // 18. Insert bullet list
+            // 18. Insert bullet list — no keyboard shortcut, keep TheFakeWebSocket
             await op('Bullet list', async (p) => {
                 await p.evaluate(() => TheFakeWebSocket.send('uno .uno:DefaultBullet'));
             });
@@ -559,120 +570,161 @@ async function typeText(page, label, text) {
                 await typeText(p, 'FA', 'List item 1');
             });
 
-            // 20. Insert table (2x2)
+            // 20. Insert table (2x2) — no keyboard shortcut, keep TheFakeWebSocket
             await op('Insert table 2x2', async (p) => {
                 await p.evaluate(() => {
                     TheFakeWebSocket.send('uno .uno:InsertTable {"InsertTable.Columns":{"type":"long","value":2},"InsertTable.Rows":{"type":"long","value":2}}');
                 });
             });
 
-            // 21. Insert image (via postMobileMessage)
+            // 21. Insert image (via clipboard paste)
             await op('Insert image (PNG)', async (p) => {
-                await p.evaluate(() => {
-                    var b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
-                    globalThis.postMobileMessage('insertfile name=test-extreme.png type=graphic data=' + b64);
-                });
+                var b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+                await p.evaluate(async (b64data) => {
+                    var raw = atob(b64data);
+                    var bytes = new Uint8Array(raw.length);
+                    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                    await navigator.clipboard.write([new ClipboardItem({
+                        'image/png': new Blob([bytes], { type: 'image/png' }),
+                    })]);
+                }, b64);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('v');
+                await p.keyboard.up('Control');
             });
 
             // 22. Save (checkpoint)
             await op('Save (checkpoint)', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Save'));
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('s');
+                await p.keyboard.up('Control');
                 await sleep(3000); // extra time for save pipeline
             });
 
             // 23. Cursor movement (Ctrl+End)
             await op('Ctrl+End (go to end)', async (p) => {
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('key type=input char=0 key=9221');
-                    TheFakeWebSocket.send('key type=up char=0 key=9221');
-                });
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('End');
+                await p.keyboard.up('Control');
             });
 
             // 24. Selection via keyboard (Ctrl+Shift+Home to select all)
             await op('selecttext via keyboard (Ctrl+Shift+Home)', async (p) => {
-                await p.evaluate(() => {
-                    // Ctrl+Shift+Home = 1028 + 8192 + 4096 = 13316
-                    TheFakeWebSocket.send('key type=input char=0 key=13316');
-                    TheFakeWebSocket.send('key type=up char=0 key=13316');
-                });
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.down('Shift');
+                await p.keyboard.press('Home');
+                await p.keyboard.up('Shift');
+                await p.keyboard.up('Control');
             });
 
             // 25. Copy
             await op('Copy (Ctrl+C)', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Copy'));
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('c');
+                await p.keyboard.up('Control');
             });
 
             // 26. Go to end + Paste
             await op('Paste (Ctrl+V)', async (p) => {
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('key type=input char=0 key=9221'); // End
-                    TheFakeWebSocket.send('key type=up char=0 key=9221');
-                });
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('End');
+                await p.keyboard.up('Control');
                 await sleep(500);
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
+                await p.keyboard.down('Control');
+                await p.keyboard.press('v');
+                await p.keyboard.up('Control');
             });
 
             // ── Copy/Paste exercise (internal + binary) ────────────
 
             // 27. Select a word, Copy, move to end, Paste
             await op('Select word + Copy + Paste at end (internal cycle)', async (p) => {
-                // Home → select first word → Copy
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('key type=input char=0 key=9220'); // Ctrl+Home
-                    TheFakeWebSocket.send('key type=up char=0 key=9220');
-                });
+                await clickCanvas(p);
+                // Ctrl+Home
+                await p.keyboard.down('Control');
+                await p.keyboard.press('Home');
+                await p.keyboard.up('Control');
                 await sleep(500);
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('key type=input char=0 key=13315'); // Ctrl+Shift+Right
-                    TheFakeWebSocket.send('key type=up char=0 key=13315');
-                });
+                // Ctrl+Shift+Right (select word)
+                await p.keyboard.down('Control');
+                await p.keyboard.down('Shift');
+                await p.keyboard.press('ArrowRight');
+                await p.keyboard.up('Shift');
+                await p.keyboard.up('Control');
                 await sleep(500);
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Copy'));
+                // Copy
+                await p.keyboard.down('Control');
+                await p.keyboard.press('c');
+                await p.keyboard.up('Control');
                 await sleep(500);
-                // End → Paste
-                await p.evaluate(() => {
-                    TheFakeWebSocket.send('key type=input char=0 key=9221'); // Ctrl+End
-                    TheFakeWebSocket.send('key type=up char=0 key=9221');
-                });
+                // Ctrl+End
+                await p.keyboard.down('Control');
+                await p.keyboard.press('End');
+                await p.keyboard.up('Control');
                 await sleep(500);
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
+                // Paste
+                await p.keyboard.down('Control');
+                await p.keyboard.press('v');
+                await p.keyboard.up('Control');
             });
 
             // 28. Cut + Paste back (should preserve content)
             await op('Select All + Cut + Paste back', async (p) => {
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:SelectAll'));
+                await clickCanvas(p);
+                // Select All
+                await p.keyboard.down('Control');
+                await p.keyboard.press('a');
+                await p.keyboard.up('Control');
                 await sleep(500);
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Cut'));
+                // Cut
+                await p.keyboard.down('Control');
+                await p.keyboard.press('x');
+                await p.keyboard.up('Control');
                 await sleep(800);
-                await p.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
+                // Paste
+                await p.keyboard.down('Control');
+                await p.keyboard.press('v');
+                await p.keyboard.up('Control');
             });
 
-            // 29. Binary paste: simulate _pasteTypedBlob with HTML
-            //     (the path external rich-text paste takes)
-            await op('Binary paste (HTML via Blob)', async (p) => {
-                await p.evaluate(() => {
+            // 29. Binary paste: HTML via clipboard
+            await op('Binary paste (HTML via clipboard)', async (p) => {
+                await p.evaluate(async () => {
                     var html = '<html><body><b>Pasted bold text</b></body></html>';
-                    var header = 'paste mimetype=text/html\n';
-                    var blob = new Blob([header, html]);
-                    TheFakeWebSocket.send(blob);
+                    await navigator.clipboard.write([new ClipboardItem({
+                        'text/html': new Blob([html], { type: 'text/html' }),
+                        'text/plain': new Blob(['Pasted bold text'], { type: 'text/plain' }),
+                    })]);
                 });
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('v');
+                await p.keyboard.up('Control');
             });
 
-            // 30. Binary paste: simulate image paste from clipboard
+            // 30. Binary paste: PNG image from clipboard
             await op('Binary paste (PNG image from clipboard)', async (p) => {
-                await p.evaluate(() => {
+                await p.evaluate(async () => {
                     var b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
                     var raw = atob(b64);
                     var bytes = new Uint8Array(raw.length);
                     for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-                    var header = 'paste mimetype=image/png\n';
-                    var blob = new Blob([header, bytes]);
-                    TheFakeWebSocket.send(blob);
+                    await navigator.clipboard.write([new ClipboardItem({
+                        'image/png': new Blob([bytes], { type: 'image/png' }),
+                    })]);
                 });
+                await clickCanvas(p);
+                await p.keyboard.down('Control');
+                await p.keyboard.press('v');
+                await p.keyboard.up('Control');
             });
 
-            // 31. Paste Special (uno:PasteSpecial — opens dialog typically,
-            //     but tests the relay path for the command)
+            // 31. Paste Special — no keyboard shortcut, keep TheFakeWebSocket
             await op('PasteSpecial command', async (p) => {
                 await p.evaluate(() => TheFakeWebSocket.send('uno .uno:PasteSpecial'));
             });
@@ -717,7 +769,7 @@ async function typeText(page, label, text) {
     log(allPassed ? '  RESULT: ALL CHECKS PASSED' : '  RESULT: SOME CHECKS FAILED');
     log('================================================================');
 
-    await browser.close();
+    await cleanup();
     log('Done.');
     process.exit(allPassed ? 0 : 1);
 })();

@@ -24,7 +24,7 @@ const __cl = require('./lib/inject-checklist');
 //   If a future change to relay-adapter accidentally stops forwarding
 //   `invalidatetiles:` from remote peers, this test fails.
 
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -34,7 +34,6 @@ const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-calc-impress';
 const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
 const STAMP = Date.now();
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 const log = m => console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`);
 
@@ -48,8 +47,8 @@ async function snap(page, name) {
 let allPassed = true;
 function check(label, cond, ev) {
     __cl.recordCheck(label, cond, ev);
-    if (cond) log(`  ✓ ${label}`);
-    else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
+    if (cond) log(`  PASS: ${label}`);
+    else { log(`  FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
 async function getFrame(page) {
@@ -111,11 +110,25 @@ async function waitForEditTick(page, baseline, timeoutMs) {
     return -1;
 }
 
+async function clickCanvas(page) {
+    const frameEl = await page.$('iframe');
+    if (frameEl) {
+        const box = await frameEl.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(300);
+}
+
 async function openViewer(browser) {
     const ctx = await browser.createBrowserContext();
     const page = await ctx.newPage();
     await page.setCacheEnabled(false);
     await page.setViewport({ width: 1280, height: 800 });
+    // Grant clipboard permissions for real keyboard input
+    const cdp = await page.createCDPSession();
+    await cdp.send('Browser.grantPermissions', {
+        permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
+    });
     await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: 60000 });
     for (let i = 0; i < 240; i++) {
         await sleep(500);
@@ -135,7 +148,7 @@ async function clickFile(page, name) {
 }
 
 async function waitForDocReady(page, fileName, timeoutMs) {
-    // For cross-type opens (writer→calc, writer→impress) the viewer
+    // For cross-type opens (writer->calc, writer->impress) the viewer
     // REPLACES the iframe. We must wait for the new iframe whose URL
     // contains the requested filename — otherwise we read stale state
     // from the previous iframe and conclude "ready" instantly.
@@ -162,22 +175,20 @@ async function waitForDocReady(page, fileName, timeoutMs) {
 }
 
 async function focusForType(page, docType) {
-    const fr = await getFrame(page);
-    if (!fr) return;
-    let x = 1500, y = 1500, count = 1;
-    if (docType === 'impress') { x = 8000; y = 3500; count = 2; }
-    await fr.evaluate((cx, cy, cnt) => {
-        globalThis.TheFakeWebSocket.send(
-            `mouse type=buttondown x=${cx} y=${cy} count=${cnt} buttons=1 modifier=0`);
-        globalThis.TheFakeWebSocket.send(
-            `mouse type=buttonup x=${cx} y=${cy} count=${cnt} buttons=1 modifier=0`);
-    }, x, y, count);
-}
-
-async function typeOne(page, ch) {
-    const fr = await getFrame(page);
-    await fr.evaluate(c =>
-        globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c), ch);
+    // Click the canvas area inside the iframe to focus for typing.
+    // For Impress, double-click to enter a text placeholder.
+    await clickCanvas(page);
+    if (docType === 'impress') {
+        // Double-click to enter a text placeholder
+        const frameEl = await page.$('iframe');
+        if (frameEl) {
+            const box = await frameEl.boundingBox();
+            if (box) {
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { clickCount: 2 });
+            }
+        }
+        await sleep(300);
+    }
 }
 
 async function uploadDoc(browser, name, src) {
@@ -196,10 +207,7 @@ async function uploadDoc(browser, name, src) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--ignore-certificate-errors', '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     try {
         const CALC_NAME = `regr-ci-${STAMP}.xlsx`;
@@ -227,17 +235,16 @@ async function uploadDoc(browser, name, src) {
             // Settle so peers see each other.
             await sleep(8000);
 
-            // A clicks to focus then types 3 chars.
+            // A clicks to focus then types 3 chars via real keyboard.
             await focusForType(A.page, docType);
             await sleep(docType === 'impress' ? 1500 : 250);
             const aPre = await getEditTick(A.page);
             const bPre = await getEditTick(B.page);
             log(`  pre-type: A.tick=${aPre} B.tick=${bPre}`);
 
-            for (const ch of 'ABC') {
-                await typeOne(A.page, ch);
-                await sleep(150);
-            }
+            await clickCanvas(A.page);
+            await A.page.keyboard.type('ABC', { delay: 150 });
+
             // Wait for both A's local and B's remote-forwarded invalidatetiles.
             const aAfter = await waitForEditTick(A.page, aPre, 15000);
             const bAfter = await waitForEditTick(B.page, bPre, 15000);
@@ -254,12 +261,12 @@ async function uploadDoc(browser, name, src) {
             await B.ctx.close();
         }
 
-        log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
+        log('\n' + (allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'));
     } catch (e) {
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

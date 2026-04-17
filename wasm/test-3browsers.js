@@ -3,8 +3,8 @@ const __cl = require('./lib/inject-checklist');
 // Document: "Hello World" (1 line)
 // A types "ABC" at start, B types "XYZ" at end, C types "PQR" in middle
 // Expected: "ABCHelloPQR WorldXYZ" = 20 chars
-// All input goes through relay. Sequential phases with convergence waits.
-const puppeteer = require('puppeteer');
+// ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
 
@@ -13,8 +13,6 @@ const RELAY_BASE = env.RELAY_URL;
 const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots3';
-
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 let shotNum = 0;
 async function snap(page, name) {
@@ -74,12 +72,7 @@ async function waitForAnyCharCount(pages, expected, timeout) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new',
-        protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     let allPassed = true;
     function check(label, condition) { __cl.recordCheck(label, condition);
@@ -140,6 +133,12 @@ async function waitForAnyCharCount(pages, expected, timeout) {
             }
         }
 
+        // Click the editor canvas to focus it
+        async function clickCanvas(page) {
+            await page.mouse.click(640, 400);
+            await sleep(500);
+        }
+
         // Open all 3 browsers. If any fails, restart all with a fresh room.
         let pageA, pageB, pageC;
         for (let roomAttempt = 1; roomAttempt <= 3; roomAttempt++) {
@@ -183,12 +182,11 @@ async function waitForAnyCharCount(pages, expected, timeout) {
 
         console.log('\n=== Phase 1: A types ABC at start (default cursor pos 0) ===\n');
         await sleep(2000);
+        await clickCanvas(pageA);
 
         for (const ch of ['A', 'B', 'C']) {
             console.log(`[A] Types "${ch}"...`);
-            await pageA.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await pageA.keyboard.type(ch, { delay: 50 });
             await sleep(8000);
             const expected = 11 + 'ABC'.indexOf(ch) + 1;
             await waitForAnyCharCount([pageA, pageB, pageC], expected, 5000);
@@ -214,17 +212,15 @@ async function waitForAnyCharCount(pages, expected, timeout) {
         // Phase 2: B moves to end and types XYZ
         console.log('\n=== Phase 2: B types XYZ at end ===\n');
         console.log('[B] Ctrl+End');
-        await pageB.evaluate(() => {
-            globalThis.TheFakeWebSocket.send('key type=input char=0 key=9221');
-            globalThis.TheFakeWebSocket.send('key type=up char=0 key=9221');
-        });
+        await clickCanvas(pageB);
+        await pageB.keyboard.down('Control');
+        await pageB.keyboard.press('End');
+        await pageB.keyboard.up('Control');
         await sleep(3000);
 
         for (const ch of ['X', 'Y', 'Z']) {
             console.log(`[B] Types "${ch}"...`);
-            await pageB.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await pageB.keyboard.type(ch, { delay: 50 });
             await sleep(8000);
             const expected = 14 + 'XYZ'.indexOf(ch) + 1;
             await waitForAnyCharCount([pageA, pageB, pageC], expected, 5000);
@@ -249,20 +245,15 @@ async function waitForAnyCharCount(pages, expected, timeout) {
 
         // Phase 3: C clicks middle (between "ABC" and "Hello") and types PQR
         // Document is now "ABCHello WorldXYZ". The space is between "Hello" and "World".
-        // Click at x=2000 should land in the middle area.
+        // Click near the middle of the visible text area.
         console.log('\n=== Phase 3: C types PQR in middle ===\n');
         console.log('[C] Click middle of document');
-        await pageC.evaluate(() => {
-            globalThis.TheFakeWebSocket.send('mouse type=buttondown x=2000 y=1000 count=1 buttons=1 modifier=0');
-            globalThis.TheFakeWebSocket.send('mouse type=buttonup x=2000 y=1000 count=1 buttons=1 modifier=0');
-        });
+        await pageC.mouse.click(500, 400);
         await sleep(3000);
 
         for (const ch of ['P', 'Q', 'R']) {
             console.log(`[C] Types "${ch}"...`);
-            await pageC.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await pageC.keyboard.type(ch, { delay: 50 });
             await sleep(8000);
             const expected = 17 + 'PQR'.indexOf(ch) + 1;
             await waitForAnyCharCount([pageA, pageB, pageC], expected, 5000);
@@ -290,7 +281,7 @@ async function waitForAnyCharCount(pages, expected, timeout) {
     } catch (e) {
         console.error('Error:', e.message);
     } finally {
-        await browser.close();
+        await cleanup();
         console.log('\nDone.');
         process.exit(allPassed ? 0 : 1);
     }

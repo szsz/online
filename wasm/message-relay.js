@@ -98,7 +98,7 @@ const DEBUG_HTML = `<!doctype html>
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
   }
   .row {
-    display: grid; grid-template-columns: 96px 56px 36px 90px 1fr;
+    display: grid; grid-template-columns: 96px 56px 36px 140px 1fr;
     gap: 10px; padding: 4px 18px; align-items: baseline;
     border-bottom: 1px dashed #ececf0;
   }
@@ -201,8 +201,9 @@ function appendRow(rec) {
     : 'msg';
   const vidEl = document.createElement('div');
   vidEl.className = 'vid';
-  vidEl.textContent = rec.fromViewId != null ? '#' + rec.fromViewId :
-                      rec.viewId      != null ? '#' + rec.viewId : '';
+  vidEl.textContent = rec.fromViewId != null
+    ? '#' + rec.fromViewId + (rec.fromName ? ' ' + rec.fromName : '')
+    : rec.viewId != null ? '#' + rec.viewId + (rec.name ? ' ' + rec.name : '') : '';
   const textEl = document.createElement('div');
   textEl.className = 'text';
   if (rec.kind === 'msg') {
@@ -401,10 +402,25 @@ class Room {
         // set of recipients.
         const fromViewId = viewId.readUInt32BE(0);
         const text = payload.toString('utf8');
+        // Capture name from presence messages
+        if (text.startsWith('presence ')) {
+            const nameMatch = text.match(/name=(\S+)/);
+            if (nameMatch) {
+                for (const c of this.clients) {
+                    if (c._viewId === fromViewId) { c._name = nameMatch[1]; break; }
+                }
+            }
+        }
+        // Look up sender name for debug display
+        let fromName = null;
+        for (const c of this.clients) {
+            if (c._viewId === fromViewId && c._name) { fromName = c._name; break; }
+        }
         this.debugAppend('msg', {
             seq,
             type: 0x00,
             fromViewId,
+            fromName,
             text: text.length > 200 ? text.substring(0, 200) + '…' : text,
             bytes: payload.length,
             recipients: this.activeClients.size,
@@ -830,6 +846,7 @@ server.on('upgrade', (req, socket, head) => {
                 room.debugAppend('event', {
                     event: 'activated',
                     viewId,
+                    name: ws._name || null,
                     activeCount: room.activeClients.size,
                 });
                 return;
@@ -858,12 +875,20 @@ server.on('upgrade', (req, socket, head) => {
                 activeCount: room.activeClients.size,
             });
             if (room.clients.size === 0) {
-                setTimeout(() => {
-                    if (room.clients.size === 0) {
-                        rooms.delete(roomId);
-                        console.log(`[${roomId}] Room cleaned up`);
-                    }
-                }, 60000);
+                // If there are unsaved messages since the last checkpoint,
+                // keep the room alive so a reconnecting client can replay
+                // them. This prevents data loss on hard-refresh when WASM
+                // boot takes >60s.
+                if (room.messageLog.length > 0) {
+                    console.log(`[${roomId}] Room empty but ${room.messageLog.length} unsaved messages — keeping alive`);
+                } else {
+                    setTimeout(() => {
+                        if (room.clients.size === 0 && room.messageLog.length === 0) {
+                            rooms.delete(roomId);
+                            console.log(`[${roomId}] Room cleaned up (no unsaved messages)`);
+                        }
+                    }, 60000);
+                }
             }
         });
     });

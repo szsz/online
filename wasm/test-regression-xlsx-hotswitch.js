@@ -19,7 +19,7 @@ const __cl = require('./lib/inject-checklist');
 //   3. Asserts B became ready (App_LoadingStatus OR __wasmPrewarmReady)
 //      within a strict budget. Before the fix this timed out at 60s.
 
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -31,7 +31,6 @@ const STAMP = Date.now();
 const A_NAME = `xlsx-hotswitch-${STAMP}-A.xlsx`;
 const B_NAME = `xlsx-hotswitch-${STAMP}-B.xlsx`;
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 const log = m => console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`);
 
@@ -51,6 +50,15 @@ function check(label, cond, ev) {
 
 async function getFrame(page) {
     return page.frames().find(f => f.url().includes('cool.html'));
+}
+
+async function clickIframe(page) {
+    const frameEl = await page.$('iframe#editor-frame');
+    if (frameEl) {
+        const box = await frameEl.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(500);
 }
 
 async function getIframeState(page) {
@@ -104,10 +112,7 @@ async function waitForNewDocReady(page, timeoutMs) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--ignore-certificate-errors', '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     try {
         // Upload two xlsx files. testdoc.xlsx and convert-to.xlsx both have
@@ -162,7 +167,8 @@ async function waitForNewDocReady(page, timeoutMs) {
         if (!resA.ok) throw new Error('A did not load');
         log(`  A state: dp="${resA.state.dp}" wc="${resA.state.wc}"`);
 
-        // Let doc settle briefly so subsequent hot-switch is clean
+        // Focus the iframe and let doc settle before hot-switch
+        await clickIframe(page);
         await sleep(2000);
 
         // Hot-switch to B (calc → calc). Both xlsx have 1 sheet → both
@@ -200,7 +206,7 @@ async function waitForNewDocReady(page, timeoutMs) {
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

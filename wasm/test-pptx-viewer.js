@@ -4,7 +4,7 @@ const __cl = require('./lib/inject-checklist');
 // 1. All slides render content in the main canvas (not just thumbnails)
 // 2. Slide navigation (setPart) works for every slide
 // 3. Slide Show (presentation mode) starts
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -15,7 +15,6 @@ const DOC_NAME = 'pptx-slides-test.pptx';
 // Use a real multi-slide pptx
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx');
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }
 
@@ -33,6 +32,15 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
+async function clickIframe(page) {
+    const frameEl = await page.$('iframe#editor-frame');
+    if (frameEl) {
+        const box = await frameEl.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(300);
+}
+
 (async () => {
     log('=== PPTX Viewer Test ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
@@ -40,10 +48,7 @@ function check(label, cond, ev) {
 
     if (!fs.existsSync(DOC_PATH)) { log('ERROR: fixture missing: ' + DOC_PATH); process.exit(1); }
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox','--ignore-certificate-errors','--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
     const pageErrors = [];
 
     try {
@@ -75,7 +80,7 @@ function check(label, cond, ev) {
         }
         log('Prewarm done');
 
-        // Click the pptx (cold reload — writer→impress)
+        // Click the pptx (cold reload — writer->impress)
         await page.evaluate(n => {
             const el = [...document.querySelectorAll('.file')].find(e => e.dataset.name === n);
             if (!el) throw new Error('File not found: ' + n);
@@ -125,7 +130,7 @@ function check(label, cond, ev) {
                 try {
                     const ctx = c.getContext('2d');
                     // Slides may have content anywhere on the canvas (centered
-                    // text, title at top, footer at bottom). Sample a 5×5 grid
+                    // text, title at top, footer at bottom). Sample a 5x5 grid
                     // and count non-white pixels across the whole grid — any
                     // sufficient amount means the slide rendered something.
                     let nonWhite = 0;
@@ -140,7 +145,7 @@ function check(label, cond, ev) {
                             }
                         }
                     }
-                    // 25 boxes × 900 px each = 22 500 samples. >50 non-white
+                    // 25 boxes x 900 px each = 22 500 samples. >50 non-white
                     // is an extremely conservative bar (well below "blank").
                     return nonWhite > 50;
                 } catch(e) { return false; }
@@ -164,6 +169,7 @@ function check(label, cond, ev) {
 
         let ssState = {};
         try {
+            // .uno:Presentation is a toolbar action with no keyboard equivalent — keep TheFakeWebSocket
             await fr.evaluate(() => {
                 if (globalThis.TheFakeWebSocket) {
                     TheFakeWebSocket.send('uno .uno:Presentation');
@@ -201,7 +207,7 @@ function check(label, cond, ev) {
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

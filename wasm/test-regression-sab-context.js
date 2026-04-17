@@ -19,17 +19,19 @@ const __cl = require('./lib/inject-checklist');
 // viewer); we're testing that the test infrastructure assumption — "different
 // browser contexts are required for co-editing" — actually holds, so future
 // engineers don't accidentally regress to shared contexts in new tests.
+//
+// ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
 
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY = env.RELAY_URL;
+const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 180000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-sab';
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }
 
@@ -58,6 +60,18 @@ function charCount(s) {
     return m ? parseInt(m[1]) : -1;
 }
 
+// Click the canvas to focus the editor (pages open cool.html directly, no iframe)
+async function clickCanvas(page) {
+    const box = await page.evaluate(() => {
+        const c = document.querySelector('.leaflet-tile-container canvas, #document-container canvas');
+        if (!c) return null;
+        const r = c.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    if (box) await page.mouse.click(box.x, box.y);
+    await sleep(300);
+}
+
 async function openInContext(ctx, url, label) {
     const page = await ctx.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
@@ -70,8 +84,9 @@ async function openInContext(ctx, url, label) {
 }
 
 async function typeChars(page, label, chars) {
+    await clickCanvas(page);
     for (const c of chars) {
-        await page.evaluate(ch => globalThis.TheFakeWebSocket.send('textinput id=0 text=' + ch), c);
+        await page.keyboard.type(c, { delay: 50 });
         await sleep(1500);
     }
 }
@@ -81,19 +96,13 @@ async function typeChars(page, label, chars) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     try {
         // Upload doc + seed relay
         const ROOM_OK   = 'sab-ok-' + Date.now();
         const ROOM_BAD  = 'sab-bad-' + Date.now();
         const FILE = 'sab-test.txt';
-        // Relay file endpoint is the same host but over HTTPS, not WSS.
-        const RELAY_HTTP = RELAY.replace(/^wss?:/, m => m === 'wss:' ? 'https:' : 'http:');
         const up = await browser.newPage();
         await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
         for (const room of [ROOM_OK, ROOM_BAD]) {
@@ -198,7 +207,7 @@ async function typeChars(page, label, chars) {
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

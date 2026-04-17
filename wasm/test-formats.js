@@ -2,7 +2,8 @@ const __cl = require('./lib/inject-checklist');
 // Test: 3 browsers co-edit different file formats (docx, xlsx, pptx)
 // Each browser types at the default cursor position.
 // Verifies all browsers converge to the same character count.
-const puppeteer = require('puppeteer');
+// ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -12,7 +13,6 @@ const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-formats';
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }
 function log(msg) { console.log(`[${elapsed()}] ${msg}`); }
@@ -66,6 +66,12 @@ async function waitForDocLoaded(page, label) {
     }, { timeout: TIMEOUT });
     const dur = ((Date.now() - t0) / 1000).toFixed(1);
     log(`[${label}] Loaded in ${dur}s`);
+}
+
+// Click the editor canvas to focus it
+async function clickCanvas(page) {
+    await page.mouse.click(640, 400);
+    await sleep(500);
 }
 
 async function testFormat(browser, docName, docPath, formatLabel) {
@@ -163,32 +169,27 @@ async function testFormat(browser, docName, docPath, formatLabel) {
 
         await sleep(3000);
 
-        // For Calc, click a cell first to enter edit mode
+        // For Calc, double-click a cell to enter edit mode
+        // Note: COOL's mouse coords are in document/twips space; here we use
+        // approximate viewport coordinates that land on cell A1.
         const isCalc = formatLabel === 'xlsx';
         if (isCalc) {
-            log('[A] Clicking cell A1 for Calc');
-            await pageA.evaluate(() => {
-                globalThis.TheFakeWebSocket.send('mouse type=buttondown x=1000 y=500 count=2 buttons=1 modifier=0');
-                globalThis.TheFakeWebSocket.send('mouse type=buttonup x=1000 y=500 count=2 buttons=1 modifier=0');
-            });
+            log('[A] Double-clicking cell A1 for Calc');
+            await pageA.mouse.click(200, 300, { clickCount: 2 });
             await sleep(2000);
         }
 
         // A types TEST1
         log('[A] Typing "TEST1"...');
+        await clickCanvas(pageA);
         for (const ch of 'TEST1') {
-            await pageA.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await pageA.keyboard.type(ch, { delay: 50 });
             await sleep(2000);
         }
 
         // For Calc, press Enter to confirm cell input
         if (isCalc) {
-            await pageA.evaluate(() => {
-                globalThis.TheFakeWebSocket.send('key type=input char=13 key=1280');
-                globalThis.TheFakeWebSocket.send('key type=up char=13 key=1280');
-            });
+            await pageA.keyboard.press('Enter');
         }
 
         await sleep(10000);
@@ -200,27 +201,21 @@ async function testFormat(browser, docName, docPath, formatLabel) {
 
         // B types TEST2 (click different cell for Calc)
         if (isCalc) {
-            log('[B] Clicking cell B1 for Calc');
-            await pageB.evaluate(() => {
-                globalThis.TheFakeWebSocket.send('mouse type=buttondown x=2000 y=500 count=2 buttons=1 modifier=0');
-                globalThis.TheFakeWebSocket.send('mouse type=buttonup x=2000 y=500 count=2 buttons=1 modifier=0');
-            });
+            // Double-click cell B1 — approximate viewport coordinates
+            log('[B] Double-clicking cell B1 for Calc');
+            await pageB.mouse.click(350, 300, { clickCount: 2 });
             await sleep(2000);
         }
 
         log('[B] Typing "TEST2"...');
+        await clickCanvas(pageB);
         for (const ch of 'TEST2') {
-            await pageB.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await pageB.keyboard.type(ch, { delay: 50 });
             await sleep(2000);
         }
 
         if (isCalc) {
-            await pageB.evaluate(() => {
-                globalThis.TheFakeWebSocket.send('key type=input char=13 key=1280');
-                globalThis.TheFakeWebSocket.send('key type=up char=13 key=1280');
-            });
+            await pageB.keyboard.press('Enter');
         }
 
         await sleep(15000);
@@ -256,12 +251,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new',
-        protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     const formats = [
         { name: 'test document.docx', path: path.join(__dirname, '..', 'test', 'data', 'test document.docx'), label: 'docx' },
@@ -289,7 +279,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
         }
     }
 
-    await browser.close();
+    await cleanup();
 
     log('\n' + '='.repeat(50));
     log('RESULTS');

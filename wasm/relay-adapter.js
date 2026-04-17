@@ -34,6 +34,19 @@
     var isFirstClient = false;
 
     var remoteClients = {};
+    var replayMode = false;  // true while replaying buffered messages from relay
+
+    // My display name — read from URL param (set by viewer), fallback to random
+    var myName = params.get('UserName') || (function() {
+        var c = 'bcdfghjklmnprstvwz', v = 'aeiou';
+        var len = 5 + Math.floor(Math.random() * 2), n = '';
+        for (var i = 0; i < len; i++) {
+            var pool = (i % 2 === 0) ? c : v;
+            n += pool.charAt(Math.floor(Math.random() * pool.length));
+        }
+        return n.charAt(0).toUpperCase() + n.slice(1);
+    })();
+    console.log('[relay] My name: ' + myName + ', viewId: ' + myViewId);
 
     // --- Room switching (for hot-switch document changes) ---
     // When the viewer switches documents via hash change, it sends a
@@ -226,6 +239,17 @@
         var readyPayload = joinFileHash ? JSON.stringify({ hash: joinFileHash }) : '';
         var hashPreview = joinFileHash ? joinFileHash.substring(0, 16) + '…' : 'none';
         console.log('[relay] Activating — sending join-ready hash=' + hashPreview);
+        // Enter replay mode: all messages from the buffer will be routed
+        // to local Kit (not remote clients) so the doc catches up.
+        // Replay mode ends when we receive 0x02 (join acknowledged).
+        if (!isFirstClient) {
+            replayMode = true;
+            console.log('[relay] Replay mode ON — buffered messages → local Kit');
+        }
+        try { parent.postMessage(JSON.stringify({
+            MessageId: 'RelayLateJoinPhase',
+            Values: { phase: 'replaying' }
+        }), '*'); } catch(e) {}
         sendToRelay(0x06, myViewId, readyPayload);
 
         // Tell the parent viewer that input is now accepted. Until this
@@ -240,10 +264,24 @@
         } catch(e) {}
 
         // Announce presence
-        sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
+        sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId + ' name=' + myName);
 
-        // Initial save to relay so future late joiners can get the document
-        saveAndUploadCheckpoint();
+        // Initial checkpoint: only for the first client (its doc IS the
+        // authoritative state). Late joiners must NOT save immediately —
+        // their Kit still has the checkpoint doc and the replay messages
+        // haven't been applied yet. Saving now would overwrite the stored
+        // file with stale content and prune the relay's message log.
+        if (isFirstClient) {
+            saveAndUploadCheckpoint();
+        } else {
+            // Wait for replay messages to be applied, then save.
+            // 10s is generous — replay is fast (just feeding messages
+            // to Kit) but the save needs Kit to finish processing them.
+            console.log('[relay] Late joiner — delaying checkpoint by 10s for replay');
+            setTimeout(function() {
+                saveAndUploadCheckpoint();
+            }, 10000);
+        }
     }
 
     // --- FakeWebSocket.send interceptor ---
@@ -298,16 +336,6 @@
                     var mime = mimeMatch[1].trim();
                     var payload = bytes.slice(nlIdx + 1);
                     console.log('[relay] Paste blob: mimetype=' + mime + ' payload=' + payload.length + 'B');
-
-                    // If this is an EXTERNAL paste (detected by the native
-                    // paste event listener), Map.Keyboard already sent
-                    // `uno .uno:Paste` which pasted Kit's stale internal
-                    // text clipboard. Undo it before we paste the real
-                    // external content (image or text).
-                    if (globalThis._isExternalPaste) {
-                        console.log('[relay] External paste blob — undoing Map.Keyboard stale paste');
-                        sendToRelay(0x00, myViewId, 'uno .uno:Undo');
-                    }
 
                     if (mime.startsWith('image/')) {
                         // Convert to insertfile (the path that works in WASM).
@@ -409,6 +437,13 @@
             //   gettextselection, paintwindow → local view state / queries
             //   attemptlock, closedocument, versionrestore, downloadas,
             //   exportas, renamefile → server-side WOPI ops
+            // Mouse moves are high-frequency cursor tracking — they don't
+            // mutate the document and don't need to be relayed. Only
+            // buttondown/buttonup (clicks) matter for co-editing.
+            if (text.startsWith('mouse type=move ')) {
+                originalSend(data);
+                return;
+            }
             var isUserInput = text.startsWith('key ') || text.startsWith('mouse ') ||
                 text.startsWith('textinput ') || text.startsWith('windowkey ') ||
                 text.startsWith('uno ') ||
@@ -426,16 +461,12 @@
                     console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
                     return;
                 }
-                // Suppress the duplicate paste that COOL sends after our
-                // clipboard POST interceptor already pasted the HTML.
-                // COOL uses EITHER `uno .uno:Paste` or a paste key event
-                // (key=8225, when usePasteKeyEvent=true in _doInternalPaste)
-                // depending on context. Suppress both.
+                // Suppress Map.Keyboard's uno:Paste when our paste handler
+                // already sent external content as a paste blob. The flag
+                // is set by the paste handler in wasm-loader.js.
                 if (globalThis._suppressNextPaste) {
-                    if (text === 'uno .uno:Paste' ||
-                        text === 'uno .uno:PasteSpecial' ||
-                        (text.startsWith('key type=input') && text.includes('key=8225'))) {
-                        console.log('[relay] Suppressing duplicate paste: ' + text.substring(0, 40));
+                    if (text === 'uno .uno:Paste' || text === 'uno .uno:PasteSpecial') {
+                        console.log('[relay] Suppressing Map.Keyboard paste (external paste handled)');
                         globalThis._suppressNextPaste = false;
                         return;
                     }
@@ -601,7 +632,7 @@
         var clientId = Module._create_remote_client();
         remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
         console.log('[relay] Remote client created: viewId=' + viewId + ' clientId=' + clientId);
-        sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId);
+        sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId + ' name=' + myName);
     }
 
     // --- Poll for C++ ready signals ---
@@ -706,6 +737,13 @@
                         ws.send(frame);
                         console.log('[relay] Checkpoint: file=' + bytes.length + 'B → /api/files; ' +
                                     'sent hash=' + hashHex.substring(0, 16) + '… (' + frame.length + 'B frame) seq=' + saveAtSeq);
+                        // Notify viewer of successful save
+                        try {
+                            parent.postMessage(JSON.stringify({
+                                MessageId: 'SaveComplete',
+                                Values: { hash: hashHex.substring(0, 16), bytes: bytes.length }
+                            }), '*');
+                        } catch(e) {}
                     });
                 });
             }).catch(function(e) {
@@ -777,8 +815,23 @@
 
         // Presence: trigger remote client creation
         if (text.startsWith('presence ')) {
-            if (vid !== myViewId && !remoteClients[vid]) {
-                createRemoteClient(vid);
+            if (vid !== myViewId) {
+                // Parse name from "presence viewId=X name=Foo"
+                var nameMatch = text.match(/name=(\S+)/);
+                var remoteName = nameMatch ? nameMatch[1] : 'User-' + vid;
+                if (!remoteClients[vid]) {
+                    createRemoteClient(vid);
+                }
+                remoteClients[vid].name = remoteName;
+                // Inject into COOL's view info so cursor label shows the name
+                try {
+                    if (window.app && window.app.map && window.app.map._viewInfo) {
+                        if (!window.app.map._viewInfo[vid]) {
+                            window.app.map._viewInfo[vid] = {};
+                        }
+                        window.app.map._viewInfo[vid].username = remoteName;
+                    }
+                } catch(e) {}
             }
             return;
         }
@@ -815,8 +868,18 @@
             console.log('[relay] processUI: vid=' + vid + ' myVid=' + myViewId + ' isSelf=' + (vid===myViewId) + ' ' + text.substring(0, 50));
         }
 
-        // Own viewId → local Kit session (own cursor)
-        if (vid === myViewId) {
+        // Own viewId → local Kit session (own cursor).
+        // During late-join REPLAY (messages from the buffer that predate
+        // our activation), ALL messages go to local Kit regardless of
+        // viewId. The replay messages include edits from peers who may
+        // have disconnected — routing them to a remote-client Kit would
+        // leave the local doc stale. After replay is done (seq catches
+        // up to current), normal routing kicks in: own vid → local,
+        // other vid → remote client.
+        if (vid === myViewId || replayMode) {
+            if (replayMode && vid !== myViewId) {
+                console.log('[relay] Replay vid=' + vid + ' seq=' + seq + ' → local Kit: ' + text.substring(0, 50));
+            }
             if (text.startsWith('textinput ')) {
                 var match = text.match(/text=(.+)/);
                 if (match) {
@@ -900,6 +963,10 @@
                     var nameUrl = getFileStorageUrl(wopiSrc);
                     console.log('[relay] Join-response: relay-expected hash=' + (info.hash||'').substring(0, 16) + '… seq=' + info.seq +
                         (blobUrl ? ' — fetching by hash from ' + blobUrl.replace(/\/[a-f0-9]{16,}.*$/, '/<hash>') : ' — fetching by name'));
+                    try { parent.postMessage(JSON.stringify({
+                        MessageId: 'RelayLateJoinPhase',
+                        Values: { phase: 'downloading', msgCount: info.msgCount || 0, seq: info.seq }
+                    }), '*'); } catch(e) {}
 
                     // Try sources in order: blob-by-hash → name → editor's own /wasm/.
                     var sources = [];
@@ -940,6 +1007,10 @@
                         });
                     }).then(function() {
                         console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
+                        try { parent.postMessage(JSON.stringify({
+                            MessageId: 'RelayLateJoinPhase',
+                            Values: { phase: 'loading' }
+                        }), '*'); } catch(e) {}
                     }).catch(function(e) {
                         console.error('[relay] Late-join file sync failed: ' + e.message);
                     });
@@ -950,11 +1021,16 @@
             return;
         }
 
-        // 0x02: Client joined
+        // 0x02: Client joined — also marks end of replay
         if (msg.type === 0x02) {
             try {
                 var joinInfo = JSON.parse(new TextDecoder().decode(msg.payload));
                 console.log('[relay] Client joined: viewId=' + joinInfo.viewId + ' seq=' + joinInfo.seq);
+                // If this is OUR join announcement, replay is done
+                if (joinInfo.viewId === myViewId && replayMode) {
+                    replayMode = false;
+                    console.log('[relay] Replay mode OFF — ' + lastSeq + ' messages applied to local Kit');
+                }
                 if (joinInfo.viewId !== myViewId && !remoteClients[joinInfo.viewId]) {
                     createRemoteClient(joinInfo.viewId);
                 }

@@ -10,7 +10,7 @@ const __cl = require('./lib/inject-checklist');
 //
 // This test:
 //   1. A opens a doc through the viewer.
-//   2. A types ALPHA (5 chars).
+//   2. A types ALPHA (5 chars) via real keyboard input.
 //   3. B joins shortly after — the relay will trigger a fresh save on A.
 //   4. We measure the wall-clock time from B's join to B seeing the
 //      complete content (initial doc + ALPHA). It must be << 5s extra.
@@ -19,15 +19,16 @@ const __cl = require('./lib/inject-checklist');
 // The strict timing assertion is the regression sentinel: if someone bumps
 // the save delay back up or introduces a new long wait in the join path,
 // this test will fail.
+//
+// ALL input via keyboard/mouse — no TheFakeWebSocket.send() calls.
 
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-checkpoint';
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }
 
@@ -97,16 +98,24 @@ async function waitForCharCount(page, expected, timeoutMs) {
     return -1;
 }
 
+// Click the center of the editor canvas to focus it
+async function clickCanvas(page) {
+    const fr = await getEditorFrame(page);
+    if (!fr) return;
+    const frameEl = await page.$('iframe');
+    if (frameEl) {
+        const box = await frameEl.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(300);
+}
+
 (async () => {
     log('=== Regression: late-join checkpoint timing (1.5s budget) ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     const STAMP = Date.now();
     const FILE = `checkpoint-timing-${STAMP}.txt`;
@@ -137,10 +146,10 @@ async function waitForCharCount(page, expected, timeoutMs) {
         // Wait for first activation+ready settle (so A is the active room peer)
         await sleep(8000);
 
-        // Type ALPHA
-        const frA = await getEditorFrame(A.page);
+        // Type ALPHA via real keyboard input
+        await clickCanvas(A.page);
         for (const c of TYPED) {
-            await frA.evaluate(ch => globalThis.TheFakeWebSocket.send('textinput id=0 text=' + ch), c);
+            await A.page.keyboard.type(c, { delay: 50 });
             await sleep(800);
         }
         const aAfterAlpha = await waitForCharCount(A.page, EXPECTED, 15000);
@@ -178,7 +187,7 @@ async function waitForCharCount(page, expected, timeoutMs) {
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

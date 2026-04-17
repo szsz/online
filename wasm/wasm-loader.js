@@ -426,56 +426,14 @@
                 });
             });
         }
-        // ── Clipboard POST interceptor ────────────────────────────
-        // COOL's Clipboard.js in WASM mode POSTs clipboard HTML to
-        // /collabora-online-mobile/cool/clipboard then calls .uno:Paste.
-        // But the WASM Kit can't read from the HTTP clipboard endpoint
-        // so .uno:Paste finds an empty clipboard. Intercept the POST:
-        // extract text from the uploaded HTML, inject as textinput via
-        // TheFakeWebSocket.send (our relay-adapter intercepts Blob
-        // messages and routes through the relay). Then return 200 to
-        // COOL so it doesn't error out. When COOL subsequently sends
-        // .uno:Paste, Kit's clipboard is empty → no-op (the text was
-        // already inserted via textinput).
+        // ── Clipboard POST stub ──────────────────────────────────
+        // Our document.onpaste override handles all paste logic now.
+        // COOL's code should never reach this endpoint, but if some
+        // code path does POST to /cool/clipboard, return a fake 200
+        // so it doesn't error out.
         if (typeof key === 'string' && key.includes('/cool/clipboard') && opts && opts.method === 'POST') {
-            mark('clipboard:post_intercepted');
-            // Read the body (FormData or Blob or string)
-            var clipBody = opts.body;
-            if (clipBody) {
-                (async function() {
-                    try {
-                        var htmlText = '';
-                        if (clipBody instanceof FormData) {
-                            var file = clipBody.get('file');
-                            if (file && file instanceof Blob) {
-                                htmlText = await file.text();
-                            }
-                        } else if (clipBody instanceof Blob) {
-                            htmlText = await clipBody.text();
-                        } else if (typeof clipBody === 'string') {
-                            htmlText = clipBody;
-                        }
-                        if (htmlText && htmlText.trim()) {
-                            console.log('[wasm-loader] Clipboard POST intercepted: ' + htmlText.length + ' chars HTML');
-                            // Send as paste blob with the FULL HTML so Kit
-                            // preserves formatting (bold, italic, underline).
-                            var blob = new Blob(['paste mimetype=text/html\n', htmlText]);
-                            if (globalThis.TheFakeWebSocket) {
-                                globalThis.TheFakeWebSocket.send(blob);
-                            }
-                            // COOL will follow up with _doInternalPaste →
-                            // `uno .uno:Paste`. We already pasted via the
-                            // blob above, so suppress the duplicate. Set a
-                            // flag that interceptedSend checks.
-                            globalThis._suppressNextPaste = true;
-                            setTimeout(function() { globalThis._suppressNextPaste = false; }, 5000);
-                        }
-                    } catch(e) {
-                        console.error('[wasm-loader] Clipboard POST intercept error:', e);
-                    }
-                })();
-            }
-            // Return fake 200 so COOL doesn't show an error
+            mark('clipboard:post_stub');
+            console.log('[wasm-loader] Clipboard POST stub — returning 200 (paste handled by onpaste)');
             return Promise.resolve(new Response('{"ok":true}', {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' },
@@ -485,10 +443,9 @@
         return origFetch.apply(this, arguments);
     };
 
-    // ── XHR clipboard POST interceptor ────────────────────────────
-    // COOL's _doAsyncDownload uses XMLHttpRequest (NOT fetch), so our
-    // fetch wrapper above never sees the clipboard POST. Wrap XHR.open
-    // to intercept POSTs to /cool/clipboard.
+    // ── XHR clipboard POST stub ──────────────────────────────────
+    // Same as fetch stub above — safety net for XHR-based clipboard
+    // POSTs that shouldn't happen now that onpaste is overridden.
     var _origXHROpen = XMLHttpRequest.prototype.open;
     var _origXHRSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function(method, url) {
@@ -499,104 +456,120 @@
     XMLHttpRequest.prototype.send = function(body) {
         if (this._coolMethod === 'POST' && this._coolUrl &&
             this._coolUrl.indexOf('/cool/clipboard') >= 0) {
-            // Only intercept for EXTERNAL paste (flag set by our native
-            // paste event listener above). For internal paste (COOL meta
-            // in clipboard), let the XHR through to COOL — its native
-            // flow handles it correctly via _doInternalPaste.
-            if (!globalThis._isExternalPaste) {
-                mark('clipboard:xhr_post_internal_passthrough');
-                console.log('[wasm-loader] Internal paste — letting XHR through to COOL');
-                return _origXHRSend.apply(xhr, [body]);
-            }
-            mark('clipboard:xhr_post_intercepted');
-            // EXTERNAL paste. The blob interceptor in relay-adapter
-            // sends Undo + the actual paste content. We just suppress
-            // _doInternalPaste's follow-up uno:Paste here (don't also
-            // send Undo — that would double-undo).
-            globalThis._suppressNextPaste = true;
-            setTimeout(function() { globalThis._suppressNextPaste = false; }, 5000);
-            // Read the FormData body. The clipboard HTML is in a field
-            // named 'file'. Extract it and send as a paste blob.
+            mark('clipboard:xhr_post_stub');
+            console.log('[wasm-loader] XHR clipboard POST stub — faking 200');
             var xhr = this;
-            (async function() {
-                try {
-                    var htmlText = '';
-                    if (body instanceof FormData) {
-                        var file = body.get('file');
-                        if (file instanceof Blob) htmlText = await file.text();
-                    } else if (body instanceof Blob) {
-                        htmlText = await body.text();
-                    } else if (typeof body === 'string') {
-                        htmlText = body;
-                    }
-                    if (htmlText && htmlText.trim()) {
-                        // The blob from _readContentSyncToBlob is multi-section:
-                        //   text/html\n<hex-size>\n<html>\ntext/plain\n<hex-size>\n<plain>\n
-                        // Parse and extract the best section (prefer text/html).
-                        var bestMime = null, bestContent = null;
-                        var sections = htmlText.split(/(?=text\/html\n|text\/plain\n)/);
-                        for (var si = 0; si < sections.length; si++) {
-                            var sec = sections[si];
-                            var nlPos = sec.indexOf('\n');
-                            if (nlPos < 0) continue;
-                            var secMime = sec.substring(0, nlPos).trim();
-                            if (secMime !== 'text/html' && secMime !== 'text/plain') continue;
-                            var rest = sec.substring(nlPos + 1);
-                            // Skip the hex-size line
-                            var nl2 = rest.indexOf('\n');
-                            var secContent = nl2 >= 0 ? rest.substring(nl2 + 1).replace(/\n$/, '') : rest;
-                            if (secMime === 'text/html' && secContent) {
-                                bestMime = 'text/html'; bestContent = secContent;
-                            } else if (secMime === 'text/plain' && !bestContent) {
-                                bestMime = 'text/plain'; bestContent = secContent;
-                            }
-                        }
-                        if (!bestContent) { bestMime = 'text/html'; bestContent = htmlText; }
-                        console.log('[wasm-loader] XHR clipboard POST intercepted: ' +
-                            bestContent.length + ' chars (' + bestMime + ')');
-                        var blob = new Blob(['paste mimetype=' + bestMime + '\n', bestContent]);
-                        if (globalThis.TheFakeWebSocket) {
-                            globalThis.TheFakeWebSocket.send(blob);
-                        }
-                        // _suppressNextPaste already set above (synchronously)
-                    }
-                } catch(e) {
-                    console.error('[wasm-loader] XHR clipboard intercept error:', e);
-                }
-            })();
-            // Fake a successful response so COOL doesn't error out
             Object.defineProperty(xhr, 'status', { get: function() { return 200; } });
             Object.defineProperty(xhr, 'readyState', { get: function() { return 4; } });
-            Object.defineProperty(xhr, 'response', {
-                get: function() { return new Blob(['OK']); }
-            });
+            Object.defineProperty(xhr, 'response', { get: function() { return new Blob(['OK']); } });
             setTimeout(function() {
                 if (xhr.onreadystatechange) xhr.onreadystatechange();
                 if (xhr.onload) xhr.onload();
             }, 50);
-            return; // Don't actually send the XHR
+            return;
         }
         return _origXHRSend.apply(this, arguments);
     };
 
-    // Detect EXTERNAL paste early: listen for the native paste event
-    // in capture phase (fires before COOL's handler). If the clipboard
-    // HTML does NOT have COOL's meta-origin marker, it's an external
-    // paste → set flag so the XHR interceptor knows to intercept.
-    // If it HAS the marker, it's internal → don't touch.
-    globalThis._isExternalPaste = false;
+    // ── Clipboard fingerprint ──────────────────────────────────────
+    // Saved by document.oncopy (set later, in docPoll). Compared by
+    // the paste handler below.
+    globalThis._lastCopiedPlain = null;
+
+    // ── Ctrl+V keydown: always suppress Map.Keyboard's uno:Paste ──
+    // Map.Keyboard (line 864) sends `uno .uno:Paste` on Ctrl+V keydown
+    // in the mobile/Emscripten path. This fires BEFORE the paste event.
+    // We always suppress it because our paste event handler decides the
+    // correct action (internal vs external).
+    document.addEventListener('keydown', function(ev) {
+        if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey &&
+            (ev.key === 'v' || ev.key === 'V')) {
+            globalThis._suppressNextPaste = true;
+            setTimeout(function() { globalThis._suppressNextPaste = false; }, 3000);
+        }
+    }, true);
+
+    // ── PASTE handler (capture phase, registered EARLY) ──────────
+    // This MUST be registered before COOL's Clipboard.js loads so it
+    // fires first. stopImmediatePropagation prevents COOL's broken
+    // paste path (which tries to POST to cool:/... and fails).
+    //
+    // Rule: always paste from the real system clipboard, UNLESS it
+    // still holds what we last copied from the document.
     document.addEventListener('paste', function(ev) {
-        globalThis._isExternalPaste = false;
-        if (ev.clipboardData) {
-            var html = ev.clipboardData.getData('text/html') || '';
-            if (html && html.indexOf('data-coolorigin') < 0 && html.indexOf('meta-origin') < 0) {
-                globalThis._isExternalPaste = true;
-                console.log('[wasm-loader] External paste detected (no COOL meta in clipboard)');
-            } else if (html) {
-                console.log('[wasm-loader] Internal paste detected (COOL meta found)');
+        // Guard: TheFakeWebSocket not ready yet (doc still loading)
+        if (!globalThis.TheFakeWebSocket) return;
+
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+
+        var html = ev.clipboardData ? ev.clipboardData.getData('text/html') || '' : '';
+        var plain = ev.clipboardData ? ev.clipboardData.getData('text/plain') || '' : '';
+
+        // Detect internal paste: either fingerprint matches OR the
+        // HTML contains COOL's origin marker (set by our oncopy handler).
+        // The fingerprint can be null if the 200ms setTimeout hasn't
+        // fired yet, so the marker check is the reliable fallback.
+        var hasCoolMarker = html && (html.indexOf('data-coolorigin') >= 0 ||
+                                     html.indexOf('meta-origin') >= 0);
+        var isInternal = hasCoolMarker ||
+                         (globalThis._lastCopiedPlain && plain === globalThis._lastCopiedPlain);
+
+        if (isInternal) {
+            // Clipboard holds content from our document → Kit internal
+            // paste (preserves full formatting). We suppressed Map.Keyboard's
+            // uno:Paste in the keydown handler, so we send it ourselves.
+            console.log('[wasm-loader] Internal paste (' +
+                (hasCoolMarker ? 'COOL marker' : 'fingerprint') +
+                ', ' + plain.length + ' chars)');
+            globalThis.TheFakeWebSocket.send('uno .uno:Paste');
+        } else if (html) {
+            // External HTML content (from browser, Word, etc.)
+            console.log('[wasm-loader] External paste (html, ' + html.length + ' chars)');
+            globalThis.TheFakeWebSocket.send(
+                new Blob(['paste mimetype=text/html\n', html]));
+        } else if (plain) {
+            // External plain text (terminal, Notepad, etc.)
+            console.log('[wasm-loader] External paste (plain, ' + plain.length + ' chars)');
+            globalThis.TheFakeWebSocket.send(
+                new Blob(['paste mimetype=text/plain\n', plain]));
+        } else {
+            // Check for image in clipboardData.items (images aren't
+            // available via getData(), only via items[].getAsFile())
+            var imageFile = null;
+            if (ev.clipboardData && ev.clipboardData.items) {
+                for (var i = 0; i < ev.clipboardData.items.length; i++) {
+                    var item = ev.clipboardData.items[i];
+                    if (item.type && item.type.startsWith('image/')) {
+                        imageFile = item.getAsFile();
+                        break;
+                    }
+                }
+            }
+            if (imageFile) {
+                console.log('[wasm-loader] External paste (image, ' + imageFile.type + ', ' + imageFile.size + 'B)');
+                // Read the image file and send as paste blob
+                var reader = new FileReader();
+                reader.onload = function() {
+                    var bytes = new Uint8Array(reader.result);
+                    var ext = imageFile.type.split('/')[1] || 'png';
+                    // Convert to base64 for insertfile command
+                    var b64 = '';
+                    var CHUNK = 32768;
+                    for (var ci = 0; ci < bytes.length; ci += CHUNK) {
+                        b64 += String.fromCharCode.apply(null, bytes.slice(ci, Math.min(ci + CHUNK, bytes.length)));
+                    }
+                    b64 = btoa(b64);
+                    var msg = 'insertfile name=clipboard-paste.' + ext + ' type=graphic data=' + b64;
+                    console.log('[wasm-loader] Image paste → insertfile (' + msg.length + ' chars)');
+                    globalThis.TheFakeWebSocket.send(msg);
+                };
+                reader.readAsArrayBuffer(imageFile);
+            } else {
+                console.log('[wasm-loader] Paste: empty clipboard — ignored');
             }
         }
-    }, true); // capture phase
+    }, true);
 
     var OrigXHR = window.XMLHttpRequest;
     window.XMLHttpRequest = function() {
@@ -714,36 +687,36 @@
                         Values: { Status: 'Initialized' }
                     }), '*');
                 } catch(e) {}
-                // Fix Ctrl+C for WASM mode. COOL's mobile path just sends
-                // postMobileMessage('COPY') which copies to Kit's internal
-                // clipboard but never writes to the SYSTEM clipboard.
-                // Override: after Kit processes .uno:Copy, request the
-                // selection content, then write it to the system clipboard
-                // via the Clipboard API.
+                // ── COPY override ─────────────────────────────────────
+                // Write the selection to the SYSTEM clipboard so external
+                // apps can receive it.  Also save a plain-text fingerprint
+                // so the paste handler knows whether the clipboard still
+                // holds "our" content or something the user copied elsewhere.
                 try {
                     if (window.app && window.app.map && window.app.map._clip) {
                         var clip = window.app.map._clip;
                         document.oncopy = function(ev) {
                             ev.preventDefault();
-                            // Request selection from Kit (populates _selectionContent)
+                            // Map.Keyboard already sends uno:Copy on Ctrl+C
+                            // keydown (line 860 of Map.Keyboard.js, mobile path).
+                            // We do NOT send it again — just populate the system
+                            // clipboard below.
+                            // Ask Kit for the selection HTML
                             if (globalThis.postMobileMessage) {
                                 globalThis.postMobileMessage('gettextselection mimetype=text/html');
                             }
-                            // Give Kit a moment to respond, then write to clipboard
                             setTimeout(function() {
                                 var html = clip._selectionContent || '';
                                 var plain = clip._selectionPlainTextContent || '';
                                 if (!plain && html) {
-                                    // Strip <style>, <head>, <script> and
-                                    // meta tags before extracting text —
-                                    // div.textContent includes CSS rules
-                                    // from <style> as visible text.
                                     var d = document.createElement('div');
                                     d.innerHTML = html;
                                     var kill = d.querySelectorAll('style, head, script, meta, link, title');
                                     for (var ki = 0; ki < kill.length; ki++) kill[ki].remove();
                                     plain = (d.textContent || '').trim();
                                 }
+                                // Save fingerprint BEFORE writing to clipboard
+                                globalThis._lastCopiedPlain = plain || null;
                                 if (navigator.clipboard && navigator.clipboard.write && html) {
                                     navigator.clipboard.write([new ClipboardItem({
                                         'text/html': new Blob([html], {type: 'text/html'}),
@@ -752,21 +725,48 @@
                                         console.log('[wasm-loader] Copied to system clipboard (' + plain.length + ' chars)');
                                     }).catch(function(e) {
                                         console.error('[wasm-loader] Clipboard write failed:', e);
+                                        globalThis._lastCopiedPlain = null;
                                     });
                                 } else if (plain) {
-                                    // Fallback: write plain text
                                     navigator.clipboard.writeText(plain).catch(function(){});
                                 }
                             }, 200);
                             return false;
                         };
                         document.oncut = function(ev) {
-                            document.oncopy(ev);
-                            // Also send the cut command to Kit
-                            if (globalThis.TheFakeWebSocket)
+                            ev.preventDefault();
+                            // Cut = copy to system clipboard + delete from doc
+                            if (globalThis.TheFakeWebSocket) {
                                 globalThis.TheFakeWebSocket.send('uno .uno:Cut');
+                            }
+                            // Also write to system clipboard (same as copy)
+                            if (globalThis.postMobileMessage) {
+                                globalThis.postMobileMessage('gettextselection mimetype=text/html');
+                            }
+                            setTimeout(function() {
+                                var html = clip._selectionContent || '';
+                                var plain = clip._selectionPlainTextContent || '';
+                                if (!plain && html) {
+                                    var d = document.createElement('div');
+                                    d.innerHTML = html;
+                                    var kill = d.querySelectorAll('style, head, script, meta, link, title');
+                                    for (var ki = 0; ki < kill.length; ki++) kill[ki].remove();
+                                    plain = (d.textContent || '').trim();
+                                }
+                                globalThis._lastCopiedPlain = plain || null;
+                                if (navigator.clipboard && navigator.clipboard.write && html) {
+                                    navigator.clipboard.write([new ClipboardItem({
+                                        'text/html': new Blob([html], {type: 'text/html'}),
+                                        'text/plain': new Blob([plain], {type: 'text/plain'}),
+                                    })]).catch(function() {});
+                                }
+                            }, 200);
                             return false;
                         };
+
+                        // Paste handler is registered at the top of this
+                        // file (capture phase, before COOL loads). No need
+                        // to set it again here.
                         mark('clipboard:wasm_copy_override');
                     }
                 } catch(e) {}

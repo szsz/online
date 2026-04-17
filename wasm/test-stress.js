@@ -12,7 +12,7 @@ const __cl = require('./lib/inject-checklist');
 // 7. A reconnects (new page, same room), types EPSILON (7 chars)
 // 8. Verify D and reconnected-A converge
 
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -25,7 +25,6 @@ const SHOT_DIR = '/tmp/static-deploy/public/shots-stress';
 const DOC_NAME = 'test document.docx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }
 function log(msg) { console.log(`[${elapsed()}] ${msg}`); }
@@ -67,6 +66,16 @@ async function waitForReady(page, label, count) {
     return false;
 }
 
+// Click the center of the editor canvas to focus it for keyboard input
+async function clickCanvas(page) {
+    const frameEl = await page.$('iframe#editor-frame');
+    if (frameEl) {
+        const box = await frameEl.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(300);
+}
+
 (async () => {
     log('=== Stress test: join, leave, reconnect ===');
 
@@ -75,11 +84,7 @@ async function waitForReady(page, label, count) {
 
     if (!fs.existsSync(DOC_PATH)) { log('ERROR: doc not found'); process.exit(1); }
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     let allPassed = true;
     function check(label, condition) { __cl.recordCheck(label, condition);
@@ -126,10 +131,9 @@ async function waitForReady(page, label, count) {
 
     async function typeText(page, label, text) {
         log(`[${label}] Typing "${text}"...`);
+        await clickCanvas(page);
         for (const ch of text) {
-            await page.evaluate((c) => {
-                globalThis.TheFakeWebSocket.send('textinput id=0 text=' + c);
-            }, ch);
+            await page.keyboard.type(ch, { delay: 20 });
             await sleep(1500);
         }
         await sleep(5000);
@@ -282,7 +286,7 @@ async function waitForReady(page, label, count) {
     } catch (e) {
         log('Error: ' + e.message);
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

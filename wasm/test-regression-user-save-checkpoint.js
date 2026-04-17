@@ -7,10 +7,10 @@ const __cl = require('./lib/inject-checklist');
 //   - Open one browser, type some text so the doc is dirty.
 //   - Capture the relay's stored checkpointHash and the storage's
 //     X-Content-Hash for /api/files/<name> BEFORE the save.
-//   - Dispatch `uno .uno:Save`.
+//   - Press Ctrl+S (real keyboard).
 //   - Wait. After the save+upload completes, both should reflect the
 //     new content (and the two hashes should match each other).
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const https = require('https');
 const env = require('./lib/test-env');
@@ -22,7 +22,6 @@ const RELAY_HTTP = RELAY_BASE.replace(/^wss?:/, 'https:');
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-user-save';
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }
 
@@ -53,16 +52,17 @@ function httpGet(urlStr, opts) {
     });
 }
 
+async function clickCanvas(page) {
+    await page.mouse.click(640, 400);
+    await sleep(500);
+}
+
 (async () => {
     log('=== Regression: user save → checkpoint + storage upload ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     const STAMP = Date.now();
     const NAME = 'usersave-' + STAMP + '.txt';
@@ -130,11 +130,14 @@ function httpGet(urlStr, opts) {
 
         // ── Type some text ───────────────────────────────────────────
         log('\n--- Typing "' + TYPED + '" ---');
-        // GoToEndOfDoc to land at end (5 chars in) before typing.
-        await page.evaluate(() => TheFakeWebSocket.send('uno .uno:GoToEndOfDoc'));
+        // Click canvas to focus, then Ctrl+End to land at end before typing.
+        await clickCanvas(page);
+        await page.keyboard.down('Control');
+        await page.keyboard.press('End');
+        await page.keyboard.up('Control');
         await sleep(800);
         for (const c of TYPED) {
-            await page.evaluate((c) => TheFakeWebSocket.send('textinput id=0 text=' + c), c);
+            await page.keyboard.type(c, { delay: 50 });
             await sleep(400);
         }
         await sleep(2000);
@@ -142,10 +145,12 @@ function httpGet(urlStr, opts) {
             document.querySelector('#StateWordCount')?.textContent || '');
         log(`After typing: "${wcAfterType.trim()}"`);
 
-        // ── User save (.uno:Save) ────────────────────────────────────
-        log('\n--- Dispatching uno .uno:Save (Ctrl+S) ---');
+        // ── User save (Ctrl+S) ──────────────────────────────────────
+        log('\n--- Dispatching Ctrl+S (real keyboard) ---');
         const saveTime = Date.now();
-        await page.evaluate(() => TheFakeWebSocket.send('uno .uno:Save'));
+        await page.keyboard.down('Control');
+        await page.keyboard.press('s');
+        await page.keyboard.up('Control');
 
         // Wait for the save+upload pipeline to flush. saveAndUploadCheckpoint
         // has a built-in 1.5 s delay before reading /wasm + uploading; give
@@ -184,7 +189,7 @@ function httpGet(urlStr, opts) {
         log('Error: ' + (e.stack || e.message));
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

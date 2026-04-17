@@ -4,26 +4,8 @@ const __cl = require('./lib/inject-checklist');
 // User-reported bug: pressing Delete in one browser does not propagate to
 // the other browser.
 //
-// Mechanism: COOL's Map.Keyboard.js leaves Backspace and Delete to
-// TextInput.js's beforeinput handler. TextInput sends:
-//
-//     removetextcontext id=<windowId> before=<N> after=<N>
-//
-// (note the typo — "removetextcontext" not "removetextcontent" — that's
-// what the wire protocol actually uses; see TextInput.js _removeTextContent).
-//
-// The relay-adapter's interceptedSend filter recognizes these prefixes as
-// user-input that must be relayed:
-//   key   mouse   textinput   windowkey   uno
-//
-// `removetextcontext` is not in that list, so it falls into the "not user
-// input" branch and is delivered straight to the local Kit via
-// postMobileMessage — bypassing the relay entirely. Browser B never sees
-// the delete.
-//
-// This test reproduces it via the on-the-wire message TextInput would
-// produce, which is the same message a real Delete keypress generates.
-const puppeteer = require('puppeteer');
+// ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
 
@@ -32,7 +14,6 @@ const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-delete-key';
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }
 
@@ -71,16 +52,18 @@ async function waitForCharCount(page, expected, timeoutMs) {
     return -1;
 }
 
+// Click the editor canvas to focus it
+async function clickCanvas(page) {
+    await page.mouse.click(640, 400);
+    await sleep(500);
+}
+
 (async () => {
     log('=== Regression: Delete key must propagate via relay ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     try {
         // Upload "Hello World" — 11 chars.
@@ -123,34 +106,29 @@ async function waitForCharCount(page, expected, timeoutMs) {
         check('Both browsers see "Hello World" (11 chars)',
               initA === 11 && initB === 11);
 
-        // ── A: position cursor at end and press Delete ─────────────
-        // We dispatch the EXACT message TextInput.js produces for the
-        // Delete key — `removetextcontext id=… before=0 after=N`. With
-        // before=0 after=1, COOL deletes the character to the right of
-        // the cursor. From end-of-doc this deletes nothing locally; we
-        // first move the cursor somewhere mid-doc (between 'Hello ' and
-        // 'World') so the next-char delete actually removes a 'W'.
+        // ── A: position cursor at position 6 and press Delete ──────
+        // Ctrl+Home moves to start, then Right x6 puts cursor at
+        // "Hello |World". Delete removes the 'W'.
         log('\n--- A: move cursor to position 6, press Delete ---');
-        // GoToStartOfDoc then Right×6 puts cursor at "Hello |World".
-        await pageA.evaluate(() => TheFakeWebSocket.send('uno .uno:GoToStartOfDoc'));
+        await clickCanvas(pageA);
+
+        // Ctrl+Home to go to start of document
+        await pageA.keyboard.down('Control');
+        await pageA.keyboard.press('Home');
+        await pageA.keyboard.up('Control');
         await sleep(800);
+
+        // Right arrow x6 to position cursor at "Hello |World"
         for (let i = 0; i < 6; i++) {
-            await pageA.evaluate(() => {
-                TheFakeWebSocket.send('key type=input char=0 key=1027');  // Right
-                TheFakeWebSocket.send('key type=up    char=0 key=1027');
-            });
+            await pageA.keyboard.press('ArrowRight');
             await sleep(120);
         }
         await sleep(800);
         await snap(pageA, 'A_at_position_6');
 
-        // The Delete key — TextInput's removetextcontext message.
-        // windowId is doc-window in writer; 0 works for our purposes
-        // (we're not in a sub-window dialog).
-        await pageA.evaluate(() => {
-            TheFakeWebSocket.send('removetextcontext id=0 before=0 after=1');
-        });
-        log('A: dispatched removetextcontext (Delete key)');
+        // Press Delete key (real keyboard input)
+        await pageA.keyboard.press('Delete');
+        log('A: pressed Delete key');
 
         // ── Wait for the delete to propagate to B ───────────────────
         // Doc was 11 chars, deleting 1 → 10 chars on both sides.
@@ -180,7 +158,7 @@ async function waitForCharCount(page, expected, timeoutMs) {
         log('Error: ' + (e.stack || e.message));
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

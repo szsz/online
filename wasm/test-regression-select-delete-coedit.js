@@ -12,12 +12,11 @@ const __cl = require('./lib/inject-checklist');
 //   - The doc is a real .docx (matters: docx parsing/save path is heavier
 //     than .txt and was where the user actually saw the divergence)
 //   - A double-clicks inside the doc to select a word
-//   - A presses Delete via the same key code (UNOKey.DELETE = 1286) that
-//     a real keyboard event produces via Map.Keyboard._toUNOKeyCode
+//   - A presses Delete via real keyboard events (same path as a real user)
 //   - Both browsers deselect (Right arrow) so #StateWordCount reports
 //     doc-char-count not selection-char-count
 //   - Both must converge to the same shorter doc
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -27,7 +26,6 @@ const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-select-delete';
 const DOC_NAME = 'Simple small document.docx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }
 
@@ -69,15 +67,19 @@ function charCount(status) {
 function isSelectionStatus(status) {
     return /^Selected:/i.test((status || '').trim());
 }
+async function clickCanvas(page) {
+    const frameEl = await page.$('iframe#editor-frame');
+    if (frameEl) {
+        const box = await frameEl.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(300);
+}
 async function clearSelection(page) {
-    const fr = await getEditorFrame(page);
-    if (!fr) return;
-    // ArrowRight (UNOKey.RIGHT = 1027) without modifier collapses any
-    // selection to the caret in writer.
-    await fr.evaluate(() => {
-        TheFakeWebSocket.send('key type=input char=0 key=1027');
-        TheFakeWebSocket.send('key type=up    char=0 key=1027');
-    });
+    // ArrowRight without modifier collapses any selection to the caret
+    // in writer.
+    await clickCanvas(page);
+    await page.keyboard.press('ArrowRight');
     await sleep(800);
 }
 async function waitForCharCount(page, expected, timeoutMs) {
@@ -95,11 +97,7 @@ async function waitForCharCount(page, expected, timeoutMs) {
     fs.mkdirSync(SHOT_DIR, { recursive: true });
     if (!fs.existsSync(DOC_PATH)) { log('ERROR: fixture missing: ' + DOC_PATH); process.exit(1); }
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     try {
         // Upload the docx fresh so the test is self-contained (the real
@@ -153,28 +151,23 @@ async function waitForCharCount(page, expected, timeoutMs) {
               initA > 0 && initA === initB,
               'A=' + initA + ' B=' + initB);
 
-        // ── A: select the first word via the EXACT user-keyboard path ─
-        // We send the same key codes that Map.Keyboard._toUNOKeyCode would
-        // produce for a real Ctrl+Home then Ctrl+Shift+Right keyboard
-        // sequence. The user-reported bug is about the SELECT+DELETE
-        // reaching B; using actual key events (rather than uno commands)
+        // ── A: select the first word via REAL keyboard events ──────────
+        // The user-reported bug is about the SELECT+DELETE reaching B;
+        // using actual keyboard events (rather than TheFakeWebSocket)
         // matches what the user does and exercises the same dispatch path.
-        //
-        // UNOKey + UNOModifier (from browser/src/UNO/Key.js + docstate.ts):
-        //   HOME    = 1028,  Ctrl+Home  = 1028 + 8192 = 9220
-        //   RIGHT   = 1027,  Ctrl+Shift+Right = 1027 + 8192 + 4096 = 13315
-        //   DELETE  = 1286
         log('\n--- A: Ctrl+Home, Ctrl+Shift+Right (select first word), Delete ---');
-        const frA = await getEditorFrame(pageA);
-        await frA.evaluate(() => {
-            TheFakeWebSocket.send('key type=input char=0 key=9220');     // Ctrl+Home
-            TheFakeWebSocket.send('key type=up    char=0 key=9220');
-        });
+        await clickCanvas(pageA);
+        // Ctrl+Home — move caret to start of document
+        await pageA.keyboard.down('Control');
+        await pageA.keyboard.press('Home');
+        await pageA.keyboard.up('Control');
         await sleep(1200);
-        await frA.evaluate(() => {
-            TheFakeWebSocket.send('key type=input char=0 key=13315');    // Ctrl+Shift+Right
-            TheFakeWebSocket.send('key type=up    char=0 key=13315');
-        });
+        // Ctrl+Shift+Right — select the first word
+        await pageA.keyboard.down('Control');
+        await pageA.keyboard.down('Shift');
+        await pageA.keyboard.press('ArrowRight');
+        await pageA.keyboard.up('Shift');
+        await pageA.keyboard.up('Control');
         await sleep(1500);
         await snap(pageA, 'A_after_select');
         await snap(pageB, 'B_after_select');
@@ -186,11 +179,8 @@ async function waitForCharCount(page, expected, timeoutMs) {
               isSelectionStatus(sASel) && aSelectionSize > 0,
               sASel);
 
-        // Delete via the keyboard channel (UNOKey.DELETE = 1286).
-        await frA.evaluate(() => {
-            TheFakeWebSocket.send('key type=input char=0 key=1286');
-            TheFakeWebSocket.send('key type=up    char=0 key=1286');
-        });
+        // Delete via real keyboard
+        await pageA.keyboard.press('Delete');
         log(`A: pressed Delete (selection was ${aSelectionSize} chars)`);
 
         // Wait for propagation, then DESELECT on both before reading
@@ -227,7 +217,7 @@ async function waitForCharCount(page, expected, timeoutMs) {
         log('Error: ' + (e.stack || e.message));
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

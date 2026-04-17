@@ -9,11 +9,10 @@ const __cl = require('./lib/inject-checklist');
 //
 // This test:
 //   1. Opens a minimal Writer doc (Hello World, ~9 KB).
-//   2. Dispatches `insertfile` with a tiny 1×1 red PNG via
-//      postMobileMessage (the same path the real UI would use).
+//   2. Sets clipboard to a 1x1 PNG image, then pastes via Ctrl+V.
 //   3. Waits for the Kit to process, then saves + downloads.
 //   4. Checks: saved doc is larger than original (image embedded).
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -23,30 +22,34 @@ const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-image-insert';
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }
 
 let allPassed = true;
 function check(label, cond, ev) {
     __cl.recordCheck(label, cond, ev);
-    if (cond) log(`  ✓ ${label}`);
-    else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
+    if (cond) log(`  PASS: ${label}`);
+    else { log(`  FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
-// Minimal valid 1×1 red PNG (67 bytes).
+// Minimal valid 1x1 red PNG (67 bytes).
 const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+
+async function clickCanvas(page) {
+    const canvas = await page.$('canvas');
+    if (canvas) {
+        const box = await canvas.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(300);
+}
 
 (async () => {
     log('=== Regression: image insertion into Writer doc ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
 
     const NAME = 'imgtest-' + Date.now() + '.docx';
     const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
@@ -70,6 +73,11 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
         const coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(NAME)}&relay=${relay}&access_token=test`;
 
         const page = await browser.newPage();
+        // Grant clipboard permissions for real paste
+        const cdp = await page.createCDPSession();
+        await cdp.send('Browser.grantPermissions', {
+            permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
+        });
         page.on('console', m => {
             if (/insertfile|image|graphic|mobile/i.test(m.text()))
                 log(`[console] ${m.text().substring(0, 200)}`);
@@ -90,42 +98,33 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
         }, BASE, NAME);
         log(`Initial doc size: ${initialSize} bytes`);
 
-        // ── Insert image via postMobileMessage ──────────────────────
-        log('\n--- Inserting 1×1 PNG via postMobileMessage ---');
-        const inserted = await page.evaluate((b64) => {
-            if (typeof globalThis.postMobileMessage !== 'function') {
-                return { error: 'postMobileMessage not available' };
-            }
-            try {
-                globalThis.postMobileMessage(
-                    'insertfile name=test-image.png type=graphic data=' + b64);
-                return { ok: true };
-            } catch (e) {
-                return { error: e.message };
-            }
+        // -- Insert image via clipboard paste (set clipboard to PNG, then Ctrl+V) --
+        log('\n--- Inserting 1x1 PNG via clipboard paste ---');
+        await page.evaluate(async (b64) => {
+            var raw = atob(b64);
+            var bytes = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+            await navigator.clipboard.write([new ClipboardItem({
+                'image/png': new Blob([bytes], { type: 'image/png' }),
+            })]);
         }, TINY_PNG_B64);
-        log(`insertfile result: ${JSON.stringify(inserted)}`);
-        check('postMobileMessage is available', !inserted.error, inserted.error);
+        await clickCanvas(page);
+        await page.keyboard.down('Control');
+        await page.keyboard.press('v');
+        await page.keyboard.up('Control');
+        log('Pasted image via Ctrl+V');
 
         // Wait for the Kit to process the insertion
         await sleep(5000);
         await page.screenshot({ path: `${SHOT_DIR}/02_after_insert.png` });
 
-        // ── Save and re-check size ──────────────────────────────────
-        // The WASM build's C++ DocumentBroker rejects `uno .uno:Save`
-        // (assertion: !message.starts_with("uno .uno:Save") unless
-        // SaveGraphic). The correct save path in WASM is the `save`
-        // command (lowercase, no uno: prefix), which is what the
-        // relay-adapter's saveAndUploadCheckpoint uses.
-        log('\n--- Saving via Kit save command ---');
-        // The Kit's WOPI putFile handler writes the saved bytes back to
-        // /wasm/<name> on the editor server. Give generous time — the
-        // Kit does the LO save + serialization + HTTP PUT.
-        await page.evaluate(() => {
-            if (globalThis.postMobileMessage) {
-                globalThis.postMobileMessage('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
-            }
-        });
+        // -- Save via Ctrl+S --
+        log('\n--- Saving via Ctrl+S ---');
+        await clickCanvas(page);
+        await page.keyboard.down('Control');
+        await page.keyboard.press('s');
+        await page.keyboard.up('Control');
+
         // Poll /wasm/<name> until the file size changes or 15s passes.
         const saveDeadline = Date.now() + 15000;
         let savedSize = initialSize;
@@ -154,12 +153,12 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
               canvasCount >= 1,
               'canvasCount=' + canvasCount);
 
-        log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
+        log('\n' + (allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'));
     } catch (e) {
         log('Error: ' + (e.stack || e.message));
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }

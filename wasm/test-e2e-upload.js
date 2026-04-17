@@ -1,7 +1,7 @@
 const __cl = require('./lib/inject-checklist');
 // Test: End-to-end upload → open → co-edit
 // Upload at 3s, click open immediately. No waiting for preload.
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
@@ -11,7 +11,6 @@ const BASE = env.EDITOR_URL;
 const TIMEOUT = 600000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-e2e-upload';
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
 
@@ -29,21 +28,22 @@ function check(label, condition) { __cl.recordCheck(label, condition);
     else { log(`  ✗ FAIL: ${label}`); allPassed = false; }
 }
 
+async function clickIframe(page) {
+    const frameEl = await page.$('iframe#editor-frame');
+    if (frameEl) {
+        const box = await frameEl.boundingBox();
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await sleep(300);
+}
+
 (async () => {
     log('=== E2E Upload & Co-Edit Test ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const browserA = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
-    const browserB = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser: browserA, cleanup: cleanupA } = await launch();
+    const { browser: browserB, cleanup: cleanupB } = await launch();
 
     try {
         // --- Step 1: Open landing page ---
@@ -144,16 +144,9 @@ function check(label, condition) { __cl.recordCheck(label, condition);
             await sleep(2000);
             await snap(pageB, 'document_B');
 
-            const frB = await findEditorFrame(pageB);
-            for (const ch of 'HELLO') {
-                if (frB) {
-                    await frB.evaluate((c) => {
-                        if (globalThis.TheFakeWebSocket)
-                            TheFakeWebSocket.send('key type=input char=' + c.charCodeAt(0) + ' key=0');
-                    }, ch);
-                }
-                await sleep(500);
-            }
+            // Click the iframe to focus it, then type with real keyboard
+            await clickIframe(pageB);
+            await pageB.keyboard.type('HELLO', { delay: 50 });
             await sleep(3000);
             await snap(pageA, 'A_after_coedit');
             await snap(pageB, 'B_after_coedit');
@@ -169,8 +162,8 @@ function check(label, condition) { __cl.recordCheck(label, condition);
         log('Error: ' + e.message);
         allPassed = false;
     } finally {
-        await browserA.close();
-        await browserB.close();
+        await cleanupA();
+        await cleanupB();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }
