@@ -108,21 +108,14 @@ async function getWc(page) {
         // TEST 1: Paste RICH TEXT from "external app" (XHR clipboard POST)
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 1: Paste rich text (bold + italic) from external app ---');
-        // Simulate COOL's _sendToInternalClipboard via XHR POST
-        // with a multi-section blob (text/html + text/plain) like
-        // _readContentSyncToBlob produces
+        // Simulate external paste: send paste blob with HTML containing
+        // bold + italic formatting. This is what our relay-adapter's blob
+        // interceptor converts external clipboard content into.
         await pageA.evaluate(() => {
-            var html = '<p><b>ExternalBold</b> and <i>ExternalItalic</i></p>';
-            var plain = 'ExternalBold and ExternalItalic';
-            // Multi-section format (what _readContentSyncToBlob creates)
-            var content = 'text/html\n' + html.length.toString(16) + '\n' + html + '\n' +
-                          'text/plain\n' + plain.length.toString(16) + '\n' + plain + '\n';
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', 'collabora-online-mobile/cool/clipboard?Tag=extpaste');
-            xhr.send(new FormData());
-            // Our XHR wrapper intercepts before the real send
+            TheFakeWebSocket.send('key type=input char=0 key=9221'); // Ctrl+End
+            TheFakeWebSocket.send('key type=up char=0 key=9221');
         });
-        // Also send via the blob path (direct simulation)
+        await sleep(500);
         await pageA.evaluate(() => {
             var html = '<p><b>ExternalBold</b> and <i>ExternalItalic</i></p>';
             var blob = new Blob(['paste mimetype=text/html\n', html]);
