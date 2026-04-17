@@ -422,6 +422,34 @@ async function getWc(page) {
               dblDelta === 3,
               'delta=' + dblDelta + (dblDelta === 9 ? ' — DOUBLE PASTE BUG' : ''));
 
+        // ══════════════════════════════════════════════════════════════
+        // TEST 8: External IMAGE paste after internal copy (double-paste)
+        // ══════════════════════════════════════════════════════════════
+        log('\n--- TEST 8: External image paste after internal text copy ---');
+        const fr = pageA.frames().find(f => f.url().includes('cool.html'));
+        if (fr) {
+            const before8 = charCount(await getWc(pageA));
+            // Simulate the exact sequence: Map.Keyboard pastes first, then blob
+            await fr.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
+            await sleep(500);
+            await fr.evaluate(() => { globalThis._isExternalPaste = true; });
+            await fr.evaluate(() => {
+                var b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+                var raw = atob(b64);
+                var bytes = new Uint8Array(raw.length);
+                for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                var blob = new Blob(['paste mimetype=image/png\n', bytes]);
+                TheFakeWebSocket.send(blob);
+            });
+            await sleep(8000);
+            const after8 = charCount(await getWc(pageA));
+            const delta8 = after8 - before8;
+            log(`Image paste after copy: ${before8} → ${after8} (delta=${delta8})`);
+            check('TEST8: No text double-paste with external image (delta ≤ 2)',
+                  delta8 <= 2,
+                  'delta=' + delta8 + (delta8 > 5 ? ' — text was pasted alongside image' : ''));
+        }
+
         log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
     } catch (e) {
         log('Error: ' + (e.stack || e.message));
