@@ -509,12 +509,10 @@
                 return _origXHRSend.apply(xhr, [body]);
             }
             mark('clipboard:xhr_post_intercepted');
-            // EXTERNAL paste. Map.Keyboard already sent `uno .uno:Paste`
-            // which pasted Kit's INTERNAL clipboard (wrong content).
-            // Undo it, then our blob pastes the correct external content.
-            if (globalThis.TheFakeWebSocket) {
-                globalThis.TheFakeWebSocket.send('uno .uno:Undo');
-            }
+            // EXTERNAL paste. The blob interceptor in relay-adapter
+            // sends Undo + the actual paste content. We just suppress
+            // _doInternalPaste's follow-up uno:Paste here (don't also
+            // send Undo — that would double-undo).
             globalThis._suppressNextPaste = true;
             setTimeout(function() { globalThis._suppressNextPaste = false; }, 5000);
             // Read the FormData body. The clipboard HTML is in a field
