@@ -500,13 +500,14 @@
         if (this._coolMethod === 'POST' && this._coolUrl &&
             this._coolUrl.indexOf('/cool/clipboard') >= 0) {
             mark('clipboard:xhr_post_intercepted');
-            // Suppress ALL pending uno:Paste commands. COOL fires two
-            // paste paths on Ctrl+V:
-            //   1. Map.Keyboard sends `uno .uno:Paste` IMMEDIATELY
-            //   2. Native paste event → Clipboard.paste → XHR POST (here)
-            //      → _doInternalPaste → another uno:Paste
-            // Both must be suppressed because our blob interceptor handles
-            // the actual paste with the correct clipboard content.
+            // EXTERNAL paste detected. Map.Keyboard already sent
+            // `uno .uno:Paste` which pasted Kit's INTERNAL clipboard
+            // (wrong content). Undo that, then our blob pastes the
+            // correct external content.
+            // Also suppress the follow-up uno:Paste from _doInternalPaste.
+            if (globalThis.TheFakeWebSocket) {
+                globalThis.TheFakeWebSocket.send('uno .uno:Undo');
+            }
             globalThis._suppressNextPaste = true;
             setTimeout(function() { globalThis._suppressNextPaste = false; }, 5000);
             // Read the FormData body. The clipboard HTML is in a field
@@ -572,19 +573,6 @@
         }
         return _origXHRSend.apply(this, arguments);
     };
-
-    // Suppress keyboard-triggered uno:Paste on Ctrl+V. COOL's
-    // Map.Keyboard sends `uno .uno:Paste` IMMEDIATELY on Ctrl+V,
-    // before the native paste event fires. Our clipboard interceptor
-    // handles the actual paste (with the correct content from the
-    // system clipboard). Set the suppress flag on keydown so the
-    // uno:Paste from Map.Keyboard is dropped.
-    document.addEventListener('keydown', function(ev) {
-        if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'v' || ev.key === 'V') && !ev.shiftKey) {
-            globalThis._suppressNextPaste = true;
-            setTimeout(function() { globalThis._suppressNextPaste = false; }, 5000);
-        }
-    }, true); // capture phase — fires before COOL's handler
 
     var OrigXHR = window.XMLHttpRequest;
     window.XMLHttpRequest = function() {
