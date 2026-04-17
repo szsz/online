@@ -346,7 +346,42 @@ async function getWc(page) {
               !finalB.startsWith('Selected:'), finalB);
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 6: Double-paste guard — internal copy then external Ctrl+V
+        // TEST 6: Internal copy+paste AFTER external paste
+        // (Bug: _suppressNextPaste was blocking all internal pastes)
+        // ══════════════════════════════════════════════════════════════
+        log('\n--- TEST 6: Internal copy+paste after external paste ---');
+        // Select first word, copy
+        await pageA.evaluate(() => {
+            TheFakeWebSocket.send('key type=input char=0 key=9220'); // Ctrl+Home
+            TheFakeWebSocket.send('key type=up char=0 key=9220');
+        });
+        await sleep(500);
+        await pageA.evaluate(() => {
+            TheFakeWebSocket.send('key type=input char=0 key=13315'); // Ctrl+Shift+Right
+            TheFakeWebSocket.send('key type=up char=0 key=13315');
+        });
+        await sleep(500);
+        await pageA.evaluate(() => TheFakeWebSocket.send('uno .uno:Copy'));
+        await sleep(2000);
+        // Deselect, go to end
+        await pageA.evaluate(() => {
+            TheFakeWebSocket.send('key type=input char=0 key=9221'); // Ctrl+End
+            TheFakeWebSocket.send('key type=up char=0 key=9221');
+        });
+        await sleep(1000);
+        const beforeIntPaste = charCount(await getWc(pageA));
+        // Internal paste
+        await pageA.evaluate(() => TheFakeWebSocket.send('uno .uno:Paste'));
+        await sleep(5000);
+        const afterIntPaste = charCount(await getWc(pageA));
+        const intDelta = afterIntPaste - beforeIntPaste;
+        log(`Internal paste: ${beforeIntPaste} → ${afterIntPaste} (delta=${intDelta})`);
+        check('TEST6: Internal paste works after external paste (delta > 0)',
+              intDelta > 0,
+              'delta=' + intDelta + (intDelta === 0 ? ' — paste was blocked!' : ''));
+
+        // ══════════════════════════════════════════════════════════════
+        // TEST 7: Double-paste guard — internal copy then external Ctrl+V
         // After internal copy, Kit has the selection on its clipboard.
         // Then external paste (Ctrl+V with new content) should produce
         // ONLY the new content, not also the internal clipboard.
@@ -390,7 +425,7 @@ async function getWc(page) {
         const afterDbl = charCount(await getWc(pageA));
         const dblDelta = afterDbl - beforeDbl;
         log(`Double-paste test: ${beforeDbl} → ${afterDbl} (delta=${dblDelta})`);
-        check('TEST6: Only "NEW" pasted, not also "MARKER" (delta=3, not 9)',
+        check('TEST7: Only "NEW" pasted, not also "MARKER" (delta=3, not 9)',
               dblDelta === 3,
               'delta=' + dblDelta + (dblDelta === 9 ? ' — DOUBLE PASTE BUG' : ''));
 
