@@ -416,12 +416,19 @@
                     console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
                     return;
                 }
-                // Suppress the duplicate uno:Paste that COOL sends after
-                // our clipboard POST interceptor already pasted the HTML.
-                if (globalThis._suppressNextPaste && text === 'uno .uno:Paste') {
-                    console.log('[relay] Suppressing duplicate uno:Paste (already pasted via blob)');
-                    globalThis._suppressNextPaste = false;
-                    return;
+                // Suppress the duplicate paste that COOL sends after our
+                // clipboard POST interceptor already pasted the HTML.
+                // COOL uses EITHER `uno .uno:Paste` or a paste key event
+                // (key=8225, when usePasteKeyEvent=true in _doInternalPaste)
+                // depending on context. Suppress both.
+                if (globalThis._suppressNextPaste) {
+                    if (text === 'uno .uno:Paste' ||
+                        text === 'uno .uno:PasteSpecial' ||
+                        (text.startsWith('key type=input') && text.includes('key=8225'))) {
+                        console.log('[relay] Suppressing duplicate paste: ' + text.substring(0, 40));
+                        globalThis._suppressNextPaste = false;
+                        return;
+                    }
                 }
                 sendToRelay(0x00, myViewId, data);
 
