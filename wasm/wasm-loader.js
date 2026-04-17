@@ -701,8 +701,15 @@
                                 var html = clip._selectionContent || '';
                                 var plain = clip._selectionPlainTextContent || '';
                                 if (!plain && html) {
+                                    // Strip <style>, <head>, <script> and
+                                    // meta tags before extracting text —
+                                    // div.textContent includes CSS rules
+                                    // from <style> as visible text.
                                     var d = document.createElement('div');
-                                    d.innerHTML = html; plain = d.textContent || '';
+                                    d.innerHTML = html;
+                                    var kill = d.querySelectorAll('style, head, script, meta, link, title');
+                                    for (var ki = 0; ki < kill.length; ki++) kill[ki].remove();
+                                    plain = (d.textContent || '').trim();
                                 }
                                 if (navigator.clipboard && navigator.clipboard.write && html) {
                                     navigator.clipboard.write([new ClipboardItem({
