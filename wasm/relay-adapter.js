@@ -299,6 +299,16 @@
                     var payload = bytes.slice(nlIdx + 1);
                     console.log('[relay] Paste blob: mimetype=' + mime + ' payload=' + payload.length + 'B');
 
+                    // If this is an EXTERNAL paste (detected by the native
+                    // paste event listener), Map.Keyboard already sent
+                    // `uno .uno:Paste` which pasted Kit's stale internal
+                    // text clipboard. Undo it before we paste the real
+                    // external content (image or text).
+                    if (globalThis._isExternalPaste) {
+                        console.log('[relay] External paste blob — undoing Map.Keyboard stale paste');
+                        sendToRelay(0x00, myViewId, 'uno .uno:Undo');
+                    }
+
                     if (mime.startsWith('image/')) {
                         // Convert to insertfile (the path that works in WASM).
                         var b64 = '';
