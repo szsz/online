@@ -4361,9 +4361,26 @@ bool startURP(const std::shared_ptr<lok::Office>& LOKit, void** ppURPContext)
     return true;
 }
 
+#ifdef __EMSCRIPTEN__
+// Declared in wasmapp.cpp — set by JS when a memory snapshot is restored
+extern std::atomic<int> g_snapshotRestored;
+#endif
+
 /// Initializes LibreOfficeKit for cross-fork re-use.
 bool globalPreinit(const std::string &loTemplate)
 {
+#ifdef __EMSCRIPTEN__
+    if (g_snapshotRestored.load())
+    {
+        std::cout << "globalPreinit: SKIPPING — memory snapshot restored by JS" << std::endl;
+        // The snapshot has the fully initialized LO runtime in memory.
+        // We still need to set up the initFunction pointer for later use.
+        static void *handle = dlopen(nullptr, RTLD_NOW);
+        initFunction = reinterpret_cast<LokHookFunction2 *>(dlsym(handle, "libreofficekit_hook_2"));
+        return true;
+    }
+#endif
+
     auto _gp_t0 = std::chrono::steady_clock::now();
     auto _gp_mark = [&_gp_t0](const char* label) {
         auto now = std::chrono::steady_clock::now();

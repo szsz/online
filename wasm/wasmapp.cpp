@@ -19,13 +19,37 @@
 #include <wsd/COOLWSD.hpp>
 
 #include <emscripten/fetch.h>
+#include <emscripten.h>
 
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <memory>
 #include <mutex>
+
+// ── WASM Memory Snapshot ──────────────────────────────────
+// JS sets g_snapshotRestored=1 BEFORE signaling g_jsReady if it
+// restored a memory snapshot. The C++ thread checks this flag
+// and skips lok_preinit_2 if the memory is already initialized.
+static std::atomic<bool> g_jsReady{false};
+static std::atomic<int> g_snapshotRestored{0};
+
+extern "C" EMSCRIPTEN_KEEPALIVE void signal_js_ready(int snapshotRestored)
+{
+    g_snapshotRestored.store(snapshotRestored);
+    g_jsReady.store(true);
+    std::cout << "signal_js_ready: snapshotRestored=" << snapshotRestored << std::endl;
+}
+
+// JS calls this to check if preinit is done (to save a snapshot)
+extern "C" EMSCRIPTEN_KEEPALIVE int is_preinit_done()
+{
+    // This is set after globalPreinit completes in ForKit.cpp
+    // We piggyback on coolwsd_server_socket_fd being set
+    return coolwsd_server_socket_fd != -1 ? 1 : 0;
+}
 
 int coolwsd_server_socket_fd = -1;
 
@@ -439,6 +463,18 @@ int main(int argc, char* argv_main[])
         [&]
         {
             Util::setThreadName("COOLWSD::run");
+
+            // Wait for JS to signal readiness. JS may:
+            // a) Restore a WASM memory snapshot (return visitor) and set
+            //    g_snapshotRestored=1 → we skip globalPreinit
+            // b) Signal without restoring (first visitor) → normal init
+            std::cout << "COOLWSD thread: waiting for JS signal..." << std::endl;
+            while (!g_jsReady.load())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            std::cout << "COOLWSD thread: JS ready, snapshotRestored="
+                      << g_snapshotRestored.load() << std::endl;
 
             const std::string docKind = std::string(argv_main[1]);
             const std::string docDesc = std::string(argv_main[2]);

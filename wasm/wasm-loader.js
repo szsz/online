@@ -632,6 +632,89 @@
         if (!seenCalledRun && typeof Module !== 'undefined' && Module.calledRun) {
             seenCalledRun = true; mark('emscripten:calledRun');
             updateProgress('Opening document…', 95);
+
+            // ── Snapshot restore/signal ────────────────────────
+            // The COOLWSD thread is waiting for signal_js_ready().
+            // Check IndexedDB for a saved memory snapshot.
+            (function() {
+                var SNAP_KEY = 'lo-wasm-memory-v1';
+                function signalReady(restored) {
+                    mark('snapshot:signal', restored ? 'restored' : 'normal');
+                    if (typeof Module._signal_js_ready === 'function') {
+                        Module._signal_js_ready(restored ? 1 : 0);
+                    }
+                }
+                try {
+                    var dbReq = indexedDB.open('wasm-memory-snapshot', 1);
+                    dbReq.onupgradeneeded = function(e) {
+                        e.target.result.createObjectStore('snapshots');
+                    };
+                    dbReq.onsuccess = function(e) {
+                        var db = e.target.result;
+                        var tx = db.transaction('snapshots', 'readonly');
+                        var req = tx.objectStore('snapshots').get(SNAP_KEY);
+                        req.onsuccess = function() {
+                            var snap = req.result;
+                            if (snap && snap.memory && Module.HEAPU8) {
+                                try {
+                                    var src = new Uint8Array(snap.memory);
+                                    var dst = Module.HEAPU8;
+                                    if (src.length <= dst.length) {
+                                        mark('snapshot:restoring', (src.length / 1048576).toFixed(0) + 'MB');
+                                        dst.set(src);
+                                        mark('snapshot:restored');
+                                        db.close();
+                                        signalReady(true);
+                                        return;
+                                    }
+                                    mark('snapshot:size_mismatch', 'snap=' + src.length + ' heap=' + dst.length);
+                                } catch(err) {
+                                    mark('snapshot:restore_error', err.message);
+                                }
+                            }
+                            db.close();
+                            signalReady(false);
+                        };
+                        req.onerror = function() { db.close(); signalReady(false); };
+                    };
+                    dbReq.onerror = function() { signalReady(false); };
+                } catch(ex) {
+                    signalReady(false);
+                }
+
+                // Save snapshot after preinit completes (first visit only)
+                // Poll is_preinit_done until it returns 1, then save
+                if (typeof Module._is_preinit_done === 'function') {
+                    var saveInterval = setInterval(function() {
+                        if (Module._is_preinit_done() && Module.HEAPU8) {
+                            clearInterval(saveInterval);
+                            mark('snapshot:saving', (Module.HEAPU8.buffer.byteLength / 1048576).toFixed(0) + 'MB');
+                            try {
+                                var memCopy = Module.HEAPU8.buffer.slice(0);
+                                var dbReq2 = indexedDB.open('wasm-memory-snapshot', 1);
+                                dbReq2.onupgradeneeded = function(e) {
+                                    e.target.result.createObjectStore('snapshots');
+                                };
+                                dbReq2.onsuccess = function(e) {
+                                    var db2 = e.target.result;
+                                    var tx2 = db2.transaction('snapshots', 'readwrite');
+                                    tx2.objectStore('snapshots').put({
+                                        memory: memCopy,
+                                        timestamp: Date.now(),
+                                    }, SNAP_KEY);
+                                    tx2.oncomplete = function() {
+                                        mark('snapshot:saved', (memCopy.byteLength / 1048576).toFixed(0) + 'MB');
+                                        db2.close();
+                                    };
+                                    tx2.onerror = function() { db2.close(); };
+                                };
+                            } catch(ex) {
+                                mark('snapshot:save_error', ex.message);
+                            }
+                        }
+                    }, 500);
+                }
+            })();
         }
     }, 50);
 
