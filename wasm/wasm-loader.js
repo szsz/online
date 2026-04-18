@@ -660,7 +660,9 @@
             var writerLoaded = wc && /\d/.test(wc.textContent || '') &&
                                (wc.textContent.includes('word') || wc.textContent.includes('character'));
             var calcLoaded = dp && /\d/.test(dp.textContent || '') && dp.textContent.includes('Sheet');
-            var impressLoaded = nav && nav.textContent && nav.textContent.includes('Slide Show');
+            var slideStatus = document.querySelector('#SlideStatus');
+            var impressLoaded = (nav && nav.textContent && nav.textContent.includes('Slide Show')) ||
+                                (slideStatus && /Slide \d/i.test(slideStatus.textContent || ''));
             var loaded = writerLoaded || calcLoaded || impressLoaded;
             // For switches, require the displayed text to have CHANGED from
             // when we re-armed (otherwise the old blank-doc count satisfies

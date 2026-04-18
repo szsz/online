@@ -96,9 +96,13 @@ async function editorHelpers(page) {
             await sleep(500);
             frame = getEditorFrame();
             if (frame) {
-                const wc = await frame.evaluate(() =>
-                    document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-                if (/\d+\s+(word|character)/i.test(wc)) {
+                const status = await frame.evaluate(() => {
+                    var wc = document.querySelector('#StateWordCount')?.textContent || '';
+                    var dp = document.querySelector('#StatusDocPos')?.textContent || '';
+                    var ss = document.querySelector('#SlideStatus')?.textContent || '';
+                    return wc + '|' + dp + '|' + ss;
+                }).catch(() => '');
+                if (/\d+\s+(word|character)|Sheet \d|Slide \d/i.test(status)) {
                     const canvasOk = await frame.evaluate(() =>
                         !!document.querySelector('.leaflet-tile-container canvas, #document-container canvas')
                     ).catch(() => false);
