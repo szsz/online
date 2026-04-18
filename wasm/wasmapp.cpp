@@ -313,6 +313,21 @@ void handle_cool_message(const char *string_value)
 {
     std::cout << "================ handle_cool_message(): '" << string_value << "'" << std::endl;
 
+    // JS signals readiness for the snapshot mechanism
+    if (strcmp(string_value, "JS_READY") == 0)
+    {
+        g_jsReady.store(true);
+        std::cout << "handle_cool_message: JS_READY → g_jsReady=true" << std::endl;
+        return;
+    }
+    if (strcmp(string_value, "JS_READY_SNAPSHOT") == 0)
+    {
+        g_snapshotRestored.store(1);
+        g_jsReady.store(true);
+        std::cout << "handle_cool_message: JS_READY_SNAPSHOT → snapshot restored" << std::endl;
+        return;
+    }
+
     if (strcmp(string_value, "HULLO") == 0)
     {
         // Now we know that the JS has started completely

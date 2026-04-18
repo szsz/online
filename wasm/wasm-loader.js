@@ -640,8 +640,9 @@
                 var SNAP_KEY = 'lo-wasm-memory-v1';
                 function signalReady(restored) {
                     mark('snapshot:signal', restored ? 'restored' : 'normal');
-                    if (typeof Module._signal_js_ready === 'function') {
-                        Module._signal_js_ready(restored ? 1 : 0);
+                    // Use handle_cool_message which is already exported and working
+                    if (globalThis.postMobileMessage) {
+                        globalThis.postMobileMessage(restored ? 'JS_READY_SNAPSHOT' : 'JS_READY');
                     }
                 }
                 try {
@@ -684,36 +685,25 @@
 
                 // Save snapshot after preinit completes (first visit only)
                 // Poll is_preinit_done until it returns 1, then save
-                if (typeof Module._is_preinit_done === 'function') {
-                    var saveInterval = setInterval(function() {
-                        if (Module._is_preinit_done() && Module.HEAPU8) {
-                            clearInterval(saveInterval);
-                            mark('snapshot:saving', (Module.HEAPU8.buffer.byteLength / 1048576).toFixed(0) + 'MB');
-                            try {
-                                var memCopy = Module.HEAPU8.buffer.slice(0);
-                                var dbReq2 = indexedDB.open('wasm-memory-snapshot', 1);
-                                dbReq2.onupgradeneeded = function(e) {
-                                    e.target.result.createObjectStore('snapshots');
-                                };
-                                dbReq2.onsuccess = function(e) {
-                                    var db2 = e.target.result;
-                                    var tx2 = db2.transaction('snapshots', 'readwrite');
-                                    tx2.objectStore('snapshots').put({
-                                        memory: memCopy,
-                                        timestamp: Date.now(),
-                                    }, SNAP_KEY);
-                                    tx2.oncomplete = function() {
-                                        mark('snapshot:saved', (memCopy.byteLength / 1048576).toFixed(0) + 'MB');
-                                        db2.close();
-                                    };
-                                    tx2.onerror = function() { db2.close(); };
-                                };
-                            } catch(ex) {
-                                mark('snapshot:save_error', ex.message);
-                            }
-                        }
-                    }, 500);
-                }
+                // Save snapshot when doc is loaded (prewarm:ready fires)
+                var saveCheck = setInterval(function() {
+                    if (window.__wasmPrewarmReady && Module.HEAPU8) {
+                        clearInterval(saveCheck);
+                        mark('snapshot:saving', (Module.HEAPU8.buffer.byteLength / 1048576).toFixed(0) + 'MB');
+                        try {
+                            var memCopy = Module.HEAPU8.buffer.slice(0);
+                            var dbReq2 = indexedDB.open('wasm-memory-snapshot', 1);
+                            dbReq2.onupgradeneeded = function(e) { e.target.result.createObjectStore('snapshots'); };
+                            dbReq2.onsuccess = function(e) {
+                                var db2 = e.target.result;
+                                var tx2 = db2.transaction('snapshots', 'readwrite');
+                                tx2.objectStore('snapshots').put({ memory: memCopy, timestamp: Date.now() }, SNAP_KEY);
+                                tx2.oncomplete = function() { mark('snapshot:saved', (memCopy.byteLength / 1048576).toFixed(0) + 'MB'); db2.close(); };
+                                tx2.onerror = function() { db2.close(); };
+                            };
+                        } catch(ex) { mark('snapshot:save_error', ex.message); }
+                    }
+                }, 500);
             })();
         }
     }, 50);
