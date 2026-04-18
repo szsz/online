@@ -899,25 +899,27 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 		}
 		else if (textMsg.startsWith('status:') || textMsg.startsWith('statusupdate:')) {
 			var oldDocType = this._docType;
-			// Always update _docType from the status message (subclass
-			// _onStatusMsg only sets it conditionally on sizeChanged)
+			// Always update _docType from the status message
 			try {
-				var statusJSON = JSON.parse(textMsg.replace('status:', '').replace('statusupdate:', ''));
-				if (statusJSON && statusJSON.type) {
-					this._docType = statusJSON.type;
-				}
-			} catch(e) { /* parse error — leave _docType unchanged */ }
+				var sj = JSON.parse(textMsg.replace('status:', '').replace('statusupdate:', ''));
+				if (sj && sj.type) this._docType = sj.type;
+			} catch(ignore) { /* leave _docType unchanged */ }
+
+			console.log('DEBUG: onStatusMsg: old=' + oldDocType + ' new=' + this._docType);
 
 			this._onStatusMsg(textMsg);
 
-			// Cross-type hot-switch: if the type changed (e.g., writer→calc),
-			// re-initialize the specialized UI for the new type.
+			// Cross-type hot-switch: reinitialize UI if type changed
 			if (this._docType && oldDocType && this._docType !== oldDocType) {
-				console.log('Cross-type switch detected: ' + oldDocType + ' → ' + this._docType);
-				if (this._map && this._map.uiManager) {
-					this._map.uiManager.initializeSpecializedUI(this._docType);
+				console.log('Cross-type switch: ' + oldDocType + ' → ' + this._docType);
+				try {
+					if (this._map && this._map.uiManager) {
+						this._map.uiManager.initializeSpecializedUI(this._docType);
+					}
+					document.body.setAttribute('data-docType', this._docType);
+				} catch(e) {
+					console.error('Cross-type UI switch error:', e);
 				}
-				document.body.setAttribute('data-docType', this._docType);
 			}
 
 			// update tiles and selection because mode could be changed

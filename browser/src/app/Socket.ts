@@ -894,6 +894,25 @@ class Socket {
 			return;
 		}
 
+		// Cross-type hot-switch: if the docLayer exists but the type
+		// from the status message differs, reinitialize the UI.
+		// The docLayer stays (content already renders correctly from
+		// switchdocument), but the toolbar/panels need to switch.
+		if (this._map._docLayer && command.type &&
+			(this._map._docLayer as any)._createdForType &&
+			(this._map._docLayer as any)._createdForType !== command.type) {
+			console.log('Cross-type switch: ' +
+				(this._map._docLayer as any)._createdForType + ' → ' + command.type);
+			(this._map._docLayer as any)._createdForType = command.type;
+			this._map._docLayer._docType = command.type;
+			document.body.setAttribute('data-docType', command.type);
+			try {
+				this._map.uiManager.initializeSpecializedUI(command.type);
+			} catch(e: any) {
+				console.error('Cross-type UI reinit error:', e);
+			}
+		}
+
 		if (!this._map._docLayer) {
 			Util.ensureValue(command.type);
 
