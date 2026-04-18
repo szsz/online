@@ -541,6 +541,20 @@ class UIManager extends window.L.Control {
 			return;
 		}
 
+		// Reset type-specific UI before setting up new type.
+		// This makes the function idempotent for cross-type hot-switching.
+		{ const el = document.getElementById('spreadsheet-toolbar'); if (el) { el.classList.add('hidden'); el.style.display = ''; } }
+		{ const el = document.getElementById('formulabar-row'); if (el) { el.classList.add('hidden'); el.style.display = ''; } }
+		{ const el = document.getElementById('presentation-controls-wrapper'); if (el) { el.style.display = ''; $(el).hide(); } }
+		{ const el = document.getElementById('selectbackground'); if (el) el.style.display = ''; }
+		$('#toolbar-wrapper').removeClass('spreadsheet');
+		// Remove previously-created type-specific controls to avoid duplicates
+		if (this.sheetsBar) { try { this.sheetsBar.remove(); } catch(e) {} this.sheetsBar = null; }
+		if (this.map.formulabar) { try { this.map.formulabar.remove(); } catch(e) {} this.map.formulabar = null; }
+		if (this.map.addressInputField) { try { this.map.addressInputField.remove(); } catch(e) {} this.map.addressInputField = null; }
+		// Recreate notebookbar for new doc type
+		if (this.notebookbar) { try { this.notebookbar.onRemove(); } catch(e) {} this.notebookbar = null; }
+
 		var isDesktop = window.mode.isDesktop();
 		var currentMode = this.getCurrentMode();
 		var enableNotebookbar = currentMode === 'notebookbar' && !app.isReadOnly();
