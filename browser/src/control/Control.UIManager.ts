@@ -590,11 +590,9 @@ class UIManager extends window.L.Control {
 			this.map.addressInputField = JSDialog.AddressInputField(this.map);
 			$('#toolbar-wrapper').addClass('spreadsheet');
 
-			// remove unused elements
-			window.L.DomUtil.remove(window.L.DomUtil.get('presentation-controls-wrapper'));
-			const selectBackground = document.getElementById('selectbackground');
-			if (selectBackground != null)
-				selectBackground.parentNode?.removeChild(selectBackground);
+			// Hide unused elements (hide, not remove, for cross-type switching)
+			{ const el = document.getElementById('presentation-controls-wrapper'); if (el) el.style.display = 'none'; }
+			{ const el = document.getElementById('selectbackground'); if (el) el.style.display = 'none'; }
 
 			const highlightState = this.getHighlightMode()? 'true' : 'false';
 			this.map['stateChangeHandler'].setItemValue('columnrowhighlight', highlightState);
@@ -602,21 +600,21 @@ class UIManager extends window.L.Control {
 		}
 
 		if (this.map.isPresentationOrDrawing()) {
-			// remove unused elements
-			window.L.DomUtil.remove(window.L.DomUtil.get('spreadsheet-toolbar'));
+			// Hide unused, show presentation controls
+			{ const el = document.getElementById('spreadsheet-toolbar'); if (el) el.style.display = 'none'; }
 			$('#presentation-controls-wrapper').show();
 			this.initializeRuler();
-			this.map.slideShowPresenter = new SlideShow.SlideShowPresenter(this.map, window.enableAccessibility);
-			this.map.presenterConsole = new SlideShow.PresenterConsole(this.map, this.map.slideShowPresenter);
+			if (!this.map.slideShowPresenter)
+				this.map.slideShowPresenter = new SlideShow.SlideShowPresenter(this.map, window.enableAccessibility);
+			if (!this.map.presenterConsole)
+				this.map.presenterConsole = new SlideShow.PresenterConsole(this.map, this.map.slideShowPresenter);
 		}
 
 		if (docType === 'text') {
-			// remove unused elements
-			window.L.DomUtil.remove(window.L.DomUtil.get('spreadsheet-toolbar'));
-			window.L.DomUtil.remove(window.L.DomUtil.get('presentation-controls-wrapper'));
-			const selectBackground = document.getElementById('selectbackground');
-			if (selectBackground != null)
-				selectBackground.parentNode?.removeChild(selectBackground);
+			// Hide unused elements
+			{ const el = document.getElementById('spreadsheet-toolbar'); if (el) el.style.display = 'none'; }
+			{ const el = document.getElementById('presentation-controls-wrapper'); if (el) el.style.display = 'none'; }
+			{ const el = document.getElementById('selectbackground'); if (el) el.style.display = 'none'; }
 
 			this.initializeRuler();
 

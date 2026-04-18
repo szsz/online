@@ -487,8 +487,10 @@ async function openFile(name) {
     const newDocType = docTypeFor(name);
     const sameType = newDocType === currentDocType;
 
-    if (sameType && prewarmReady) {
-        // HOT SWITCH — reuse the live WASM (~200ms).
+    if (prewarmReady) {
+        // HOT SWITCH — reuse the live WASM, even across doc types.
+        // The C++ Kit handles cross-type documentLoad natively.
+        // COOL's JS docLayer is swapped on the status: message.
         // 1. Tell the relay-adapter inside the iframe to switch rooms
         // 2. Change the hash to trigger switchdocument in wasm-loader
         const newRoom = relayRoom(name);

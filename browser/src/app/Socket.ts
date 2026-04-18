@@ -894,15 +894,31 @@ class Socket {
 			return;
 		}
 
-		if (!this._map._docLayer) {
+		// Detect cross-type document switch: if the docLayer exists but
+		// has a different type, remove it and create the correct one.
+		// This enables hot-switching between writer↔calc↔impress
+		// without destroying the iframe / reloading WASM.
+		const needNewLayer = !this._map._docLayer ||
+			(this._map._docLayer._docType !== command.type && !this._reconnecting);
+
+		if (needNewLayer) {
 			Util.ensureValue(command.type);
+
+			// Remove old layer if switching types
+			if (this._map._docLayer) {
+				console.log('Cross-type switch: ' + this._map._docLayer._docType + ' → ' + command.type);
+				this._map.removeLayer(this._map._docLayer);
+				this._map._docLayer = undefined as any;
+				// Reset section container for new doc type
+				if (app.sectionContainer) {
+					app.sectionContainer.reNewAllSections();
+				}
+			}
+
 			// initialize and append text input before doc layer
 			this._map.initTextInput(command.type);
 
 			// Reinitialize the menubar and top toolbar if browser settings are enabled.
-			// During the initial `initializeBasicUI` call, we don't know if compact mode is enabled.
-			// Before `doclayerinit`, we recheck the compact mode setting and if conditions are met,
-			// add the top toolbar and menubar controls to the map.
 			if (window.prefs.useBrowserSetting) {
 				if (
 					!window.mode.isMobile() &&
@@ -913,7 +929,7 @@ class Socket {
 					this._map.uiManager.initializeMenubarAndTopToolbar();
 			}
 
-			// first status message, we need to create the document layer
+			// Create the document layer for the new type
 			let tileWidthTwips = this._map.options.tileWidthTwips;
 			let tileHeightTwips = this._map.options.tileHeightTwips;
 			if (this._map.options.zoom !== this._map.options.defaultZoom) {
