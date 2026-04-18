@@ -898,7 +898,27 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 			this._onStateChangedMsg(textMsg);
 		}
 		else if (textMsg.startsWith('status:') || textMsg.startsWith('statusupdate:')) {
+			var oldDocType = this._docType;
+			// Always update _docType from the status message (subclass
+			// _onStatusMsg only sets it conditionally on sizeChanged)
+			try {
+				var statusJSON = JSON.parse(textMsg.replace('status:', '').replace('statusupdate:', ''));
+				if (statusJSON && statusJSON.type) {
+					this._docType = statusJSON.type;
+				}
+			} catch(e) { /* parse error — leave _docType unchanged */ }
+
 			this._onStatusMsg(textMsg);
+
+			// Cross-type hot-switch: if the type changed (e.g., writer→calc),
+			// re-initialize the specialized UI for the new type.
+			if (this._docType && oldDocType && this._docType !== oldDocType) {
+				console.log('Cross-type switch detected: ' + oldDocType + ' → ' + this._docType);
+				if (this._map && this._map.uiManager) {
+					this._map.uiManager.initializeSpecializedUI(this._docType);
+				}
+				document.body.setAttribute('data-docType', this._docType);
+			}
 
 			// update tiles and selection because mode could be changed
 			TileManager.update();

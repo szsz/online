@@ -894,26 +894,8 @@ class Socket {
 			return;
 		}
 
-		// Detect cross-type document switch: if the docLayer exists but
-		// has a different type, remove it and create the correct one.
-		// This enables hot-switching between writer↔calc↔impress
-		// without destroying the iframe / reloading WASM.
-		const needNewLayer = !this._map._docLayer ||
-			(this._map._docLayer._docType !== command.type && !this._reconnecting);
-
-		if (needNewLayer) {
+		if (!this._map._docLayer) {
 			Util.ensureValue(command.type);
-
-			// Remove old layer if switching types
-			if (this._map._docLayer) {
-				console.log('Cross-type switch: ' + this._map._docLayer._docType + ' → ' + command.type);
-				this._map.removeLayer(this._map._docLayer);
-				this._map._docLayer = undefined as any;
-				// Reset section container for new doc type
-				if (app.sectionContainer) {
-					app.sectionContainer.reNewAllSections();
-				}
-			}
 
 			// initialize and append text input before doc layer
 			this._map.initTextInput(command.type);
@@ -955,6 +937,7 @@ class Socket {
 				docLayer = new window.L.ImpressTileLayer(options);
 
 			Util.ensureValue(docLayer);
+			(docLayer as any)._createdForType = command.type;
 			this._map._docLayer = docLayer;
 			this._map.addLayer(docLayer);
 			this._map.fire('doclayerinit');

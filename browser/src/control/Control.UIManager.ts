@@ -541,19 +541,33 @@ class UIManager extends window.L.Control {
 			return;
 		}
 
-		// Reset type-specific UI before setting up new type.
+		// Reset ALL type-specific UI before setting up new type.
 		// This makes the function idempotent for cross-type hot-switching.
+
+		// Hide all type-specific DOM elements (they'll be shown by the right type)
 		{ const el = document.getElementById('spreadsheet-toolbar'); if (el) { el.classList.add('hidden'); el.style.display = ''; } }
 		{ const el = document.getElementById('formulabar-row'); if (el) { el.classList.add('hidden'); el.style.display = ''; } }
-		{ const el = document.getElementById('presentation-controls-wrapper'); if (el) { el.style.display = ''; $(el).hide(); } }
-		{ const el = document.getElementById('selectbackground'); if (el) el.style.display = ''; }
+		{ const el = document.getElementById('presentation-controls-wrapper'); if (el) { el.style.display = 'none'; } }
+		{ const el = document.getElementById('selectbackground'); if (el) el.style.display = 'none'; }
 		$('#toolbar-wrapper').removeClass('spreadsheet');
-		// Remove previously-created type-specific controls to avoid duplicates
+
+		// Destroy Calc-specific controls
 		if (this.sheetsBar) { try { this.sheetsBar.remove(); } catch(e) {} this.sheetsBar = null; }
 		if (this.map.formulabar) { try { this.map.formulabar.remove(); } catch(e) {} this.map.formulabar = null; }
 		if (this.map.addressInputField) { try { this.map.addressInputField.remove(); } catch(e) {} this.map.addressInputField = null; }
-		// Recreate notebookbar for new doc type
+
+		// Destroy Impress-specific controls
+		if (this.map.slideShowPresenter) { try { this.map.slideShowPresenter.destroy?.(); } catch(e) {} this.map.slideShowPresenter = null; }
+		if (this.map.presenterConsole) { try { this.map.presenterConsole.destroy?.(); } catch(e) {} this.map.presenterConsole = null; }
+
+		// Clear slide-sorter content (will be repopulated by ImpressTileLayer)
+		{ const el = document.getElementById('slide-sorter'); if (el) el.innerHTML = ''; }
+
+		// Destroy and recreate notebookbar for new doc type
 		if (this.notebookbar) { try { this.notebookbar.onRemove(); } catch(e) {} this.notebookbar = null; }
+
+		// Clear any stale notebookbar DOM
+		{ const el = document.getElementById('toolbar-up'); if (el) el.innerHTML = ''; }
 
 		var isDesktop = window.mode.isDesktop();
 		var currentMode = this.getCurrentMode();
