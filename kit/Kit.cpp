@@ -28,6 +28,11 @@
 #include <dlfcn.h>
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/threading.h>
+#endif
+
 #ifdef __linux__
 #include <ftw.h>
 #include <sys/vfs.h>
@@ -2096,6 +2101,8 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         _isDocPasswordProtected = false;
 
         const char* url = loadUri.c_str();
+        { FILE* tf = fopen("/tmp/timing.log", "a");
+          if (tf) { fprintf(tf, "documentLoad starting\n"); fclose(tf); } }
         LOG_DBG("Calling lokit::documentLoad(" << anonymizeUrl(url) << ", \"" << options << "\")");
         const auto start = std::chrono::steady_clock::now();
         _loKitDocument.reset(_loKit->documentLoad(url, options.c_str()));
@@ -2110,6 +2117,8 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
 #endif
         const auto duration = std::chrono::steady_clock::now() - start;
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+        { FILE* tf = fopen("/tmp/timing.log", "a");
+          if (tf) { fprintf(tf, "documentLoad done in %lldms\n", (long long)elapsed.count()); fclose(tf); } }
         LOG_DBG("Returned lokit::documentLoad(" << anonymizeUrl(url) << ") in " << elapsed);
 #if defined(IOS) || defined(MACOS) || defined(_WIN32) || defined(QTAPP)
         DocumentData::get(_mobileAppDocId).loKitDocument = _loKitDocument.get();
@@ -4355,6 +4364,16 @@ bool startURP(const std::shared_ptr<lok::Office>& LOKit, void** ppURPContext)
 /// Initializes LibreOfficeKit for cross-fork re-use.
 bool globalPreinit(const std::string &loTemplate)
 {
+    auto _gp_t0 = std::chrono::steady_clock::now();
+    auto _gp_mark = [&_gp_t0](const char* label) {
+        auto now = std::chrono::steady_clock::now();
+        auto ms = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(now - _gp_t0).count();
+        // Write timing to a file that JS can read later
+        FILE* tf = fopen("/timing.log", "a");
+        if (tf) { fprintf(tf, "globalPreinit +%lldms  %s\n", ms, label); fclose(tf); }
+    };
+    _gp_mark("start");
+
     std::string loadedLibrary;
     // we deliberately don't dlclose handle on success, make it
     // static so static analysis doesn't see this as a leak
@@ -4400,6 +4419,7 @@ bool globalPreinit(const std::string &loTemplate)
         }
     }
 
+    _gp_mark("dlopen done");
     LokHookPreInit2* preInit = reinterpret_cast<LokHookPreInit2 *>(dlsym(handle, "lok_preinit_2"));
     if (!preInit)
     {
@@ -4432,6 +4452,7 @@ bool globalPreinit(const std::string &loTemplate)
     const std::string lokProgramDir = loTemplate + "/Contents/Frameworks";
 #endif
 
+    _gp_mark("before lok_preinit_2");
     LOG_TRC("Invoking lok_preinit_2(" << lokProgramDir << ", \"file:///tmp/user\")");
     const auto start = std::chrono::steady_clock::now();
     if (preInit(lokProgramDir.c_str(), "file:///tmp/user", &loKitPtr) != 0)
@@ -4441,6 +4462,7 @@ bool globalPreinit(const std::string &loTemplate)
         return false;
     }
 
+    _gp_mark("lok_preinit_2 done");
     LOG_DBG("After lok_preinit_2: loKitPtr=" << loKitPtr);
 
     LOG_TRC("Finished lok_preinit(" << lokProgramDir << ", \"file:///tmp/user\") in "

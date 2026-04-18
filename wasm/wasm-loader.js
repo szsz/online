@@ -700,6 +700,17 @@
                 updateProgress('Ready', 100);
                 setTimeout(hideOverlay, 150);
 
+                // Read C++ timing log from WASM VFS
+                try {
+                    if (typeof Module !== 'undefined' && Module.FS) {
+                        var timingData = Module.FS.readFile('/timing.log', { encoding: 'utf8' });
+                        if (timingData) {
+                            console.log('[C++ TIMING]\n' + timingData);
+                            mark('cpp_timing', timingData.replace(/\n/g, ' | '));
+                        }
+                    }
+                } catch(e) { /* timing.log not created */ }
+
                 // Note: WASM memory snapshot/restore was investigated but is
                 // not feasible with the current Emscripten build. The WASM
                 // module instantiation overwrites memory, and Emscripten's

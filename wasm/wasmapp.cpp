@@ -483,8 +483,13 @@ int main(int argc, char* argv_main[])
                 assert(false);
             }
 
+            auto t_start = std::chrono::steady_clock::now();
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: COOLWSD::run() starting'); });
             COOLWSD *coolwsd = new COOLWSD();
             coolwsd->run(1, argv);
+            auto t_end = std::chrono::steady_clock::now();
+            { auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: COOLWSD::run() took ' + $0 + 'ms'); }, ms); }
             delete coolwsd;
         })
         .detach();
