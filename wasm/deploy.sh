@@ -176,6 +176,26 @@ else:
 # VFS is empty and LO fails silently. Saving/restoring MEMFS alongside
 # HEAPU8 would fix this but is a larger change.
 
+# INJECTION 3: Suppress checkMailbox/mailbox_await console spam.
+# Emscripten's Atomics.waitAsync().then(checkMailbox) creates an infinite
+# Promise chain. Chrome shows "checkMailbox @ online.js:9725" and
+# "__emscripten_thread_mailbox_await @ online.js:9708" in the console
+# as resolved Promise async stack frames. Fix: remove the assert (which
+# can log) and silence the recursive .then chain via a no-name wrapper.
+target7 = 'assert(wait.async);\n        wait.value.then(checkMailbox);'
+count7 = c.count(target7)
+if count7 >= 1:
+    c = c.replace(target7, 'if(wait.async)wait.value.then(function _mb(){checkMailbox();});', 1)
+    print('  Patched mailbox: removed assert + silenced .then chain')
+else:
+    # Try without the newline (minified builds)
+    target7b = 'assert(wait.async);wait.value.then(checkMailbox);'
+    if c.count(target7b) >= 1:
+        c = c.replace(target7b, 'if(wait.async)wait.value.then(function _mb(){checkMailbox();});', 1)
+        print('  Patched mailbox: removed assert + silenced .then chain (compact)')
+    else:
+        print('  NOTE: checkMailbox patch target not found — skipping')
+
 with open(path, 'w') as f:
     f.write(c.replace(target, inject + target, 1))
 patches = 2

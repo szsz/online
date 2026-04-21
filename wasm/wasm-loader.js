@@ -908,13 +908,7 @@
                 window.__wasmInitialDocLoaded = true;  // sticky one-shot
                 prewarmWordCountAtReady = wc ? wc.textContent : '';
                 mark('prewarm:ready');
-                logTiming('Document ready (total load time)');
-                // Print summary
-                var summary = Object.keys(_timingMilestones).map(function(k) {
-                    return '  ' + k + ': ' + (_timingMilestones[k] / 1000).toFixed(2) + 's';
-                }).join('\n');
-                console.log('%c[TIMING SUMMARY] (all times from navigation start / user hitting Enter)\n' + summary,
-                    'color: #1b5e20; font-weight: bold; font-size: 12px');
+                logTiming('Document ready');
                 clearInterval(docPollInterval);
                 docPollInterval = null;
                 updateProgress('Ready', 100);
