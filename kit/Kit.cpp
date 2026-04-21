@@ -2101,8 +2101,6 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         _isDocPasswordProtected = false;
 
         const char* url = loadUri.c_str();
-        { FILE* tf = fopen("/tmp/timing.log", "a");
-          if (tf) { fprintf(tf, "documentLoad starting\n"); fclose(tf); } }
         LOG_DBG("Calling lokit::documentLoad(" << anonymizeUrl(url) << ", \"" << options << "\")");
         const auto start = std::chrono::steady_clock::now();
         _loKitDocument.reset(_loKit->documentLoad(url, options.c_str()));
@@ -2117,8 +2115,6 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
 #endif
         const auto duration = std::chrono::steady_clock::now() - start;
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-        { FILE* tf = fopen("/tmp/timing.log", "a");
-          if (tf) { fprintf(tf, "documentLoad done in %lldms\n", (long long)elapsed.count()); fclose(tf); } }
         LOG_DBG("Returned lokit::documentLoad(" << anonymizeUrl(url) << ") in " << elapsed);
 #if defined(IOS) || defined(MACOS) || defined(_WIN32) || defined(QTAPP)
         DocumentData::get(_mobileAppDocId).loKitDocument = _loKitDocument.get();
@@ -3440,6 +3436,10 @@ std::future<LibreOfficeKit*> initKitRunLoopThread(const std::shared_ptr<KitSocke
         return future;
 }
 #endif // QTAPP
+#ifdef __EMSCRIPTEN__
+extern "C" int lok_preinit_2(const char*, const char*, LibreOfficeKit**);
+#endif
+
 void lokit_main(
 #if !MOBILEAPP
                 const std::string& childRoot,
@@ -3945,6 +3945,7 @@ void lokit_main(
             if (!initFunction)
                 initFunction = lok_init_2;
 
+
             if (!Util::isKitInProcess())
                 kit = UnitKit::get().lok_init(instdir, userdir, initFunction);
             if (!kit)
@@ -4084,7 +4085,34 @@ void lokit_main(
 #endif
 
 #if MOBILEAPP
-#if (defined(__linux__) && !defined(__ANDROID__) && !defined(QTAPP)) || defined(__FreeBSD__)
+#if defined(__EMSCRIPTEN__)
+        // ── WASM snapshot architecture ──
+        // Visit 1: lok_init_2 → Desktop::Main → doc loads → JS saves snapshot
+        //   (snapshot includes fully warmed Writer module, config, fonts, everything)
+        // Visit 2: restore snapshot → SECOND_INIT → Desktop::Main → doc loads fast (<1s)
+        //   (Writer module already in snapshot heap)
+        // Snapshot save is triggered from wasm-loader.js when __wasmPrewarmReady fires.
+        {
+            extern bool g_wasmSkipExecute;
+
+            int isRestore = MAIN_THREAD_EM_ASM_INT({
+                return globalThis.__wasmSnapshotRestored ? 1 : 0;
+            });
+
+            if (isRestore)
+            {
+                g_wasmSkipExecute = false; // Allow VCL event loop
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: Snapshot restore'); });
+            }
+        }
+
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 starting'); });
+        // NOT static — must re-run on restore to reinitialize VCL/fontconfig.
+        // On first visit: FULL_INIT. On restore: bInitialized=true → returns 1 (fast).
+        // But InitVCL is called in the unipoll else-branch regardless.
+        LibreOfficeKit *kit = lok_init_2(nullptr, nullptr);
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 done'); });
+#elif (defined(__linux__) && !defined(__ANDROID__) && !defined(QTAPP)) || defined(__FreeBSD__)
         Poco::URI userInstallationURI("file", LO_PATH);
         LibreOfficeKit *kit = lok_init_2(LO_PATH "/program", userInstallationURI.toString().c_str());
 #elif defined(IOS) // In the iOS app we call lok_init_2() just once, when the app starts
@@ -4098,6 +4126,10 @@ void lokit_main(
 #endif
 
         assert(kit);
+
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 done (SECOND_INIT)'); });
+#endif
 
         static std::shared_ptr<lok::Office> loKit = std::make_shared<lok::Office>(kit);
         assert(loKit);
@@ -4361,33 +4393,21 @@ bool startURP(const std::shared_ptr<lok::Office>& LOKit, void** ppURPContext)
     return true;
 }
 
-#ifdef __EMSCRIPTEN__
-// Declared in wasmapp.cpp — set by JS when a memory snapshot is restored
-extern std::atomic<int> g_snapshotRestored;
-#endif
-
 /// Initializes LibreOfficeKit for cross-fork re-use.
 bool globalPreinit(const std::string &loTemplate)
 {
-#ifdef __EMSCRIPTEN__
-    if (g_snapshotRestored.load())
-    {
-        std::cout << "globalPreinit: SKIPPING — memory snapshot restored by JS" << std::endl;
-        // The snapshot has the fully initialized LO runtime in memory.
-        // We still need to set up the initFunction pointer for later use.
-        static void *handle = dlopen(nullptr, RTLD_NOW);
-        initFunction = reinterpret_cast<LokHookFunction2 *>(dlsym(handle, "libreofficekit_hook_2"));
-        return true;
-    }
-#endif
 
     auto _gp_t0 = std::chrono::steady_clock::now();
     auto _gp_mark = [&_gp_t0](const char* label) {
         auto now = std::chrono::steady_clock::now();
         auto ms = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(now - _gp_t0).count();
-        // Write timing to a file that JS can read later
-        FILE* tf = fopen("/timing.log", "a");
-        if (tf) { fprintf(tf, "globalPreinit +%lldms  %s\n", ms, label); fclose(tf); }
+#ifdef __EMSCRIPTEN__
+        // Log to browser console from any thread (proxied to main thread)
+        MAIN_THREAD_EM_ASM({
+            console.log('TIMING: globalPreinit +' + $0 + 'ms  ' + UTF8ToString($1));
+        }, (int)ms, label);
+#endif
+        std::cout << "globalPreinit +" << ms << "ms  " << label << std::endl;
     };
     _gp_mark("start");
 

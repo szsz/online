@@ -108,7 +108,26 @@ window.L.WriterTileLayer = window.L.CanvasTileLayer.extend({
 	},
 
 	_onStatusMsg: function (textMsg) {
+		try {
+			return this._onStatusMsgImpl(textMsg);
+		} catch (e) {
+			// During cross-type switch, a non-Writer status message may
+			// arrive. Swallow errors instead of crashing.
+			console.warn('WriterTileLayer._onStatusMsg error (cross-type?): ' + e.message);
+		}
+	},
+
+	_onStatusMsgImpl: function (textMsg) {
 		const statusJSON = JSON.parse(textMsg.replace('status:', '').replace('statusupdate:', ''));
+
+		// Guard: during cross-type switch, a Calc/Impress status message
+		// may arrive before the doc layer is replaced.
+		if (statusJSON.type && statusJSON.type !== 'text') {
+			return;
+		}
+		if (!statusJSON.pagerectangles) {
+			return;
+		}
 
 		if (app.socket._reconnecting) {
 			// persist cursor position on reconnection
@@ -167,7 +186,7 @@ window.L.WriterTileLayer = window.L.CanvasTileLayer.extend({
 			this._currentPage = statusJSON.selectedpart;
 		}
 		this._pages = statusJSON.partscount;
-		app.file.writer.pageRectangleList = statusJSON.pagerectangles.slice(); // Copy the array.
+		app.file.writer.pageRectangleList = statusJSON.pagerectangles ? statusJSON.pagerectangles.slice() : []; // Copy the array (may be absent during cross-type switch).
 		// Recalculate view layout so view size reflects the new pages.
 		// Needed for ViewLayoutMultiPage where the viewSize setter is a no-op.
 		if (app.activeDocument.activeLayout.type === 'ViewLayoutMultiPage')

@@ -76,9 +76,38 @@ function hashJsFiles() {
 console.log('Content-hashed JS files:');
 hashJsFiles();
 // Rebuild hashes on SIGHUP (useful after deploying new code)
+// Regenerate stale .br files (called on startup and SIGHUP)
+const BROTLI_ASSETS = ['online.js', 'online.wasm', 'bundle.js', 'bundle.css'];
+function refreshBrotli() {
+    const { execSync } = require('child_process');
+    const browserDir = path.join(PUB, 'browser');
+    for (const name of BROTLI_ASSETS) {
+        const src = path.join(browserDir, name);
+        const br = src + '.br';
+        if (!fs.existsSync(src)) continue;
+        const srcMtime = fs.statSync(src).mtimeMs;
+        const brMtime = fs.existsSync(br) ? fs.statSync(br).mtimeMs : 0;
+        if (srcMtime > brMtime) {
+            console.log(`  Regenerating ${name}.br (source newer than .br)...`);
+            try {
+                execSync(`brotli -f "${src}" -o "${br}"`, { timeout: 300000 });
+                console.log(`    → ${name}.br: ${fs.statSync(br).size} bytes`);
+            } catch(e) {
+                console.error(`    Failed to compress ${name}: ${e.message}`);
+                // Delete stale .br so the server serves uncompressed
+                try { fs.unlinkSync(br); } catch(e2) {}
+            }
+        }
+    }
+}
+// Run on startup (may take a few minutes for online.wasm)
+console.log('Checking Brotli freshness:');
+refreshBrotli();
+
 process.on('SIGHUP', () => {
-    console.log('SIGHUP — rehashing JS files');
+    console.log('SIGHUP — rehashing JS files + checking Brotli');
     hashJsFiles();
+    refreshBrotli();
 });
 
 const MIME = {
@@ -193,10 +222,11 @@ function handler(req, res) {
         }
     }
 
-    // /reports/ — serve the test-suite HTML report set produced by
-    // wasm/run-all-tests.sh (lives under PUB/reports).
-    if (pathname.startsWith('/reports/')) {
-        const filepath = path.join(PUB, pathname);
+    // /timing-report/ and /reports/ — serve test reports from PUB.
+    if (pathname.startsWith('/timing-report/') || pathname.startsWith('/reports/')) {
+        let filepath = path.join(PUB, pathname);
+        // Resolve directory to index.html
+        try { if (fs.statSync(filepath).isDirectory()) filepath = path.join(filepath, 'index.html'); } catch(e) {}
         if (!fs.existsSync(filepath)) { res.writeHead(404); res.end(); return; }
         const ext = path.extname(filepath);
         res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain' });
@@ -274,9 +304,13 @@ function handler(req, res) {
     }
 
     // Serve a precompiled `<file>.br` if the client accepts brotli.
+    // STALENESS CHECK: only serve .br if it's newer than the source.
+    // A stale .br (from a previous build) causes silent binary mismatches
+    // that break WebAssembly instantiation.
     const accepted = (req.headers['accept-encoding'] || '').includes('br');
     const brPath = filepath + '.br';
-    if (accepted && fs.existsSync(brPath)) {
+    if (accepted && fs.existsSync(brPath) &&
+        fs.statSync(brPath).mtimeMs >= stat.mtimeMs) {
         const brData = fs.readFileSync(brPath);
         headers['Content-Encoding'] = 'br';
         headers['Content-Length'] = brData.length;

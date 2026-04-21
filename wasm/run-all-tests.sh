@@ -83,6 +83,7 @@ TESTS=(
     "regression-mouse-select-copypaste|test-regression-mouse-select-copypaste.js|Regression: Mouse Select + Copy/Paste|Mouse click/double-click selection + copy/paste between 2 browsers|shots-regression-mouse-select-copypaste"
     "prewarm-benchmark|test-prewarm-benchmark.js|Prewarm Benchmark|Document open timing for all doc types: first visit vs return visit, cold vs warm cache|shots-prewarm-benchmark"
     "pptx-viewer-slides|test-pptx-viewer-slides.js|PPTX Viewer Slides|Real pptx via viewer: Impress UI, slide panel, navigation, content rendering|shots-pptx-viewer-slides"
+    "timing-report|test-timing-report.js|Timing Report|Cold vs warm visit timing with screenshots, generates HTML report at /timing-report/|timing-report"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────

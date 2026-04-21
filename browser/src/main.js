@@ -116,6 +116,38 @@ if (window.ThisIsTheEmscriptenApp) {
 
 	globalThis.Module = createEmscriptenModule(
 		isWopi ? 'server' : 'local', isWopi ? encodedWOPI : docURL);
+	// Snapshot restore: before main() runs, restore HEAPU8 from
+	// Cache API if available. This must happen in onRuntimeInitialized
+	// (AFTER initRuntime sets up stack/FS/ctors, BEFORE callMain).
+	// Snapshot restore via preRun — fires BEFORE stackCheckInit and
+	// initRuntime. We restore HEAPU8, then the Emscripten init overwrites
+	// the stack cookie area (fixed 8 bytes at a known address) — which is
+	// fine because our snapshot has the same cookies at the same address.
+	// Snapshot restore: inject into Module.preRun using globalThis
+	// (works in both main thread and Worker contexts).
+	if (!globalThis.Module.preRun) globalThis.Module.preRun = [];
+	globalThis.Module.preRun.push(function() {
+		// Use globalThis — preRun may execute in a Worker where
+		// 'window' is undefined.
+		var g = typeof globalThis !== 'undefined' ? globalThis :
+		        typeof self !== 'undefined' ? self : {};
+		g.__preRunFired = true;
+		var snapData = g.__wasmSnapshotData;
+		var mod = g.Module; // globalThis.Module is the Emscripten module
+		g.__preRunState = {
+			hasSnap: !!snapData,
+			snapLen: snapData ? snapData.byteLength : 0,
+			hasHeap: !!(mod && mod.HEAPU8),
+			heapLen: mod && mod.HEAPU8 ? mod.HEAPU8.length : 0,
+		};
+		if (snapData && mod && mod.HEAPU8) {
+			var src = new Uint8Array(snapData);
+			if (src.length <= mod.HEAPU8.length) {
+				mod.HEAPU8.set(src);
+				g.__wasmSnapshotRestored = true;
+			}
+		}
+	});
 	globalThis.Module.onRuntimeInitialized = function() {
 		map.loadDocument(global.socket);
 	};

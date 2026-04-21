@@ -933,6 +933,60 @@ private:
 /// And also cleans up and balances the correct number of children.
 static std::shared_ptr<PrisonPoll> PrisonerPoll;
 
+#ifdef __EMSCRIPTEN__
+void COOLWSD::leakSnapshotPolls()
+{
+    // Release shared_ptrs without running destructors. The pointed-to objects
+    // are in the snapshot heap with stale thread handles; destroying them
+    // would deadlock on join().
+    if (PrisonerPoll)
+    {
+        [[maybe_unused]] auto* leaked = new std::shared_ptr<PrisonPoll>(std::move(PrisonerPoll));
+    }
+    if (COOLWSDServer::WebServerPoll)
+    {
+        [[maybe_unused]] auto* leaked = new std::shared_ptr<TerminatingPoll>(std::move(COOLWSDServer::WebServerPoll));
+    }
+    if (COOLWSDServer::Instance)
+    {
+        [[maybe_unused]] auto* leaked = new std::unique_ptr<COOLWSDServer>(std::move(COOLWSDServer::Instance));
+    }
+
+    // Reset the Poco Logger system. After snapshot restore, Logger mutexes
+    // are stale (locked by dead threads). shutdown() destroys all Logger
+    // instances, freeing their mutexes. The logging system recreates them
+    // fresh on the next LOG_ call.
+    Poco::Logger::shutdown();
+
+    // Clear stale DocBrokers (each has a dead poll thread).
+    new (&DocBrokersMutex) std::mutex();
+    for (auto& [key, broker] : DocBrokers) {
+        if (broker) {
+            [[maybe_unused]] auto* leaked = new std::shared_ptr<DocumentBroker>(std::move(broker));
+        }
+    }
+    DocBrokers.clear();
+
+    // Reset the server socket FD.
+    coolwsd_server_socket_fd = -1;
+
+    // Reinitialize global mutexes and condition variables.
+    new (&NewChildrenMutex) std::mutex();
+    new (&NewChildrenCV) std::condition_variable();
+    NewChildren.clear();
+
+    // Set g_wasmSkipExecute=false so Desktop::Main enters Execute().
+    extern bool g_wasmSkipExecute;
+    g_wasmSkipExecute = false;
+
+    // Set phase=2 so Desktop::Main skips Phase 1 (already in snapshot).
+    extern int g_wasmDesktopPhase;
+    g_wasmDesktopPhase = 2;
+
+    std::cout << "leakSnapshotPolls: full snapshot cleanup done" << std::endl;
+}
+#endif
+
 std::shared_ptr<ChildProcess> getNewChild_Blocks(const std::shared_ptr<SocketPoll>& destPoll,
                                                  const std::string& configId,
                                                  unsigned mobileAppDocId)
@@ -1392,6 +1446,9 @@ void COOLWSD::setupChildRoot(const bool UseMountNamespaces)
 
 void COOLWSD::innerInitialize(Poco::Util::Application& self)
 {
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: innerInitialize START'); });
+#endif
 #if !MOBILEAPP
     if (geteuid() == 0 && CheckCoolUser)
     {
@@ -1399,9 +1456,15 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     }
 #endif
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: innerInit: setApplicationPath...'); });
+#endif
     Util::setApplicationPath(
         Poco::Path(Poco::Util::Application::instance().commandPath()).parent().toString());
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: innerInit: config()...'); });
+#endif
     StartTime = std::chrono::steady_clock::now();
 
     // Initialize the config subsystem.
@@ -1413,6 +1476,10 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     // Set default values, in case they are missing from the config file.
     Poco::AutoPtr<ConfigUtil::AppConfigMap> defConfig(new ConfigUtil::AppConfigMap(defAppConfig));
     conf.addWriteable(defConfig, PRIO_SYSTEM); // Lowest priority
+
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: innerInit: config done, continuing...'); });
+#endif
 
 #if !MOBILEAPP
 
@@ -1593,6 +1660,13 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     // Log at trace level until we complete the initialization.
     LogLevelStartup =
         ConfigUtil::getConfigValue<std::string>(conf, "logging.level_startup", "trace");
+#if WASMAPP
+    // In WASM, trace-level startup logging floods the browser console.
+    // Use the final log level from the start.
+    LogLevelStartup = "information";
+    LogLevel = "information";
+    setenv("COOL_LOGLEVEL", LogLevel.c_str(), true);
+#endif
     setenv("COOL_LOGLEVEL_STARTUP", LogLevelStartup.c_str(), true);
 
     Log::initialize("wsd", LogLevelStartup, withColor, logToFile, logProperties, logToFileUICmd, logPropertiesUICmd);
@@ -3397,7 +3471,13 @@ std::shared_ptr<ServerSocket> COOLWSDServer::findClientPort()
 
 void COOLWSDServer::startPrisoners()
 {
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: startPrisoners...'); });
+#endif
     PrisonerPoll->startThread();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: prisoner thread started'); });
+#endif
     PrisonerPoll->insertNewSocket(findPrisonerServerPort());
 }
 
@@ -3413,9 +3493,18 @@ void COOLWSDServer::start(std::shared_ptr<ServerSocket>&& serverSocket)
     coolwsd_server_socket_fd = serverSocket->getFD();
 #endif
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: accept_poll startThread...'); });
+#endif
     _acceptPoll.startThread();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: accept_poll started, inserting socket...'); });
+#endif
     _acceptPoll.insertNewSocket(std::move(serverSocket));
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: websrv_poll startThread...'); });
+#endif
     WebServerPoll->startThread();
 
 #if !MOBILEAPP
@@ -3871,8 +3960,8 @@ void COOLWSD::innerMain()
 
 #elif defined __EMSCRIPTEN__
 
-    // Hard-code a somewhat random log level:
-    Log::setLevel("information");
+    // Log level already set to "information" at startup (see innerInitialize).
+    Log::setDisabledAreas(LogDisabledAreas);
 
 #endif
 

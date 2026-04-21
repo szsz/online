@@ -140,7 +140,7 @@ endif
 
 exports: @LOBUILDDIR@/workdir/CustomTarget/desktop/soffice_bin-emscripten-exports/exports
 	cp $< $@
-	printf '_handle_cool_message\n_create_remote_client\n_handle_remote_message\n_close_remote_client\n_poll_remote_client_ready\n_signal_js_ready\n_is_preinit_done\n' >>$@
+	printf '_handle_cool_message\n_create_remote_client\n_handle_remote_message\n_close_remote_client\n_poll_remote_client_ready\n_start_coolwsd_phase2\n_force_second_init\n_get_heap_base\n_get_temp_dir_path\n' >>$@
 
 soffice.dat%: @LOBUILDDIR@/instdir/program/soffice.dat%
 	cp $< $@

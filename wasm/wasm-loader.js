@@ -2,6 +2,11 @@
 // Every phase is marked on window.__prewarmTimings for test inspection.
 (function() {
     'use strict';
+
+    // Build fingerprint — injected by deploy.sh (md5 of online.wasm).
+    // Used to invalidate stale snapshots when the WASM binary changes.
+    var BUILD_FINGERPRINT = '__WASM_BUILD_FINGERPRINT__';
+
     var params = new URLSearchParams(window.location.search);
     var wopiSrc = params.get('WOPISrc') || '';
     var ext = wopiSrc.split('.').pop().toLowerCase().split('?')[0];
@@ -53,6 +58,71 @@
     } else {
         mark('sw:unavailable', 'navigator.serviceWorker missing');
     }
+
+    // ───── EARLY SNAPSHOT CHECK ─────
+    // Only check if a snapshot EXISTS (HEAD check, no body materialization).
+    // The actual 73MB ArrayBuffer is loaded lazily in the deploy.sh injection
+    // right before callMain — after the WASM module has fully instantiated.
+    // Loading it eagerly caused memory pressure that broke __wasm_call_ctors.
+    window.__wasmSnapshotData = undefined; // undefined = not yet checked
+    window.__wasmSnapshotExists = false;
+    window.__wasmSnapshotPromise = (function() {
+        if (!('caches' in self)) {
+            mark('snapshot:no_cache_api');
+            window.__wasmSnapshotData = null;
+            return Promise.resolve(null);
+        }
+        return caches.open('wasm-snapshot').then(function(cache) {
+            // Check both the heap data and the metadata (which stores the fingerprint)
+            return Promise.all([
+                cache.match('/snapshot/heap-v2'),
+                cache.match('/snapshot/meta')
+            ]);
+        }).then(function(results) {
+            var heapResp = results[0];
+            var metaResp = results[1];
+            if (!heapResp) {
+                mark('snapshot:not_found');
+                window.__wasmSnapshotData = null;
+                return null;
+            }
+            // Check fingerprint: reject stale snapshots from older WASM binaries.
+            if (metaResp && BUILD_FINGERPRINT !== '__WASM_BUILD' + '_FINGERPRINT__') {
+                return metaResp.clone().json().then(function(meta) {
+                    if (meta.fingerprint && meta.fingerprint !== BUILD_FINGERPRINT) {
+                        mark('snapshot:stale', 'stored=' + meta.fingerprint + ' current=' + BUILD_FINGERPRINT);
+                        console.log('[snapshot] Discarding stale snapshot (build fingerprint mismatch)');
+                        // Delete stale snapshot
+                        return caches.open('wasm-snapshot').then(function(c) {
+                            return Promise.all([c.delete('/snapshot/heap-v2'), c.delete('/snapshot/meta')]);
+                        }).then(function() {
+                            window.__wasmSnapshotData = null;
+                            return null;
+                        });
+                    }
+                    // Fingerprint matches — snapshot is valid
+                    mark('snapshot:exists');
+                    window.__wasmSnapshotExists = true;
+                    window.__wasmSnapshotData = null; // will be loaded lazily
+                    return 'deferred';
+                }).catch(function() {
+                    // Can't read meta — treat as stale
+                    mark('snapshot:meta_error');
+                    window.__wasmSnapshotData = null;
+                    return null;
+                });
+            }
+            // No metadata or fingerprint not injected (dev mode) — accept the snapshot
+            mark('snapshot:exists');
+            window.__wasmSnapshotExists = true;
+            window.__wasmSnapshotData = null;
+            return 'deferred';
+        }).catch(function(e) {
+            mark('snapshot:cache_error', e.message);
+            window.__wasmSnapshotData = null;
+            return null;
+        });
+    })();
 
     // Unique fingerprint for THIS WASM runtime instance. Survives only as
     // long as the iframe doesn't reload; if a test sees the same value
@@ -197,13 +267,46 @@
                 var origOnMsg = TheFakeWebSocket.onmessage;
                 if (origOnMsg) {
                     TheFakeWebSocket.onmessage = function(ev) {
-                        var txt = (typeof ev.data === 'string' ? ev.data : '').substring(0, 120);
+                        var txt = (typeof ev.data === 'string' ? ev.data : '').substring(0, 300);
                         var sw = window.__switchSendT;
                         if (sw && (txt.indexOf('status:') === 0 || txt.indexOf('loaded:') === 0 ||
                                    txt.indexOf('invalidatetiles') === 0 || txt.indexOf('tile ') === 0 ||
                                    txt.indexOf('editor:') === 0 || txt.indexOf('statusindicator') === 0)) {
                             var dt = (performance.now() - sw).toFixed(0);
                             mark('msg:' + txt.split(' ')[0].replace(':',''), dt + 'ms  ' + txt.substring(0, 80));
+                        }
+                        // Cross-type hot-switch: detect doc type change from
+                        // status message and recreate the tile layer + UI.
+                        if (txt.indexOf('status:') === 0 && window.__bridgeSwitchSent) {
+                            try {
+                                // Extract type from status JSON. Use full ev.data
+                                // (not truncated txt) and regex instead of JSON.parse
+                                // because the status may have non-standard JSON.
+                                var fullData = typeof ev.data === 'string' ? ev.data : '';
+                                var typeMatch = fullData.match(/"type"\s*:\s*"(\w+)"/);
+                                var json = typeMatch ? { type: typeMatch[1] } : null;
+                                if (!json) throw new Error('no type in status');
+                                var map = window.app && window.app.map;
+                                if (json.type && map && map._docLayer && map._docLayer._docType &&
+                                    json.type !== map._docLayer._docType) {
+                                    var oldType = map._docLayer._docType;
+                                    console.log('[wasm-loader] Cross-type: ' + oldType + ' → ' + json.type);
+                                    // Remove old layer and clear TileManager's cached reference
+                                    try { map.removeLayer(map._docLayer); } catch(e) {}
+                                    map._docLayer = null;
+                                    if (typeof TileManager !== 'undefined' && TileManager._docLayer) {
+                                        TileManager._docLayer = null;
+                                    }
+                                    // Reinitialize UI for new type (creates correct
+                                    // notebookbar, toolbar, sidebar)
+                                    map.uiManager.initializeSpecializedUI(json.type);
+                                    // The status message will now be processed by
+                                    // Socket._onStatusMsg which will create the new
+                                    // doc layer since _docLayer is now null.
+                                }
+                            } catch(e) {
+                                console.error('[wasm-loader] Cross-type error:', e);
+                            }
                         }
                         return origOnMsg.apply(this, arguments);
                     };
@@ -633,77 +736,77 @@
             seenCalledRun = true; mark('emscripten:calledRun');
             updateProgress('Opening document…', 95);
 
-            // ── Snapshot restore/signal ────────────────────────
-            // The COOLWSD thread is waiting for signal_js_ready().
-            // Check IndexedDB for a saved memory snapshot.
+            // ── Snapshot signal + save ────────────────────────
+            // On restore visits, HEAPU8 was restored before callMain by
+            // the deploy.sh injection. LO Core takes SECOND_INIT (fast).
+            // Kit.cpp detects the restore and skips the save.
+            // On first visits, we save HEAPU8 to Cache API after the doc
+            // loads, then call start_coolwsd_phase2 to unblock Kit.cpp.
             (function() {
-                var SNAP_KEY = 'lo-wasm-memory-v1';
-                function signalReady(restored) {
-                    mark('snapshot:signal', restored ? 'restored' : 'normal');
-                    // Use handle_cool_message which is already exported and working
-                    if (globalThis.postMobileMessage) {
-                        globalThis.postMobileMessage(restored ? 'JS_READY_SNAPSHOT' : 'JS_READY');
-                    }
-                }
-                try {
-                    var dbReq = indexedDB.open('wasm-memory-snapshot', 1);
-                    dbReq.onupgradeneeded = function(e) {
-                        e.target.result.createObjectStore('snapshots');
-                    };
-                    dbReq.onsuccess = function(e) {
-                        var db = e.target.result;
-                        var tx = db.transaction('snapshots', 'readonly');
-                        var req = tx.objectStore('snapshots').get(SNAP_KEY);
-                        req.onsuccess = function() {
-                            var snap = req.result;
-                            if (snap && snap.memory && Module.HEAPU8) {
-                                try {
-                                    var src = new Uint8Array(snap.memory);
-                                    var dst = Module.HEAPU8;
-                                    if (src.length <= dst.length) {
-                                        mark('snapshot:restoring', (src.length / 1048576).toFixed(0) + 'MB');
-                                        dst.set(src);
-                                        mark('snapshot:restored');
-                                        db.close();
-                                        signalReady(true);
-                                        return;
-                                    }
-                                    mark('snapshot:size_mismatch', 'snap=' + src.length + ' heap=' + dst.length);
-                                } catch(err) {
-                                    mark('snapshot:restore_error', err.message);
-                                }
-                            }
-                            db.close();
-                            signalReady(false);
-                        };
-                        req.onerror = function() { db.close(); signalReady(false); };
-                    };
-                    dbReq.onerror = function() { signalReady(false); };
-                } catch(ex) {
-                    signalReady(false);
-                }
+                var wasRestored = !!window.__wasmSnapshotRestored;
+                mark('snapshot:signal', wasRestored ? 'restored' : 'first-visit');
+                window.__wasmJsReady = true;
 
-                // Save snapshot after preinit completes (first visit only)
-                // Poll is_preinit_done until it returns 1, then save
-                // Save snapshot when doc is loaded (prewarm:ready fires)
-                var saveCheck = setInterval(function() {
-                    if (window.__wasmPrewarmReady && Module.HEAPU8) {
+                if (!wasRestored) {
+                    // First visit: save after LO init + module preload.
+                    // Desktop::Main signals __loInitDone after preloading modules.
+                    var saveCheck = setInterval(function() {
+                        if (!Module || !Module.HEAPU8) return;
+                        if (!window.__loInitDone) return;
                         clearInterval(saveCheck);
-                        mark('snapshot:saving', (Module.HEAPU8.buffer.byteLength / 1048576).toFixed(0) + 'MB');
+                        mark('snapshot:init_done');
+                        // Save only the USED portion of HEAPU8 (typically ~160MB
+                        // vs 1GB total). Find last non-zero 4-byte word.
+                        var u32 = Module.HEAPU32;
+                        var lastUsed = 0;
+                        for (var i = u32.length - 1; i >= 0; i--) {
+                            if (u32[i] !== 0) { lastUsed = (i + 1) * 4; break; }
+                        }
+                        // Round up to 64KB page boundary
+                        var heapSize = Math.min(((lastUsed + 65535) & ~65535), Module.HEAPU8.byteLength);
+                        // The first ~16MB of WASM memory contains data segments,
+                        // BSS, and stack — these are initialized by Emscripten's
+                        // initRuntime() and must NOT be overwritten on restore.
+                        // Everything above is the dynamic heap (malloc'd objects).
+                        // 16MB is a conservative estimate — actual data+BSS+stack
+                        // is typically 5-10MB for this build.
+                        // Read __heap_base via ccall to a C helper.
+                        // This is the boundary between BSS/data (below) and heap (above).
+                        var heapBase = 16 * 1024 * 1024; // 16MB default
                         try {
-                            var memCopy = Module.HEAPU8.buffer.slice(0);
-                            var dbReq2 = indexedDB.open('wasm-memory-snapshot', 1);
-                            dbReq2.onupgradeneeded = function(e) { e.target.result.createObjectStore('snapshots'); };
-                            dbReq2.onsuccess = function(e) {
-                                var db2 = e.target.result;
-                                var tx2 = db2.transaction('snapshots', 'readwrite');
-                                tx2.objectStore('snapshots').put({ memory: memCopy, timestamp: Date.now() }, SNAP_KEY);
-                                tx2.oncomplete = function() { mark('snapshot:saved', (memCopy.byteLength / 1048576).toFixed(0) + 'MB'); db2.close(); };
-                                tx2.onerror = function() { db2.close(); };
-                            };
+                            heapBase = Module.ccall('get_heap_base', 'number', [], []);
+                        } catch(e) {
+                            mark('snapshot:heap_base_fallback', e.message);
+                        }
+                        mark('snapshot:saving', (heapSize / 1048576).toFixed(0) + 'MB used, heapBase=' + heapBase);
+                        try {
+                            var memCopy = new ArrayBuffer(heapSize);
+                            new Uint8Array(memCopy).set(Module.HEAPU8.subarray(0, heapSize));
+                            // Use Cache API — handles large blobs efficiently.
+                            // Store metadata alongside the snapshot.
+                            var meta = JSON.stringify({ heapBase: heapBase, size: heapSize, ts: Date.now(), fingerprint: BUILD_FINGERPRINT });
+                            caches.open('wasm-snapshot').then(function(cache) {
+                                // Save metadata
+                                cache.put('/snapshot/meta', new Response(meta, {
+                                    headers: { 'Content-Type': 'application/json' }
+                                }));
+                                // Save heap data
+                                var blob = new Blob([memCopy], { type: 'application/octet-stream' });
+                                return cache.put('/snapshot/heap-v2', new Response(blob));
+                            }).then(function() {
+                                mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB via Cache API, heapBase=' + heapBase);
+                                // Resume COOLWSD (unblock Kit.cpp wait loop)
+                                mark('snapshot:starting_phase2');
+                                try { Module.ccall('start_coolwsd_phase2', null, [], []); }
+                                catch(e) { mark('snapshot:phase2_error', e.message); }
+                            }).catch(function(err) {
+                                mark('snapshot:save_error', err.message);
+                                // Resume COOLWSD even if save failed
+                                try { Module.ccall('start_coolwsd_phase2', null, [], []); } catch(e) {}
+                            });
                         } catch(ex) { mark('snapshot:save_error', ex.message); }
-                    }
-                }, 500);
+                    }, 500);
+                }
             })();
         }
     }, 50);

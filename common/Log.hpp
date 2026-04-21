@@ -299,8 +299,10 @@ static constexpr std::size_t skipPathPrefix(const char (&s)[N], std::size_t n = 
 
 // emscripten/console.h does not have emscripten_console_info (corresponding to JS console.info) nor
 // emscripten_console_debug (corresponding to JS console.debug), so use emscripten_console_log
-// (corresponding to JS console.log) instead:
+// (corresponding to JS console.log) instead.
+// Suppress DBG/TRC in the browser console — they're too noisy for DevTools.
 #define LOG_LOG(LVL, STR) ( \
+    Log::LVL > Log::INF ? (void)0 : \
     Log::LVL <= Log::ERR ? emscripten_console_error((STR).c_str()) : \
     Log::LVL <= Log::WRN ? emscripten_console_warn((STR).c_str()) : \
                            emscripten_console_log((STR).c_str()))

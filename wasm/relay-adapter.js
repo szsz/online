@@ -55,7 +55,17 @@
     window.addEventListener('message', function(event) {
         try {
             var msg = typeof event.data === 'string' ? JSON.parse(event.data) : null;
-            if (!msg || msg.MessageId !== 'RelaySwitchRoom') return;
+            if (!msg) return;
+            // Parent says stop — iframe is being destroyed. Disconnect
+            // to prevent stale checkpoint saves from overwriting the
+            // file that's being uploaded for the next session.
+            if (msg.MessageId === 'RelayDisconnect') {
+                console.log('[relay] Disconnect requested — closing WebSocket');
+                connected = false;
+                if (ws) { ws.onmessage = null; ws.close(); ws = null; }
+                return;
+            }
+            if (msg.MessageId !== 'RelaySwitchRoom') return;
             var newRoom = msg.Values.room;
             var newDoc = msg.Values.docName;
             console.log('[relay] Room switch: ' + relayUrl + ' → ' + newRoom);
@@ -271,17 +281,22 @@
         // their Kit still has the checkpoint doc and the replay messages
         // haven't been applied yet. Saving now would overwrite the stored
         // file with stale content and prune the relay's message log.
-        if (isFirstClient) {
-            saveAndUploadCheckpoint();
-        } else {
-            // Wait for replay messages to be applied, then save.
-            // 10s is generous — replay is fast (just feeding messages
-            // to Kit) but the save needs Kit to finish processing them.
-            console.log('[relay] Late joiner — delaying checkpoint by 10s for replay');
-            setTimeout(function() {
-                saveAndUploadCheckpoint();
-            }, 10000);
-        }
+        //
+        // Skip initial checkpoint for the first client too — the viewer
+        // already uploaded the correct file. A checkpoint now would save
+        // a potentially blank/stale doc (e.g., a prewarm blank that hasn't
+        // been switched yet) and overwrite the original on the viewer.
+        // The relay hash is set on the first user-initiated save.
+        // Automatic initial checkpoints are DISABLED to prevent
+        // blank-doc / stale-doc overwrites. The viewer already has the
+        // correct file. Checkpoints only run on user-initiated saves
+        // (Ctrl+S / .uno:Save) or explicit modification events.
+        console.log('[relay] Skipping initial checkpoint (first=' + isFirstClient + ') — file already on viewer');
+        // if (isFirstClient) {
+        //     saveAndUploadCheckpoint();
+        // } else {
+        //     setTimeout(function() { saveAndUploadCheckpoint(); }, 10000);
+        // }
     }
 
     // --- FakeWebSocket.send interceptor ---
@@ -704,6 +719,16 @@
             var editorFileUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
             origFetch(editorFileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
                 var bytes = new Uint8Array(buf);
+
+                // Guard: if the saved file is a tiny blank doc (<15KB) but
+                // we're editing a real document, the checkpoint captured the
+                // prewarm blank — don't overwrite the original on the viewer.
+                if (bytes.length < 15000 && window.__lastUploadedFileSize && window.__lastUploadedFileSize > 50000) {
+                    console.log('[relay] Checkpoint skip: saved ' + bytes.length + 'B but original was ' +
+                                window.__lastUploadedFileSize + 'B — refusing to overwrite with blank');
+                    return Promise.resolve();
+                }
+
                 // 2. Compute the full SHA-256 hex of the document.
                 return crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
                     var hashArr = new Uint8Array(hashBuf);

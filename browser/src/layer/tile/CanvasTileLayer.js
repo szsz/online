@@ -905,24 +905,48 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 				if (sj && sj.type) this._docType = sj.type;
 			} catch(ignore) { /* leave _docType unchanged */ }
 
-			console.log('DEBUG: onStatusMsg: old=' + oldDocType + ' new=' + this._docType);
-
-			this._onStatusMsg(textMsg);
-
-			// Cross-type hot-switch: reinitialize UI if type changed
-			if (this._docType && oldDocType && this._docType !== oldDocType) {
+			console.log('CTL status: old=' + oldDocType + ' new=' + this._docType + ' msg=' + textMsg.substring(0, 40));
+			var isCrossTypeSwitch = this._docType && oldDocType && this._docType !== oldDocType;
+			if (isCrossTypeSwitch) {
+				// Cross-type switch: the current tile layer can't process a
+				// status message from a different doc type. Remove old layer,
+				// create new one, and reinitialize the UI.
 				console.log('Cross-type switch: ' + oldDocType + ' → ' + this._docType);
 				try {
-					if (this._map && this._map.uiManager) {
-						this._map.uiManager.initializeSpecializedUI(this._docType);
+					// Remove the old layer and create a correct one
+					var map = this._map;
+					map.removeLayer(this);
+
+					var options = {
+						tileWidthTwips: map.options.tileWidthTwips / app.dpiScale,
+						tileHeightTwips: map.options.tileHeightTwips / app.dpiScale,
+						docType: this._docType,
+					};
+					var newLayer;
+					if (this._docType === 'text')
+						newLayer = new L.WriterTileLayer(options);
+					else if (this._docType === 'spreadsheet')
+						newLayer = new L.CalcTileLayer(options);
+					else if (this._docType === 'presentation' || this._docType === 'drawing')
+						newLayer = new L.ImpressTileLayer(options);
+					if (newLayer) {
+						newLayer._docType = this._docType;
+						map._docLayer = newLayer;
+						map.addLayer(newLayer);
+						// Reinitialize toolbar/notebookbar for the new doc type
+						map.uiManager.initializeSpecializedUI(this._docType);
+						// Feed the status message to the new layer
+						newLayer._onMessage(textMsg, null);
 					}
-					document.body.setAttribute('data-docType', this._docType);
 				} catch(e) {
-					console.error('Cross-type UI switch error:', e);
+					console.error('Cross-type layer switch error:', e);
 				}
+				return; // Don't continue processing on the old layer
+			} else {
+				this._onStatusMsg(textMsg);
 			}
 
-			// update tiles and selection because mode could be changed
+			// update tiles and selection
 			TileManager.update();
 			app.definitions.otherViewGraphicSelectionSection.updateVisibilities();
 			TextCursorSection.updateVisibilities();

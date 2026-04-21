@@ -20,6 +20,11 @@
 
 #include <emscripten/fetch.h>
 #include <emscripten.h>
+#include <emscripten/threading.h>
+
+#include <Poco/Util/Application.h>
+
+#include <LibreOfficeKit/LibreOfficeKit.h>
 
 #include <atomic>
 #include <cassert>
@@ -43,6 +48,28 @@ extern "C" EMSCRIPTEN_KEEPALIVE void signal_js_ready(int snapshotRestored)
     std::cout << "signal_js_ready: snapshotRestored=" << snapshotRestored << std::endl;
 }
 
+// Return the __heap_base address for partial heap snapshot
+extern "C" EMSCRIPTEN_KEEPALIVE uintptr_t get_heap_base()
+{
+    extern char __heap_base;
+    return reinterpret_cast<uintptr_t>(&__heap_base);
+}
+
+// Return the temp dir path stored in LO Core's gTempNameBase_Impl.
+// After HEAPU8 snapshot restore, JS needs to recreate this dir in the VFS.
+extern "C" EMSCRIPTEN_KEEPALIVE const char* get_temp_dir_path()
+{
+    static std::string result;
+    // Read TMPDIR env var (set during init, in restored HEAPU8)
+    const char* tmpdir = getenv("TMPDIR");
+    if (tmpdir) {
+        result = tmpdir;
+        return result.c_str();
+    }
+    result = "/tmp";
+    return result.c_str();
+}
+
 // JS calls this to check if preinit is done (to save a snapshot)
 extern "C" EMSCRIPTEN_KEEPALIVE int is_preinit_done()
 {
@@ -52,6 +79,29 @@ extern "C" EMSCRIPTEN_KEEPALIVE int is_preinit_done()
 }
 
 int coolwsd_server_socket_fd = -1;
+
+// Stored by main() for start_coolwsd_phase2() to use
+static const char* g_argv1 = nullptr;
+static const char* g_argv2 = nullptr;
+
+// Snapshot sentinel — set by Kit.cpp after LO init, polled by JS.
+// Must be a GLOBAL (not local/stack) so it has a stable address.
+volatile uint32_t g_snapshotSentinel = 0;
+
+// Controls whether Desktop::Main enters the VCL event loop.
+// Controls whether Desktop::Main enters Execute() (VCL event loop).
+// First visit: true → Desktop::Main returns after Phase 1 (for lok_init_2 WaitForReady).
+// After snapshot save: false → Desktop::Main enters Execute().
+// On restore: set false by leakSnapshotPolls so it enters Execute().
+bool g_wasmSkipExecute = true;
+
+// Desktop::Main phase control:
+// 0 = first visit: run Phase 1, save snapshot, then Phase 2
+// 2 = restore visit: skip Phase 1, run Phase 2 only
+int g_wasmDesktopPhase = 0;
+
+// Controls the PRE_INIT snapshot save wait loop in Kit.cpp.
+std::atomic<bool> g_snapshotWaiting{false};
 
 static char const * tempFile; // null when operating on a local file in the Emscripten file system
 static std::string remoteUrl;
@@ -291,7 +341,7 @@ void handle_remote_message(int clientId, const char *string_value)
         std::cerr << "handle_remote_message: unknown client " << clientId << std::endl;
         return;
     }
-    std::cout << "handle_remote_message(" << clientId << "): " << std::string(string_value).substr(0, 60) << std::endl;
+    LOG_TRC("handle_remote_message(" << clientId << "): " << std::string(string_value).substr(0, 60));
     fakeSocketWriteQueue(it->second.fakeClientFd, string_value, strlen(string_value));
 }
 
@@ -311,7 +361,7 @@ void close_remote_client(int clientId)
 extern "C"
 void handle_cool_message(const char *string_value)
 {
-    std::cout << "================ handle_cool_message(): '" << string_value << "'" << std::endl;
+    LOG_TRC("handle_cool_message(): '" << string_value << "'");
 
     // JS signals readiness for the snapshot mechanism
     if (strcmp(string_value, "JS_READY") == 0)
@@ -332,9 +382,21 @@ void handle_cool_message(const char *string_value)
     {
         // Now we know that the JS has started completely
 
-        // Contact the permanently (during app lifetime) listening COOLWSD server
-        // "public" socket
-        assert(coolwsd_server_socket_fd != -1);
+        // After snapshot restore, coolwsd_server_socket_fd is -1 until
+        // the new COOLWSD starts. Defer HULLO to a thread that can block.
+        if (coolwsd_server_socket_fd == -1)
+        {
+            std::cout << "HULLO: server not ready, deferring to thread" << std::endl;
+            std::thread([]
+            {
+                while (coolwsd_server_socket_fd == -1)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::cout << "HULLO (deferred): server ready, fd=" << coolwsd_server_socket_fd << std::endl;
+                handle_cool_message("HULLO");
+            }).detach();
+            return;
+        }
+
         int rc = fakeSocketConnect(fakeClientFd, coolwsd_server_socket_fd);
         assert(rc != -1);
 
@@ -453,11 +515,22 @@ void saveToServer() {
     //TODO: handle fetch->status != 200
 }
 
+// Called by JS after snapshot save. Unblocks Kit.cpp wait loop.
+extern "C" EMSCRIPTEN_KEEPALIVE
+void start_coolwsd_phase2()
+{
+    std::cout << "start_coolwsd_phase2: g_wasmSkipExecute=false, g_snapshotWaiting=false" << std::endl;
+    g_wasmSkipExecute = false;
+    g_snapshotWaiting.store(false);
+}
+
 int main(int argc, char* argv_main[])
 {
     std::cout << "================ Here is main()" << std::endl;
 
     assert(argc == 3);
+    g_argv1 = argv_main[1];
+    g_argv2 = argv_main[2];
 
     Log::initialize("WASM", "error");
     Util::setThreadName("main");
@@ -473,23 +546,11 @@ int main(int argc, char* argv_main[])
 
     fakeClientFd = fakeSocketSocket();
 
-    // We run COOOLWSD::run() in a thread of its own so that main() can return.
+    // We run COOLWSD::run() in a thread of its own so that main() can return.
     std::thread(
         [&]
         {
             Util::setThreadName("COOLWSD::run");
-
-            // Wait for JS to signal readiness. JS may:
-            // a) Restore a WASM memory snapshot (return visitor) and set
-            //    g_snapshotRestored=1 → we skip globalPreinit
-            // b) Signal without restoring (first visitor) → normal init
-            std::cout << "COOLWSD thread: waiting for JS signal..." << std::endl;
-            while (!g_jsReady.load())
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            std::cout << "COOLWSD thread: JS ready, snapshotRestored="
-                      << g_snapshotRestored.load() << std::endl;
 
             const std::string docKind = std::string(argv_main[1]);
             const std::string docDesc = std::string(argv_main[2]);
@@ -536,6 +597,19 @@ int main(int argc, char* argv_main[])
 
             auto t_start = std::chrono::steady_clock::now();
             MAIN_THREAD_EM_ASM({ console.log('TIMING: COOLWSD::run() starting'); });
+#ifdef __EMSCRIPTEN__
+            {
+                int isRestore = MAIN_THREAD_EM_ASM_INT({
+                    return globalThis.__wasmSnapshotRestored ? 1 : 0;
+                });
+                if (isRestore)
+                {
+                    // Leak stale poll objects from snapshot — their dtors
+                    // would try to join dead threads → deadlock.
+                    COOLWSD::leakSnapshotPolls();
+                }
+            }
+#endif
             COOLWSD *coolwsd = new COOLWSD();
             coolwsd->run(1, argv);
             auto t_end = std::chrono::steady_clock::now();

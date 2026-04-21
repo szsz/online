@@ -727,9 +727,12 @@ class TileManager {
 	}
 
 	private static computeBorders() {
+		// Guard: during cross-type hot-switch, _docLayer is temporarily null.
+		if (!this._docLayer) return;
 		// Need to compute borders afresh and fetch tiles for them.
 		this._borders = []; // Stores borders for each split-pane.
 		const tileRanges = this.pxBoundsToTileRanges(this._pixelBounds);
+		if (!tileRanges) return;
 
 		const splitPanesContext = this._docLayer.getSplitPanesContext();
 		const paneStatusList = splitPanesContext

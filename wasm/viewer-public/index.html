@@ -258,10 +258,23 @@ function tryDropShield(reason, docMs) {
         }, 200);
         return;
     }
-    if (!docReady) {
-        updateShieldProgress('Loading document…', 92, currentFile);
-    } else if (!relayActivated) {
+    // If doc is ready but relay hasn't activated yet, start a timeout
+    // to drop the shield anyway. The relay is for co-editing — a single
+    // user shouldn't have to wait for it.
+    if (docReady && !relayActivated) {
+        if (!window.__shieldRelayTimeout) {
+            window.__shieldRelayTimeout = setTimeout(function() {
+                window.__shieldRelayTimeout = null;
+                if (docReady && !relayActivated) {
+                    console.log('[viewer] Shield timeout: dropping without relay activation');
+                    relayActivated = true; // pretend activated
+                    tryDropShield('relay-timeout', docMs);
+                }
+            }, 5000);
+        }
         updateShieldProgress('Joining session…', 96, 'Waiting for relay activation');
+    } else if (!docReady) {
+        updateShieldProgress('Loading document…', 92, currentFile);
     }
     console.log('[viewer] tryDropShield (' + reason + '): docReady=' + docReady +
                 ' relayActivated=' + relayActivated + ' — keeping shield up');
@@ -384,7 +397,16 @@ window.addEventListener('message', function(event) {
                 if (!currentFile) hideShield();
                 return;
             }
-            console.log('[viewer] App_LoadingStatus=Initialized (post-prewarm) — IGNORED, waiting for WasmDocReady');
+            // For cold-reload cross-type switches, WasmDocReady never fires
+            // (no switchdocument in the new iframe). Accept Initialized as ready.
+            if (window.__viewerState && window.__viewerState.lastOpenMode &&
+                window.__viewerState.lastOpenMode.startsWith('cold')) {
+                console.log('[viewer] App_LoadingStatus=Initialized (cold reload) — treating as doc ready');
+                docReady = true;
+                tryDropShield('cold-reload-initialized');
+            } else {
+                console.log('[viewer] App_LoadingStatus=Initialized (post-prewarm) — waiting for WasmDocReady');
+            }
         }
     } catch(e) {}
 });
@@ -440,18 +462,16 @@ function currentHashFile() {
 async function openFile(name) {
     const t0 = Date.now();
     currentFile = name;
-    // Reset shield-drop signals — the new doc has its own DocReady and
-    // its own RelayActivated to wait for. Without this reset a hot-switch
-    // would inherit the previous doc's "true" flags and drop the shield
-    // before the new doc finished loading.
-    docReady = false;
-    relayActivated = false;
     // Keep the URL in sync with the open file. The hashchange listener below
     // guards against re-entering openFile() when we triggered the change
     // ourselves (hash already matches currentFile).
     const wantHash = '#file=' + encodeURIComponent(name);
     if (location.hash !== wantHash) location.hash = wantHash;
-    const willHotSwitch = prewarmReady && (docTypeFor(name) === currentDocType);
+    // Snapshot prewarmReady at the START of openFile (before async
+    // downloads). If the prewarm completes during the download, we still
+    // use cold reload to avoid signal races with the prewarm WasmDocReady.
+    const wasPrewarmReady = prewarmReady;
+    const willHotSwitch = wasPrewarmReady && (docTypeFor(name) === currentDocType);
 
     // Collapse the file sidebar so the editor gets the full viewport.
     // The user can re-open it by hovering the left edge or clicking the bar.
@@ -476,6 +496,12 @@ async function openFile(name) {
     await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
         method: 'POST', body: new Uint8Array(buf), mode: 'cors',
     });
+    // Track the upload size so the relay checkpoint guard can detect
+    // if Kit saved a blank doc instead of the real file.
+    const iframe2 = document.getElementById('editor-frame');
+    if (iframe2 && iframe2.contentWindow) {
+        try { iframe2.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+    }
 
     if (willHotSwitch) {
         updateShieldProgress('Opening document…', 50, 'Switching to ' + name);
@@ -487,11 +513,16 @@ async function openFile(name) {
     const newDocType = docTypeFor(name);
     const sameType = newDocType === currentDocType;
 
-    if (sameType && prewarmReady) {
+    // Reset shield-drop signals. For hot-switches, we need fresh signals
+    // from the new document. For cold reloads, the iframe recreates
+    // everything anyway.
+    docReady = false;
+    relayActivated = false;
+
+    if (wasPrewarmReady && sameType) {
         // HOT SWITCH — same document type, reuse the live WASM.
-        // Cross-type switches use cold reload because COOL's JS
-        // message routing in WASM mode bypasses Socket._onStatusMsg,
-        // preventing UI reinitialization for the new doc type.
+        // Cross-type switches use cold reload because the JS UI layer
+        // recreation + relay room switch + shield coordination is fragile.
         // 1. Tell the relay-adapter inside the iframe to switch rooms
         // 2. Change the hash to trigger switchdocument in wasm-loader
         const newRoom = relayRoom(name);
@@ -510,6 +541,13 @@ async function openFile(name) {
                       + '&relay=' + encodeURIComponent(relayRoom(name))
                       + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                       + '&UserName=' + encodeURIComponent(MY_USER_NAME);
+        // Stop the old iframe's relay adapter to prevent stale checkpoint
+        // saves from overwriting the file we're about to upload.
+        try {
+            iframe.contentWindow.postMessage(JSON.stringify({
+                MessageId: 'RelayDisconnect', Values: {}
+            }), '*');
+        } catch(e) {}
         // Cross-type or no prewarm: destroy and re-create iframe to
         // ensure clean WASM teardown.
         const newIframe = document.createElement('iframe');

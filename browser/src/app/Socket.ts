@@ -895,22 +895,24 @@ class Socket {
 		}
 
 		// Cross-type hot-switch: if the docLayer exists but the type
-		// from the status message differs, reinitialize the UI.
-		// The docLayer stays (content already renders correctly from
-		// switchdocument), but the toolbar/panels need to switch.
+		// from the status message differs, tear down the old layer so
+		// the code below creates a new one of the correct type.
+		console.log('_onStatusMsg: docLayer=' + !!this._map._docLayer +
+			' cmd.type=' + command.type +
+			' layer._docType=' + (this._map._docLayer ? (this._map._docLayer as any)._docType : 'N/A'));
 		if (this._map._docLayer && command.type &&
-			(this._map._docLayer as any)._createdForType &&
-			(this._map._docLayer as any)._createdForType !== command.type) {
+			this._map._docLayer._docType &&
+			this._map._docLayer._docType !== command.type) {
 			console.log('Cross-type switch: ' +
-				(this._map._docLayer as any)._createdForType + ' → ' + command.type);
-			(this._map._docLayer as any)._createdForType = command.type;
-			this._map._docLayer._docType = command.type;
-			document.body.setAttribute('data-docType', command.type);
+				this._map._docLayer._docType + ' → ' + command.type +
+				' — removing old doc layer to create correct type');
 			try {
-				this._map.uiManager.initializeSpecializedUI(command.type);
+				this._map.removeLayer(this._map._docLayer);
 			} catch(e: any) {
-				console.error('Cross-type UI reinit error:', e);
+				console.error('Cross-type: removeLayer error:', e);
 			}
+			(this._map as any)._docLayer = null;
+			document.body.setAttribute('data-docType', command.type);
 		}
 
 		if (!this._map._docLayer) {
@@ -960,6 +962,18 @@ class Socket {
 			this._map._docLayer = docLayer;
 			this._map.addLayer(docLayer);
 			this._map.fire('doclayerinit');
+
+			// Reinitialize UI for the new doc type (toolbar, sidebar,
+			// notebookbar). This is critical for cross-type hot-switches
+			// where the previous layer was a different type.
+			try {
+				this._map.uiManager.initializeSpecializedUI(command.type);
+				if (!window.mode.isMobile())
+					this._map.uiManager.initializeNotebookbarInCore();
+				this._map.uiManager.initializeSidebar();
+			} catch (e: any) {
+				window.app.console.error('UI reinit for ' + command.type + ': ' + e);
+			}
 		} else if (this._reconnecting) {
 			// we are reconnecting ...
 			this._map._docLayer._resetClientVisArea();
@@ -1058,7 +1072,11 @@ class Socket {
 	}
 
 	public _onMessage(e: SlurpMessageEvent | MinimalMessageEvent): void {
-		let textMsg = e.textMsg;
+		// In WASM mode, messages arrive as raw {data: string} events from
+		// TheFakeWebSocket, without the slurp queue setting textMsg.
+		let textMsg = e.textMsg || (e as any).data;
+		if (textMsg && textMsg.startsWith && textMsg.startsWith('status:'))
+			console.log('DBG_TOP: _onMessage got status:, len=' + textMsg.length);
 		const imgBytes: Uint8Array | undefined = (e as SlurpMessageEvent).imgBytes;
 
 		if (window.L.Browser.cypressTest) {
@@ -1202,7 +1220,8 @@ class Socket {
 			}
 		}
 
-		if (textMsg.startsWith('status:')) {
+		if (textMsg && (textMsg.startsWith('status:') || textMsg.startsWith('statusupdate:'))) {
+			console.log('DBG: _onMessage intercepting status msg, calling _onStatusMsg');
 			this._onStatusMsg(
 				textMsg,
 				JSON.parse(textMsg.replace('status:', '').replace('statusupdate:', '')),
