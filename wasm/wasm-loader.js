@@ -16,24 +16,30 @@
     window.__wasmDocType = docType;
 
     // ───── PROFILING ─────
-    var t0 = performance.now();
-    window.__prewarmTimings = { t0Wall: Date.now(), events: [] };
+    // All times measured from navigation start (when the user hit Enter),
+    // not from when this script runs. This gives the true total load time.
+    var t0Nav = performance.timeOrigin || (performance.timing && performance.timing.navigationStart) || (Date.now() - performance.now());
+    var t0 = performance.now(); // kept for backward compat with test code
+    window.__prewarmTimings = { t0Wall: Date.now(), t0Nav: t0Nav, events: [] };
+    function msSinceNav() { return Date.now() - t0Nav; }
     function mark(name, detail) {
         var dt = (performance.now() - t0).toFixed(1);
-        window.__prewarmTimings.events.push({ t: +dt, name: name, detail: detail || '' });
+        var navMs = msSinceNav();
+        window.__prewarmTimings.events.push({ t: +dt, tNav: navMs, name: name, detail: detail || '' });
         console.log('[profile +' + dt + 'ms] ' + name + (detail ? ' ' + detail : ''));
     }
-    window.__prewarmMark = mark;  // external code can mark events too
+    window.__prewarmMark = mark;
 
-    // ── Human-readable timing summary (visible in browser console) ──
+    // ── Human-readable timing (from navigation start, visible in console) ──
     var _timingMilestones = {};
     function logTiming(label) {
-        var ms = performance.now() - t0;
+        var ms = msSinceNav();
         _timingMilestones[label] = ms;
-        console.log('%c[TIMING] ' + label + ': ' + (ms / 1000).toFixed(2) + 's',
+        console.log('%c[TIMING] ' + label + ' @ ' + (ms / 1000).toFixed(2) + 's (from navigation)',
             'color: #1565c0; font-weight: bold; font-size: 13px');
     }
     window.__wasmLogTiming = logTiming;
+    logTiming('wasm-loader.js started');
 
     mark('loader:start', 'doc=' + docType + ' ext=' + ext);
 
@@ -899,12 +905,12 @@
                 window.__wasmInitialDocLoaded = true;  // sticky one-shot
                 prewarmWordCountAtReady = wc ? wc.textContent : '';
                 mark('prewarm:ready');
-                logTiming('Document ready');
+                logTiming('Document ready (total load time)');
                 // Print summary
                 var summary = Object.keys(_timingMilestones).map(function(k) {
                     return '  ' + k + ': ' + (_timingMilestones[k] / 1000).toFixed(2) + 's';
                 }).join('\n');
-                console.log('%c[TIMING SUMMARY]\n' + summary,
+                console.log('%c[TIMING SUMMARY] (all times from navigation start / user hitting Enter)\n' + summary,
                     'color: #1b5e20; font-weight: bold; font-size: 12px');
                 clearInterval(docPollInterval);
                 docPollInterval = null;
