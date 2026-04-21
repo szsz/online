@@ -166,6 +166,17 @@ const RELAY  = window.__CONFIG?.RELAY_URL  || 'wss://wasm.atgpartners.info:9091'
 const FILE_STORAGE_URL = window.__CONFIG?.VIEWER_URL || window.location.origin;
 const BLANK_FILENAME = '__prewarm_blank.docx';
 
+// Read-only mode: set by readonly.html or ?readonly=1 URL param.
+// When true, the relay parameter is omitted from iframe URLs (disabling
+// co-editing) and the shield drops on WasmDocReady alone.
+// Single-user mode: set by singleuser.html or ?singleuser URL param.
+// When true, the relay parameter is omitted from iframe URLs — all edits
+// go straight to the local Kit without co-editing. The user can still
+// edit and save; there's just no relay server connection.
+const SINGLE_USER = window.__VIEWER_SINGLE_USER ||
+    new URLSearchParams(window.location.search).has('singleuser');
+if (SINGLE_USER) document.title = 'Viewer (Single User)';
+
 // Random pronounceable name for this browser tab (shown on cursor to peers)
 function generateUserName() {
     var c = 'bcdfghjklmnprstvwz', v = 'aeiou';
@@ -426,10 +437,10 @@ async function startPrewarm() {
         const iframe = document.getElementById('editor-frame');
         iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                    + '&access_token=test'
-                   + '&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME))
+                   + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME)))
                    + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                    + '&UserName=' + encodeURIComponent(MY_USER_NAME);
-        console.log('[viewer] Pre-warm started');
+        console.log('[viewer] Pre-warm started' + (SINGLE_USER ? ' (readonly)' : ''));
     } catch (e) {
         setPrewarmStatus('❌ Pre-warm failed: ' + e.message);
     }
@@ -517,7 +528,7 @@ async function openFile(name) {
     // from the new document. For cold reloads, the iframe recreates
     // everything anyway.
     docReady = false;
-    relayActivated = false;
+    relayActivated = SINGLE_USER; // In readonly mode, no relay to wait for
 
     if (wasPrewarmReady && sameType) {
         // HOT SWITCH — same document type, reuse the live WASM.
@@ -525,11 +536,13 @@ async function openFile(name) {
         // recreation + relay room switch + shield coordination is fragile.
         // 1. Tell the relay-adapter inside the iframe to switch rooms
         // 2. Change the hash to trigger switchdocument in wasm-loader
-        const newRoom = relayRoom(name);
-        iframe.contentWindow.postMessage(JSON.stringify({
-            MessageId: 'RelaySwitchRoom',
-            Values: { room: newRoom, docName: name }
-        }), '*');
+        if (!SINGLE_USER) {
+            const newRoom = relayRoom(name);
+            iframe.contentWindow.postMessage(JSON.stringify({
+                MessageId: 'RelaySwitchRoom',
+                Values: { room: newRoom, docName: name }
+            }), '*');
+        }
         const base = iframe.src.split('#')[0];
         iframe.src = base + '#switchdoc=' + encodeURIComponent(name);
         setStatus('Opening ' + name);
@@ -538,7 +551,7 @@ async function openFile(name) {
         // COLD RELOAD — cross-type or no prewarm.
         const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
                       + '&access_token=test'
-                      + '&relay=' + encodeURIComponent(relayRoom(name))
+                      + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
                       + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                       + '&UserName=' + encodeURIComponent(MY_USER_NAME);
         // Stop the old iframe's relay adapter to prevent stale checkpoint

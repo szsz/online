@@ -83,11 +83,13 @@ TESTS=(
     "regression-mouse-select-copypaste|test-regression-mouse-select-copypaste.js|Regression: Mouse Select + Copy/Paste|Mouse click/double-click selection + copy/paste between 2 browsers|shots-regression-mouse-select-copypaste"
     "prewarm-benchmark|test-prewarm-benchmark.js|Prewarm Benchmark|Document open timing for all doc types: first visit vs return visit, cold vs warm cache|shots-prewarm-benchmark"
     "pptx-viewer-slides|test-pptx-viewer-slides.js|PPTX Viewer Slides|Real pptx via viewer: Impress UI, slide panel, navigation, content rendering|shots-pptx-viewer-slides"
+    "save-conflict|test-save-conflict.js|Save Conflict|External file modification during editing — conflict detection behavior|none"
     "timing-report|test-timing-report.js|Timing Report|Cold vs warm visit timing with screenshots, generates HTML report at /timing-report/|timing-report"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
 declare -A RESULTS   # slug -> pass|fail
+declare -A DURATIONS # slug -> elapsed seconds
 TOTAL=0
 PASSED=0
 FAILED=0
@@ -101,6 +103,7 @@ for entry in "${TESTS[@]}"; do
     echo "  Running: $title  ($script)"
     echo "========================================"
 
+    t_start=$SECONDS
     status="pass"
     if node "$SCRIPT_DIR/$script" 2>&1; then
         echo "  => PASS"
@@ -108,6 +111,9 @@ for entry in "${TESTS[@]}"; do
         status="fail"
         echo "  => FAIL (exit code $?)"
     fi
+    elapsed=$((SECONDS - t_start))
+    DURATIONS[$slug]="$elapsed"
+    echo "  Duration: ${elapsed}s"
 
     RESULTS[$slug]="$status"
     TOTAL=$((TOTAL + 1))
@@ -179,7 +185,7 @@ cat > "$REPORTS_DIR/index.html" <<HTMLEOF
     <span class="fail">Failed: ${FAILED}</span>
   </div>
   <table>
-    <thead><tr><th>Status</th><th>Test</th><th>Description</th></tr></thead>
+    <thead><tr><th>Status</th><th>Test</th><th>Time</th><th>Description</th></tr></thead>
     <tbody>
 HTMLEOF
 
@@ -191,10 +197,17 @@ for entry in "${TESTS[@]}"; do
     else
         badge='<span class="badge badge-fail">FAIL</span>'
     fi
+    dur="${DURATIONS[$slug]}"
+    if [ "$dur" -ge 60 ] 2>/dev/null; then
+        dur_fmt="$((dur / 60))m $((dur % 60))s"
+    else
+        dur_fmt="${dur}s"
+    fi
     cat >> "$REPORTS_DIR/index.html" <<ROW
       <tr>
         <td>${badge}</td>
         <td><a href="${slug}.html">${title}</a></td>
+        <td style="color:#888;font-size:0.85rem;white-space:nowrap">${dur_fmt}</td>
         <td>${description}</td>
       </tr>
 ROW

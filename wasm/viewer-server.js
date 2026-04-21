@@ -99,6 +99,17 @@ app.get('/', (req, res) => {
     res.send(fs.readFileSync(indexPath));
 });
 
+// ── GET /singleuser.html — same viewer, no relay/co-editing ────
+app.get('/singleuser.html', (req, res) => {
+    const p = path.join(VIEWER_PUBLIC, 'singleuser.html');
+    if (!fs.existsSync(p)) {
+        return res.status(500).send('viewer-public/singleuser.html missing');
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(fs.readFileSync(p));
+});
+
 // ── GET /config.js — inject deployment URLs into the viewer ────
 // The viewer's index.html does <script src="/config.js"></script>
 // before its own JS runs, so window.__CONFIG.EDITOR_URL / .RELAY_URL
