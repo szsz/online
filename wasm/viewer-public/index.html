@@ -652,28 +652,14 @@ async function openFile(name) {
 
     document.querySelectorAll('.file').forEach(el => el.classList.toggle('active', el.dataset.name === name));
 
-    // Step 1: Download from file storage
-    const resp = await fetch('/api/files/' + encodeURIComponent(name));
-    if (!resp.ok) { hideShield(); setStatus('Error: ' + resp.status); return; }
-    const buf = await resp.arrayBuffer();
-    const sizeMB = (buf.byteLength / 1048576).toFixed(1);
-    updateShieldProgress('Transferring to editor…', 20, name + ' (' + sizeMB + ' MB)');
+    // Start downloading the file from Azure. For cold reloads, we also
+    // start the iframe in parallel — the file just needs to arrive at
+    // /wasm/ before Kit opens it (~3-6s into WASM init).
+    const filePromise = fetch('/api/files/' + encodeURIComponent(name))
+        .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
 
-    // Step 2: Transfer to editor via CORS
-    await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-        method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-    });
-    // Track the upload size so the relay checkpoint guard can detect
-    // if Kit saved a blank doc instead of the real file.
-    const iframe2 = document.getElementById('editor-frame');
-    if (iframe2 && iframe2.contentWindow) {
-        try { iframe2.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
-    }
-
-    if (willHotSwitch) {
-        updateShieldProgress('Opening document…', 50, 'Switching to ' + name);
-    } else {
-        updateShieldProgress('Initializing app…', 30, 'Loading WebAssembly editor');
+    if (!willHotSwitch) {
+        updateShieldProgress('Initializing app…', 15, 'Loading WebAssembly editor + downloading file');
     }
 
     const iframe = document.getElementById('editor-frame');
@@ -688,10 +674,14 @@ async function openFile(name) {
 
     if (wasPrewarmReady && sameType) {
         // HOT SWITCH — same document type, reuse the live WASM.
-        // Cross-type switches use cold reload because the JS UI layer
-        // recreation + relay room switch + shield coordination is fragile.
-        // 1. Tell the relay-adapter inside the iframe to switch rooms
-        // 2. Change the hash to trigger switchdocument in wasm-loader
+        // Need file uploaded BEFORE switchdocument fires.
+        updateShieldProgress('Opening document…', 30, 'Downloading ' + name);
+        const buf = await filePromise;
+        updateShieldProgress('Opening document…', 50, 'Transferring to editor');
+        await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
+            method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+        });
+        try { iframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
         if (!SINGLE_USER) {
             const newRoom = relayRoom(name);
             iframe.contentWindow.postMessage(JSON.stringify({
@@ -704,22 +694,21 @@ async function openFile(name) {
         setStatus('Opening ' + name);
         window.__viewerState.lastOpenMode = 'hot';
     } else {
-        // COLD RELOAD — cross-type or no prewarm.
+        // COLD RELOAD — start iframe IMMEDIATELY, upload file in parallel.
+        // The file just needs to arrive at /wasm/ before Kit opens it
+        // (~3-6s into WASM init). This saves the entire download+upload
+        // latency from the critical path.
         const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
                       + '&access_token=test'
                       + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
                       + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                       + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                       + '&viewerT0=' + window.__viewerT0;
-        // Stop the old iframe's relay adapter to prevent stale checkpoint
-        // saves from overwriting the file we're about to upload.
         try {
             iframe.contentWindow.postMessage(JSON.stringify({
                 MessageId: 'RelayDisconnect', Values: {}
             }), '*');
         } catch(e) {}
-        // Cross-type or no prewarm: destroy and re-create iframe to
-        // ensure clean WASM teardown.
         const newIframe = document.createElement('iframe');
         newIframe.id = 'editor-frame';
         newIframe.setAttribute('allow', 'cross-origin-isolated; clipboard-read; clipboard-write');
@@ -729,8 +718,19 @@ async function openFile(name) {
         newIframe.style.border = 'none';
         iframe.parentNode.replaceChild(newIframe, iframe);
         newIframe.src = coolUrl;
+        viewerLog('Editor iframe loading (cold reload)');
         setStatus('Loading ' + name + (sameType ? '' : ' (type change ' + currentDocType + '→' + newDocType + ')'));
         window.__viewerState.lastOpenMode = 'cold-typechange';
+
+        // Upload file in background — it'll arrive before Kit needs it
+        filePromise.then(buf => {
+            return fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
+                method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+            }).then(() => {
+                try { newIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+                viewerLog('File transferred to editor');
+            });
+        }).catch(e => { setStatus('Error downloading: ' + e.message); });
     }
     currentDocType = newDocType;
     window.__viewerState.lastOpenStart = t0;
@@ -744,18 +744,18 @@ window.addEventListener('hashchange', function() {
     if (name && name !== currentFile) openFile(name);
 });
 
-// Kick off. If the page loads with #file=<name>, open it directly and skip
-// the prewarm (prewarm would just get thrown away when we hot-reload into
-// the target doc). Otherwise do the usual blank-doc prewarm so the first
-// click-to-open is fast.
+// Kick off. Start the editor iframe FIRST (prewarm or direct open),
+// then populate the file sidebar in parallel. The Azure file list
+// takes ~7s — don't let it block the editor initialization.
 (async function init() {
-    await refresh();
     const hashFile = currentHashFile();
     if (hashFile) {
         openFile(hashFile);
     } else {
         startPrewarm();
     }
+    // File list populates in the background — not on the critical path
+    refresh();
 })();
 </script>
 </body>
