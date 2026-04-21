@@ -30,8 +30,17 @@ fs.mkdirSync(STORAGE_DIR, { recursive: true });
 fs.mkdirSync(BLOBS_DIR,   { recursive: true });
 fs.mkdirSync(META_DIR,    { recursive: true });
 
-// Block path traversal: only allow basename(name).
-function safeName(name) { return path.basename(name); }
+// Allow folder paths but block traversal attacks.
+function safeName(name) {
+    if (!name) return null;
+    // Normalize separators, collapse runs
+    const n = name.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
+    if (!n) return null;
+    // Block .., absolute paths, hidden files
+    const parts = n.split('/');
+    if (parts.some(p => !p || p === '.' || p === '..' || p.startsWith('.'))) return null;
+    return n;
+}
 function blobPath(hash) {
     // Hex hashes only — SHA-256 is 64 chars; reject anything weird so a
     // crafted hash can't escape BLOBS_DIR.
@@ -39,7 +48,9 @@ function blobPath(hash) {
     return path.join(BLOBS_DIR, hash.toLowerCase());
 }
 function metaPath(name) {
-    return path.join(META_DIR, encodeURIComponent(safeName(name)) + '.json');
+    const safe = safeName(name);
+    if (!safe) return null;
+    return path.join(META_DIR, encodeURIComponent(safe) + '.json');
 }
 
 // ── Blobs (content-addressable) ────────────────────────────────────
@@ -77,19 +88,24 @@ function pipeBlobTo(hash, res, contentType) {
 // ── Name → hash metadata ───────────────────────────────────────────
 function readMeta(name) {
     const mp = metaPath(name);
-    if (!fs.existsSync(mp)) return null;
+    if (!mp || !fs.existsSync(mp)) return null;
     try { return JSON.parse(fs.readFileSync(mp, 'utf8')); } catch (e) { return null; }
 }
 function writeMeta(name, meta) {
-    fs.writeFileSync(metaPath(name), JSON.stringify(meta));
+    const mp = metaPath(name);
+    if (!mp) return;
+    fs.writeFileSync(mp, JSON.stringify(meta));
 }
 
 // Self-healing migration: if a legacy plain-name file exists for `name`
 // but no metadata, hash it, write the blob + meta, then return the meta.
 function maybeMigrateLegacy(name) {
-    const legacyPath = path.join(STORAGE_DIR, safeName(name));
+    const safe = safeName(name);
+    if (!safe) return null;
+    const legacyPath = path.join(STORAGE_DIR, safe);
     if (!fs.existsSync(legacyPath)) return null;
-    if (path.dirname(legacyPath) !== STORAGE_DIR) return null;  // safety
+    // Verify it's still under STORAGE_DIR (path traversal guard)
+    if (!path.resolve(legacyPath).startsWith(path.resolve(STORAGE_DIR))) return null;
     const st = fs.statSync(legacyPath);
     if (!st.isFile()) return null;
     const buf = fs.readFileSync(legacyPath);
@@ -145,15 +161,13 @@ async function listNames() {
 // new layout.
 
 async function put(name, buffer, { expectedHash = null, force = false } = {}) {
-    // Conflict check: if the caller declares the hash it expects the file
-    // to currently have, reject the write when it doesn't match (unless
-    // force=true). This prevents silent overwrites when the file was
-    // modified externally since the editor loaded it.
+    const safe = safeName(name);
+    if (!safe) throw new Error('Invalid file name: ' + name);
     if (expectedHash && !force) {
-        const currentMeta = readMeta(safeName(name));
+        const currentMeta = readMeta(safe);
         if (currentMeta && currentMeta.hash && currentMeta.hash !== expectedHash) {
             return {
-                name: safeName(name),
+                name: safe,
                 conflict: true,
                 currentHash: currentMeta.hash,
                 expectedHash,
@@ -162,8 +176,8 @@ async function put(name, buffer, { expectedHash = null, force = false } = {}) {
         }
     }
     const { hash, size } = await putBlob(buffer);
-    await setName(safeName(name), hash, size);
-    return { name: safeName(name), size, hash };
+    await setName(safe, hash, size);
+    return { name: safe, size, hash };
 }
 
 async function getBuffer(name) {

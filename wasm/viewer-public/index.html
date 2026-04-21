@@ -56,9 +56,20 @@ body.docs-collapsed #sidebar-hover-zone { display: block; }
 @keyframes shspin { to { transform: rotate(360deg); } }
 #editor-shield-label { font-size: 15px; font-weight: 500; color: #333; margin-bottom: 6px; }
 #editor-shield-detail { font-size: 12px; color: #666; }
-.file { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; }
+.file { padding: 6px 8px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 13px; }
 .file:hover { background: #e8f4ff; }
 .file.active { background: #d0e8ff; }
+.folder-row { padding: 6px 8px; cursor: pointer; font-weight: 600; font-size: 13px; color: #1a1a1a; user-select: none; }
+.folder-row:hover { background: #f0f4ff; }
+.folder-row .arrow { display: inline-block; width: 14px; font-size: 10px; color: #888; }
+.folder-contents { }
+.folder-actions { display: inline; margin-left: 6px; }
+.folder-actions button { font-size: 11px; padding: 1px 6px; cursor: pointer; background: #e8f0fe; border: 1px solid #c4d4f0; border-radius: 3px; color: #1a56c4; }
+.folder-actions button:hover { background: #d0e0ff; }
+#new-folder-bar { padding: 4px 8px; border-bottom: 1px solid #ccc; display: flex; gap: 4px; }
+#new-folder-bar input { flex: 1; font-size: 12px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px; }
+#new-folder-bar button { font-size: 12px; padding: 3px 8px; cursor: pointer; background: #1a56c4; color: #fff; border: none; border-radius: 3px; }
+#new-folder-bar button:hover { background: #0d3b8c; }
 #prewarm-status { padding: 8px; font-size: 12px; color: #666; border-bottom: 1px solid #ccc; }
 #prewarm-status.ready { background: #e0f8e0; color: #060; }
 #status-bar { padding: 5px 10px; background: #f5f5f5; font-size: 12px; border-top: 1px solid #ccc; display: flex; align-items: center; gap: 6px; }
@@ -75,7 +86,11 @@ h3 { margin: 5px 0; }
 <div id="files">
     <h3>Files</h3>
     <div id="prewarm-status">🔄 Pre-warming editor...</div>
-    <input type="file" id="upload" onchange="uploadFile()">
+    <input type="file" id="upload" onchange="uploadFile()" multiple>
+    <div id="new-folder-bar">
+        <input type="text" id="new-folder-name" placeholder="New folder name...">
+        <button onclick="createFolder()">Create</button>
+    </div>
     <div id="list"></div>
 </div>
 <div id="editor-pane">
@@ -465,19 +480,103 @@ async function startPrewarm() {
     }
 }
 
+// Current folder context for uploads (set by clicking a folder)
+let currentUploadFolder = '';
+
 async function refresh() {
-    const r = await fetch('/api/files/');
-    const list = await r.json();
-    document.getElementById('list').innerHTML = list.filter(f => f.name !== BLANK_FILENAME).map(f =>
-        `<div class="file" data-name="${f.name}" onclick="openFile('${f.name.replace(/'/g, "\\'")}')">${f.name} (${(f.size/1024).toFixed(1)}KB)</div>`).join('');
+    const [filesResp, foldersResp] = await Promise.all([
+        fetch('/api/files/'), fetch('/api/folders')
+    ]);
+    const files = (await filesResp.json()).filter(f => f.name !== BLANK_FILENAME);
+    let folders = [];
+    try { folders = await foldersResp.json(); } catch(e) {}
+
+    // Build tree: {__files: [], subfolder: {__files: [], ...}}
+    const tree = { __files: [] };
+    // Register explicit folders
+    for (const fp of folders) {
+        let node = tree;
+        for (const part of fp.split('/')) {
+            if (!node[part]) node[part] = { __files: [] };
+            node = node[part];
+        }
+    }
+    // Place files into their folders
+    for (const f of files) {
+        const parts = f.name.split('/');
+        let node = tree;
+        for (let i = 0; i < parts.length - 1; i++) {
+            if (!node[parts[i]]) node[parts[i]] = { __files: [] };
+            node = node[parts[i]];
+        }
+        node.__files.push(f);
+    }
+
+    document.getElementById('list').innerHTML = renderTree(tree, '', 0);
+}
+
+function renderTree(node, pathPrefix, depth) {
+    let html = '';
+    // Render subfolders first
+    const folderKeys = Object.keys(node).filter(k => k !== '__files').sort();
+    for (const name of folderKeys) {
+        const fullPath = pathPrefix ? pathPrefix + '/' + name : name;
+        const indent = depth * 16;
+        html += `<div class="folder-row" style="padding-left:${8 + indent}px" onclick="toggleFolder(this)" data-path="${fullPath}">` +
+                `<span class="arrow">&#9654;</span> ${name}` +
+                `<span class="folder-actions"><button onclick="event.stopPropagation();setUploadFolder('${fullPath.replace(/'/g,"\\'")}')">Upload here</button></span>` +
+                `</div>`;
+        html += `<div class="folder-contents" style="display:none">`;
+        html += renderTree(node[name], fullPath, depth + 1);
+        html += `</div>`;
+    }
+    // Render files
+    for (const f of (node.__files || [])) {
+        const indent = depth * 16;
+        const displayName = f.name.split('/').pop();
+        html += `<div class="file" style="padding-left:${8 + indent}px" data-name="${f.name}" ` +
+                `onclick="openFile('${f.name.replace(/'/g, "\\'")}')">${displayName} ` +
+                `<span style="color:#999;font-size:11px">(${(f.size/1024).toFixed(1)}KB)</span></div>`;
+    }
+    return html;
+}
+
+function toggleFolder(el) {
+    const contents = el.nextElementSibling;
+    const open = contents.style.display !== 'none';
+    contents.style.display = open ? 'none' : '';
+    el.querySelector('.arrow').innerHTML = open ? '&#9654;' : '&#9660;';
+}
+
+function setUploadFolder(path) {
+    currentUploadFolder = path;
+    setStatus('Upload folder: ' + (path || '(root)'));
+}
+
+async function createFolder() {
+    const input = document.getElementById('new-folder-name');
+    const name = input.value.trim();
+    if (!name) return;
+    const fullPath = currentUploadFolder ? currentUploadFolder + '/' + name : name;
+    await fetch('/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: fullPath })
+    });
+    input.value = '';
+    setStatus('Created folder: ' + fullPath);
+    refresh();
 }
 
 async function uploadFile() {
-    const f = document.getElementById('upload').files[0];
-    if (!f) return;
-    setStatus('Uploading ' + f.name);
-    await fetch('/api/files/' + encodeURIComponent(f.name), { method: 'POST', body: f });
-    setStatus('Uploaded ' + f.name);
+    const fileInput = document.getElementById('upload');
+    for (const f of fileInput.files) {
+        const fullName = currentUploadFolder ? currentUploadFolder + '/' + f.name : f.name;
+        setStatus('Uploading ' + fullName);
+        await fetch('/api/files/' + encodeURIComponent(fullName), { method: 'POST', body: f });
+    }
+    setStatus('Uploaded ' + fileInput.files.length + ' file(s)');
+    fileInput.value = '';
     refresh();
 }
 

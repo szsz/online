@@ -160,6 +160,41 @@ app.get('/api/files/', async (req, res) => {
     }
 });
 
+// ── POST /api/folders — create a folder ───────────────────────────
+// Body: JSON {path: "folder/subfolder"}.
+// Folders are virtual — they exist only when files inside them exist.
+// But we record them in a .folders metadata file so empty folders show
+// in the tree until something is added.
+app.post('/api/folders', express.json(), (req, res) => {
+    const folderPath = req.body && req.body.path;
+    if (!folderPath || typeof folderPath !== 'string') {
+        return res.status(400).json({ error: 'Missing path' });
+    }
+    // Validate: no .., no leading/trailing slash, no empty parts
+    const parts = folderPath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/|\/$/g, '').split('/');
+    if (parts.some(p => !p || p === '.' || p === '..' || p.startsWith('.'))) {
+        return res.status(400).json({ error: 'Invalid folder path' });
+    }
+    const clean = parts.join('/');
+    // Store in a simple JSON file
+    const foldersFile = path.join(process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'storage'), '_folders.json');
+    let folders = [];
+    try { folders = JSON.parse(fs.readFileSync(foldersFile, 'utf8')); } catch(e) {}
+    if (!folders.includes(clean)) {
+        folders.push(clean);
+        fs.writeFileSync(foldersFile, JSON.stringify(folders));
+    }
+    res.json({ path: clean, created: true });
+});
+
+// ── GET /api/folders — list explicit folders ─────────────────────
+app.get('/api/folders', (req, res) => {
+    const foldersFile = path.join(process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'storage'), '_folders.json');
+    let folders = [];
+    try { folders = JSON.parse(fs.readFileSync(foldersFile, 'utf8')); } catch(e) {}
+    res.json(folders);
+});
+
 // ── GET /api/blobs/:hash — content-addressable blob ─────────────
 // The actual document bytes, addressed by their SHA-256 hash. Same hash
 // → same bytes, forever — so this is the cleanest immutable resource on
