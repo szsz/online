@@ -15,12 +15,18 @@
 
     var params = new URLSearchParams(window.location.search);
     var relayUrl = params.get('relay');
-    if (!relayUrl) return;
+    // Even without a relay URL (single-user mode), we still set up
+    // the save/hash tracking so conflict detection works. We just
+    // skip the WebSocket connection and relay-specific messaging.
+    var singleUserMode = !relayUrl;
+    if (singleUserMode) {
+        console.log('[relay] Single-user mode — no relay, save/hash tracking only');
+    } else {
+        console.log('[relay] Connecting to ' + relayUrl);
+    }
 
-    console.log('[relay] Connecting to ' + relayUrl);
-
-    var ws = new WebSocket(relayUrl);
-    ws.binaryType = 'arraybuffer';
+    var ws = singleUserMode ? null : new WebSocket(relayUrl);
+    if (ws) ws.binaryType = 'arraybuffer';
 
     var connected = false;
     var coolwsdReady = false;
@@ -509,18 +515,18 @@
                         return;
                     }
                 }
-                sendToRelay(0x00, myViewId, data);
+                if (singleUserMode) {
+                    // No relay — send directly to local Kit
+                    originalSend(data);
+                } else {
+                    sendToRelay(0x00, myViewId, data);
+                }
 
                 // User-initiated save (Ctrl+S → COOL emits `uno .uno:Save`):
                 // create a checkpoint and upload the saved file to storage.
-                // Only the ORIGINATOR runs this — other peers receive the
-                // same uno via relay, save locally, but don't double-upload
-                // (their processUIMessage path doesn't schedule a save).
-                //
-                // saveAndUploadCheckpoint waits 1.5s for Kit to flush the
-                // save before reading /wasm/<name>; if Ctrl+S is hammered,
-                // each call queues its own delayed upload — wasteful but
-                // not harmful (each uploads the same final bytes).
+                // In relay mode, only the ORIGINATOR runs this — other peers
+                // receive the same uno via relay and save locally. In
+                // single-user mode, we always run it since there are no peers.
                 if (isUserSaveCommand(text)) {
                     console.log('[relay] User save detected (' + text.substring(0, 40) +
                                 ') — scheduling checkpoint + upload');
@@ -808,7 +814,7 @@
                             frame[7] = (saveAtSeq >>> 8) & 0xFF;
                             frame[8] = saveAtSeq & 0xFF;
                             frame.set(hashBytes, 9);
-                            ws.send(frame);
+                            if (ws && connected) ws.send(frame);
                             console.log('[relay] Checkpoint: file=' + bytes.length + 'B → /api/files; ' +
                                         'sent hash=' + hashHex.substring(0, 16) + '… (' + frame.length + 'B frame) seq=' + saveAtSeq);
                             // Notify viewer of successful save
@@ -1157,10 +1163,12 @@
         initiateJoin();
     }
 
-    ws.onmessage = onWsMessage;
-    ws.onopen = onWsOpen;
-    ws.onerror = function(err) { console.error('[relay] WebSocket error', err); };
-    ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
+    if (ws) {
+        ws.onmessage = onWsMessage;
+        ws.onopen = onWsOpen;
+        ws.onerror = function(err) { console.error('[relay] WebSocket error', err); };
+        ws.onclose = function() { connected = false; console.log('[relay] Disconnected'); };
+    }
 
     // --- Activation when COOLWSD is ready (for late joiners) ---
     // Late joiners: wait for both COOLWSD ready AND file downloaded.
@@ -1196,5 +1204,25 @@
             }
         }, 500);
     }
+    // In single-user mode, skip the relay handshake. Fetch the initial
+    // file hash from viewer storage so conflict detection works, and mark
+    // the late-join file as ready (there is no late-join).
+    if (singleUserMode) {
+        lateJoinFileReady = true;
+        isFirstClient = true;
+        var fileStorageUrl = getFileStorageUrl(wopiSrc);
+        if (fileStorageUrl) {
+            origFetch(fileStorageUrl, { method: 'HEAD', mode: 'cors' })
+                .then(function(resp) {
+                    var h = resp.headers.get('X-Content-Hash');
+                    if (h) {
+                        joinFileHash = h;
+                        lastKnownHash = h;
+                        console.log('[relay] Single-user initial hash: ' + h.substring(0, 16) + '…');
+                    }
+                }).catch(function() {});
+        }
+    }
+
     startActivationPoll();
 })();
