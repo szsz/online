@@ -25,6 +25,16 @@
     }
     window.__prewarmMark = mark;  // external code can mark events too
 
+    // ── Human-readable timing summary (visible in browser console) ──
+    var _timingMilestones = {};
+    function logTiming(label) {
+        var ms = performance.now() - t0;
+        _timingMilestones[label] = ms;
+        console.log('%c[TIMING] ' + label + ': ' + (ms / 1000).toFixed(2) + 's',
+            'color: #1565c0; font-weight: bold; font-size: 13px');
+    }
+    window.__wasmLogTiming = logTiming;
+
     mark('loader:start', 'doc=' + docType + ' ext=' + ext);
 
     // ───── SERVICE WORKER REGISTRATION ─────
@@ -83,6 +93,7 @@
             var metaResp = results[1];
             if (!heapResp) {
                 mark('snapshot:not_found');
+                logTiming('Snapshot: not found (cold start)');
                 window.__wasmSnapshotData = null;
                 return null;
             }
@@ -102,6 +113,7 @@
                     }
                     // Fingerprint matches — snapshot is valid
                     mark('snapshot:exists');
+                    logTiming('Snapshot: found (warm start)');
                     window.__wasmSnapshotExists = true;
                     window.__wasmSnapshotData = null; // will be loaded lazily
                     return 'deferred';
@@ -745,6 +757,7 @@
             (function() {
                 var wasRestored = !!window.__wasmSnapshotRestored;
                 mark('snapshot:signal', wasRestored ? 'restored' : 'first-visit');
+                logTiming(wasRestored ? 'WASM runtime restored from snapshot' : 'WASM runtime initialized (first visit)');
                 window.__wasmJsReady = true;
 
                 if (!wasRestored) {
@@ -886,6 +899,13 @@
                 window.__wasmInitialDocLoaded = true;  // sticky one-shot
                 prewarmWordCountAtReady = wc ? wc.textContent : '';
                 mark('prewarm:ready');
+                logTiming('Document ready');
+                // Print summary
+                var summary = Object.keys(_timingMilestones).map(function(k) {
+                    return '  ' + k + ': ' + (_timingMilestones[k] / 1000).toFixed(2) + 's';
+                }).join('\n');
+                console.log('%c[TIMING SUMMARY]\n' + summary,
+                    'color: #1b5e20; font-weight: bold; font-size: 12px');
                 clearInterval(docPollInterval);
                 docPollInterval = null;
                 updateProgress('Ready', 100);

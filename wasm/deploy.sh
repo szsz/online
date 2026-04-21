@@ -163,9 +163,23 @@ if count4 == 1:
 else:
     print(f'  WARNING: Expected 1 checkStackCookie target, found {count4}')
 
+# INJECTION 3: Skip soffice.data download + VFS unpack on snapshot restore.
+# The snapshot already has the VFS populated. We:
+# a) Define getPreloadedPackage to return a 1-byte dummy on restore
+# b) Patch DataRequest.finish to skip FS_createDataFile on restore
+# c) The dependency counter stays balanced (open/finish still pairs)
+# NOTE: soffice.data CANNOT be skipped on snapshot restore.
+# The HEAPU8 snapshot captures the C++ heap, but NOT the Emscripten
+# MEMFS (JavaScript data structure). LO Core's C++ code holds pointers
+# to MEMFS inodes (/instdir/program/*, /instdir/share/*, etc.) which
+# only exist after soffice.data is unpacked. Without the unpack, the
+# VFS is empty and LO fails silently. Saving/restoring MEMFS alongside
+# HEAPU8 would fix this but is a larger change.
+
 with open(path, 'w') as f:
     f.write(c.replace(target, inject + target, 1))
-print('  Injected snapshot restore into online.js (2 patches)')
+patches = 2
+print(f'  Injected snapshot restore into online.js ({patches} patches)')
 PYEOF
 fi
 
