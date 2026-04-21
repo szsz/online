@@ -19,6 +19,7 @@
 const express = require('express');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const storage = require('./lib/storage');
