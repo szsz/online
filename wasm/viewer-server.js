@@ -165,34 +165,38 @@ app.get('/api/files/', async (req, res) => {
 // Folders are virtual — they exist only when files inside them exist.
 // But we record them in a .folders metadata file so empty folders show
 // in the tree until something is added.
-app.post('/api/folders', express.json(), (req, res) => {
+// Folder list is stored as a virtual file in the same storage backend.
+const FOLDERS_KEY = '__system__folders.json';
+async function readFolders() {
+    try {
+        const buf = await storage.getBuffer(FOLDERS_KEY);
+        return buf ? JSON.parse(buf.toString('utf8')) : [];
+    } catch(e) { return []; }
+}
+async function writeFolders(folders) {
+    await storage.put(FOLDERS_KEY, Buffer.from(JSON.stringify(folders)));
+}
+
+app.post('/api/folders', express.json(), async (req, res) => {
     const folderPath = req.body && req.body.path;
     if (!folderPath || typeof folderPath !== 'string') {
         return res.status(400).json({ error: 'Missing path' });
     }
-    // Validate: no .., no leading/trailing slash, no empty parts
     const parts = folderPath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/|\/$/g, '').split('/');
     if (parts.some(p => !p || p === '.' || p === '..' || p.startsWith('.'))) {
         return res.status(400).json({ error: 'Invalid folder path' });
     }
     const clean = parts.join('/');
-    // Store in a simple JSON file
-    const foldersFile = path.join(process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'storage'), '_folders.json');
-    let folders = [];
-    try { folders = JSON.parse(fs.readFileSync(foldersFile, 'utf8')); } catch(e) {}
+    const folders = await readFolders();
     if (!folders.includes(clean)) {
         folders.push(clean);
-        fs.writeFileSync(foldersFile, JSON.stringify(folders));
+        await writeFolders(folders);
     }
     res.json({ path: clean, created: true });
 });
 
-// ── GET /api/folders — list explicit folders ─────────────────────
-app.get('/api/folders', (req, res) => {
-    const foldersFile = path.join(process.env.LOCAL_STORAGE_DIR || path.join(process.cwd(), 'storage'), '_folders.json');
-    let folders = [];
-    try { folders = JSON.parse(fs.readFileSync(foldersFile, 'utf8')); } catch(e) {}
-    res.json(folders);
+app.get('/api/folders', async (req, res) => {
+    res.json(await readFolders());
 });
 
 // ── GET /api/blobs/:hash — content-addressable blob ─────────────

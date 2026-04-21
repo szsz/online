@@ -40,9 +40,14 @@ if (sasUrl) {
     throw new Error('Azure storage backend requires DOC_STORAGE_SAS_URL or DOC_STORAGE_ACCOUNT+DOC_STORAGE_KEY');
 }
 
+// Allow folder paths but block traversal attacks.
 function safeName(name) {
-    // Strip any path traversal — names with "/" become flat keys.
-    return name.replace(/\.\.+\//g, '').replace(/^\/+/, '');
+    if (!name) return null;
+    const n = name.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
+    if (!n) return null;
+    const parts = n.split('/');
+    if (parts.some(p => !p || p === '.' || p === '..' || p.startsWith('.'))) return null;
+    return n;
 }
 function blobKey(hash) {
     if (!/^[0-9a-f]{16,128}$/i.test(hash || '')) return null;
@@ -208,10 +213,24 @@ async function listNames() {
 }
 
 // ── Backward-compat facades ────────────────────────────────────────
-async function put(name, buffer) {
+async function put(name, buffer, { expectedHash = null, force = false } = {}) {
+    const safe = safeName(name);
+    if (!safe) throw new Error('Invalid file name: ' + name);
+    if (expectedHash && !force) {
+        const currentMeta = await readMeta(safe);
+        if (currentMeta && currentMeta.hash && currentMeta.hash !== expectedHash) {
+            return {
+                name: safe,
+                conflict: true,
+                currentHash: currentMeta.hash,
+                expectedHash,
+                updatedAt: currentMeta.updatedAt,
+            };
+        }
+    }
     const { hash, size } = await putBlob(buffer);
-    await setName(safeName(name), hash, size);
-    return { name: safeName(name), size, hash };
+    await setName(safe, hash, size);
+    return { name: safe, size, hash };
 }
 
 async function getBuffer(name) {
