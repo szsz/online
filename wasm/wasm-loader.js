@@ -795,10 +795,25 @@
                                 return cache.put('/snapshot/heap-v2', new Response(blob));
                             }).then(function() {
                                 mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB via Cache API, heapBase=' + heapBase);
-                                // Resume COOLWSD (unblock Kit.cpp wait loop)
-                                mark('snapshot:starting_phase2');
-                                try { Module.ccall('start_coolwsd_phase2', null, [], []); }
-                                catch(e) { mark('snapshot:phase2_error', e.message); }
+                                if (isBlank(wopiSrc)) {
+                                    // Prewarm: don't enter Execute() — no need to
+                                    // render the blank doc. The snapshot already has
+                                    // all modules preloaded. Signal readiness so the
+                                    // viewer knows prewarm is done (shield stays up).
+                                    mark('snapshot:prewarm_done');
+                                    window.__wasmPrewarmReady = true;
+                                    try {
+                                        parent.postMessage(JSON.stringify({
+                                            MessageId: 'App_LoadingStatus',
+                                            Values: { Status: 'Initialized' }
+                                        }), '*');
+                                    } catch(e) {}
+                                } else {
+                                    // Real document: resume COOLWSD so it enters Execute()
+                                    mark('snapshot:starting_phase2');
+                                    try { Module.ccall('start_coolwsd_phase2', null, [], []); }
+                                    catch(e) { mark('snapshot:phase2_error', e.message); }
+                                }
                             }).catch(function(err) {
                                 mark('snapshot:save_error', err.message);
                                 // Resume COOLWSD even if save failed
