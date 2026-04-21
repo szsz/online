@@ -144,7 +144,23 @@ async function listNames() {
 // getBuffer(name) / stat(name) / list() — keep them, route through the
 // new layout.
 
-async function put(name, buffer) {
+async function put(name, buffer, { expectedHash = null, force = false } = {}) {
+    // Conflict check: if the caller declares the hash it expects the file
+    // to currently have, reject the write when it doesn't match (unless
+    // force=true). This prevents silent overwrites when the file was
+    // modified externally since the editor loaded it.
+    if (expectedHash && !force) {
+        const currentMeta = readMeta(safeName(name));
+        if (currentMeta && currentMeta.hash && currentMeta.hash !== expectedHash) {
+            return {
+                name: safeName(name),
+                conflict: true,
+                currentHash: currentMeta.hash,
+                expectedHash,
+                updatedAt: currentMeta.updatedAt,
+            };
+        }
+    }
     const { hash, size } = await putBlob(buffer);
     await setName(safeName(name), hash, size);
     return { name: safeName(name), size, hash };

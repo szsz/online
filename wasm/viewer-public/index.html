@@ -386,6 +386,25 @@ window.addEventListener('message', function(event) {
                 setTimeout(function() { toast.classList.remove('show'); }, 2000);
             }
         }
+        // Save conflict — file was modified externally since we loaded it
+        if (msg.MessageId === 'SaveConflict' && msg.Values) {
+            var cv = msg.Values;
+            var choice = confirm(
+                'This file was modified externally since you opened it.\n\n' +
+                'Your version is based on: ' + (cv.expectedHash || '').substring(0, 8) + '…\n' +
+                'Current storage version: ' + (cv.currentHash || '').substring(0, 8) + '…\n' +
+                'Last modified: ' + (cv.updatedAt || 'unknown') + '\n\n' +
+                'Click OK to overwrite with your version, or Cancel to keep the external version.'
+            );
+            if (choice) {
+                var iframe = document.getElementById('editor-frame');
+                if (iframe && iframe.contentWindow) {
+                    iframe.contentWindow.postMessage(JSON.stringify({
+                        MessageId: 'ForceSave', Values: {}
+                    }), '*');
+                }
+            }
+        }
 
         // App_LoadingStatus=Initialized fires once when COOL initializes.
         // We only trust it for the very first prewarm — once we're past

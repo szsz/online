@@ -32,6 +32,8 @@
     var joinFileHash = null;
     var joinFileSeq = 0;         // seq# of the base state we downloaded
     var isFirstClient = false;
+    var lastKnownHash = null;    // hash of the file version we know about (loaded or last saved)
+    var forceNextSave = false;   // set by ForceSave message after conflict
 
     var remoteClients = {};
     var replayMode = false;  // true while replaying buffered messages from relay
@@ -65,6 +67,12 @@
                 if (ws) { ws.onmessage = null; ws.close(); ws = null; }
                 return;
             }
+            if (msg.MessageId === 'ForceSave') {
+                console.log('[relay] Force save requested (overriding conflict)');
+                forceNextSave = true;
+                saveAndUploadCheckpoint();
+                return;
+            }
             if (msg.MessageId !== 'RelaySwitchRoom') return;
             var newRoom = msg.Values.room;
             var newDoc = msg.Values.docName;
@@ -87,6 +95,8 @@
             joinFileHash = null;
             joinFileSeq = 0;
             lastSeq = 0;
+            lastKnownHash = null;
+            forceNextSave = false;
             sendQueue = [];
             recvQueue = [];
             kitQueue = []; // drop any pending messages from old room
@@ -244,6 +254,9 @@
     function activateClient() {
         if (activated) return;
         activated = true;
+        // Set the initial known hash from the file we loaded/joined with.
+        // This is used for conflict detection when saving.
+        lastKnownHash = joinFileHash;
         // Send join-ready with the SHA-256 hex of the document we loaded.
         // Truncate the log preview so a 64-char hash doesn't drown the console.
         var readyPayload = joinFileHash ? JSON.stringify({ hash: joinFileHash }) : '';
@@ -740,45 +753,72 @@
                     //    here. The relay only learns the hash + seq for
                     //    coordination — it never stores file bytes.
                     var viewerFileUrl = getFileStorageUrl(wopiSrc);
+                    // Send the hash of the version we expect to be on storage.
+                    // If someone modified the file externally, the server returns 409.
+                    var uploadHeaders = {};
+                    if (lastKnownHash) {
+                        uploadHeaders['X-Expected-Hash'] = lastKnownHash;
+                    }
+                    if (forceNextSave) {
+                        uploadHeaders['X-Force-Overwrite'] = 'true';
+                        forceNextSave = false;
+                    }
                     return origFetch(viewerFileUrl, {
                         method: 'POST',
                         body: new Blob([bytes]),
                         mode: 'cors',
-                    }).then(function() {
-                        // 4. Report to relay. Frame layout:
-                        //      [0]   type (0x07)
-                        //      [1-4] viewId (uint32 BE)
-                        //      [5-8] saveAtSeq (uint32 BE)
-                        //      [9..] hash hex string (UTF-8, 64 ASCII chars)
-                        //
-                        //    We send only the hash here — NOT the file bytes.
-                        //    Sending the body would burn `filesize` bytes of
-                        //    WebSocket traffic per save (the file already
-                        //    went to /api/files in step 3). The relay's
-                        //    0x07 handler reads buf.slice(9).toString() as
-                        //    the hash.
-                        var hashBytes = new TextEncoder().encode(hashHex);
-                        var frame = new Uint8Array(5 + 4 + hashBytes.length);
-                        frame[0] = 0x07;
-                        frame[1] = (myViewId >>> 24) & 0xFF;
-                        frame[2] = (myViewId >>> 16) & 0xFF;
-                        frame[3] = (myViewId >>> 8) & 0xFF;
-                        frame[4] = myViewId & 0xFF;
-                        frame[5] = (saveAtSeq >>> 24) & 0xFF;
-                        frame[6] = (saveAtSeq >>> 16) & 0xFF;
-                        frame[7] = (saveAtSeq >>> 8) & 0xFF;
-                        frame[8] = saveAtSeq & 0xFF;
-                        frame.set(hashBytes, 9);
-                        ws.send(frame);
-                        console.log('[relay] Checkpoint: file=' + bytes.length + 'B → /api/files; ' +
-                                    'sent hash=' + hashHex.substring(0, 16) + '… (' + frame.length + 'B frame) seq=' + saveAtSeq);
-                        // Notify viewer of successful save
-                        try {
-                            parent.postMessage(JSON.stringify({
-                                MessageId: 'SaveComplete',
-                                Values: { hash: hashHex.substring(0, 16), bytes: bytes.length }
-                            }), '*');
-                        } catch(e) {}
+                        headers: uploadHeaders,
+                    }).then(function(uploadResp) {
+                        if (uploadResp.status === 409) {
+                            // Conflict: file was modified externally
+                            return uploadResp.json().then(function(conflict) {
+                                console.log('[relay] Save conflict! expected=' +
+                                    (conflict.expectedHash || '').substring(0, 16) +
+                                    '… current=' + (conflict.currentHash || '').substring(0, 16) + '…');
+                                try {
+                                    parent.postMessage(JSON.stringify({
+                                        MessageId: 'SaveConflict',
+                                        Values: {
+                                            expectedHash: conflict.expectedHash,
+                                            currentHash: conflict.currentHash,
+                                            updatedAt: conflict.updatedAt,
+                                        }
+                                    }), '*');
+                                } catch(e) {}
+                                // DON'T update lastKnownHash, DON'T send 0x07 to relay
+                            });
+                        }
+                        return uploadResp.json().then(function(result) {
+                            // Success: update our known hash to the new version
+                            lastKnownHash = result.hash || hashHex;
+                            // 4. Report to relay. Frame layout:
+                            //      [0]   type (0x07)
+                            //      [1-4] viewId (uint32 BE)
+                            //      [5-8] saveAtSeq (uint32 BE)
+                            //      [9..] hash hex string (UTF-8, 64 ASCII chars)
+                            var hashBytes = new TextEncoder().encode(hashHex);
+                            var frame = new Uint8Array(5 + 4 + hashBytes.length);
+                            frame[0] = 0x07;
+                            frame[1] = (myViewId >>> 24) & 0xFF;
+                            frame[2] = (myViewId >>> 16) & 0xFF;
+                            frame[3] = (myViewId >>> 8) & 0xFF;
+                            frame[4] = myViewId & 0xFF;
+                            frame[5] = (saveAtSeq >>> 24) & 0xFF;
+                            frame[6] = (saveAtSeq >>> 16) & 0xFF;
+                            frame[7] = (saveAtSeq >>> 8) & 0xFF;
+                            frame[8] = saveAtSeq & 0xFF;
+                            frame.set(hashBytes, 9);
+                            ws.send(frame);
+                            console.log('[relay] Checkpoint: file=' + bytes.length + 'B → /api/files; ' +
+                                        'sent hash=' + hashHex.substring(0, 16) + '… (' + frame.length + 'B frame) seq=' + saveAtSeq);
+                            // Notify viewer of successful save
+                            try {
+                                parent.postMessage(JSON.stringify({
+                                    MessageId: 'SaveComplete',
+                                    Values: { hash: hashHex.substring(0, 16), bytes: bytes.length }
+                                }), '*');
+                            } catch(e) {}
+                        });
                     });
                 });
             }).catch(function(e) {

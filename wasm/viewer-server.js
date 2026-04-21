@@ -82,8 +82,9 @@ app.use((req, res, next) => {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Vary', 'Origin');
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Expected-Hash, X-Force-Overwrite');
+    res.setHeader('Access-Control-Expose-Headers', 'X-Content-Hash');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
 });
@@ -241,7 +242,13 @@ app.post('/api/files/:name', (req, res) => {
     req.on('end', async () => {
         try {
             const data = Buffer.concat(chunks);
-            const result = await storage.put(req.params.name, data);
+            const expectedHash = req.headers['x-expected-hash'] || null;
+            const force = req.headers['x-force-overwrite'] === 'true';
+            const result = await storage.put(req.params.name, data, { expectedHash, force });
+            if (result.conflict) {
+                res.status(409).json(result);
+                return;
+            }
             res.json(result);  // {name, size, hash}
         } catch (err) {
             console.error('Upload error:', err.message);
