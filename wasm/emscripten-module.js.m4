@@ -18,29 +18,6 @@ function createEmscriptenModule(documentKind, documentDescriptor) {
 			_snapshotDepAdded = true;
 			console.log('[snapshot] preRun: adding dependency for deferred snapshot load');
 			Module['addRunDependency']('snapshot-load');
-			// Skip soffice.data download on restore — the VFS already has
-			// all unpacked files from the snapshot. Remove the run dependency
-			// that the data loader added, so we don't block on a 24MB fetch.
-			var dataDepKey = null;
-			for (var k in Module['runDependencies'] || {}) {
-				if (k.indexOf('soffice.data') >= 0) { dataDepKey = k; break; }
-			}
-			if (!dataDepKey) {
-				// Emscripten stores deps as a counter + tracking object.
-				// Try the known key from the compiled output.
-				var knownKeys = [
-					'datafile_/lo/core-build-impress/workdir/CustomTarget/static/emscripten_fs_image/soffice.data',
-					'datafile_/lo/core-build/workdir/CustomTarget/static/emscripten_fs_image/soffice.data',
-					'soffice.data.js.metadata'
-				];
-				for (var i = 0; i < knownKeys.length; i++) {
-					Module['removeRunDependency'](knownKeys[i]);
-				}
-				console.log('[snapshot] Removed soffice.data run dependencies (snapshot has VFS data)');
-			} else {
-				Module['removeRunDependency'](dataDepKey);
-				console.log('[snapshot] Removed run dependency: ' + dataDepKey);
-			}
 			caches.open('wasm-snapshot').then(function(cache) {
 				return Promise.all([
 					cache.match('/snapshot/heap-v2'),
