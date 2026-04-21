@@ -126,6 +126,15 @@ h3 { margin: 5px 0; }
 // editor iframe so wasm-loader.js can measure total time from when the
 // user actually started loading the page, not from when the iframe loads.
 window.__viewerT0 = performance.timeOrigin || (performance.timing && performance.timing.navigationStart) || (Date.now() - performance.now());
+// Timing log — all times measured from when the user hit Enter on the viewer URL
+var __vMilestones = {};
+function viewerLog(label) {
+    var ms = Date.now() - window.__viewerT0;
+    __vMilestones[label] = ms;
+    console.log('%c[TIMING] ' + label + ' @ ' + (ms / 1000).toFixed(2) + 's',
+        'color: #1565c0; font-weight: bold; font-size: 13px');
+}
+viewerLog('Viewer page JS started');
 </script>
 <script>
 // --- Sidebar collapse/expand ---
@@ -282,6 +291,13 @@ function updateShieldProgress(label, pct, detail) {
 function tryDropShield(reason, docMs) {
     if (!currentFile) return;
     if (docReady && relayActivated) {
+        viewerLog('Document ready: ' + currentFile);
+        // Print full timing summary
+        var summary = Object.keys(__vMilestones).map(function(k) {
+            return '  ' + k + ': ' + (__vMilestones[k] / 1000).toFixed(2) + 's';
+        }).join('\n');
+        console.log('%c[TIMING SUMMARY] (from viewer page navigation)\n' + summary,
+            'color: #1b5e20; font-weight: bold; font-size: 12px');
         updateShieldProgress('Ready', 100, currentFile);
         setTimeout(function() {
             hideShield();
@@ -456,7 +472,7 @@ window.addEventListener('message', function(event) {
             if (!prewarmReady) {
                 prewarmReady = true;
                 setPrewarmStatus('✅ Editor pre-warmed — pick a file', true);
-                console.log('[viewer] Pre-warm ready');
+                viewerLog('Editor pre-warmed (ready to open files)');
                 // Only drop the shield if no document open is in progress.
                 // If the user clicked a file while prewarm was finishing
                 // (or the page loaded with a deep link), openFile() has
@@ -490,13 +506,13 @@ async function startPrewarm() {
     try {
         // Start the iframe loading IMMEDIATELY — don't wait for blank doc
         const iframe = document.getElementById('editor-frame');
+        viewerLog('Editor iframe loading');
         iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                    + '&access_token=test'
                    + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME)))
                    + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                    + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                    + '&viewerT0=' + window.__viewerT0;
-        console.log('[viewer] Pre-warm iframe started' + (SINGLE_USER ? ' (singleuser)' : ''));
 
         // Upload the blank doc in parallel — it just needs to arrive before
         // Kit tries to load it (which happens after online.wasm + soffice.data
@@ -622,6 +638,7 @@ function currentHashFile() {
 }
 
 async function openFile(name) {
+    viewerLog('Opening file: ' + name);
     const t0 = Date.now();
     currentFile = name;
     // Keep the URL in sync with the open file. The hashchange listener below
