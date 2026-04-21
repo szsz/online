@@ -483,14 +483,13 @@ window.addEventListener('message', function(event) {
                 prewarmReady = true;
                 setPrewarmStatus('✅ Editor pre-warmed — pick a file', true);
                 viewerLog('Editor pre-warmed (ready to open files)');
-                // Only drop the shield if no document open is in progress.
-                // If the user clicked a file while prewarm was finishing
-                // (or the page loaded with a deep link), openFile() has
-                // already shown its own "Opening document…" shield and
-                // will hide it on WasmDocReady. Hiding here would expose
-                // the prewarm blank doc until the real doc paints.
-                if (!currentFile) hideShield();
-                return;
+                if (!currentFile) {
+                    // Pure prewarm (no file requested) — just hide the shield
+                    hideShield();
+                    return;
+                }
+                // A file is being opened (deep-link or clicked during prewarm).
+                // Fall through to the cold-reload handler below to set docReady.
             }
             // For cold-reload cross-type switches, WasmDocReady never fires
             // (no switchdocument in the new iframe). Accept Initialized as ready.
