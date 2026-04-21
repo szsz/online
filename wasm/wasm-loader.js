@@ -16,9 +16,12 @@
     window.__wasmDocType = docType;
 
     // ───── PROFILING ─────
-    // All times measured from navigation start (when the user hit Enter),
-    // not from when this script runs. This gives the true total load time.
-    var t0Nav = performance.timeOrigin || (performance.timing && performance.timing.navigationStart) || (Date.now() - performance.now());
+    // If loaded through the viewer, viewerT0 is the viewer page's navigation
+    // start (when the user actually hit Enter). Without it, fall back to this
+    // iframe's own navigation start. This gives the true total load time.
+    var viewerT0Param = params.get('viewerT0');
+    var t0Nav = viewerT0Param ? parseFloat(viewerT0Param)
+              : (performance.timeOrigin || (performance.timing && performance.timing.navigationStart) || (Date.now() - performance.now()));
     var t0 = performance.now(); // kept for backward compat with test code
     window.__prewarmTimings = { t0Wall: Date.now(), t0Nav: t0Nav, events: [] };
     function msSinceNav() { return Date.now() - t0Nav; }

@@ -122,6 +122,12 @@ h3 { margin: 5px 0; }
 </style>
 <script src="/config.js"></script>
 <script>
+// Timestamp of the viewer page load (navigation start). Passed to the
+// editor iframe so wasm-loader.js can measure total time from when the
+// user actually started loading the page, not from when the iframe loads.
+window.__viewerT0 = performance.timeOrigin || (performance.timing && performance.timing.navigationStart) || (Date.now() - performance.now());
+</script>
+<script>
 // --- Sidebar collapse/expand ---
 (function() {
     const filesEl = document.getElementById('files');
@@ -473,7 +479,8 @@ async function startPrewarm() {
                    + '&access_token=test'
                    + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME)))
                    + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
-                   + '&UserName=' + encodeURIComponent(MY_USER_NAME);
+                   + '&UserName=' + encodeURIComponent(MY_USER_NAME)
+                   + '&viewerT0=' + window.__viewerT0;
         console.log('[viewer] Pre-warm started' + (SINGLE_USER ? ' (readonly)' : ''));
     } catch (e) {
         setPrewarmStatus('❌ Pre-warm failed: ' + e.message);
@@ -671,7 +678,8 @@ async function openFile(name) {
                       + '&access_token=test'
                       + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
                       + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
-                      + '&UserName=' + encodeURIComponent(MY_USER_NAME);
+                      + '&UserName=' + encodeURIComponent(MY_USER_NAME)
+                      + '&viewerT0=' + window.__viewerT0;
         // Stop the old iframe's relay adapter to prevent stale checkpoint
         // saves from overwriting the file we're about to upload.
         try {
