@@ -380,7 +380,7 @@ void handle_cool_message(const char *string_value)
 
     if (strcmp(string_value, "HULLO") == 0)
     {
-        // Now we know that the JS has started completely
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: HULLO received from JS'); });
 
         // After snapshot restore, coolwsd_server_socket_fd is -1 until
         // the new COOLWSD starts. Defer HULLO to a thread that can block.
@@ -397,8 +397,10 @@ void handle_cool_message(const char *string_value)
             return;
         }
 
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: HULLO fakeSocketConnect...'); });
         int rc = fakeSocketConnect(fakeClientFd, coolwsd_server_socket_fd);
         assert(rc != -1);
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: HULLO connected, sending fileURL'); });
 
         // Create a socket pair to notify the below thread when the document has been closed
         fakeSocketPipe2(closeNotificationPipeForForwardingThread);

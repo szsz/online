@@ -65,6 +65,8 @@
 #if WASMAPP
 #include <wasmapp.hpp>
 #include <emscripten/fetch.h>
+#include <emscripten.h>
+#include <emscripten/threading.h>
 #endif
 
 #include <cassert>
@@ -1062,7 +1064,13 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     // Note: _isDocLoaded is set on our return.
     const bool isFirstView = !_docManager->isLoaded();
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad (loadComponentFromURL) starting...'); });
+#endif
     const bool loaded = _docManager->onLoad(getId(), getJailedFilePathAnonym(), renderOpts);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad done'); });
+#endif
     if (!loaded || _viewId < 0)
     {
         // Failed and communicated with the reason; do not send errors to the client.
@@ -1143,6 +1151,9 @@ bool ChildSession::loadDocument(const StringVector& tokens)
         << " isfirst=" << (isFirstView ? "true" : "false");
     sendTextFrame(oss.str());
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: Loaded session (status+tiles sent to JS)'); });
+#endif
     LOG_INF("Loaded session " << getId());
     return true;
 }
