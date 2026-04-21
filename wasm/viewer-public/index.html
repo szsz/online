@@ -503,30 +503,18 @@ window.addEventListener('message', function(event) {
 // the TLS handshake + CORS preflight + upload latency (~2-5s).
 async function startPrewarm() {
     showShield('Loading editor…', 'First-time pre-warm of WebAssembly runtime');
-    try {
-        // Start the iframe loading IMMEDIATELY — don't wait for blank doc
-        const iframe = document.getElementById('editor-frame');
-        viewerLog('Editor iframe loading');
-        iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
-                   + '&access_token=test'
-                   + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME)))
-                   + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
-                   + '&UserName=' + encodeURIComponent(MY_USER_NAME)
-                   + '&viewerT0=' + window.__viewerT0;
-
-        // Upload the blank doc in parallel — it just needs to arrive before
-        // Kit tries to load it (which happens after online.wasm + soffice.data
-        // download + LO Core init, typically ~6s from now).
-        const resp = await fetch('/blank.docx');
-        if (!resp.ok) throw new Error('blank.docx missing');
-        const buf = await resp.arrayBuffer();
-        await fetch(EDITOR + '/wasm/' + encodeURIComponent(BLANK_FILENAME), {
-            method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-        });
-        console.log('[viewer] Blank doc uploaded to editor');
-    } catch (e) {
-        setPrewarmStatus('❌ Pre-warm failed: ' + e.message);
-    }
+    // Start the editor iframe immediately. The WOPISrc is a dummy name —
+    // no actual file needs to exist because wasm-loader.js skips Phase 2
+    // (Execute/doc-open) for blank prewarm docs. We only need LO Core to
+    // initialize and preload modules so the snapshot can be saved.
+    const iframe = document.getElementById('editor-frame');
+    viewerLog('Editor iframe loading');
+    iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
+               + '&access_token=test'
+               + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME)))
+               + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
+               + '&UserName=' + encodeURIComponent(MY_USER_NAME)
+               + '&viewerT0=' + window.__viewerT0;
 }
 
 // Current folder context for uploads (set by clicking a folder)
