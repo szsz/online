@@ -480,18 +480,15 @@ window.addEventListener('message', function(event) {
     } catch(e) {}
 });
 
-// Start pre-warm immediately: fetch a blank .docx and load it in the iframe
+// Start pre-warm immediately: load the editor iframe in parallel with the
+// blank doc upload. The iframe takes several seconds to download online.wasm
+// anyway — the blank doc just needs to arrive at /wasm/ before Kit opens it
+// (~6s after iframe starts loading). Starting the iframe immediately saves
+// the TLS handshake + CORS preflight + upload latency (~2-5s).
 async function startPrewarm() {
     showShield('Loading editor…', 'First-time pre-warm of WebAssembly runtime');
     try {
-        // Fetch the blank .docx from viewer storage and upload to editor
-        const resp = await fetch('/blank.docx');
-        if (!resp.ok) throw new Error('blank.docx missing');
-        const buf = await resp.arrayBuffer();
-        await fetch(EDITOR + '/wasm/' + encodeURIComponent(BLANK_FILENAME), {
-            method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-        });
-        // Load cool.html with the blank doc — this triggers full WASM init
+        // Start the iframe loading IMMEDIATELY — don't wait for blank doc
         const iframe = document.getElementById('editor-frame');
         iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                    + '&access_token=test'
@@ -499,7 +496,18 @@ async function startPrewarm() {
                    + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                    + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                    + '&viewerT0=' + window.__viewerT0;
-        console.log('[viewer] Pre-warm started' + (SINGLE_USER ? ' (readonly)' : ''));
+        console.log('[viewer] Pre-warm iframe started' + (SINGLE_USER ? ' (singleuser)' : ''));
+
+        // Upload the blank doc in parallel — it just needs to arrive before
+        // Kit tries to load it (which happens after online.wasm + soffice.data
+        // download + LO Core init, typically ~6s from now).
+        const resp = await fetch('/blank.docx');
+        if (!resp.ok) throw new Error('blank.docx missing');
+        const buf = await resp.arrayBuffer();
+        await fetch(EDITOR + '/wasm/' + encodeURIComponent(BLANK_FILENAME), {
+            method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+        });
+        console.log('[viewer] Blank doc uploaded to editor');
     } catch (e) {
         setPrewarmStatus('❌ Pre-warm failed: ' + e.message);
     }
