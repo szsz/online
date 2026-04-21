@@ -41,6 +41,82 @@
     var lastKnownHash = null;    // hash of the file version we know about (loaded or last saved)
     var forceNextSave = false;   // set by ForceSave message after conflict
 
+    // ── E2E Encryption ─────────────────────────────────────────────
+    var encryptionEnabled = false;
+    var currentKeyVer = 0;
+    var _keyCache = {};          // keyVersion → CryptoKey
+    var _pendingKeyReqs = {};    // keyVersion → [resolve callbacks]
+    var ENCRYPTED_TYPES = { 0x00: true }; // frame types to encrypt (0x00 = user input)
+
+    function fetchKey(keyVersion) {
+        if (_keyCache[keyVersion]) return Promise.resolve(_keyCache[keyVersion]);
+        if (_pendingKeyReqs[keyVersion]) {
+            return new Promise(function(resolve) { _pendingKeyReqs[keyVersion].push(resolve); });
+        }
+        _pendingKeyReqs[keyVersion] = [];
+        return new Promise(function(resolve) {
+            _pendingKeyReqs[keyVersion].push(resolve);
+            try {
+                parent.postMessage(JSON.stringify({
+                    MessageId: 'KeyRequest',
+                    Values: { fileId: wopiSrc, keyVersion: keyVersion }
+                }), '*');
+            } catch(e) { console.error('[relay] KeyRequest postMessage failed:', e); }
+        });
+    }
+
+    function _onKeyResponse(kv, keyB64) {
+        var raw = Uint8Array.from(atob(keyB64), function(c) { return c.charCodeAt(0); });
+        crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+            .then(function(ck) {
+                _keyCache[kv] = ck;
+                var cbs = _pendingKeyReqs[kv] || [];
+                delete _pendingKeyReqs[kv];
+                cbs.forEach(function(cb) { cb(ck); });
+            });
+    }
+
+    // Encrypt payload → Uint8Array: [keyVer:4][nonce:12][ciphertext+tag]
+    function encryptPayload(payload) {
+        return fetchKey(currentKeyVer).then(function(key) {
+            var nonce = crypto.getRandomValues(new Uint8Array(12));
+            return crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, payload)
+                .then(function(ct) {
+                    var out = new Uint8Array(4 + 12 + ct.byteLength);
+                    out[0] = (currentKeyVer >>> 24) & 0xFF;
+                    out[1] = (currentKeyVer >>> 16) & 0xFF;
+                    out[2] = (currentKeyVer >>> 8) & 0xFF;
+                    out[3] = currentKeyVer & 0xFF;
+                    out.set(nonce, 4);
+                    out.set(new Uint8Array(ct), 16);
+                    return out;
+                });
+        });
+    }
+
+    // Decrypt [keyVer:4][nonce:12][ciphertext+tag] → Uint8Array
+    function decryptPayload(data) {
+        var kv = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+        var nonce = data.subarray(4, 16);
+        var ct = data.subarray(16);
+        return fetchKey(kv).then(function(key) {
+            return crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, key, ct);
+        }).then(function(pt) { return new Uint8Array(pt); });
+    }
+
+    // Encrypt file bytes for storage (same format: [keyVer:4][nonce:12][ct])
+    function encryptFileBytes(bytes) {
+        if (!encryptionEnabled) return Promise.resolve(bytes);
+        return encryptPayload(bytes);
+    }
+
+    // Decrypt file bytes from storage
+    function decryptFileBytes(encBytes) {
+        if (!encryptionEnabled) return Promise.resolve(encBytes);
+        return decryptPayload(new Uint8Array(encBytes));
+    }
+    // ── End E2E Encryption ──────────────────────────────────────────
+
     var remoteClients = {};
     var replayMode = false;  // true while replaying buffered messages from relay
 
@@ -77,6 +153,10 @@
                 console.log('[relay] Force save requested (overriding conflict)');
                 forceNextSave = true;
                 saveAndUploadCheckpoint();
+                return;
+            }
+            if (msg.MessageId === 'KeyResponse' && msg.Values) {
+                _onKeyResponse(msg.Values.keyVersion, msg.Values.key);
                 return;
             }
             if (msg.MessageId !== 'RelaySwitchRoom') return;
@@ -144,7 +224,19 @@
         frame[3] = (viewId >>> 8) & 0xFF;
         frame[4] = viewId & 0xFF;
         frame.set(encoded, 5);
-        if (connected) ws.send(frame);
+        // Encrypt payload for sensitive frame types
+        if (encryptionEnabled && ENCRYPTED_TYPES[type]) {
+            var header = frame.subarray(0, 5);
+            encryptPayload(frame.subarray(5)).then(function(enc) {
+                var ef = new Uint8Array(5 + enc.length);
+                ef.set(header);
+                ef.set(enc, 5);
+                if (connected && ws) ws.send(ef);
+                else sendQueue.push(ef);
+            });
+            return;
+        }
+        if (connected && ws) ws.send(frame);
         else sendQueue.push(frame);
     }
 
@@ -291,6 +383,24 @@
                 Values: { viewId: myViewId, isFirstClient: isFirstClient }
             }), '*');
         } catch(e) {}
+
+        // Enable E2E encryption — request the current key before sending anything
+        if (!singleUserMode) {
+            var keyBaseUrl = getFileStorageUrl(wopiSrc);
+            if (keyBaseUrl) {
+                var kvUrl = keyBaseUrl.replace(/\/api\/files\/.*/, '/api/keys/current-version');
+                origFetch(kvUrl, { mode: 'cors' }).then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        currentKeyVer = data.keyVersion;
+                        return fetchKey(currentKeyVer);
+                    }).then(function() {
+                        encryptionEnabled = true;
+                        console.log('[relay] E2E encryption enabled, keyVersion=' + currentKeyVer);
+                    }).catch(function(e) {
+                        console.warn('[relay] Encryption key fetch failed, running unencrypted:', e.message);
+                    });
+            }
+        }
 
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId + ' name=' + myName);
@@ -769,11 +879,14 @@
                         uploadHeaders['X-Force-Overwrite'] = 'true';
                         forceNextSave = false;
                     }
+                    // Encrypt file bytes before upload if encryption is active
+                    return encryptFileBytes(bytes).then(function(uploadBytes) {
                     return origFetch(viewerFileUrl, {
                         method: 'POST',
-                        body: new Blob([bytes]),
+                        body: new Blob([uploadBytes]),
                         mode: 'cors',
                         headers: uploadHeaders,
+                    });
                     }).then(function(uploadResp) {
                         if (uploadResp.status === 409) {
                             // Conflict: file was modified externally
@@ -1070,6 +1183,11 @@
                         });
                     }
                     tryNext(0).then(function(buf) {
+                        // Decrypt if encrypted (file has [keyVer:4][nonce:12][ct...])
+                        return decryptFileBytes(new Uint8Array(buf)).then(function(dec) {
+                            return dec.buffer || dec;
+                        });
+                    }).then(function(buf) {
                         // Compute SHA-256 of what we actually loaded — keeps
                         // the integrity check honest even when we go via
                         // /api/blobs (where it's tautological).
@@ -1129,9 +1247,26 @@
         }
 
         // 0x00: UI message (with seq#)
+        // Relay format: [0x00][viewId:4][seq:4][payload...]
+        // With encryption: [0x00][viewId:4][seq:4][keyVer:4][nonce:12][ct...]
         if (msg.type === 0x00 && msg.payload.length >= 4) {
             var seq = ((msg.payload[0] << 24) | (msg.payload[1] << 16) |
                        (msg.payload[2] << 8) | msg.payload[3]) >>> 0;
+            if (encryptionEnabled && msg.payload.length > 4 + 16) {
+                // Decrypt the portion after the seq bytes
+                var encPart = msg.payload.subarray(4);
+                decryptPayload(encPart).then(function(pt) {
+                    // Rebuild payload: [seq:4][decrypted text]
+                    var rebuilt = new Uint8Array(4 + pt.length);
+                    rebuilt.set(msg.payload.subarray(0, 4)); // seq
+                    rebuilt.set(pt, 4);
+                    msg.payload = rebuilt;
+                    processUIMessage(msg, seq);
+                }).catch(function(e) {
+                    console.error('[relay] Decrypt failed for seq=' + seq + ':', e.message);
+                });
+                return;
+            }
             processUIMessage(msg, seq);
             return;
         }

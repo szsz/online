@@ -199,6 +199,29 @@ app.get('/api/folders', async (req, res) => {
     res.json(await readFolders());
 });
 
+// ── Encryption key API ──────────────────────────────────────────
+// Keys are derived from HMAC(secret, fileId|keyVersion|secret|messagekey).
+// The keyVersion is an hourly counter. Clients request keys via the
+// viewer (postMessage → fetch → respond), never directly from the editor.
+const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'dev-secret-change-in-prod';
+
+app.get('/api/keys/current-version', (req, res) => {
+    // Monotonically increasing hourly counter from a fixed epoch
+    const epoch = new Date('2026-01-01T00:00:00Z').getTime();
+    const version = Math.floor((Date.now() - epoch) / 3600000);
+    res.json({ keyVersion: version });
+});
+
+app.get('/api/keys/:fileId/:keyVersion', (req, res) => {
+    const material = req.params.fileId + '|' + req.params.keyVersion + '|' + ENCRYPTION_SECRET + '|messagekey';
+    const key = crypto.createHmac('sha256', ENCRYPTION_SECRET).update(material).digest('base64');
+    res.json({
+        fileId: req.params.fileId,
+        keyVersion: parseInt(req.params.keyVersion, 10),
+        key: key,
+    });
+});
+
 // ── GET /api/blobs/:hash — content-addressable blob ─────────────
 // The actual document bytes, addressed by their SHA-256 hash. Same hash
 // → same bytes, forever — so this is the cleanest immutable resource on

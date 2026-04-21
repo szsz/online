@@ -401,9 +401,15 @@ class Room {
         // UTF-8 (truncated) — user input is text. activeClients is the
         // set of recipients.
         const fromViewId = viewId.readUInt32BE(0);
-        const text = payload.toString('utf8');
+        // Detect encrypted payload: [keyVer:4][nonce:12][ct...] starts with
+        // a non-ASCII byte pattern (key version > 0, nonce is random bytes).
+        // Plaintext always starts with an ASCII command keyword.
+        const isEncrypted = payload.length > 16 && payload[0] === 0 && payload[1] === 0;
+        const text = isEncrypted
+            ? '[encrypted: ' + payload.length + 'B, keyVer=' + payload.readUInt32BE(0) + ']'
+            : payload.toString('utf8');
         // Capture name from presence messages
-        if (text.startsWith('presence ')) {
+        if (!isEncrypted && text.startsWith('presence ')) {
             const nameMatch = text.match(/name=(\S+)/);
             if (nameMatch) {
                 for (const c of this.clients) {

@@ -427,6 +427,24 @@ window.addEventListener('message', function(event) {
             }
         }
 
+        // Encryption key request from the editor iframe's relay-adapter.
+        // The viewer is the key authority — it derives the key and responds.
+        if (msg.MessageId === 'KeyRequest' && msg.Values) {
+            var fId = msg.Values.fileId;
+            var kv = msg.Values.keyVersion;
+            fetch('/api/keys/' + encodeURIComponent(fId) + '/' + kv)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var iframe = document.getElementById('editor-frame');
+                    if (iframe && iframe.contentWindow) {
+                        iframe.contentWindow.postMessage(JSON.stringify({
+                            MessageId: 'KeyResponse',
+                            Values: { keyVersion: data.keyVersion, key: data.key, fileId: fId }
+                        }), '*');
+                    }
+                }).catch(function(e) { console.error('[viewer] Key request failed:', e); });
+        }
+
         // App_LoadingStatus=Initialized fires once when COOL initializes.
         // We only trust it for the very first prewarm — once we're past
         // that, all subsequent doc-open shield-drops go through
