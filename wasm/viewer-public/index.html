@@ -443,6 +443,16 @@ window.addEventListener('message', function(event) {
             }
         }
 
+        // WasmSnapshotReady: the prewarm saved a snapshot but COOL's JS
+        // framework isn't initialized (Execute() was skipped). The first
+        // file open MUST use a cold reload (new iframe). We update the
+        // status text but do NOT set prewarmReady — that ensures openFile
+        // takes the cold-reload path.
+        if (msg.MessageId === 'WasmSnapshotReady') {
+            setPrewarmStatus('✅ Snapshot saved — pick a file', true);
+            viewerLog('Snapshot saved (prewarm, cold reload required for first file)');
+        }
+
         // Encryption key request from the editor iframe's relay-adapter.
         // The viewer is the key authority — it derives the key and responds.
         if (msg.MessageId === 'KeyRequest' && msg.Values) {

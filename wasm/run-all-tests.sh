@@ -84,6 +84,7 @@ TESTS=(
     "prewarm-benchmark|test-prewarm-benchmark.js|Prewarm Benchmark|Document open timing for all doc types: first visit vs return visit, cold vs warm cache|shots-prewarm-benchmark"
     "pptx-viewer-slides|test-pptx-viewer-slides.js|PPTX Viewer Slides|Real pptx via viewer: Impress UI, slide panel, navigation, content rendering|shots-pptx-viewer-slides"
     "singleuser|test-singleuser.js|Single-User Mode|Open/edit/save docx, xlsx, pptx without relay in one session|shots-singleuser"
+    "cold-open|test-cold-open.js|Cold Start File Open|Deep-link file open on cold start must use cold-reload, not hot-switch|shots-cold-open"
     "folder-api|test-folder-api.js|Folder API|Create folders, upload nested files, download, path traversal rejection|none"
     "snapshot-stale|test-snapshot-stale.js|Snapshot Stale Rejection|Tampered fingerprint causes snapshot to be discarded on reload|none"
     "save-conflict|test-save-conflict.js|Save Conflict|External file modification during editing — conflict detection behavior|none"

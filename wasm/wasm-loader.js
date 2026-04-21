@@ -820,14 +820,20 @@
                                 if (isBlank(wopiSrc)) {
                                     // Prewarm: don't enter Execute() — no need to
                                     // render the blank doc. The snapshot already has
-                                    // all modules preloaded. Signal readiness so the
-                                    // viewer knows prewarm is done (shield stays up).
+                                    // all modules preloaded.
+                                    // NOTE: Do NOT set __wasmPrewarmReady or send
+                                    // App_LoadingStatus here. COOL's JS framework
+                                    // hasn't initialized (Execute() never ran), so
+                                    // the editor can't handle switchdocument. The
+                                    // viewer must use a cold reload for the first
+                                    // real file open. We send a different signal
+                                    // (WasmSnapshotReady) so the viewer knows the
+                                    // snapshot is saved but doesn't set prewarmReady.
                                     mark('snapshot:prewarm_done');
-                                    window.__wasmPrewarmReady = true;
                                     try {
                                         parent.postMessage(JSON.stringify({
-                                            MessageId: 'App_LoadingStatus',
-                                            Values: { Status: 'Initialized' }
+                                            MessageId: 'WasmSnapshotReady',
+                                            Values: { snapshotSaved: true }
                                         }), '*');
                                     } catch(e) {}
                                 } else {
