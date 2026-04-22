@@ -773,6 +773,7 @@
     };
 
     function sendToRemoteClient(clientId, text) {
+        if (!Module || !Module.calledRun || !Module._handle_remote_message) return;
         if (text.startsWith('textinput ')) {
             var match = text.match(/text=(.+)/);
             if (match) {
@@ -790,8 +791,17 @@
         }
     }
 
+    var _pendingRemoteClients = []; // viewIds waiting for runtime init
     function createRemoteClient(viewId) {
         if (remoteClients[viewId]) return;
+        // Guard: Module C functions not available until callMain completes
+        if (!Module || !Module.calledRun || !Module._create_remote_client) {
+            if (_pendingRemoteClients.indexOf(viewId) < 0) {
+                _pendingRemoteClients.push(viewId);
+                console.log('[relay] Queuing remote client for viewId=' + viewId + ' (WASM not ready)');
+            }
+            return;
+        }
         console.log('[relay] Creating remote client for viewId=' + viewId);
         var clientId = Module._create_remote_client();
         remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
@@ -804,6 +814,11 @@
         if (!Module || !Module.calledRun || !Module._poll_remote_client_ready) {
             setTimeout(globalPollReady, 500);
             return;
+        }
+        // Flush any remote clients that were queued before runtime init
+        if (_pendingRemoteClients.length > 0) {
+            var pending = _pendingRemoteClients.splice(0);
+            for (var i = 0; i < pending.length; i++) createRemoteClient(pending[i]);
         }
         var readyId = Module._poll_remote_client_ready();
         if (readyId > 0) {
