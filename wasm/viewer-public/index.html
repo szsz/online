@@ -535,7 +535,8 @@ async function refresh() {
     const [filesResp, foldersResp] = await Promise.all([
         fetch('/api/files/'), fetch('/api/folders')
     ]);
-    const files = (await filesResp.json()).filter(f => f.name !== BLANK_FILENAME);
+    const files = (await filesResp.json()).filter(f =>
+        f.name !== BLANK_FILENAME && !f.name.startsWith('__system__'));
     let folders = [];
     try { folders = await foldersResp.json(); } catch(e) {}
 
