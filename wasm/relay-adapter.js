@@ -820,6 +820,12 @@
             var pending = _pendingRemoteClients.splice(0);
             for (var i = 0; i < pending.length; i++) createRemoteClient(pending[i]);
         }
+        // Flush messages that arrived before runtime was ready
+        if (_kitMessageQueue.length > 0) {
+            var queued = _kitMessageQueue.splice(0);
+            console.log('[relay] Flushing ' + queued.length + ' queued messages (runtime now ready)');
+            for (var j = 0; j < queued.length; j++) processUIMessage(queued[j].msg, queued[j].seq);
+        }
         var readyId = Module._poll_remote_client_ready();
         if (readyId > 0) {
             for (var vid in remoteClients) {
@@ -1024,6 +1030,7 @@
     }
 
     // --- Process a sequenced UI message ---
+    var _kitMessageQueue = []; // messages waiting for WASM runtime
     function processUIMessage(msg, seq) {
         lastSeq = seq;
 
@@ -1031,6 +1038,13 @@
         var vid = msg.viewId;
 
         if (text === 'HULLO' || text === 'BYE' || text.startsWith('tileprocessed ')) return;
+
+        // Queue messages until WASM runtime is ready (callMain completed).
+        // Without this, replay messages crash or get "PostMessage ignored".
+        if (!Module || !Module.calledRun) {
+            _kitMessageQueue.push({ msg: msg, seq: seq });
+            return;
+        }
 
         // Presence: trigger remote client creation
         if (text.startsWith('presence ')) {
