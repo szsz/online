@@ -794,8 +794,9 @@
     var _pendingRemoteClients = []; // viewIds waiting for runtime init
     function createRemoteClient(viewId) {
         if (remoteClients[viewId]) return;
-        // Guard: Module C functions not available until callMain completes
-        if (!Module || !Module.calledRun || !Module._create_remote_client) {
+        // Guard: need COOLWSD fully running (not just callMain — the server
+        // socket must be ready or create_remote_client asserts)
+        if (!coolwsdReady || !Module || !Module.calledRun || !Module._create_remote_client) {
             if (_pendingRemoteClients.indexOf(viewId) < 0) {
                 _pendingRemoteClients.push(viewId);
                 console.log('[relay] Queuing remote client for viewId=' + viewId + ' (WASM not ready)');
@@ -811,19 +812,20 @@
 
     // --- Poll for C++ ready signals ---
     function globalPollReady() {
-        if (!Module || !Module.calledRun || !Module._poll_remote_client_ready) {
+        if (!coolwsdReady || !Module || !Module.calledRun || !Module._poll_remote_client_ready) {
             setTimeout(globalPollReady, 500);
             return;
         }
-        // Flush any remote clients that were queued before runtime init
+        // Flush any remote clients that were queued before COOLWSD was ready
         if (_pendingRemoteClients.length > 0) {
             var pending = _pendingRemoteClients.splice(0);
+            console.log('[relay] Flushing ' + pending.length + ' queued remote clients (COOLWSD ready)');
             for (var i = 0; i < pending.length; i++) createRemoteClient(pending[i]);
         }
-        // Flush messages that arrived before runtime was ready
+        // Flush messages that arrived before COOLWSD was ready
         if (_kitMessageQueue.length > 0) {
             var queued = _kitMessageQueue.splice(0);
-            console.log('[relay] Flushing ' + queued.length + ' queued messages (runtime now ready)');
+            console.log('[relay] Flushing ' + queued.length + ' queued messages (COOLWSD ready)');
             for (var j = 0; j < queued.length; j++) processUIMessage(queued[j].msg, queued[j].seq);
         }
         var readyId = Module._poll_remote_client_ready();
@@ -1039,9 +1041,9 @@
 
         if (text === 'HULLO' || text === 'BYE' || text.startsWith('tileprocessed ')) return;
 
-        // Queue messages until WASM runtime is ready (callMain completed).
-        // Without this, replay messages crash or get "PostMessage ignored".
-        if (!Module || !Module.calledRun) {
+        // Queue messages until COOLWSD is fully running. Not just callMain —
+        // the server socket, Kit thread, and DocumentBroker must be ready.
+        if (!coolwsdReady || !Module || !Module.calledRun) {
             _kitMessageQueue.push({ msg: msg, seq: seq });
             return;
         }
