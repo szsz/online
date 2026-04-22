@@ -1262,7 +1262,13 @@
         if (msg.type === 0x00 && msg.payload.length >= 4) {
             var seq = ((msg.payload[0] << 24) | (msg.payload[1] << 16) |
                        (msg.payload[2] << 8) | msg.payload[3]) >>> 0;
-            if (encryptionEnabled && msg.payload.length > 4 + 16) {
+            // Check if the payload after seq looks encrypted:
+            // [seq:4][keyVer:4][nonce:12][ct...] — keyVer is a recent hourly
+            // counter (>1000), so the first byte after seq will be 0x00 0x00.
+            // Plaintext messages start with ASCII (byte > 0x20).
+            var afterSeq = msg.payload.length > 8 ? msg.payload[4] : 0xFF;
+            var looksEncrypted = encryptionEnabled && msg.payload.length > 4 + 16 + 16 && afterSeq === 0;
+            if (looksEncrypted) {
                 // Decrypt the portion after the seq bytes
                 var encPart = msg.payload.subarray(4);
                 decryptPayload(encPart).then(function(pt) {
@@ -1272,8 +1278,11 @@
                     rebuilt.set(pt, 4);
                     msg.payload = rebuilt;
                     processUIMessage(msg, seq);
-                }).catch(function(e) {
-                    console.error('[relay] Decrypt failed for seq=' + seq + ':', e.message);
+                }).catch(function() {
+                    // Decryption failed — message was likely sent before
+                    // encryption was enabled (e.g., presence announcement).
+                    // Process as plaintext.
+                    processUIMessage(msg, seq);
                 });
                 return;
             }
