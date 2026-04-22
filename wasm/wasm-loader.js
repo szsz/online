@@ -817,25 +817,11 @@
                                 return cache.put('/snapshot/heap-v2', new Response(blob));
                             }).then(function() {
                                 mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB via Cache API, heapBase=' + heapBase);
-                                if (isBlank(wopiSrc)) {
-                                    // Prewarm: don't enter Execute() — no need to
-                                    // render the blank doc. The snapshot already has
-                                    // all modules preloaded.
-                                    // NOTE: Do NOT set __wasmPrewarmReady or send
-                                    // App_LoadingStatus here. COOL's JS framework
-                                    // hasn't initialized (Execute() never ran), so
-                                    // the editor can't handle switchdocument. The
-                                    // viewer must use a cold reload for the first
-                                    // real file open. We send a different signal
-                                    // (WasmSnapshotReady) so the viewer knows the
-                                    // snapshot is saved but doesn't set prewarmReady.
+                                if (false && isBlank(wopiSrc)) {
+                                    // DISABLED: prewarm skip broke hot-switch because
+                                    // COOL's JS framework never initialized (no Execute()).
+                                    // The blank doc must load so hot-switch works.
                                     mark('snapshot:prewarm_done');
-                                    try {
-                                        parent.postMessage(JSON.stringify({
-                                            MessageId: 'WasmSnapshotReady',
-                                            Values: { snapshotSaved: true }
-                                        }), '*');
-                                    } catch(e) {}
                                 } else {
                                     // Real document: resume COOLWSD so it enters Execute()
                                     mark('snapshot:starting_phase2');

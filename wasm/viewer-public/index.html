@@ -443,16 +443,6 @@ window.addEventListener('message', function(event) {
             }
         }
 
-        // WasmSnapshotReady: the prewarm saved a snapshot but COOL's JS
-        // framework isn't initialized (Execute() was skipped). The first
-        // file open MUST use a cold reload (new iframe). We update the
-        // status text but do NOT set prewarmReady — that ensures openFile
-        // takes the cold-reload path.
-        if (msg.MessageId === 'WasmSnapshotReady') {
-            setPrewarmStatus('✅ Snapshot saved — pick a file', true);
-            viewerLog('Snapshot saved (prewarm, cold reload required for first file)');
-        }
-
         // Encryption key request from the editor iframe's relay-adapter.
         // The viewer is the key authority — it derives the key and responds.
         if (msg.MessageId === 'KeyRequest' && msg.Values) {
@@ -512,10 +502,9 @@ window.addEventListener('message', function(event) {
 // the TLS handshake + CORS preflight + upload latency (~2-5s).
 async function startPrewarm() {
     showShield('Loading editor…', 'First-time pre-warm of WebAssembly runtime');
-    // Start the editor iframe immediately. The WOPISrc is a dummy name —
-    // no actual file needs to exist because wasm-loader.js skips Phase 2
-    // (Execute/doc-open) for blank prewarm docs. We only need LO Core to
-    // initialize and preload modules so the snapshot can be saved.
+    // Start the editor iframe IMMEDIATELY, upload blank doc in parallel.
+    // The blank doc must exist at /wasm/ before Kit tries to open it (~6s
+    // into WASM init). The iframe load + blank doc upload overlap.
     const iframe = document.getElementById('editor-frame');
     viewerLog('Editor iframe loading');
     iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
@@ -524,6 +513,19 @@ async function startPrewarm() {
                + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                + '&viewerT0=' + window.__viewerT0;
+
+    // Upload blank doc in parallel — arrives before Kit needs it
+    try {
+        const resp = await fetch('/blank.docx');
+        if (resp.ok) {
+            const buf = await resp.arrayBuffer();
+            await fetch(EDITOR + '/wasm/' + encodeURIComponent(BLANK_FILENAME), {
+                method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+            });
+        }
+    } catch (e) {
+        console.log('[viewer] Blank doc upload failed (non-critical): ' + e.message);
+    }
 }
 
 // Current folder context for uploads (set by clicking a folder)
