@@ -794,9 +794,11 @@
     var _pendingRemoteClients = []; // viewIds waiting for runtime init
     function createRemoteClient(viewId) {
         if (remoteClients[viewId]) return;
-        // Guard: need COOLWSD fully running (not just callMain — the server
-        // socket must be ready or create_remote_client asserts)
-        if (!coolwsdReady || !Module || !Module.calledRun || !Module._create_remote_client) {
+        // Guard: need C++ server socket ready (coolwsd_server_socket_fd != -1).
+        // coolwsdReady (DOM check) fires before the C++ socket is created.
+        // is_preinit_done() checks the actual C++ fd.
+        var serverReady = coolwsdReady && Module && Module.calledRun && Module._is_preinit_done && Module._is_preinit_done();
+        if (!serverReady || !Module._create_remote_client) {
             if (_pendingRemoteClients.indexOf(viewId) < 0) {
                 _pendingRemoteClients.push(viewId);
                 console.log('[relay] Queuing remote client for viewId=' + viewId + ' (WASM not ready)');
@@ -812,7 +814,8 @@
 
     // --- Poll for C++ ready signals ---
     function globalPollReady() {
-        if (!coolwsdReady || !Module || !Module.calledRun || !Module._poll_remote_client_ready) {
+        var serverUp = coolwsdReady && Module && Module.calledRun && Module._is_preinit_done && Module._is_preinit_done();
+        if (!serverUp || !Module._poll_remote_client_ready) {
             setTimeout(globalPollReady, 500);
             return;
         }
@@ -1041,9 +1044,9 @@
 
         if (text === 'HULLO' || text === 'BYE' || text.startsWith('tileprocessed ')) return;
 
-        // Queue messages until COOLWSD is fully running. Not just callMain —
-        // the server socket, Kit thread, and DocumentBroker must be ready.
-        if (!coolwsdReady || !Module || !Module.calledRun) {
+        // Queue until C++ server socket is ready (is_preinit_done returns 1)
+        var serverUp = coolwsdReady && Module && Module.calledRun && Module._is_preinit_done && Module._is_preinit_done();
+        if (!serverUp) {
             _kitMessageQueue.push({ msg: msg, seq: seq });
             return;
         }
