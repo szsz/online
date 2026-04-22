@@ -318,10 +318,20 @@
         // Calc: StatusDocPos has "Sheet"
         var calcEl = document.querySelector('#StatusDocPos');
         var calcReady = calcEl && calcEl.textContent && calcEl.textContent.includes('Sheet');
-        // Impress: Slide Show menu
+        // Impress: any of these signals it's ready
         var impressReady = false;
+        // Check for "Slide Show" in menu
         var navEl = document.querySelector('nav.main-nav') || document.querySelector('#content-keeper');
         if (navEl && navEl.textContent && navEl.textContent.includes('Slide Show')) {
+            impressReady = true;
+        }
+        // Or check for slide status (e.g., "Slide 1 of 3")
+        var sbEl = document.querySelector('.jsdialog.ui-statusbar');
+        if (sbEl && sbEl.textContent && sbEl.textContent.length > 3) {
+            impressReady = true;
+        }
+        // Or check that canvas + map div exist (Impress rendering started)
+        if (document.querySelector('#map') && document.querySelector('canvas')) {
             impressReady = true;
         }
 
