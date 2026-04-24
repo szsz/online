@@ -1,108 +1,169 @@
 # Co-Editing Architecture
 
-## Core Principles
+The full contract for this project. `CLAUDE.md` is the quick-reference;
+this file is the authoritative spec.
 
-1. **Each browser tab runs its own full WASM instance.** There is no shared memory between tabs. Each tab is a fully independent LibreOffice instance with its own document in memory.
+## Core principles
 
-2. **Each instance has its own cursor.** Every user sees their own cursor independently. Remote users' cursors are displayed as colored markers but do not interfere with the local user's cursor position or selection.
+1. **Each browser tab runs its own full WASM LibreOffice instance.** No shared memory between tabs.
+2. **Each tab has its own cursor.** Remote cursors are displayed as colored markers but never move the local cursor.
+3. **Every user-input action goes through the relay first.** The relay assigns a monotonically-increasing sequence number, broadcasts to all clients, and only then does each client apply the action. The relay is the single source of truth for total ordering.
+4. **The relay never stores file bytes.** It holds metadata: current checkpoint (`{hash, locator, seq, cursors}`) and a bounded broadcast messageLog.
 
-3. **Every user action goes through the relay server first.** No action may be applied to the local document until the relay has assigned it a sequence number and broadcast it back. This guarantees total ordering across all clients.
+## Services
 
-4. **The relay server is the single source of truth for message ordering.** It assigns monotonically increasing sequence numbers. All clients process messages in the same order, producing identical document states.
+| Host | Service | Internal port | Role |
+|---|---|---|---|
+| `viewer.szebeni.hu` | `viewer-server.js` | 6934 | Sidebar UI, v2 encrypted storage (`/api/v2/file`), blob index (`/api/blobs`), legacy `/api/files` |
+| `wasm.atgpartners.info` | `editor-static-server.js` | 6932 | Serves `cool.html` + `online.wasm` + `/wasm/<name>` plaintext staging |
+| `relay.atgpartners.info` | `message-relay.js` | 9091 | WebSocket broker — metadata + message ordering only |
 
-## Message Flow
+`sni-router.js` on :443 proxies by Host header to the backend; each service has its own Let's Encrypt cert. Certs are configured per-service in `wasm/.env` under namespaced keys (`RELAY_SSL_CERT`, `EDITOR_SSL_CERT`; the viewer uses bare `SSL_CERT`/`PORT`).
+
+## Message flow
 
 ```
-User action (type/click/UNO)
+User action (type / click / UNO)
     ↓
 interceptedSend() — does NOT apply locally yet
     ↓
-Relay server assigns seq#, broadcasts to ALL clients (including sender)
+Relay assigns seq#, broadcasts to ALL clients (including sender)
     ↓
-Each client receives broadcast in seq order
+Each client receives the broadcast in seq order
     ↓
 Own viewId → sendToKit() (local view, local cursor)
 Other viewId → sendToRemoteClient() (remote view, remote cursor)
 ```
 
-### Intercepted Messages (go through relay)
-- `key` — keyboard input
-- `mouse` — mouse clicks, drags, selections
-- `textinput` — IME/composition text
-- `windowkey` — window-level keyboard events
-- `uno` — UNO commands (InsertRows, Bold, DeleteColumns, etc.)
+### Intercepted (go through relay)
+- `key`, `textinput`, `windowkey` — keyboard input and IME
+- `mouse type=button…` — mouse clicks
+- `uno` — UNO commands (InsertRows, Bold, …)
+- `removetextcontext`, `removetextcontent`, `contentcontrolevent`, `moveselectedclientparts`, `completefunction`, `selecttext`, `insertfile`, `paste`, `resetselection` — other user-input variants
 
-### NOT Intercepted (local only)
-- `clientzoom`, `clientvisiblearea` — per-view display settings
+### NOT intercepted (local only)
+- `clientzoom`, `clientvisiblearea` — per-view display state
 - `tileprocessed`, `commandvalues` — tile cache management
-- Status queries — don't modify document content
+- Status queries — read-only
 
-## Multi-View Architecture
+### Mouse-move special case
+- `mouse type=move` **goes directly to Kit**, not through the relay.
+- `_lastMouseMove` is buffered locally.
+- Before the next `mouse type=button…`, the buffered move is flushed to the relay so remote Kits see the cursor position at click time — start and end points of a drag-selection without flooding the relay with every intermediate pixel.
+- Implemented in `relay-adapter.js:659-669`.
 
-Each WASM instance maintains multiple views of the same document:
+## Multi-view architecture
 
-- **Local view:** The user's own session. Has its own cursor, selection, scroll position. Receives the user's own actions back from the relay via `sendToKit()`.
-- **Remote views:** One per remote user. Created via `create_remote_client()` in the Kit. Each has its own cursor and selection state. Receives remote users' actions via `sendToRemoteClient()` → `handle_remote_message()`.
+Each WASM instance maintains multiple views of the same document.
 
-All views share the same in-memory `Document` object in LibreOffice Kit. A change made through any view is immediately visible to all other views. Tile invalidations from any view trigger re-rendering for all views.
+- **Local view**: the user's own session. Local cursor, local selection. Receives own actions back from the relay via `sendToKit()`.
+- **Remote views**: one per remote peer. Created via `create_remote_client()` in the Kit. Each has its own cursor + selection. Receives that peer's actions via `sendToRemoteClient()` → `handle_remote_message()`.
 
-### Cursor Independence
+All views share the same in-memory `Document` object. Changes via any view are visible to all. Tile invalidations propagate across views.
 
-- When User B clicks at position (x, y), the mouse event goes to B's remote view on A's WASM. **A's cursor does not move.** Only B's remote cursor marker updates.
-- When User A types, the key events go to A's local view. **B's cursor is unaffected** on A's WASM.
-- Each view tracks its own cursor, selection, and editing context independently.
+### Why remote views are required
+UNO commands are **cursor-context-dependent**. B's `InsertRowsAfter` must execute in B's *remote view on A's WASM*, where B's cursor is inside the table (set by B's earlier mouse clicks). Executing it in A's local view would insert at A's cursor — wrong.
 
-### Why Remote Views Are Required
+## Relay protocol — frames
 
-UNO commands (InsertRowsAfter, Bold, etc.) are **cursor-context-dependent** — they operate on the active selection/cursor of the view that sends them. To preserve the correct context:
+All frames: `[type(1)] [viewId(4, BE)] [payload…]`. Broadcast frames (0x00) from server to client insert `[seq(4, BE)]` between viewId and payload.
 
-- B's `InsertRowsAfter` must execute in B's remote view on A's WASM, where B's cursor is inside the table (positioned by B's prior mouse clicks).
-- If it executed in A's local view, it would insert at A's cursor position — wrong result.
+| Type | Dir | Name | Payload | Purpose |
+|---|---|---|---|---|
+| **0x00** | both | User message | seq(server) + bytes | Kit↔Kit broadcast (keys, clicks, UNO) |
+| **0x02** | S→C | Announce join | `{viewId, seq}` | New peer joined |
+| **0x03** | S→C | Announce leave | `{viewId, seq}` | Peer disconnected |
+| **0x04** | C→S | Join request | (empty) | "I want in" |
+| **0x05** | S→C | Join response | `{first, hash?, locator?, seq, cursors?, msgCount}` | "You're first" OR checkpoint + cursor-replay for late joiners |
+| **0x06** | C→S | Join ready / register | `{hash, locator?}` | First client registers the room's initial checkpoint; late joiner confirms hash |
+| **0x07** | C→S | Save-rotation | `{hash, locator, seq, cursors}` | After Ctrl+S, rotate the checkpoint and prune the messageLog |
+| **0x0A** | S→C | Mismatch redirect | `{expected, locator, seq}` | "Your hash didn't match — re-download" |
 
-## Checkpoints
+Reserved: 0x01, 0x09 (ack; relay ignores today).
 
-- A **checkpoint** is a saved copy of the document at a known sequence number.
-- The checkpoint **file** is stored on the **file storage server** (not the relay).
-- The relay stores only the checkpoint **hash** and **sequence number**.
-- Checkpoints are created periodically (on save-trigger from relay) or after significant changes.
-- When a checkpoint is created, the originating client:
-  1. Saves the document and computes its content hash.
-  2. Uploads the file to the **file storage server** (overwriting the previous version).
-  3. Reports the hash + sequence number to the **relay server**.
+## Room lifecycle
 
-## Late Join
+**Empty room → first joiner**
+1. Client opens WS → `Connected`.
+2. Client sends `0x04 JOIN viewId=N`.
+3. Relay: `activeClients.size == 0 && !checkpointHash` → `0x05 {first:true, seq:0}`, `activeClients.add(ws)`, `_joining=false`.
+4. Client boots Kit, computes `hash = sha256(/wasm/<wopiSrc>)`, sends `0x06 {hash, locator}`.
+5. Relay's `0x06` handler: `registerCheckpoint(hash, locator, 0, {})` — room is now open. Any joiners parked in `waitingForCheckpoint` get flushed.
 
-1. New client connects to the relay room.
-2. Relay responds with the latest checkpoint hash and sequence number.
-3. Client downloads the checkpoint file from the **file storage server**.
-4. Client verifies the downloaded file matches the checkpoint hash.
-5. Client loads the document from the checkpoint file.
-6. Relay replays all messages with sequence numbers > checkpoint sequence.
-7. Client applies replayed messages in order (creating remote views as needed).
-8. Client sends `join-ready` — only then may it send its own actions.
+**Late joiner, checkpoint already registered**
+1. WS connect, `0x04`.
+2. Relay: `checkpointHash` set → `serveCheckpoint(ws)` → `0x05 {first:false, hash, locator, seq, cursors, msgCount}`, `_joinBuffering=true`, `_joinBuffer = messageLog`.
+3. Client fetches bytes from `locator`, verifies `sha256 === hash`, loads into Kit, applies `cursors` as peer cursor decorations, replays `_joinBuffer` through local Kit.
+4. Client sends `0x06 {hash}`.
+5. Relay compares `clientHash === expected`. Match → replay buffered frames, `activeClients.add`, `announceJoin`. Mismatch → `0x0A {expected, locator, seq}`, client re-downloads from the authoritative locator.
 
-## Checkpoint Verification
+**Parked joiner (before first 0x06 lands)**
+1. Client sends `0x04`. Relay: `!checkpointHash && activeClients.size > 0` → add to `room.waitingForCheckpoint`. **No response yet.**
+2. The first client's `0x06` fires `registerCheckpoint` → all parked clients get their `0x05` immediately. No save round-trip.
 
-- When a new checkpoint is created, **every connected client must verify** that their local document produces the same hash.
-- Each client saves its document, computes the hash, and compares with the relay's checkpoint hash.
-- **If hashes don't match → DIVERGENCE ERROR.** The client must show an error.
-- **In tests, a checkpoint mismatch is a hard test failure.** Divergence should theoretically never happen if the relay ordering is correct and all clients process messages identically.
+**Save → checkpoint rotation**
+1. Active client performs Ctrl+S. `.uno:Save` triggers Kit to serialize the doc.
+2. Client POSTs the bytes to the file manager (viewer). Viewer encrypts (v2) and stores at `/api/v2/file/<fileId>`; the locator remains the v2 URL.
+3. Client sends `0x07 {hash, locator, seq, cursors}` where:
+   - `hash` = sha256 of the plaintext bytes just saved
+   - `locator` = URL late joiners fetch from
+   - `seq` = last broadcast message seq processed when the save started
+   - `cursors` = snapshot of the relay's current cursor map (server authoritative; see below)
+4. Relay: `registerCheckpoint(hash, locator, seq, cursors)` replaces the current checkpoint and prunes `messageLog` to `seq' > seq`.
+5. Already-connected peers don't reload — they're live-synced.
+6. Future late joiners load from the new checkpoint and start replay from messages `seq' > seq`.
 
-## Known Bug: Remote View Changes Not Visible
+**Leave**
+1. WS close → remove from `clients`, `activeClients`, `waitingForCheckpoint`.
+2. If had `viewId`, `announceLeave(viewId)` → `0x03` to remaining active peers.
+3. Room cleanup 60s after `clients.size === 0 && messageLog.length === 0`.
 
-**Current status:** Remote client views are created and receive messages correctly (`handle_remote_message` confirms delivery). However, changes made through remote views do NOT trigger tile invalidations or status updates back to the primary view's JS rendering pipeline.
+## Checkpoint model
 
-**Root cause:** The Kit's tile invalidation callback from the remote view's actions does not propagate to the primary view's `ClientSession` → JS tile cache → canvas re-render.
+A room has ONE current checkpoint at any instant: `{hash, locator, seq, cursors}`.
 
-**Required fix:** When any view (local or remote) modifies the document, LibreOffice Kit sends `LOK_CALLBACK_INVALIDATE_TILES` to all registered view callbacks. The primary view's callback must process these invalidations and re-render affected tiles. This is a Kit/WASM integration issue in `wasmapp.cpp` or `Kit.cpp`.
+- **`hash`** — sha256 hex of the plaintext bytes at `locator`. Required.
+- **`locator`** — URL any client can fetch those bytes from. Today `/wasm/<wopiSrc>` on the editor-static for initial open; `/api/v2/file/<fileId>` for v2-stored saves.
+- **`seq`** — the last broadcast seq this checkpoint reflects. `0` on initial registration (nothing broadcast yet). Save-rotation uses the last-processed seq at save time.
+- **`cursors`** — map `viewId → {frame}` of the last cursor-related broadcast per peer. Late joiners apply these before starting replay, so they see peer cursors immediately without waiting for the next cursor move.
 
-## Test Requirements
+**Convergence** holds because (a) every late joiner downloading the same `locator` at the same `seq` gets byte-identical bytes; (b) messages with `seq <= checkpoint.seq` are pruned; (c) live peers don't reload — they continue from accumulated in-memory state which by construction is the same as what a fresh joiner lands on.
+
+### Checkpoint verification (mandatory)
+Every client that opens a checkpoint MUST verify `sha256(downloaded-bytes) === checkpoint.hash`. Mismatch → show an error AND do not activate. The `0x0A` flow gives the client a chance to re-download from the authoritative locator.
+
+## V2 encryption
+
+Files uploaded via the viewer are encrypted under a 128-bit secret embedded in the URL fragment (`#file=<22-char-b64url>`).
+
+- **Key derivation**: HKDF-SHA256 on the 16-byte secret → `contentKey` (32B AES), `nameKey` (32B AES), `fileIdBytes` (32B → hex = 64-char `fileId`).
+- **Ciphertext layout**: 12-byte random IV + AES-256-GCM ciphertext + 16-byte tag. Filename is separately encrypted under `nameKey`.
+- **Storage**: ciphertext + `encName` stored at `/api/v2/file/<fileId>` on the viewer. The server sees opaque bytes.
+- **Open flow**: viewer fetches ciphertext, decrypts client-side, POSTs plaintext to `/wasm/<fileId>` on the editor, then spawns the editor iframe with `WOPISrc=<fileId>`. The editor and relay never see the decryption key.
+- **Key custody**: the URL-fragment secret never leaves the browser. `localStorage.rf_v1` caches `{secret, fileId, cachedName}` per file the browser has seen so the sidebar can render the plaintext name.
+- **Save-back**: Ctrl+S sends plaintext bytes to the viewer; the viewer encrypts and stores. The editor does not perform encryption — that responsibility lives in the file manager.
+
+## Deploy contract
+
+- `wasm/deploy.sh` rebuilds staging, re-applies the snapshot-restore injection into `online.js` (fail-loud on missing target), rotates editor-static JS hashes via SIGHUP, and **restarts the relay** so no client stays on a mismatched WS protocol.
+- `test-regression-snapshot-injection.js` runs first in `run-all-tests.sh` — ~500 ms HTTP probe that catches broken deploys instantly.
+- Each service must start via its `launch-*.sh` wrapper so .env is sourced correctly and the right TLS cert is used.
+
+## Test requirements for co-editing
 
 Every co-editing test MUST verify:
 
-1. **Content convergence** — after all edits complete and a sync period, all browsers have identical document content (word count match, and/or full text comparison).
-2. **No checkpoint mismatches** — if a checkpoint is created during the test, all clients' hashes must match. A mismatch is a test failure.
+1. **Content convergence** — after all edits + a sync period, all clients show identical document content (char count + full-text comparison).
+2. **No checkpoint mismatches** — if any checkpoint is registered during the test, every active client's computed hash must match the relay's recorded hash.
 3. **No OOB memory errors** — no `memory access out of bounds` crashes.
 4. **Bidirectional sync** — changes from A appear on B AND changes from B appear on A.
-5. **Structural changes** — insert/delete rows/columns, formatting commands must propagate correctly.
-6. **Independent cursors** — each user's cursor operates independently; remote actions don't hijack the local cursor.
+5. **Structural changes** — insert/delete rows/columns, formatting commands propagate correctly.
+6. **Independent cursors** — each user's cursor moves independently; remote actions don't hijack the local cursor.
+
+## Known limitations
+
+- **Warm-path snapshot + cold-reload** — on v2-via-viewer opens the iframe is spawned cold-reload style (`cool.html?WOPISrc=<fileId>`, no `#switchdoc=`). The snapshot restores Kit at the blank-loaded state and a post-restore `switchdocument` is needed to open the target. See `wasm-loader.js` for the current `snapshot:queuing_switchdoc_for_cold_reload` mechanism.
+- **Kit-cooperation needed for "doc fully rendered" + "loading failed"** — today `WasmDocReady` fires from DOM polling (status bar + canvas heuristics). The right signal is a new `LOK_CALLBACK_DOCUMENT_PAINTED` from Kit; likewise for `load_error:`. Replacing these heuristics is tracked as items 3 & 4.
+- **Editor save-back (v2-encrypted)** — the adapter currently POSTs plaintext to the legacy `/api/files/<name>` path. The viewer-side v2 save path is not yet wired; the viewer should encrypt and write to `/api/v2/file/<fileId>`. The editor must never see the key.
+- **messageLog cap** — 50,000 entries before silent truncation. With save-rotation pruning (item 2, now implemented), any session with at least one save stays well under the cap. Unsaved multi-hour sessions can lose early history; log compaction (merge redundant cursor-moves) is a follow-up.
+- **Legacy `/api/files/*`** — still the target of Ctrl+S until v2 save-back lands. Once it does, the legacy path can be deleted; `test-save-conflict.js` and `test-regression-viewer-cache.js` exercise it today and will need a rewrite or removal.

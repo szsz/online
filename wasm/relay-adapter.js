@@ -1024,12 +1024,32 @@
                             });
                         }
                         return uploadResp.json().then(function(result) {
-                            // Success: update our known hash to the new version.
-                            // Save is purely a storage-side concern now — the
-                            // relay's checkpoint is immutable from the first
-                            // client's 0x06, so there's no `0x07` back-channel.
+                            // Success: save lands in storage, update
+                            // our known hash, and rotate the relay
+                            // checkpoint via 0x07. The relay prunes
+                            // the messageLog to seq > saveAtSeq so
+                            // future late joiners land on the new
+                            // baseline. Existing peers are unaffected.
                             lastKnownHash = result.hash || hashHex;
-                            console.log('[relay] Saved ' + bytes.length + 'B → /api/files; hash=' + hashHex.substring(0, 16) + '…');
+                            var locator = viewerFileUrl;
+                            var payload = {
+                                hash: hashHex,
+                                locator: locator,
+                                seq: saveAtSeq,
+                            };
+                            if (ws && connected) {
+                                var bodyStr = JSON.stringify(payload);
+                                var bodyBytes = new TextEncoder().encode(bodyStr);
+                                var frame = new Uint8Array(5 + bodyBytes.length);
+                                frame[0] = 0x07;
+                                frame[1] = (myViewId >>> 24) & 0xFF;
+                                frame[2] = (myViewId >>> 16) & 0xFF;
+                                frame[3] = (myViewId >>> 8) & 0xFF;
+                                frame[4] = myViewId & 0xFF;
+                                frame.set(bodyBytes, 5);
+                                ws.send(frame);
+                                console.log('[relay] Save-rotation 0x07 sent: hash=' + hashHex.substring(0, 16) + '… atSeq=' + saveAtSeq);
+                            }
                             try {
                                 parent.postMessage(JSON.stringify({
                                     MessageId: 'SaveComplete',
@@ -1272,7 +1292,8 @@
                     var wopiSrc = params.get('WOPISrc') || '';
                     var editorWopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
                     console.log('[relay] Join-response: hash=' + (info.hash||'').substring(0, 16) +
-                                '… locator=' + (info.locator || '(none)') + ' seq=' + info.seq);
+                                '… locator=' + (info.locator || '(none)') + ' seq=' + info.seq +
+                                ' cursors=' + (info.cursorCount || 0) + ' msgs=' + (info.msgCount || 0));
                     try { parent.postMessage(JSON.stringify({
                         MessageId: 'RelayLateJoinPhase',
                         Values: { phase: 'downloading', msgCount: info.msgCount || 0, seq: info.seq }

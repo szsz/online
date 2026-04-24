@@ -911,6 +911,34 @@
                 logTiming(wasRestored ? 'WASM runtime restored from snapshot' : 'WASM runtime initialized (first visit)');
                 window.__wasmJsReady = true;
 
+                // On warm visits the snapshot captured a state where Kit
+                // had already opened blank.docx. The sticky flag that
+                // gates trySendSwitch is therefore structurally true.
+                //
+                // But there's a second problem specific to cold-reload
+                // opens (viewer path: `cool.html?WOPISrc=<fileId>` with
+                // no #switchdoc=hash): Kit's normal boot path would
+                // load the URL's WOPISrc via the WOPI protocol, but
+                // snapshot restore skips that path — LO Core wakes up
+                // at "blank.docx loaded" and never opens <fileId>. No
+                // canvas paints, docPoll sees nothing, WasmDocReady
+                // never fires, user sees eternal spinner.
+                //
+                // Fix: if the iframe's WOPISrc differs from the blank,
+                // queue a switchdoc to it so Kit actually opens the
+                // target. Uses the same hash-bridge machinery the hot-
+                // switch path uses, so the visiblePoll + docReadyInterval
+                // fire normally.
+                if (wasRestored) {
+                    window.__wasmInitialDocLoaded = true;
+                    mark('snapshot:initialDocLoaded_set_from_restore');
+                    if (wopiSrc && !isBlank(wopiSrc)) {
+                        mark('snapshot:queuing_switchdoc_for_cold_reload', wopiSrc);
+                        pendingSwitchFilename = wopiSrc;
+                        setTimeout(trySendSwitch, 0);
+                    }
+                }
+
                 if (!wasRestored) {
                     // First visit: save after LO init + module preload.
                     // Desktop::Main signals __loInitDone after preloading modules.

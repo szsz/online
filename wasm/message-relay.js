@@ -308,30 +308,36 @@ class Room {
         this.activeClients = new Set();
         this.seq = 0;
 
-        // Checkpoint — pure metadata, registered by the first client's
-        // 0x06 and immutable for the lifetime of the room. The relay
-        // NEVER stores the file bytes: `locator` is a URL the file
-        // manager can serve those bytes from (/wasm/<wopiSrc> today,
-        // content-addressable /api/blobs/<sha> later).
+        // Checkpoint — pure metadata. The relay NEVER stores the file
+        // bytes; `checkpointLocator` is a URL any client can fetch the
+        // bytes from.
         //
-        // Any peer joining after room creation but before the first
-        // 0x06 is parked in `waitingForCheckpoint` until the first
-        // client registers its checkpoint — typically ~1s, never a
-        // save round-trip. Once the checkpoint is set, every late
-        // joiner gets { hash, seq: 0, locator, msgCount } and fetches
-        // bytes from `locator` directly. The relay doesn't ask any
-        // peer to save ("triggerSave") and doesn't accept client-side
-        // checkpoint rotation (the old 0x07 frame).
+        // Initial registration: first client's 0x06 after activation.
+        // Rotation: any client's 0x07 after Ctrl+S; replaces the
+        // tuple and prunes messageLog to seq > checkpointSeq.
+        //
+        // `checkpointCursors` is a snapshot of the per-viewId cursor
+        // state at checkpoint.seq — late joiners apply these before
+        // starting replay so they see peer cursors immediately without
+        // waiting for the next cursor broadcast.
         this.checkpointHash = null;
         this.checkpointLocator = null;
         this.checkpointSeq = 0;
+        this.checkpointCursors = [];   // [{viewId, frame: base64}]
+
+        // Live cursor tracking: as 0x00 broadcasts flow through the
+        // relay, we snapshot the most recent cursor-related frame per
+        // viewId. On 0x07 we copy this map into the checkpoint.
+        this.cursors = new Map();      // viewId → {frame: Buffer}
 
         // Joiners that arrived before the first client's 0x06
         // registered the checkpoint. Served as soon as the checkpoint
         // is known.
         this.waitingForCheckpoint = new Set();
 
-        // Message log since room creation (replay on late-join).
+        // Message log; pruned on every checkpoint rotation so a
+        // session with one save-per-hour never exceeds a few seconds'
+        // worth of broadcast.
         this.messageLog = [];
         this.maxLogSize = 50000;
 
@@ -363,34 +369,61 @@ class Room {
 
     nextSeq() { return ++this.seq; }
 
-    // Register the room's (immutable) checkpoint. Called exactly once,
-    // on the first client's 0x06. `locator` is the URL late joiners
-    // will fetch bytes from — the relay stores only the pointer, never
-    // the bytes. Subsequent 0x06 frames just confirm hash agreement;
-    // this method is NOT called for them.
-    registerCheckpoint(hash, locator) {
-        if (this.checkpointHash) {
-            console.log(`[${this.id}] registerCheckpoint IGNORED — already set (hash=${this.checkpointHash})`);
-            return false;
-        }
+    // Register or ROTATE the room's checkpoint.
+    //  - Initial registration: on the first client's 0x06 (atSeq=0).
+    //  - Rotation: on any client's 0x07 after Ctrl+S (atSeq = last
+    //    broadcast seq at save time). Rotation prunes messageLog to
+    //    seq > atSeq so future late joiners start on the new baseline
+    //    without replaying pre-save history.
+    // `cursors` is the cursor-state snapshot that goes into the
+    // checkpoint payload; on initial registration it's empty, on
+    // rotation it's whatever the relay's live cursor map holds.
+    registerCheckpoint(hash, locator, atSeq, cursors) {
         if (!Room.isValidHexHash(hash)) {
             console.log(`[${this.id}] registerCheckpoint REJECTED malformed hash (len=${(hash||'').length})`);
             return false;
         }
+        const isRotation = !!this.checkpointHash;
+        const newSeq = typeof atSeq === 'number' ? atSeq : 0;
+        if (isRotation && newSeq <= this.checkpointSeq) {
+            console.log(`[${this.id}] registerCheckpoint REJECTED stale rotation (atSeq=${newSeq} <= current=${this.checkpointSeq})`);
+            return false;
+        }
         this.checkpointHash = hash;
         this.checkpointLocator = locator || null;
-        this.checkpointSeq = 0;
-        console.log(`[${this.id}] CHECKPOINT REGISTERED hash=${hash} locator=${locator || '(none)'}`);
+        this.checkpointSeq = newSeq;
+        this.checkpointCursors = cursors || [];
+        // Prune log: only messages strictly newer than this checkpoint
+        // remain, so a late joiner landing on the new baseline doesn't
+        // double-apply old frames.
+        const before = this.messageLog.length;
+        this.messageLog = this.messageLog.filter(m => m.seq > newSeq);
+        const pruned = before - this.messageLog.length;
+        console.log(`[${this.id}] CHECKPOINT ${isRotation ? 'ROTATED' : 'REGISTERED'} hash=${hash} locator=${locator || '(none)'} atSeq=${newSeq} cursors=${(cursors||[]).length} pruned=${pruned}`);
         this.debugAppend('event', {
             event: 'checkpoint',
-            hash, locator: locator || null, atSeq: 0,
+            hash, locator: locator || null,
+            atSeq: newSeq, pruned,
+            rotation: isRotation,
         });
-        // Flush everyone who was parked waiting for this.
+        // Flush anyone parked waiting for the first registration.
         for (const ws of this.waitingForCheckpoint) {
             if (ws.readyState === WebSocket.OPEN) this.serveCheckpoint(ws);
         }
         this.waitingForCheckpoint.clear();
         return true;
+    }
+
+    // Snapshot the live cursor map in the format shipped in 0x05/0x07
+    // payloads: [{viewId, frame: base64}].
+    snapshotCursors() {
+        const out = [];
+        for (const [viewId, entry] of this.cursors) {
+            if (entry && entry.frame) {
+                out.push({ viewId, frame: entry.frame.toString('base64') });
+            }
+        }
+        return out;
     }
 
     // Hex-hash sanity check. We accept any-length hex string of at least
@@ -452,6 +485,15 @@ class Room {
                 }
             }
         }
+        // Track the most recent cursor-related broadcast per viewId so
+        // a future checkpoint rotation (0x07) or late-join 0x05 can
+        // ship peer cursor state without waiting for each peer to
+        // re-emit their cursor. Covers selection and graphic cursors
+        // too — any message whose payload describes where a view's
+        // focus/selection currently is.
+        if (!isEncrypted && /^(invalidateviewcursor|textselection|graphicselection|cellcursor|invalidatecursor):/.test(text)) {
+            this.cursors.set(fromViewId, { frame: Buffer.from(frame) });
+        }
         // Look up sender name for debug display
         let fromName = null;
         for (const c of this.clients) {
@@ -478,24 +520,36 @@ class Room {
         if (ws.readyState === WebSocket.OPEN) ws.send(frame);
     }
 
-    // Tell a joiner what checkpoint to fetch and what messages to replay
-    // on top. The relay never holds bytes; `locator` (if set) is the URL
-    // the joiner will fetch them from. The client is responsible for
-    // hash-verifying whatever it downloads against `hash`.
+    // Tell a joiner what checkpoint to fetch and what messages to
+    // replay on top. The relay never holds bytes; `locator` (if set)
+    // is the URL the joiner fetches them from. The client is
+    // responsible for hash-verifying whatever it downloads against
+    // `hash`.
+    //
+    // Peer cursor state from the checkpoint is prepended to the
+    // replay buffer as ordinary 0x00 broadcast frames — no special
+    // client-side handling needed, the adapter processes them the
+    // same way it processes any other buffered message.
     serveCheckpoint(ws) {
         if (!this.checkpointHash) return false;
+        const cursorFrames = [];
+        for (const entry of this.checkpointCursors || []) {
+            try { cursorFrames.push(Buffer.from(entry.frame, 'base64')); }
+            catch(e) {}
+        }
         const info = JSON.stringify({
             first: false,
             hash: this.checkpointHash,
             locator: this.checkpointLocator || null,
             seq: this.checkpointSeq,
+            cursorCount: cursorFrames.length,
             msgCount: this.messageLog.length,
         });
         this.sendControl(ws, 0x05, 0, info);
         ws._joinBuffering = true;
-        ws._joinBuffer = this.messageLog.map(m => m.frame);
+        ws._joinBuffer = cursorFrames.concat(this.messageLog.map(m => m.frame));
         ws._expectedHash = this.checkpointHash;
-        console.log(`[${this.id}] Served checkpoint hash=${this.checkpointHash} + ${ws._joinBuffer.length} msgs to viewId=${ws._viewId}`);
+        console.log(`[${this.id}] Served checkpoint hash=${this.checkpointHash} seq=${this.checkpointSeq} cursors=${cursorFrames.length} + ${this.messageLog.length} msgs to viewId=${ws._viewId}`);
         return true;
     }
 
@@ -649,7 +703,11 @@ const requestHandler = (req, res) => {
             try {
                 const obj = JSON.parse(Buffer.concat(chunks, total).toString());
                 const r = getRoom(roomId);
-                const ok = r.registerCheckpoint(obj.hash, obj.locator || null);
+                const ok = r.registerCheckpoint(
+                    obj.hash, obj.locator || null,
+                    typeof obj.seq === 'number' ? obj.seq : 0,
+                    obj.cursors || []
+                );
                 res.writeHead(ok ? 200 : 409, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
                     hash: r.checkpointHash, locator: r.checkpointLocator,
@@ -763,10 +821,10 @@ server.on('upgrade', (req, socket, head) => {
 
                 if (!ws._joining) {
                     // First client post-activation. Register the
-                    // checkpoint (one-shot) — this flushes any joiners
-                    // that were parked in waitingForCheckpoint.
+                    // initial checkpoint at seq 0 — this flushes any
+                    // joiners parked in waitingForCheckpoint.
                     if (clientHash && !room.checkpointHash) {
-                        room.registerCheckpoint(clientHash, clientLocator);
+                        room.registerCheckpoint(clientHash, clientLocator, 0, []);
                     }
                     return;
                 }
@@ -802,6 +860,48 @@ server.on('upgrade', (req, socket, head) => {
                     name: ws._name || null,
                     activeCount: room.activeClients.size,
                 });
+                return;
+            }
+
+            // ── 0x07: Save-rotation — rotate the room checkpoint ──
+            // Payload: JSON { hash, locator, seq, cursors? }
+            //   hash     — sha256 of the plaintext bytes just saved
+            //   locator  — URL late joiners fetch those bytes from
+            //   seq      — last broadcast seq the saving client had
+            //              processed when it started the save. Must be
+            //              strictly greater than the current
+            //              checkpointSeq; the relay rejects otherwise.
+            //   cursors  — optional; if the client doesn't provide
+            //              them, the relay uses its own live cursor
+            //              map (server-authoritative).
+            //
+            // Effect: registerCheckpoint replaces the tuple and prunes
+            // messageLog to seq' > seq. Already-connected peers keep
+            // their in-memory state. Future late joiners land on the
+            // new baseline.
+            if (type === 0x07) {
+                if (ws._joining) {
+                    console.log(`[${roomId}] 0x07 rejected — viewId=${viewId} not activated`);
+                    return;
+                }
+                if (buf.length <= 5) return;
+                let info;
+                try { info = JSON.parse(buf.slice(5).toString()); }
+                catch(e) {
+                    console.log(`[${roomId}] 0x07 rejected — bad JSON: ${e.message}`);
+                    return;
+                }
+                const hash = info.hash;
+                const locator = info.locator || null;
+                const atSeq = typeof info.seq === 'number' ? info.seq : null;
+                if (atSeq == null) {
+                    console.log(`[${roomId}] 0x07 rejected — seq required`);
+                    return;
+                }
+                const cursors = Array.isArray(info.cursors) && info.cursors.length
+                    ? info.cursors
+                    : room.snapshotCursors();
+                room.registerCheckpoint(hash, locator, atSeq, cursors);
                 return;
             }
 

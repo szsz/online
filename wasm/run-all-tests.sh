@@ -42,6 +42,7 @@ echo "Test output root: $TEST_OUTPUT_ROOT"
 # Each entry:  slug | script | human name | description | shots_dir_name
 TESTS=(
     "regression-snapshot-injection|test-regression-snapshot-injection.js|Regression: Snapshot Injection|deploy.sh HEAPU8 restore injection must be present in online.js — missing → warm visits re-run full init|none"
+    "regression-checkpoint-cursor-delete|test-regression-checkpoint-cursor-delete.js|Regression: Checkpoint Rotation + Cursor + Late-Join Delete|A inserts, B selects, A saves → checkpoint rotates with cursor snapshot, C joins and sees B's selection, B deletes and all three converge|shots-regression-checkpoint-cursor"
     "relay|test-relay.js|Relay Test|WebSocket relay message ordering and delivery|none"
     "2browser|test-cursor-debug.js|2-Browser Co-Edit|Two browsers co-editing with cursor sync|shots"
     "3browser|test-3browsers.js|3-Browser Co-Edit|Three browsers simultaneous co-editing|shots3"
