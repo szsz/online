@@ -1,0 +1,13 @@
+diff --git a/sw/source/uibase/shells/basesh.cxx b/sw/source/uibase/shells/basesh.cxx
+index 1bcfac0fb..9cebe6f66 100644
+--- a/sw/source/uibase/shells/basesh.cxx
++++ b/sw/source/uibase/shells/basesh.cxx
+@@ -3269,7 +3269,7 @@ void SwBaseShell::InsertTable( SfxRequest& _rRequest )
+             else
+             {
+                 aTableNameIn = SvxResId(STR_TABSTYLE_DEFAULT);
+-                pTAFormatIn.reset(new SwTableAutoFormat(rTableTable[0]));
++                if (!rTableTable.size()) { SAL_WARN("sw.ui", "InsertTable: empty autoformat table — inserting without style"); } else { pTAFormatIn.reset(new SwTableAutoFormat(rTableTable[0])); }
+             }
+ 
+             if ( pFlags )
