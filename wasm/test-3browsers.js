@@ -89,16 +89,12 @@ async function waitForAnyCharCount(pages, expected, timeout) {
         const up = await browser.newPage();
         await up.goto(BASE, { waitUntil: 'networkidle0' });
         let ROOM = 'test3-' + Date.now();
-        await up.evaluate(async (url, room, relayHttp) => {
+        await up.evaluate(async (url) => {
             const body = new Blob(['Hello World'], { type: 'application/octet-stream' });
             await fetch(url + '/wasm/test3.txt', { method: 'POST', body });
-            // Pre-seed relay so late joiners get this file immediately
-            await fetch(relayHttp + '/room/' + encodeURIComponent(room) + '/file', {
-                method: 'POST', body: new Blob(['Hello World']),
-            });
-        }, BASE, ROOM, RELAY_HTTP);
+        }, BASE);
         await up.close();
-        console.log('[setup] Uploaded "Hello World" (WOPI + relay)\n');
+        console.log('[setup] Uploaded "Hello World" to /wasm/ (first client will register relay checkpoint)\n');
         let relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
         let coolUrl = `${BASE}/browser/cool.html?WOPISrc=test3.txt&relay=${relay}&access_token=test`;
 

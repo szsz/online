@@ -5,6 +5,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-latejoin-copypaste';
 
@@ -30,15 +31,11 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     }
 
     try {
-        // Upload fresh doc
+        // Upload fresh doc (v2 encrypted upload)
         const docName = 'ljcp-' + Date.now() + '.docx';
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
-        await up.evaluate(async (name, a) => {
-            await fetch('/api/files/' + name, { method: 'POST', body: new Blob([new Uint8Array(a)]) });
-        }, docName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'))));
-        await up.close();
-        console.log('[setup] Uploaded ' + docName);
+        const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+        const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
+        console.log('[setup] Uploaded v2 ' + docName + ' as ' + fileId.substring(0,8) + '…');
 
         // ═══ Browser A: type + paste + save ═══
         console.log('\n=== Phase A: type, copy, paste, save ===');
@@ -46,21 +43,30 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         const cdpA = await pageA.createCDPSession();
         await cdpA.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
         await pageA.setViewport({ width: 1280, height: 900 });
-        await pageA.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+        await pageA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
-        // Wait for editor
+        // Wait for editor — require target fileId in frame URL so we
+        // don't latch onto the prewarm blank frame (whose statusbar shows
+        // template-text chars instead of the uploaded doc's content).
+        // In v2, the WOPISrc is the fileId (the server never sees the
+        // plaintext name).
         let frameA;
         for (let i = 0; i < 300; i++) {
             await sleep(500);
-            frameA = pageA.frames().find(f => f.url().includes('cool.html'));
+            frameA = pageA.frames().find(f =>
+                f.url().includes('cool.html') && f.url().includes(fileId));
             if (frameA) {
-                const wc = await frameA.evaluate(() =>
-                    document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-                if (/\d+\s+character/i.test(wc)) {
-                    const ws = await frameA.evaluate(() =>
-                        typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                    if (ws) break;
-                }
+                const state = await frameA.evaluate(() => {
+                    const wc = document.querySelector('#StateWordCount')?.textContent || '';
+                    return {
+                        wc,
+                        loadedDoc: window.__wasmLoadedDocName || null,
+                        ws: typeof globalThis.TheFakeWebSocket !== 'undefined',
+                    };
+                }).catch(() => null);
+                if (state && state.loadedDoc === fileId
+                    && /\d+\s+character/i.test(state.wc)
+                    && state.ws) break;
             }
         }
         if (!frameA) throw new Error('Editor A did not load');
@@ -149,26 +155,49 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         const ctxB = await browser.createBrowserContext();
         const pageB = await ctxB.newPage();
         await pageB.setViewport({ width: 1280, height: 900 });
-        await pageB.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+        await pageB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
         let frameB;
         for (let i = 0; i < 300; i++) {
             await sleep(500);
-            frameB = pageB.frames().find(f => f.url().includes('cool.html'));
+            // Match the iframe that actually loaded the TARGET doc.
+            //  - URL filter catches 1st-level mismatch (prewarm blank
+            //    frame with no target name)
+            //  - Title-bar (#document-name-input, set by wasm-loader on
+            //    switchdoc) catches 2nd-level: the prewarm iframe has
+            //    #switchdoc=<name> in its URL fragment, so URL match
+            //    is true, but the statusbar still shows the prewarm
+            //    blank's ~900 chars of accumulated template text until
+            //    the LO-side switch actually completes.
+            // In v2, WOPISrc is the fileId.
+            frameB = pageB.frames().find(f =>
+                f.url().includes('cool.html') && f.url().includes(fileId));
             if (frameB) {
-                const wc = await frameB.evaluate(() =>
-                    document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-                if (/\d+\s+character/i.test(wc)) {
-                    const ws = await frameB.evaluate(() =>
-                        typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                    if (ws) break;
-                }
+                const state = await frameB.evaluate(() => {
+                    const wc = document.querySelector('#StateWordCount')?.textContent || '';
+                    return {
+                        wc,
+                        loadedDoc: window.__wasmLoadedDocName || null,
+                        ws: typeof globalThis.TheFakeWebSocket !== 'undefined',
+                    };
+                }).catch(() => null);
+                if (state && state.loadedDoc === fileId
+                    && /\d+\s+character/i.test(state.wc)
+                    && state.ws) break;
             }
         }
         if (!frameB) throw new Error('Editor B did not load');
         await sleep(10000); // settle for message replay
 
-        const ccB = charCount(await getWc(frameB));
+        // Final convergence wait — A's late-save and B's replay can
+        // land up to ~60s apart on Azure (save RTT + upload + blob
+        // fetch + decrypt + LO apply chain).
+        let ccB = charCount(await getWc(frameB));
+        const convDeadline = Date.now() + 60000;
+        while (Math.abs(ccB - ccAfinal) > 5 && Date.now() < convDeadline) {
+            await sleep(500);
+            ccB = charCount(await getWc(frameB));
+        }
         await snap(pageB, 'B_after_join');
         console.log('  B after join: ' + ccB + ' chars (A had ' + ccAfinal + ')');
         check('B catches up to A (within ±5)', Math.abs(ccB - ccAfinal) <= 5,

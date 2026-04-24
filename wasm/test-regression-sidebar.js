@@ -10,6 +10,8 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-sidebar';
@@ -59,26 +61,19 @@ async function getSidebarState(page) {
     });
 
     try {
-        // Upload via the viewer's file-storage API
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
+        // Upload via v2 (encrypted)
         const bytes = fs.readFileSync(DOC_PATH);
-        await up.evaluate(async (n, a) => {
-            await fetch('/api/files/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([new Uint8Array(a)]),
-            });
-        }, DOC_NAME, Array.from(bytes));
-        await up.close();
-        log('Uploaded ' + DOC_NAME);
+        const upDoc = await uploadV2(VIEWER, DOC_NAME, bytes);
+        log('Uploaded ' + DOC_NAME + ' → ' + upDoc.fileId.substring(0,8) + '…');
 
         const page = await browser.newPage();
         await page.setCacheEnabled(false);
         await page.setViewport({ width: 1280, height: 900 });
+        await seedRecentFiles(page, [{ b64urlSecret: upDoc.b64urlSecret, fileId: upDoc.fileId, cachedName: DOC_NAME }]);
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         await page.waitForSelector('#files');
-        // Wait for the file list to populate
-        await page.waitForFunction(n => !!document.querySelector(`.file[data-name="${n}"]`),
-            {}, DOC_NAME);
+        // Wait for the file list to populate (v2 entries keyed by data-fileid)
+        await waitForSidebar(page, upDoc.fileId);
 
         await snap(page, 'initial');
         let s = await getSidebarState(page);
@@ -87,9 +82,7 @@ async function getSidebarState(page) {
         check('No docs-collapsed class initially', s.collapsedClass === false);
 
         // Click the file
-        await page.evaluate(n => {
-            document.querySelector(`.file[data-name="${n}"]`).click();
-        }, DOC_NAME);
+        await clickSidebarFile(page, upDoc.fileId);
         // Collapse should be immediate (synchronous in openFile)
         await sleep(200);
 

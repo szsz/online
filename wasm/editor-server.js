@@ -211,6 +211,7 @@ const WASM_LOADER_INJECT = `
   <div id="wasm-progress-bar"><div id="wasm-progress-bar-fill"></div></div>
   <div id="wasm-progress-detail"></div>
 </div>
+<script type="text/javascript" src="dict-loader.js"></script>
 <script type="text/javascript" src="wasm-loader.js"></script>
 <script type="text/javascript" src="relay-adapter.js"></script>
 `;
@@ -242,6 +243,13 @@ function serveCoolHtml(req, res) {
         html = html.split(key).join(val);
     }
 
+    // Strip the integrator branding hooks (branding.css + branding.js) —
+    // we don't theme the editor, so these would just 404 and spam the
+    // console. The dynamic device-{desktop,mobile,tablet}.css +
+    // branding-{…}.css loads in global.js are stripped at deploy time.
+    html = html.replace(/\s*<link rel="stylesheet" href="branding\.css" \/>/g, '');
+    html = html.replace(/\s*<script src="branding\.js"><\/script>/g, '');
+
     // Inject the wasm-loader block once. The anchor is the EMSCRIPTEN hidden
     // input that the build reliably emits; if it's missing we prepend before
     // </body> as a fallback. Skip if the build already embeds wasm-loader.
@@ -265,6 +273,27 @@ app.post('/browser/cool.html', serveCoolHtml);
 // final 404 handler which returns plain text (not HTML).
 app.use('/browser', express.static(BROWSER_DIST, {
     maxAge: '1h',
+}));
+
+// ── Static: /dicts/<lang>.tar.gz + /dicts/manifest.json ──────────
+// Lazy-loaded spellcheck dictionaries. dict-loader.js on the client
+// resolves /dicts/ relative to its own script URL, which lands here
+// on the editor origin. Cached aggressively — each bundle is effectively
+// immutable (filename carries no hash, but the server-side manifest
+// can be refreshed on a rebuild).
+const DICTS_DIR = fs.existsSync(path.join(__dirname, 'dicts'))
+    ? path.join(__dirname, 'dicts')
+    : path.join(__dirname, '..', 'dicts');
+app.use('/dicts', express.static(DICTS_DIR, {
+    maxAge: '7d',
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.tar.gz')) {
+            res.setHeader('Content-Type', 'application/gzip');
+        } else if (filePath.endsWith('.json')) {
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Cache-Control', 'no-cache'); // manifest may rotate
+        }
+    },
 }));
 
 // 404 for anything under /browser/ that didn't match a file above.

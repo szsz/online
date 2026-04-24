@@ -18,6 +18,8 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx-coedit-viewer';
@@ -122,17 +124,11 @@ async function clickSlideCenter(fr) {
     const pageErrors = { A: [], B: [] };
 
     try {
-        // Upload to viewer
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
+        // Upload to viewer (v2 encrypted)
         const bytes = fs.readFileSync(DOC_PATH);
-        await up.evaluate(async (n, a) => {
-            await fetch('/api/files/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([new Uint8Array(a)]),
-            });
-        }, DOC_NAME, Array.from(bytes));
-        await up.close();
-        log('Uploaded ' + DOC_NAME + ' (' + (bytes.length/1024/1024).toFixed(1) + 'MB)');
+        const upDoc = await uploadV2(VIEWER, DOC_NAME, bytes);
+        log('Uploaded ' + DOC_NAME + ' (' + (bytes.length/1024/1024).toFixed(1) + 'MB) → ' + upDoc.fileId.substring(0,8) + '…');
+        const recentList = [{ b64urlSecret: upDoc.b64urlSecret, fileId: upDoc.fileId, cachedName: DOC_NAME }];
 
         // ─── Browser A ───
         log('\n--- Browser A: open via viewer ---');
@@ -141,6 +137,7 @@ async function clickSlideCenter(fr) {
         await pageA.setViewport({ width: 1280, height: 900 });
         pageA.on('pageerror', e => pageErrors.A.push(e.message.substring(0, 200)));
 
+        await seedRecentFiles(pageA, recentList);
         await pageA.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
 
         // Wait prewarm
@@ -153,12 +150,9 @@ async function clickSlideCenter(fr) {
         }
         log('A: prewarm done');
 
-        // Click the pptx
-        await pageA.evaluate(n => {
-            const el = [...document.querySelectorAll('.file')].find(e => e.dataset.name === n);
-            if (!el) throw new Error('File not found: ' + n);
-            el.click();
-        }, DOC_NAME);
+        // Click the pptx (sidebar entries are keyed by data-fileid in v2)
+        await waitForSidebar(pageA, upDoc.fileId);
+        await clickSidebarFile(pageA, upDoc.fileId);
         log('A: clicked file (cold reload for impress)');
 
         const frA = await waitImpress(pageA, 90000);
@@ -178,6 +172,7 @@ async function clickSlideCenter(fr) {
         await pageB.setViewport({ width: 1280, height: 900 });
         pageB.on('pageerror', e => pageErrors.B.push(e.message.substring(0, 200)));
 
+        await seedRecentFiles(pageB, recentList);
         await pageB.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
 
         // B also needs prewarm
@@ -190,11 +185,8 @@ async function clickSlideCenter(fr) {
         }
         log('B: prewarm done');
 
-        await pageB.evaluate(n => {
-            const el = [...document.querySelectorAll('.file')].find(e => e.dataset.name === n);
-            if (!el) throw new Error('File not found: ' + n);
-            el.click();
-        }, DOC_NAME);
+        await waitForSidebar(pageB, upDoc.fileId);
+        await clickSidebarFile(pageB, upDoc.fileId);
         log('B: clicked file');
 
         const frB = await waitImpress(pageB, 90000);

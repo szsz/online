@@ -37,6 +37,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep, editorHelpers } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = 180000;
@@ -74,11 +75,16 @@ async function getCharCount(page) {
     } catch(e) { return -1; }
 }
 
-async function waitForDocLoaded(page, timeoutMs) {
+async function waitForDocLoaded(page, timeoutMs, expected) {
+    // The statusbar can briefly show the prewarm doc's char count (blank.docx
+    // parses to hundreds of chars of template boilerplate on some LO builds)
+    // before the hot-switch to the target file completes. If `expected` is
+    // provided, wait for EXACTLY that count so we don't accidentally read
+    // the intermediate state. Otherwise, fall back to "any count >= 1".
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
         const c = await getCharCount(page);
-        if (c >= 1) return c;
+        if (expected != null ? c === expected : c >= 1) return c;
         await sleep(500);
     }
     return -1;
@@ -95,11 +101,18 @@ async function typeViaKeyboard(page, label, chars) {
     await sleep(2000);
 }
 
-async function openViewerInContext(browser, label) {
+async function openViewerInContext(browser, label, recentList) {
     const ctx = await browser.createBrowserContext();
     const page = await ctx.newPage();
     await page.setViewport({ width: 1280, height: 900 });
     page.on('pageerror', e => console.log(`  [${label}/PAGEERR] ${e.message.substring(0, 200)}`));
+    // Seed rf_v1 so the sidebar renders the test files (v2 sidebar is
+    // purely client-side; it only shows files this browser has seen).
+    if (recentList) {
+        await page.evaluateOnNewDocument((list) => {
+            localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
+        }, recentList);
+    }
     await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: 30000 });
     // Wait for prewarm to finish
     for (let i = 0; i < 240; i++) {
@@ -115,12 +128,13 @@ async function openViewerInContext(browser, label) {
     throw new Error(`[${label}] Prewarm did not complete`);
 }
 
-async function openFileInViewer(page, fileName) {
-    await page.evaluate(n => {
-        const el = [...document.querySelectorAll('.file')].find(e => e.dataset.name === n);
-        if (!el) throw new Error('File not found in list: ' + n);
+async function openFileInViewer(page, fileId) {
+    // v2 sidebar: entries are keyed by fileId in data-fileid.
+    await page.evaluate(id => {
+        const el = document.querySelector(`.file[data-fileid="${id}"]`);
+        if (!el) throw new Error('File not found in list: ' + id);
         el.click();
-    }, fileName);
+    }, fileId);
 }
 
 (async () => {
@@ -143,39 +157,39 @@ async function openFileInViewer(page, fileName) {
     const DOC2_INIT_CHARS = DOC2_CONTENT.length;
 
     try {
-        // Upload via viewer's file-storage API
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
-        for (const [name, content] of [[DOC1, DOC1_CONTENT], [DOC2, DOC2_CONTENT]]) {
-            await up.evaluate(async (n, c) => {
-                await fetch('/api/files/' + encodeURIComponent(n), {
-                    method: 'POST', body: new Blob([c], { type: 'application/octet-stream' }),
-                });
-            }, name, content);
-            log('Uploaded ' + name + ' (' + content.length + ' chars: "' + content + '")');
-        }
-        await up.close();
+        // Upload via v2 (encrypted). Each returns {b64urlSecret, fileId}.
+        const up1 = await uploadV2(VIEWER, DOC1, Buffer.from(DOC1_CONTENT, 'utf8'));
+        const up2 = await uploadV2(VIEWER, DOC2, Buffer.from(DOC2_CONTENT, 'utf8'));
+        log(`Uploaded ${DOC1} (${DOC1_CONTENT.length} chars) → ${up1.fileId.substring(0,8)}…`);
+        log(`Uploaded ${DOC2} (${DOC2_CONTENT.length} chars) → ${up2.fileId.substring(0,8)}…`);
+
+        const recentList = [
+            { secret: up1.b64urlSecret, fileId: up1.fileId, cachedName: DOC1, lastVisited: new Date().toISOString() },
+            { secret: up2.b64urlSecret, fileId: up2.fileId, cachedName: DOC2, lastVisited: new Date(Date.now()-1).toISOString() },
+        ];
 
         // ---- Open browser A on doc1, then browser B on doc1 ----
         log('\n--- Phase 1: A and B both open ' + DOC1 + ' ---');
-        const A = await openViewerInContext(browser, 'A');
-        const B = await openViewerInContext(browser, 'B');
+        const A = await openViewerInContext(browser, 'A', recentList);
+        const B = await openViewerInContext(browser, 'B', recentList);
 
-        // Wait for the file lists to populate
+        // Wait for the sidebar to render (seeded via rf_v1).
         for (const { page, label } of [{ page: A.page, label: 'A' }, { page: B.page, label: 'B' }]) {
-            await page.waitForFunction(n => !!document.querySelector(`.file[data-name="${n}"]`),
-                { timeout: 15000 }, DOC1);
+            await page.waitForFunction(id => !!document.querySelector(`.file[data-fileid="${id}"]`),
+                { timeout: 30000 }, up1.fileId);
         }
 
-        await openFileInViewer(A.page, DOC1);
+        await openFileInViewer(A.page, up1.fileId);
         log('A clicked ' + DOC1);
         await sleep(2000);
-        await openFileInViewer(B.page, DOC1);
+        await openFileInViewer(B.page, up1.fileId);
         log('B clicked ' + DOC1);
 
-        // Wait for both to load doc1
-        const aChars1 = await waitForDocLoaded(A.page, 60000);
-        const bChars1 = await waitForDocLoaded(B.page, 60000);
+        // Wait for both to load doc1 — explicitly for the expected
+        // char count (3 = "one") so we don't read the prewarm blank's
+        // intermediate statusbar before the hot-switch completes.
+        const aChars1 = await waitForDocLoaded(A.page, 120000, DOC1_INIT_CHARS);
+        const bChars1 = await waitForDocLoaded(B.page, 120000, DOC1_INIT_CHARS);
         log(`After doc1 open: A=${aChars1} B=${bChars1} (expected ${DOC1_INIT_CHARS})`);
         check(`A loaded ${DOC1} (${DOC1_INIT_CHARS} chars)`,
               aChars1 === DOC1_INIT_CHARS, 'A=' + aChars1);
@@ -197,7 +211,8 @@ async function openFileInViewer(page, fileName) {
         log('\n--- Phase 2: hot-switch both browsers to ' + DOC2 + ' ---');
         async function waitForDoc2(page, label) {
             const t0 = Date.now();
-            while (Date.now() - t0 < 60000) {
+            // 120s: same budget as doc1 cross-type.
+            while (Date.now() - t0 < 120000) {
                 const c = await getCharCount(page);
                 if (c === DOC2_INIT_CHARS) { log(`[${label}] doc2 loaded in ${((Date.now()-t0)/1000).toFixed(1)}s`); return c; }
                 await sleep(500);
@@ -249,17 +264,19 @@ async function openFileInViewer(page, fileName) {
         await instrumentSwitchVisible(A.page, 'A');
         await instrumentSwitchVisible(B.page, 'B');
 
-        await openFileInViewer(A.page, DOC2);
-        const a2 = await waitForSwitchVisible(A.page, 'A', DOC2, 30000);
+        await openFileInViewer(A.page, up2.fileId);
+        // WasmSwitchVisible's filename is the WOPISrc, which in v2 is the
+        // fileId (the editor never sees the plaintext name).
+        const a2 = await waitForSwitchVisible(A.page, 'A', up2.fileId, 30000);
         check(`A switched to ${DOC2} (canvas changed)`, a2 >= 0, 'a2=' + a2 + 'ms');
         // Let A settle in doc2 (registers as active peer in the new room).
         await sleep(3000);
-        await openFileInViewer(B.page, DOC2);
+        await openFileInViewer(B.page, up2.fileId);
         // B's canvas-change detection is unreliable in headless co-edit
         // (concurrent remote-peer state messages can keep the canvas busy).
         // Don't assert on it — Phase 3 below proves B switched if A receives
         // B's typing.
-        const b2 = await waitForSwitchVisible(B.page, 'B', DOC2, 30000);
+        const b2 = await waitForSwitchVisible(B.page, 'B', up2.fileId, 30000);
         log(`B canvas-switch detected: ${b2 >= 0 ? b2 + 'ms' : 'no (continuing — Phase 3 is the real check)'}`);
         await snap(A.page, 'A_doc2_loaded');
         await snap(B.page, 'B_doc2_loaded');

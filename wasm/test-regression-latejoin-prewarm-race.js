@@ -9,6 +9,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-latejoin-prewarm-race';
 
@@ -30,17 +31,11 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await page.screenshot({ path: `${SHOTS}/${String(stepNum).padStart(2,'0')}_${name}.png` });
     }
 
-    // Upload a doc with known content
+    // Upload a doc with known content via v2 (encrypted)
     const docName = 'ljrace-' + Date.now() + '.docx';
-    const { browser: bUp, cleanup: cUp } = await launch();
-    const pUp = await bUp.newPage();
-    await pUp.goto(VIEWER + '/');
-    await pUp.evaluate(async (name, a) => {
-        await fetch('/api/files/' + name, { method: 'POST', body: new Blob([new Uint8Array(a)]) });
-    }, docName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'))));
-    await pUp.close();
-    await cUp();
-    console.log('[setup] Uploaded ' + docName);
+    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
+    console.log('[setup] Uploaded v2 ' + docName + ' → ' + fileId.substring(0,8) + '…');
 
     // Phase 1: A opens, types, saves
     console.log('\n=== Phase 1: A types and saves ===');
@@ -49,7 +44,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const cdpA = await pA.createCDPSession();
     await cdpA.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
     await pA.setViewport({ width: 1280, height: 900 });
-    await pA.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fA;
     for (let i = 0; i < 300; i++) {
@@ -94,7 +89,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const { browser: bB, cleanup: cB } = await launch();
     const pB = await bB.newPage();
     await pB.setViewport({ width: 1280, height: 900 });
-    await pB.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fB;
     for (let i = 0; i < 300; i++) {
@@ -123,11 +118,11 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
 
     // Wait and check file storage wasn't corrupted
     await sleep(10000);
-    const storedSize = await pB.evaluate(async (name) => {
-        const r = await fetch('/api/files/' + encodeURIComponent(name));
+    const storedSize = await pB.evaluate(async (id) => {
+        const r = await fetch('/api/v2/file/' + id);
         if (!r.ok) return -1;
-        return (await r.arrayBuffer()).byteLength;
-    }, docName);
+        return (await r.json()).size;
+    }, fileId);
     check('Stored file not corrupted (>2000B)', storedSize > 2000, 'size=' + storedSize);
 
     // Open C to verify file is still intact
@@ -138,7 +133,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const { browser: bC, cleanup: cC } = await launch();
     const pC = await bC.newPage();
     await pC.setViewport({ width: 1280, height: 900 });
-    await pC.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pC.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fC;
     for (let i = 0; i < 300; i++) {

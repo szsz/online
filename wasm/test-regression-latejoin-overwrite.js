@@ -22,6 +22,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-latejoin-overwrite';
 
@@ -44,17 +45,11 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await page.screenshot({ path: `${SHOTS}/${f}` });
     }
 
-    // Upload fresh doc
+    // Upload fresh doc via v2 (encrypted)
     const docName = 'ljover-' + Date.now() + '.docx';
-    const { browser: browserUp, cleanup: cleanupUp } = await launch();
-    const up = await browserUp.newPage();
-    await up.goto(VIEWER + '/');
-    await up.evaluate(async (name, a) => {
-        await fetch('/api/files/' + name, { method: 'POST', body: new Blob([new Uint8Array(a)]) });
-    }, docName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'))));
-    await up.close();
-    await cleanupUp();
-    console.log('[setup] Uploaded ' + docName);
+    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
+    console.log('[setup] Uploaded v2 ' + docName + ' → ' + fileId.substring(0,8) + '…');
 
     // Helper: open the doc in a fresh browser, wait for editor, return helpers
     async function openDoc(label) {
@@ -63,7 +58,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         const cdp = await page.createCDPSession();
         await cdp.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
         await page.setViewport({ width: 1280, height: 900 });
-        await page.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+        await page.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
         let frame;
         for (let i = 0; i < 300; i++) {

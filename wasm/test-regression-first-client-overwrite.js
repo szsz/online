@@ -18,6 +18,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-first-client-overwrite';
 
@@ -40,34 +41,28 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     }
 
     const docName = 'fc-overwrite-' + Date.now() + '.docx';
-    const { browser: bUp, cleanup: cUp } = await launch();
-    const pUp = await bUp.newPage();
-    await pUp.goto(VIEWER + '/');
-    await pUp.evaluate(async (name, a) => {
-        await fetch('/api/files/' + name, { method: 'POST', body: new Blob([new Uint8Array(a)]) });
-    }, docName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'))));
-    await pUp.close();
-    await cUp();
-    console.log('[setup] Uploaded ' + docName + ' (new.docx = ~19 chars)');
+    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
+    console.log('[setup] Uploaded v2 ' + docName + ' as ' + fileId.substring(0,8) + '…');
 
-    // Check initial file size
-    const { browser: bCheck, cleanup: cCheck } = await launch();
-    const pCheck = await bCheck.newPage();
-    await pCheck.goto(VIEWER + '/');
-    const initialSize = await pCheck.evaluate(async (name) => {
-        const r = await fetch('/api/files/' + encodeURIComponent(name));
-        return r.ok ? (await r.arrayBuffer()).byteLength : -1;
-    }, docName);
-    console.log('  Initial file size: ' + initialSize + ' bytes');
-    await pCheck.close();
-    await cCheck();
+    // Check initial stored ciphertext size via v2 endpoint. (The file
+    // is encrypted at rest, so the server-reported size is plaintext +
+    // 28 bytes for the AES-GCM IV + tag.)
+    async function getStoredSize() {
+        const r = await fetch(VIEWER + '/api/v2/file/' + fileId);
+        if (!r.ok) return -1;
+        const j = await r.json();
+        return j.size;
+    }
+    const initialSize = await getStoredSize();
+    console.log('  Initial stored (ciphertext) size: ' + initialSize + ' bytes');
 
     // ═══ Phase 1: Browser A opens (prewarm → hot-switch) ═══
     console.log('\n=== Phase 1: A opens doc ===');
     const { browser: bA, cleanup: cA } = await launch();
     const pA = await bA.newPage();
     await pA.setViewport({ width: 1280, height: 900 });
-    await pA.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fA;
     for (let i = 0; i < 300; i++) {
@@ -93,10 +88,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     check('A sees content (19 chars)', ccA === 19, 'cc=' + ccA);
 
     // Check: did the activation checkpoint corrupt the stored file?
-    const sizeAfterA = await pA.evaluate(async (name) => {
-        const r = await fetch('/api/files/' + encodeURIComponent(name));
-        return r.ok ? (await r.arrayBuffer()).byteLength : -1;
-    }, docName);
+    const sizeAfterA = await getStoredSize();
     console.log('  File size after A activation: ' + sizeAfterA + ' (was ' + initialSize + ')');
     // The file should be similar size (±20% tolerance for DOCX round-trip)
     const sizeRatio = sizeAfterA / initialSize;
@@ -112,7 +104,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const { browser: bB, cleanup: cB } = await launch();
     const pB = await bB.newPage();
     await pB.setViewport({ width: 1280, height: 900 });
-    await pB.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fB;
     for (let i = 0; i < 300; i++) {
@@ -139,10 +131,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     check('B is NOT blank', ccB > 10, 'cc=' + ccB);
 
     // Final file size check
-    const finalSize = await pB.evaluate(async (name) => {
-        const r = await fetch('/api/files/' + encodeURIComponent(name));
-        return r.ok ? (await r.arrayBuffer()).byteLength : -1;
-    }, docName);
+    const finalSize = await getStoredSize();
     console.log('  Final file size: ' + finalSize + ' bytes');
     check('File intact after B', finalSize > initialSize * 0.5,
         'size=' + finalSize + ' initial=' + initialSize);

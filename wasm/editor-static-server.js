@@ -43,7 +43,7 @@ fs.mkdirSync(DOCS, { recursive: true });
 // <name>.<hash>.js symlinks. cool.html is rewritten on-the-fly to
 // reference the hashed filenames. The hashed files are served with
 // immutable cache headers so browsers never use stale code.
-const HASHED_JS = ['wasm-loader.js', 'relay-adapter.js'];
+const HASHED_JS = ['wasm-loader.js', 'relay-adapter.js', 'dict-loader.js'];
 const jsHashMap = {};  // 'wasm-loader.js' → 'wasm-loader.a1b2c3d4.js'
 
 function hashJsFiles() {
@@ -109,6 +109,44 @@ process.on('SIGHUP', () => {
     hashJsFiles();
     refreshBrotli();
 });
+
+// Matches wasm/editor-server.js WASM_LOADER_INJECT — the stock cool.html from
+// the LO build doesn't reference wasm-loader.js or relay-adapter.js, so we
+// splice them in on the fly. Also adds the loading-overlay markup the viewer
+// shield fade-out expects.
+const WASM_LOADER_INJECT = `
+<style id="wasm-loading-style">
+  #wasm-loading-overlay {
+    position: fixed; inset: 0; background: #f5f5f5; z-index: 999999;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; color: #333;
+  }
+  #wasm-spinner {
+    width: 64px; height: 64px; border: 6px solid #ddd; border-top-color: #4a90e2;
+    border-radius: 50%; animation: wasmspin 1s linear infinite;
+    margin-bottom: 16px;
+  }
+  @keyframes wasmspin { to { transform: rotate(360deg); } }
+  #wasm-progress-label { font-size: 15px; font-weight: 500; margin-bottom: 8px; }
+  #wasm-progress-bar {
+    width: 300px; height: 12px; background: #e0e0e0; border-radius: 6px; overflow: hidden; margin-bottom: 6px;
+  }
+  #wasm-progress-bar-fill {
+    height: 100%; background: linear-gradient(90deg, #4a90e2, #357abd); width: 0%;
+    transition: width 0.3s ease;
+  }
+  #wasm-progress-detail { font-size: 12px; color: #666; }
+</style>
+<div id="wasm-loading-overlay">
+  <div id="wasm-spinner"></div>
+  <div id="wasm-progress-label">Loading editor…</div>
+  <div id="wasm-progress-bar"><div id="wasm-progress-bar-fill"></div></div>
+  <div id="wasm-progress-detail"></div>
+</div>
+<script type="text/javascript" src="dict-loader.js"></script>
+<script type="text/javascript" src="wasm-loader.js"></script>
+<script type="text/javascript" src="relay-adapter.js"></script>
+`;
 
 const MIME = {
     '.html': 'text/html',
@@ -245,12 +283,27 @@ function handler(req, res) {
         }
     }
 
-    // cool.html — rewrite JS references to content-hashed filenames.
-    // This ensures browsers always load the correct version after a deploy.
+    // cool.html — inject the wasm-loader + relay-adapter blocks (the stock
+    // COOL build doesn't reference them), strip the integrator branding
+    // hooks (we don't theme the editor; these would 404 and spam the
+    // console), then rewrite JS references to the content-hashed filenames
+    // so browsers always load the correct version after a deploy.
     if (pathname.endsWith('/cool.html')) {
         const filepath = path.join(PUB, pathname);
         if (fs.existsSync(filepath)) {
             let html = fs.readFileSync(filepath, 'utf8');
+            if (!html.includes('wasm-loader.js')) {
+                const anchor = '<input type="hidden" id="init-mobile-app-os-type" value="EMSCRIPTEN" />';
+                if (html.includes(anchor)) {
+                    html = html.replace(anchor, anchor + '\n' + WASM_LOADER_INJECT);
+                } else {
+                    html = html.replace('</body>', WASM_LOADER_INJECT + '</body>');
+                }
+            }
+            // Strip the integrator branding hooks. They reference
+            // branding.css / branding.js which we don't ship.
+            html = html.replace(/\s*<link rel="stylesheet" href="branding\.css" \/>/g, '');
+            html = html.replace(/\s*<script src="branding\.js"><\/script>/g, '');
             for (const [orig, hashed] of Object.entries(jsHashMap)) {
                 html = html.replace(new RegExp(orig.replace('.', '\\.'), 'g'), hashed);
             }

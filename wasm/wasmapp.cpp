@@ -170,7 +170,11 @@ extern "C"
 EMSCRIPTEN_KEEPALIVE
 int create_remote_client()
 {
-    assert(coolwsd_server_socket_fd != -1);
+    if (coolwsd_server_socket_fd == -1)
+    {
+        std::cerr << "create_remote_client: server socket not ready, returning -1" << std::endl;
+        return -1;
+    }
 
     int clientId;
     {

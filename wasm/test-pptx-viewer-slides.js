@@ -8,6 +8,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const EDITOR = env.EDITOR_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-pptx-viewer-slides';
@@ -28,19 +29,11 @@ function check(label, cond, ev) {
         await page.screenshot({ path: `${SHOTS}/${String(stepNum).padStart(2,'0')}_${name}.png` });
     }
 
-    // Upload a real pptx file
+    // Upload a real pptx file (v2 encrypted)
     const pptxName = 'slide-test.pptx';
-    const { browser: bUp, cleanup: cUp } = await launch();
-    const pUp = await bUp.newPage();
-    await pUp.goto(VIEWER + '/');
-    await pUp.evaluate(async (name, a) => {
-        await fetch('/api/files/' + encodeURIComponent(name), {
-            method: 'POST', body: new Blob([new Uint8Array(a)])
-        });
-    }, pptxName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'rare-fonts.pptx'))));
-    await pUp.close();
-    await cUp();
-    console.log('[setup] Uploaded ' + pptxName);
+    const pptxBytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'rare-fonts.pptx'));
+    const upPptx = await uploadV2(VIEWER, pptxName, pptxBytes);
+    console.log('[setup] Uploaded v2 ' + pptxName + ' → ' + upPptx.fileId.substring(0,8) + '…');
 
     // Open via viewer
     console.log('\n=== Opening pptx via viewer ===');
@@ -48,7 +41,7 @@ function check(label, cond, ev) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
     const t0 = Date.now();
-    await page.goto(VIEWER + '/#file=' + encodeURIComponent(pptxName), { waitUntil: 'domcontentloaded' });
+    await page.goto(VIEWER + '/#file=' + upPptx.b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     // Wait for Impress to load — check multiple indicators
     let editorFrame;

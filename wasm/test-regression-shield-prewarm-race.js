@@ -18,6 +18,8 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-shield-prewarm-race';
@@ -81,17 +83,11 @@ async function stopShieldSampler(page) {
     });
 
     try {
-        // Upload fixture
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
+        // Upload fixture via v2 (encrypted)
         const bytes = fs.readFileSync(FIXTURE);
-        await up.evaluate(async (n, a) => {
-            await fetch('/api/files/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([new Uint8Array(a)]),
-            });
-        }, DOC_NAME, Array.from(bytes));
-        await up.close();
-        log(`Uploaded ${DOC_NAME}`);
+        const up = await uploadV2(VIEWER, DOC_NAME, bytes);
+        log(`Uploaded ${DOC_NAME} → ${up.fileId.substring(0,8)}…`);
+        const recentList = [{ b64urlSecret: up.b64urlSecret, fileId: up.fileId, cachedName: DOC_NAME }];
 
         // ── Case 1: deep-link load /#file=X — shield must stay up
         // continuously from page load until WasmDocReady.
@@ -99,7 +95,7 @@ async function stopShieldSampler(page) {
         const p1 = await browser.newPage();
         await p1.setCacheEnabled(false);
         await p1.setViewport({ width: 1280, height: 900 });
-        await p1.goto(VIEWER + '/#file=' + encodeURIComponent(DOC_NAME),
+        await p1.goto(VIEWER + '/#file=' + up.b64urlSecret,
             { waitUntil: 'domcontentloaded' });
         await startShieldSampler(p1);
 
@@ -148,10 +144,9 @@ async function stopShieldSampler(page) {
         const p2 = await browser.newPage();
         await p2.setCacheEnabled(false);
         await p2.setViewport({ width: 1280, height: 900 });
+        await seedRecentFiles(p2, recentList);
         await p2.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
-        await p2.waitForFunction(n =>
-            !!document.querySelector(`.file[data-name="${n}"]`),
-            { timeout: 15000 }, DOC_NAME);
+        await waitForSidebar(p2, up.fileId, 15000);
         // Wait for prewarm to be NEARLY done (iframe loaded cool.html and
         // started initializing) but click before it posts Initialized.
         // We approximate this by clicking a few seconds after page load —
@@ -161,10 +156,12 @@ async function stopShieldSampler(page) {
         // hold whether or not the race fires.
         await sleep(1000);
         await startShieldSampler(p2);
-        await p2.evaluate(n => document.querySelector(`.file[data-name="${n}"]`).click(),
-            DOC_NAME);
+        await clickSidebarFile(p2, up.fileId);
 
-        const dropDeadline2 = Date.now() + 120000;
+        // 180s: click-during-prewarm forces a cold-reload of the target
+        // iframe, which on Azure is 40-90s for WASM fetch+compile+LO+doc.
+        // 120s was tight; 180s matches our Pre-Warm budget.
+        const dropDeadline2 = Date.now() + 180000;
         let shieldDropped2 = false;
         while (Date.now() < dropDeadline2) {
             const visible = await p2.evaluate(() => {

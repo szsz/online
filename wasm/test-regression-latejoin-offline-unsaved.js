@@ -12,6 +12,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-latejoin-offline-unsaved';
 
@@ -34,22 +35,16 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     }
 
     const docName = 'ljoffline-' + Date.now() + '.docx';
-    const { browser: bUp, cleanup: cUp } = await launch();
-    const pUp = await bUp.newPage();
-    await pUp.goto(VIEWER + '/');
-    await pUp.evaluate(async (name, a) => {
-        await fetch('/api/files/' + name, { method: 'POST', body: new Blob([new Uint8Array(a)]) });
-    }, docName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'))));
-    await pUp.close();
-    await cUp();
-    console.log('[setup] Uploaded ' + docName + ' (initial ~19 chars)');
+    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
+    console.log('[setup] Uploaded v2 ' + docName + ' (initial ~19 chars) → ' + fileId.substring(0,8) + '…');
 
     // ═══ Phase 1: A opens, types, does NOT save, then CLOSES ═══
     console.log('\n=== Phase 1: A opens, types (NO save), closes ===');
     const { browser: bA, cleanup: cA } = await launch();
     const pA = await bA.newPage();
     await pA.setViewport({ width: 1280, height: 900 });
-    await pA.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fA;
     for (let i = 0; i < 300; i++) {
@@ -99,7 +94,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const { browser: bB, cleanup: cB } = await launch();
     const pB = await bB.newPage();
     await pB.setViewport({ width: 1280, height: 900 });
-    await pB.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fB;
     for (let i = 0; i < 300; i++) {
@@ -129,13 +124,14 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     check('B is NOT blank/initial (>25 chars)', ccB0 > 25,
         'B=' + ccB0 + ' (initial was ~19)');
 
-    // Check stored file
-    const storedSize = await pB.evaluate(async (name) => {
-        const r = await fetch('/api/files/' + encodeURIComponent(name));
+    // Check stored (encrypted) file size via v2 endpoint. (Reported size
+    // is ciphertext: plaintext + 28B AES-GCM IV + tag.)
+    const storedSize = await pB.evaluate(async (id) => {
+        const r = await fetch('/api/v2/file/' + id);
         if (!r.ok) return -1;
-        return (await r.arrayBuffer()).byteLength;
-    }, docName);
-    console.log('  Stored file size: ' + storedSize + ' bytes');
+        return (await r.json()).size;
+    }, fileId);
+    console.log('  Stored file (ciphertext) size: ' + storedSize + ' bytes');
 
     await cB();
     console.log('\n' + (allPassed ? '✓ ALL PASSED' : '✗ SOME FAILED'));

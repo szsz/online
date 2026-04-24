@@ -43,6 +43,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 
 const VIEWER     = env.FILE_STORAGE_URL;
 const SHOT_DIR   = '/tmp/static-deploy/public/shots-stress-multidoc';
@@ -329,6 +330,13 @@ async function openViewer(browser, b) {
         stats.pageErrors++;
         logB(b, `PAGEERROR: ${e.message.substring(0, 200)}`);
     });
+    // Seed rf_v1 so every browser sees the uploaded fixtures in its sidebar
+    // without depending on server-side listing (v2 sidebar is pure client-side).
+    if (global.__STRESS_RECENT_LIST__) {
+        await b.page.evaluateOnNewDocument((list) => {
+            localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
+        }, global.__STRESS_RECENT_LIST__);
+    }
     await b.page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await installDocReadyListeners(b.page);
 
@@ -347,10 +355,12 @@ async function openViewer(browser, b) {
 }
 
 async function openDoc(b, fixture) {
-    // Wait for the file element to appear in the viewer's list.
-    await b.page.waitForFunction(n =>
-        !!document.querySelector(`.file[data-name="${n}"]`),
-        { timeout: 30000 }, fixture.name);
+    // Wait for the file element to appear in the viewer's list (v2
+    // sidebar is keyed by data-fileid since the plaintext name never
+    // reaches the server).
+    await b.page.waitForFunction(id =>
+        !!document.querySelector(`.file[data-fileid="${id}"]`),
+        { timeout: 30000 }, fixture.fileId);
     // Snapshot the iframe canvas BEFORE clicking so we can detect when
     // the new doc has rendered (more reliable than wasm-loader internals
     // for hot-switches between similar-looking docs).
@@ -365,9 +375,9 @@ async function openDoc(b, fixture) {
         }).catch(() => '');
     } catch (e) {}
     b._preOpenCanvas = preCanvas;
-    await b.page.evaluate(n => {
-        document.querySelector(`.file[data-name="${n}"]`).click();
-    }, fixture.name);
+    await b.page.evaluate(id => {
+        document.querySelector(`.file[data-fileid="${id}"]`).click();
+    }, fixture.fileId);
     // Give the viewer's openFile() time to fetch + post the RelaySwitchRoom
     // and update iframe.src — the hot-switch path resets
     // __wasmPrewarmReady to false inside the iframe's hashchange handler.
@@ -645,19 +655,22 @@ async function browserLoop(b, browser) {
                '--ignore-certificate-errors', '--enable-features=SharedArrayBuffer'],
     });
 
-    // Upload all 6 documents to the viewer using a single setup page.
-    const up = await browser.newPage();
-    await up.goto(VIEWER + '/');
+    // Upload all documents via v2 (encrypted). Each FIXTURES entry gets
+    // its own { fileId, b64urlSecret } used by the sidebar click paths.
     for (const f of FIXTURES) {
         const bytes = fs.readFileSync(path.join(FIXTURES_DIR, f.src));
-        await up.evaluate(async (n, arr) => {
-            await fetch('/api/files/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([new Uint8Array(arr)]),
-            });
-        }, f.name, Array.from(bytes));
-        log(`uploaded ${f.name} (${(bytes.length/1024).toFixed(0)}KB ${f.type})`);
+        const upF = await uploadV2(VIEWER, f.name, bytes);
+        f.fileId = upF.fileId;
+        f.b64urlSecret = upF.b64urlSecret;
+        log(`uploaded ${f.name} (${(bytes.length/1024).toFixed(0)}KB ${f.type}) → ${upF.fileId.substring(0,8)}…`);
     }
-    await up.close();
+    // Build the rf_v1 seed list shared by every browser below. Stash it on
+    // globalThis so openViewer() (defined at module-scope above) can find
+    // it without threading an argument through every caller.
+    const recentList = FIXTURES.map(f => ({
+        b64urlSecret: f.b64urlSecret, fileId: f.fileId, cachedName: f.name,
+    }));
+    global.__STRESS_RECENT_LIST__ = recentList;
 
     // Create browser objects.
     for (let i = 0; i < N_BROWSERS; i++) {

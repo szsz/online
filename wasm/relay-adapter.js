@@ -15,6 +15,10 @@
 
     var params = new URLSearchParams(window.location.search);
     var relayUrl = params.get('relay');
+    // Module-scope WOPISrc — referenced by fetchKey() and activateClient()
+    // before initiateJoin() runs. Without this declaration the free lookup
+    // throws ReferenceError under `use strict` and aborts encryption init.
+    var wopiSrc = params.get('WOPISrc') || '';
     // Even without a relay URL (single-user mode), we still set up
     // the save/hash tracking so conflict detection works. We just
     // skip the WebSocket connection and relay-specific messaging.
@@ -187,6 +191,26 @@
             recvQueue = [];
             kitQueue = []; // drop any pending messages from old room
             lateJoinFileReady = false;
+
+            // Reset encryption state — every doc has its own per-file
+            // AES-GCM key. Without this, A continues to use the OLD
+            // doc's key to (en|de)crypt messages in the new room, and
+            // every cross-peer message fails to decrypt silently.
+            // wopiSrc must also track the new doc so fetchKey() asks
+            // the parent for the correct file's key.
+            encryptionEnabled = false;
+            currentKeyVer = 0;
+            _keyCache = {};
+            _pendingKeyReqs = {};
+            if (newDoc) {
+                wopiSrc = newDoc;
+            } else {
+                // Fall back to extracting from the new room URL
+                //   wss://.../room/<wopisrc>  → <wopisrc>
+                var m = /\/room\/([^?#]+)/.exec(newRoom || '');
+                if (m) wopiSrc = decodeURIComponent(m[1]);
+            }
+            console.log('[relay] Encryption state cleared; wopiSrc=' + wopiSrc);
             // Keep remoteClients — they'll be cleaned up when new room announces joins
             for (var vid in remoteClients) {
                 if (remoteClients[vid].clientId > 0) {
@@ -365,11 +389,45 @@
         // Set the initial known hash from the file we loaded/joined with.
         // This is used for conflict detection when saving.
         lastKnownHash = joinFileHash;
-        // Send join-ready with the SHA-256 hex of the document we loaded.
-        // Truncate the log preview so a 64-char hash doesn't drown the console.
-        var readyPayload = joinFileHash ? JSON.stringify({ hash: joinFileHash }) : '';
-        var hashPreview = joinFileHash ? joinFileHash.substring(0, 16) + '…' : 'none';
-        console.log('[relay] Activating — sending join-ready hash=' + hashPreview);
+
+        // First client registers the room checkpoint via its 0x06
+        // payload: { hash, locator }. `hash` is sha256(plaintext) of
+        // /wasm/<wopiSrc>; `locator` is the URL late joiners will
+        // fetch those bytes from (today the same /wasm/<wopiSrc>
+        // endpoint on the editor origin; a content-addressable URL
+        // later). Late joiners just echo back the `hash` they
+        // computed — the relay uses that to confirm they got the
+        // right bytes, no locator needed.
+        var wasmUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+        function sendReady(hash) {
+            lastKnownHash = hash || lastKnownHash;
+            var payloadObj = {};
+            if (hash) payloadObj.hash = hash;
+            if (isFirstClient && hash) payloadObj.locator = wasmUrl;
+            var readyPayload = Object.keys(payloadObj).length ? JSON.stringify(payloadObj) : '';
+            console.log('[relay] Activating — sending join-ready hash=' +
+                        (hash ? hash.substring(0, 16) + '…' : 'none') +
+                        (isFirstClient && hash ? ' locator=' + wasmUrl : ''));
+            sendToRelay(0x06, myViewId, readyPayload);
+        }
+        if (!joinFileHash && isFirstClient) {
+            origFetch(wasmUrl).then(function(r) { return r.arrayBuffer(); })
+                .then(function(buf) {
+                    return crypto.subtle.digest('SHA-256', buf);
+                }).then(function(hashBuf) {
+                    var arr = new Uint8Array(hashBuf);
+                    var hex = Array.from(arr).map(function(b) {
+                        return b.toString(16).padStart(2, '0');
+                    }).join('');
+                    joinFileHash = hex;
+                    sendReady(hex);
+                }).catch(function(e) {
+                    console.warn('[relay] First-client hash self-compute failed:', e);
+                    sendReady(null);
+                });
+        } else {
+            sendReady(joinFileHash);
+        }
         // Enter replay mode: all messages from the buffer will be routed
         // to local Kit (not remote clients) so the doc catches up.
         // Replay mode ends when we receive 0x02 (join acknowledged).
@@ -381,7 +439,8 @@
             MessageId: 'RelayLateJoinPhase',
             Values: { phase: 'replaying' }
         }), '*'); } catch(e) {}
-        sendToRelay(0x06, myViewId, readyPayload);
+        // 0x06 is sent by sendReady() above — either synchronously with
+        // joinFileHash, or async after the first-client hash self-compute.
 
         // Tell the parent viewer that input is now accepted. Until this
         // fires the viewer keeps its loading shield up — otherwise the
@@ -807,6 +866,12 @@
         }
         console.log('[relay] Creating remote client for viewId=' + viewId);
         var clientId = Module._create_remote_client();
+        if (clientId < 0) {
+            // Server socket not ready yet — queue for retry
+            if (_pendingRemoteClients.indexOf(viewId) < 0) _pendingRemoteClients.push(viewId);
+            console.log('[relay] Server not ready, will retry viewId=' + viewId);
+            return;
+        }
         remoteClients[viewId] = { clientId: clientId, ready: false, queue: [] };
         console.log('[relay] Remote client created: viewId=' + viewId + ' clientId=' + clientId);
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId + ' name=' + myName);
@@ -872,7 +937,22 @@
     }
 
     function saveAndUploadCheckpoint() {
-        if (!connected) return;
+        // In relay mode we need the WebSocket open so we can report the
+        // new checkpoint hash back to the server (0x07 frame). In
+        // single-user mode there is no relay — save still has to go
+        // through so the file lands on viewer storage.
+        if (!singleUserMode && !connected) return;
+        // The prewarm blank is read-only by design. Saves attempted
+        // against __prewarm_blank.docx silently no-op here so we don't
+        // make a pointless fetch/upload round-trip (the viewer-server
+        // will reject the POST with 403 anyway). If the user wants to
+        // persist, they need to Save As under a new filename — that
+        // flow re-instantiates with a fresh WOPISrc.
+        var curWopiSrc = params.get('WOPISrc') || '';
+        if (curWopiSrc === '__prewarm_blank.docx') {
+            console.log('[relay] Save suppressed on prewarm blank — use Save As');
+            return;
+        }
         sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
         // Short delay for Kit to process the save — 1.5s is enough for
         // small docs. Previous 5s delay caused late joiners to miss
@@ -944,29 +1024,12 @@
                             });
                         }
                         return uploadResp.json().then(function(result) {
-                            // Success: update our known hash to the new version
+                            // Success: update our known hash to the new version.
+                            // Save is purely a storage-side concern now — the
+                            // relay's checkpoint is immutable from the first
+                            // client's 0x06, so there's no `0x07` back-channel.
                             lastKnownHash = result.hash || hashHex;
-                            // 4. Report to relay. Frame layout:
-                            //      [0]   type (0x07)
-                            //      [1-4] viewId (uint32 BE)
-                            //      [5-8] saveAtSeq (uint32 BE)
-                            //      [9..] hash hex string (UTF-8, 64 ASCII chars)
-                            var hashBytes = new TextEncoder().encode(hashHex);
-                            var frame = new Uint8Array(5 + 4 + hashBytes.length);
-                            frame[0] = 0x07;
-                            frame[1] = (myViewId >>> 24) & 0xFF;
-                            frame[2] = (myViewId >>> 16) & 0xFF;
-                            frame[3] = (myViewId >>> 8) & 0xFF;
-                            frame[4] = myViewId & 0xFF;
-                            frame[5] = (saveAtSeq >>> 24) & 0xFF;
-                            frame[6] = (saveAtSeq >>> 16) & 0xFF;
-                            frame[7] = (saveAtSeq >>> 8) & 0xFF;
-                            frame[8] = saveAtSeq & 0xFF;
-                            frame.set(hashBytes, 9);
-                            if (ws && connected) ws.send(frame);
-                            console.log('[relay] Checkpoint: file=' + bytes.length + 'B → /api/files; ' +
-                                        'sent hash=' + hashHex.substring(0, 16) + '… (' + frame.length + 'B frame) seq=' + saveAtSeq);
-                            // Notify viewer of successful save
+                            console.log('[relay] Saved ' + bytes.length + 'B → /api/files; hash=' + hashHex.substring(0, 16) + '…');
                             try {
                                 parent.postMessage(JSON.stringify({
                                     MessageId: 'SaveComplete',
@@ -1177,9 +1240,20 @@
                 try {
                     var info = JSON.parse(new TextDecoder().decode(msg.payload));
                     if (info.first) {
-                        // First client — no file to download
+                        // First client — no file to download. Mark
+                        // lateJoinFileReady anyway so that if coolwsd
+                        // isn't ready yet, the activation-poll can
+                        // still fire activateClient() once it is.
+                        // Without this the first-client path stalled
+                        // after a room switch: the old activation poll
+                        // self-cleared, the new one started waiting on
+                        // a lateJoinFileReady signal that never comes
+                        // (there's no file to late-join-download), and
+                        // the user ended up in a ghost room where own
+                        // edits worked but peer messages never arrived.
                         isFirstClient = true;
                         joinFileSeq = 0;
+                        lateJoinFileReady = true;
                         console.log('[relay] First client in room');
                         if (coolwsdReady) activateClient();
                         return;
@@ -1197,21 +1271,31 @@
                     joinFileSeq = info.seq;
                     var wopiSrc = params.get('WOPISrc') || '';
                     var editorWopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-                    var blobUrl = info.hash ? getBlobUrl(info.hash) : null;
-                    var nameUrl = getFileStorageUrl(wopiSrc);
-                    console.log('[relay] Join-response: relay-expected hash=' + (info.hash||'').substring(0, 16) + '… seq=' + info.seq +
-                        (blobUrl ? ' — fetching by hash from ' + blobUrl.replace(/\/[a-f0-9]{16,}.*$/, '/<hash>') : ' — fetching by name'));
+                    console.log('[relay] Join-response: hash=' + (info.hash||'').substring(0, 16) +
+                                '… locator=' + (info.locator || '(none)') + ' seq=' + info.seq);
                     try { parent.postMessage(JSON.stringify({
                         MessageId: 'RelayLateJoinPhase',
                         Values: { phase: 'downloading', msgCount: info.msgCount || 0, seq: info.seq }
                     }), '*'); } catch(e) {}
 
-                    // Try sources in order: blob-by-hash → name → editor's own /wasm/.
+                    // Primary: the checkpoint's `locator` (set by the
+                    // first client in its 0x06). Fallback: the editor's
+                    // own /wasm/<wopiSrc> — for the common case where
+                    // the viewer POSTed plaintext there before spawning
+                    // this iframe, the bytes will match anyway.
                     var sources = [];
-                    if (blobUrl) sources.push({ kind: 'blob', url: blobUrl });
-                    sources.push({ kind: 'name', url: nameUrl });
-                    sources.push({ kind: 'editor-wasm', url: editorWopiUrl });
+                    if (info.locator) sources.push({ kind: 'locator', url: info.locator });
+                    if (!info.locator || info.locator !== editorWopiUrl) {
+                        sources.push({ kind: 'editor-wasm', url: editorWopiUrl });
+                    }
 
+                    // Walk sources in order; take the first one that
+                    // returns bytes. If info.hash is advertised we still
+                    // compute sha256 for the log line, but we do NOT
+                    // reject non-matching sources — the relay's 0x06
+                    // handler tolerates minor hash divergence (and in
+                    // the common case `/wasm/` holds the same plaintext
+                    // as what the first client had).
                     function tryNext(idx) {
                         if (idx >= sources.length) {
                             return Promise.reject(new Error('all sources exhausted'));
@@ -1222,6 +1306,7 @@
                             if (!r.ok) throw new Error(s.kind + ' ' + r.status);
                             return r.arrayBuffer();
                         }).catch(function(e) {
+                            if (e.message === 'all sources exhausted') throw e;
                             console.log('[relay] Source "' + s.kind + '" failed (' + e.message + '), trying next');
                             return tryNext(idx + 1);
                         });
@@ -1232,22 +1317,25 @@
                             return dec.buffer || dec;
                         });
                     }).then(function(buf) {
-                        // Compute SHA-256 of what we actually loaded — keeps
-                        // the integrity check honest even when we go via
-                        // /api/blobs (where it's tautological).
                         var bytes = new Uint8Array(buf);
                         return crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
-                            var hashArr = new Uint8Array(hashBuf);
-                            joinFileHash = Array.from(hashArr).map(function(b) {
+                            joinFileHash = Array.from(new Uint8Array(hashBuf)).map(function(b) {
                                 return b.toString(16).padStart(2, '0');
                             }).join('');
                             var matches = info.hash && info.hash === joinFileHash;
-                            console.log('[relay] Downloaded ' + buf.byteLength + 'B; computed hash=' + joinFileHash.substring(0, 16) + '…' +
+                            console.log('[relay] Downloaded ' + buf.byteLength + 'B; computed hash=' +
+                                joinFileHash.substring(0, 16) + '…' +
                                 (matches ? ' (matches relay expected)' :
                                  info.hash ? ' (relay expected ' + info.hash.substring(0, 16) + '… — mismatch will be resolved by relay)' : ''));
                             lateJoinFileReady = true;
                             return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
                         });
+                    }).then(function() {
+                        console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
+                        try { parent.postMessage(JSON.stringify({
+                            MessageId: 'RelayLateJoinPhase',
+                            Values: { phase: 'loading' }
+                        }), '*'); } catch(e) {}
                     }).then(function() {
                         console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
                         try { parent.postMessage(JSON.stringify({

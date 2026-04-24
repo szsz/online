@@ -9,7 +9,15 @@
 
     var params = new URLSearchParams(window.location.search);
     var wopiSrc = params.get('WOPISrc') || '';
-    var ext = wopiSrc.split('.').pop().toLowerCase().split('?')[0];
+    // displayName is the plaintext filename the user sees in the title bar
+    // and #document-name-input. For v2-encrypted opens the WOPISrc is an
+    // opaque fileId; the parent viewer passes the decrypted filename as
+    // a separate query param so the editor can display a human label.
+    var displayName = params.get('displayName') || '';
+    // Use displayName's extension (if given) for docType detection, since
+    // v2 fileIds have no extension. Fall back to WOPISrc's extension.
+    var typingSource = displayName || wopiSrc;
+    var ext = typingSource.split('.').pop().toLowerCase().split('?')[0];
     var docType = 'writer';
     if (['xlsx','xls','ods','csv','tsv'].indexOf(ext) >= 0) docType = 'calc';
     else if (['pptx','ppt','odp','ppsx','pps'].indexOf(ext) >= 0) docType = 'impress';
@@ -35,16 +43,97 @@
 
     // ── Human-readable timing (from navigation start, visible in console) ──
     var _timingMilestones = {};
+    // Dedupe labels — logTiming is called from multiple signal paths
+    // (docPoll, trySendSwitch's docReadyInterval, switchdoc's own
+    // poll). Same label firing more than once just clutters the log.
+    var _timingSeen = {};
     function logTiming(label) {
+        if (_timingSeen[label]) return;
+        _timingSeen[label] = true;
         var ms = msSinceNav();
         _timingMilestones[label] = ms;
         console.log('%c[TIMING] ' + label + ' @ ' + (ms / 1000).toFixed(2) + 's (from navigation)',
             'color: #1565c0; font-weight: bold; font-size: 13px');
     }
     window.__wasmLogTiming = logTiming;
+    // Reset so a switchdoc into a different file can log "Document
+    // ready" again for that file. Called by checkHashSwitch.
+    window.__wasmLogTimingReset = function(label) { delete _timingSeen[label]; };
     logTiming('wasm-loader.js started');
 
+    // Filter out emscripten's worker-mailbox noise. These fire from
+    // every pthread on every iteration of the main loop — on a busy
+    // page that's tens of log lines per second for no diagnostic value.
+    // Wrap console.log/info/debug at capture-time so COOL's own
+    // callers hit the filtered one. Errors/warns pass through.
+    (function filterMailboxSpam() {
+        var patterns = [
+            /__emscripten_thread_mailbox_await/,
+            /\bcheckMailbox\b/,
+        ];
+        function matches(args) {
+            for (var i = 0; i < args.length; i++) {
+                var a = args[i];
+                if (typeof a !== 'string') continue;
+                for (var j = 0; j < patterns.length; j++) {
+                    if (patterns[j].test(a)) return true;
+                }
+            }
+            return false;
+        }
+        var origLog = console.log;
+        console.log = function() { if (matches(arguments)) return; origLog.apply(console, arguments); };
+        var origInfo = console.info;
+        console.info = function() { if (matches(arguments)) return; origInfo.apply(console, arguments); };
+        var origDebug = console.debug;
+        console.debug = function() { if (matches(arguments)) return; origDebug.apply(console, arguments); };
+    })();
+
     mark('loader:start', 'doc=' + docType + ' ext=' + ext);
+
+    // If the viewer supplied a plaintext displayName, override COOL's
+    // default title (WOPISrc-based, which is the opaque fileId in v2)
+    // persistently. COOL repopulates #document-name-input asynchronously
+    // from wopi events that arrive long after load, and its own UI code
+    // will clobber any one-off assignment. Use a MutationObserver on
+    // the input and a long-running interval so we always win.
+    if (displayName) {
+        var applyName = function() {
+            try {
+                if (window.app && window.app.map && window.app.map['wopi']) {
+                    window.app.map['wopi'].BaseFileName = displayName;
+                    window.app.map['wopi'].BreadcrumbDocName = displayName;
+                }
+                var ni = document.querySelector('#document-name-input');
+                if (ni && ni.value !== displayName) ni.value = displayName;
+                try { document.title = displayName; } catch(e) {}
+            } catch(e) {}
+        };
+        var overrideStart = Date.now();
+        var overrideInt = setInterval(function() {
+            applyName();
+            if (Date.now() - overrideStart > 120000) clearInterval(overrideInt);
+        }, 250);
+        // Watch for late DOM insertion of the input; once it appears,
+        // attach a MutationObserver so we re-apply if COOL ever resets
+        // it back to the fileId.
+        var observerInstalled = false;
+        var watchInt = setInterval(function() {
+            var ni = document.querySelector('#document-name-input');
+            if (ni && !observerInstalled) {
+                observerInstalled = true;
+                try {
+                    new MutationObserver(function() {
+                        if (ni.value !== displayName) ni.value = displayName;
+                    }).observe(ni, { attributes: true, attributeFilter: ['value'] });
+                } catch(e) {}
+                // Also watch property writes via a setInterval fallback —
+                // MutationObserver only catches attribute changes, not
+                // direct .value assignments that don't reflect to DOM.
+            }
+            if (Date.now() - overrideStart > 120000) clearInterval(watchInt);
+        }, 500);
+    }
 
     // ───── SERVICE WORKER REGISTRATION ─────
     // Register sw.js to lock the heavy WASM assets into Cache Storage.
@@ -341,15 +430,28 @@
             // new filename. COOL reads the title from wopi.BaseFileName
             // and renders it in #document-name-input. Without this the
             // title stays on the prewarm blank or the first doc opened.
-            try {
-                if (window.app && window.app.map && window.app.map['wopi']) {
-                    window.app.map['wopi'].BaseFileName = filename;
-                    window.app.map['wopi'].BreadcrumbDocName = filename;
-                }
-                var nameInput = document.querySelector('#document-name-input');
-                if (nameInput) nameInput.value = filename;
-                document.title = filename;
-            } catch(e) {}
+            // Retry briefly because in the prewarm-then-click flow the
+            // input element or wopi map can be reset by a late onWopiProps
+            // fire; a short poll keeps our value wins.
+            // Prefer the plaintext displayName when the viewer supplied
+            // one (v2 opens). filename is the WOPISrc — an opaque 64-hex
+            // fileId in the v2 case, which would be ugly in the title bar.
+            var titleText = displayName || filename;
+            try { document.title = titleText; } catch(e) {}
+            var docNameSetStart = Date.now();
+            var docNameSetInt = setInterval(function() {
+                try {
+                    if (window.app && window.app.map && window.app.map['wopi']) {
+                        window.app.map['wopi'].BaseFileName = titleText;
+                        window.app.map['wopi'].BreadcrumbDocName = titleText;
+                    }
+                    var nameInput = document.querySelector('#document-name-input');
+                    if (nameInput && nameInput.value !== titleText) {
+                        nameInput.value = titleText;
+                    }
+                } catch(e) {}
+                if (Date.now() - docNameSetStart > 15000) clearInterval(docNameSetInt);
+            }, 250);
         } catch(e) {
             mark('bridge:switchdoc_error', e.message);
         }
@@ -375,17 +477,44 @@
                 } catch(e) {}
                 if (typeof hideOverlay === 'function') hideOverlay();
 
-                // After canvas change, wait for status bar to populate.
+                // Gate WasmDocReady on BOTH:
+                //   (a) status bar has a real value ("N characters",
+                //       "Sheet X of Y", "Slide X of Y") — means Kit
+                //       finished layout
+                //   (b) canvas has been stable for STABILITY_MS — tiles
+                //       have stopped arriving
+                //
+                // A previous iteration also required "≥ 3 distinct
+                // canvas samples" to guard against firing after a
+                // single partial tile landed. But on the warm path
+                // (snapshot restore), the canvas can stabilize
+                // immediately after one paint, and the 3-sample guard
+                // never unlocked → WasmDocReady never fired → shield
+                // stayed up forever. Dropped it; (a)+(b) is enough
+                // (the parent visiblePoll already confirms the canvas
+                // differs from the pre-switch baseline, so we know
+                // SOME paint happened before we entered this block).
+                var STABILITY_MS = 1200;
                 var readyStart = performance.now();
+                var lastSample = null;
+                var lastChangeAt = performance.now();
                 var docReadyInterval = setInterval(function() {
                     var wc = document.querySelector('#StateWordCount');
                     var dp = document.querySelector('#StatusDocPos');
                     var wcReady = wc && wc.textContent && /character|word|cell|slide/i.test(wc.textContent);
                     var dpReady = dp && dp.textContent && /Sheet|Slide/i.test(dp.textContent);
-                    if (wcReady || dpReady) {
+                    var statusReady = wcReady || dpReady;
+                    var sample = snapshotCanvas();
+                    if (sample !== lastSample) {
+                        lastSample = sample;
+                        lastChangeAt = performance.now();
+                    }
+                    var stableFor = performance.now() - lastChangeAt;
+                    if (statusReady && stableFor >= STABILITY_MS) {
                         var rdt = (performance.now() - readyStart).toFixed(0);
-                        mark('bridge:doc_ready', rdt + 'ms');
+                        mark('bridge:doc_ready', rdt + 'ms, stable ' + stableFor.toFixed(0) + 'ms');
                         clearInterval(docReadyInterval);
+                        window.__wasmLoadedDocName = filename;
                         try {
                             parent.postMessage(JSON.stringify({
                                 MessageId: 'WasmDocReady',
@@ -402,7 +531,7 @@
                             }), '*');
                         } catch(e) {}
                     }
-                }, 100);
+                }, 200);
             }
             if (performance.now() - watchStart > 30000) clearInterval(visiblePollInterval);
         }, 50);
@@ -416,7 +545,16 @@
         lastHash = h;
         var m = h.match(/^#switchdoc=(.+)$/);
         if (!m) return;
-        var filename = decodeURIComponent(m[1]);
+        // switchdoc fragment is either `#switchdoc=<filename>` (legacy) or
+        // `#switchdoc=<fileId>&displayName=<encoded>` (v2). Parse both.
+        var raw = m[1];
+        var amp = raw.indexOf('&');
+        var filename = decodeURIComponent(amp >= 0 ? raw.substring(0, amp) : raw);
+        if (amp >= 0) {
+            var tail = new URLSearchParams(raw.substring(amp + 1));
+            var dn = tail.get('displayName');
+            if (dn) displayName = dn; // hoisted var from the init block
+        }
         window.__bridgeLastSwitch = filename;
         pendingSwitchFilename = filename;
         mark('bridge:switchdoc_seen', filename);
@@ -433,6 +571,10 @@
         // Reset pre-warm flag so docPollInterval re-arms and signals 'ready'
         // again when the new doc is actually visible.
         window.__wasmPrewarmReady = false;
+        // Clear the "Document ready" dedupe so the new target can log it.
+        if (typeof window.__wasmLogTimingReset === 'function') {
+            window.__wasmLogTimingReset('Document ready');
+        }
         // Also re-arm the docPoll so it sees the new word count change.
         if (typeof startDocPoll === 'function') startDocPoll();
         trySendSwitch();
@@ -898,6 +1040,18 @@
             if (runtimeReady && canvases > 0 && loaded && changed && !window.__wasmPrewarmReady) {
                 window.__wasmPrewarmReady = true;
                 window.__wasmInitialDocLoaded = true;  // sticky one-shot
+                // Authoritative "LO is painting this doc" flag for the
+                // initial-load path (cold-reload iframe opens with the
+                // target's WOPISrc and no switchdoc). Tests should read
+                // window.__wasmLoadedDocName to know which doc is
+                // actually rendered (vs prewarm). The switchdoc path
+                // updates this separately via the docReadyInterval
+                // inside checkHashSwitch.
+                try {
+                    var initParams = new URLSearchParams(window.location.search);
+                    var initWopi = initParams.get('WOPISrc') || '';
+                    if (initWopi) window.__wasmLoadedDocName = initWopi;
+                } catch(e) {}
                 prewarmWordCountAtReady = wc ? wc.textContent : '';
                 mark('prewarm:ready');
                 logTiming('Document ready');

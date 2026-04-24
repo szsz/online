@@ -5,6 +5,8 @@ const fs = require('fs');
 const path = require('path');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 
@@ -16,17 +18,11 @@ const VIEWER = env.FILE_STORAGE_URL;
     const ctx = await browser.createBrowserContext();
 
     const DOC = 'switchprofile.odt';
-    const up = await ctx.newPage();
-    await up.goto(VIEWER + '/');
     const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', '3pages.odt'));
-    await up.evaluate(async (n, a) => {
-        await fetch('/api/files/' + encodeURIComponent(n), {
-            method: 'POST', body: new Blob([new Uint8Array(a)]),
-        });
-    }, DOC, Array.from(bytes));
-    await up.close();
+    const upDoc = await uploadV2(VIEWER, DOC, bytes);
 
     const page = await ctx.newPage();
+    await seedRecentFiles(page, [{ b64urlSecret: upDoc.b64urlSecret, fileId: upDoc.fileId, cachedName: DOC }]);
 
     // Capture ALL iframe console output (LOG_INF goes through emscripten print → console.log/warn)
     let recording = false;
@@ -44,12 +40,11 @@ const VIEWER = env.FILE_STORAGE_URL;
     }
     console.log('Prewarm done.');
 
-    // Start recording, click file
+    // Start recording, click file (v2 sidebar is keyed by data-fileid)
     recording = true;
     const clickT = Date.now();
-    await page.evaluate(n => {
-        document.querySelector(`.file[data-name="${n}"]`).click();
-    }, DOC);
+    await waitForSidebar(page, upDoc.fileId);
+    await clickSidebarFile(page, upDoc.fileId);
 
     // Wait 12s
     await sleep(12000);

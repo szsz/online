@@ -34,13 +34,45 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 
+// Config comes from env (set by launch-relay.sh from wasm/.env). The
+// default for PORT is a dev convenience only; SSL_CERT/KEY have no
+// default — if they're unset, we run plain HTTP (Azure-terminated TLS).
 const PORT = process.env.PORT || process.env.RELAY_PORT || 9091;
-const SSL_CERT = process.env.SSL_CERT || '/etc/letsencrypt/live/wasm.atgpartners.info/fullchain.pem';
-const SSL_KEY = process.env.SSL_KEY || '/etc/letsencrypt/live/wasm.atgpartners.info/privkey.pem';
+const SSL_CERT = process.env.SSL_CERT || '';
+const SSL_KEY = process.env.SSL_KEY || '';
+const RELAY_HOSTNAME = process.env.RELAY_HOSTNAME || '';
 
 // Detect whether SSL certs are available. On Azure App Service, TLS is
 // terminated by the platform so the relay runs plain HTTP/WS internally.
-const useSSL = fs.existsSync(SSL_CERT) && fs.existsSync(SSL_KEY);
+const useSSL = !!(SSL_CERT && SSL_KEY && fs.existsSync(SSL_CERT) && fs.existsSync(SSL_KEY));
+
+// Sanity check: verify the cert we're about to serve actually covers
+// RELAY_HOSTNAME. Running with a mismatched SAN silently breaks
+// browser wss handshakes — the failure mode is a closed WS with no
+// error visible in application logs, just "co-editing doesn't work."
+// Only runs when RELAY_HOSTNAME is set (so local/Azure runs that
+// don't care about a specific hostname aren't pestered).
+if (useSSL && RELAY_HOSTNAME) {
+    try {
+        const { X509Certificate } = require('crypto');
+        const cert = new X509Certificate(fs.readFileSync(SSL_CERT));
+        const subject = cert.subject || '';
+        const san = cert.subjectAltName || '';
+        const expectedOK = subject.includes(RELAY_HOSTNAME)
+            || san.includes('DNS:' + RELAY_HOSTNAME);
+        if (!expectedOK) {
+            console.error('================================================================');
+            console.error('WARN: relay cert SAN does not include ' + RELAY_HOSTNAME);
+            console.error('      cert subject: ' + subject);
+            console.error('      cert SAN: ' + san);
+            console.error('      wss://' + RELAY_HOSTNAME + ' will fail browser TLS checks.');
+            console.error('      Set SSL_CERT/SSL_KEY to a cert that covers ' + RELAY_HOSTNAME + '.');
+            console.error('================================================================');
+        }
+    } catch(e) {
+        console.warn('[relay] cert sanity check skipped: ' + e.message);
+    }
+}
 
 // Inline debug UI — single-page app served at /debug/. Lists active
 // rooms, streams messages from a chosen room over SSE.
@@ -276,16 +308,30 @@ class Room {
         this.activeClients = new Set();
         this.seq = 0;
 
-        // Checkpoint
-        this.checkpoint = null;
+        // Checkpoint — pure metadata, registered by the first client's
+        // 0x06 and immutable for the lifetime of the room. The relay
+        // NEVER stores the file bytes: `locator` is a URL the file
+        // manager can serve those bytes from (/wasm/<wopiSrc> today,
+        // content-addressable /api/blobs/<sha> later).
+        //
+        // Any peer joining after room creation but before the first
+        // 0x06 is parked in `waitingForCheckpoint` until the first
+        // client registers its checkpoint — typically ~1s, never a
+        // save round-trip. Once the checkpoint is set, every late
+        // joiner gets { hash, seq: 0, locator, msgCount } and fetches
+        // bytes from `locator` directly. The relay doesn't ask any
+        // peer to save ("triggerSave") and doesn't accept client-side
+        // checkpoint rotation (the old 0x07 frame).
         this.checkpointHash = null;
+        this.checkpointLocator = null;
         this.checkpointSeq = 0;
 
-        // Save coordination
-        this.savePending = false;
-        this.saveTimeout = null;
+        // Joiners that arrived before the first client's 0x06
+        // registered the checkpoint. Served as soon as the checkpoint
+        // is known.
+        this.waitingForCheckpoint = new Set();
 
-        // Message log since checkpoint (for replay)
+        // Message log since room creation (replay on late-join).
         this.messageLog = [];
         this.maxLogSize = 50000;
 
@@ -317,45 +363,34 @@ class Room {
 
     nextSeq() { return ++this.seq; }
 
-    // Register a checkpoint by hash+seq only. The relay does NOT store the
-    // file — that's the file storage server's responsibility. We only track
-    // the hash and sequence number for late-join coordination.
-    registerCheckpoint(hash, atSeq) {
-        // Reject malformed hashes — older clients used to send file bytes
-        // through this code path (the relay would .toString() them and
-        // store binary as the hash). A subsequent joiner would then
-        // perpetually mismatch the real file's SHA-256 from /api/files
-        // and loop on 0x0A. Accept only proper hex hashes here.
+    // Register the room's (immutable) checkpoint. Called exactly once,
+    // on the first client's 0x06. `locator` is the URL late joiners
+    // will fetch bytes from — the relay stores only the pointer, never
+    // the bytes. Subsequent 0x06 frames just confirm hash agreement;
+    // this method is NOT called for them.
+    registerCheckpoint(hash, locator) {
+        if (this.checkpointHash) {
+            console.log(`[${this.id}] registerCheckpoint IGNORED — already set (hash=${this.checkpointHash})`);
+            return false;
+        }
         if (!Room.isValidHexHash(hash)) {
-            console.log(`[${this.id}] registerCheckpoint REJECTED malformed hash (len=${(hash||'').length}, prefix=${(hash||'').substring(0, 8).replace(/[^\x20-\x7e]/g, '?')}…) — keeping previous`);
-            return;
+            console.log(`[${this.id}] registerCheckpoint REJECTED malformed hash (len=${(hash||'').length})`);
+            return false;
         }
         this.checkpointHash = hash;
-        this.checkpointSeq = atSeq !== undefined ? atSeq : this.seq;
-        this.savePending = false;
-        if (this.saveTimeout) { clearTimeout(this.saveTimeout); this.saveTimeout = null; }
-
-        // Keep messages AFTER the checkpoint seq — these need to be replayed
-        // to any browser that loads this checkpoint file.
-        const before = this.messageLog.length;
-        this.messageLog = this.messageLog.filter(m => m.seq > this.checkpointSeq);
-        if (this.messageLog.length > this.maxLogSize) {
-            this.messageLog = this.messageLog.slice(-this.maxLogSize);
-        }
-        console.log(`[${this.id}] CHECKPOINT: hash=${this.checkpointHash} atSeq=${this.checkpointSeq} roomSeq=${this.seq} replay=${this.messageLog.length} (pruned ${before - this.messageLog.length})`);
+        this.checkpointLocator = locator || null;
+        this.checkpointSeq = 0;
+        console.log(`[${this.id}] CHECKPOINT REGISTERED hash=${hash} locator=${locator || '(none)'}`);
         this.debugAppend('event', {
             event: 'checkpoint',
-            hash: this.checkpointHash,
-            atSeq: this.checkpointSeq,
-            roomSeq: this.seq,
-            pruned: before - this.messageLog.length,
+            hash, locator: locator || null, atSeq: 0,
         });
-    }
-
-    // Legacy compat — old clients may still upload file data
-    createCheckpoint(buf, atSeq) {
-        const hash = crypto.createHash('sha256').update(buf).digest('hex').substring(0, 16);
-        this.registerCheckpoint(hash, atSeq);
+        // Flush everyone who was parked waiting for this.
+        for (const ws of this.waitingForCheckpoint) {
+            if (ws.readyState === WebSocket.OPEN) this.serveCheckpoint(ws);
+        }
+        this.waitingForCheckpoint.clear();
+        return true;
     }
 
     // Hex-hash sanity check. We accept any-length hex string of at least
@@ -443,59 +478,25 @@ class Room {
         if (ws.readyState === WebSocket.OPEN) ws.send(frame);
     }
 
-    triggerSave() {
-        if (this.savePending) return false;
-        for (const client of this.activeClients) {
-            if (client.readyState === WebSocket.OPEN) {
-                this.savePending = true;
-                this.sendControl(client, 0x08, 0, '');
-                console.log(`[${this.id}] Save triggered (${this.messageLog.length} unsaved msgs)`);
-                this.saveTimeout = setTimeout(() => {
-                    this.savePending = false;
-                    console.log(`[${this.id}] Save timeout — serving stale checkpoint to waiting joiners`);
-                    this._serveCheckpointToWaitingJoiners();
-                }, 20000);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Send current checkpoint + replay log to a joining client
+    // Tell a joiner what checkpoint to fetch and what messages to replay
+    // on top. The relay never holds bytes; `locator` (if set) is the URL
+    // the joiner will fetch them from. The client is responsible for
+    // hash-verifying whatever it downloads against `hash`.
     serveCheckpoint(ws) {
         if (!this.checkpointHash) return false;
-        // Tell the client to download the checkpoint from the FILE STORAGE
-        // SERVER (not the relay). The client knows its WOPISrc and can
-        // fetch from FILE_STORAGE_URL/api/files/<WOPISrc>.
         const info = JSON.stringify({
             first: false,
             hash: this.checkpointHash,
-            source: 'wopi',   // client downloads from file storage server
+            locator: this.checkpointLocator || null,
             seq: this.checkpointSeq,
             msgCount: this.messageLog.length,
         });
         this.sendControl(ws, 0x05, 0, info);
         ws._joinBuffering = true;
-        ws._joinBuffer = this.messageLog.map(m => m.frame); // Copy current log
+        ws._joinBuffer = this.messageLog.map(m => m.frame);
         ws._expectedHash = this.checkpointHash;
         console.log(`[${this.id}] Served checkpoint hash=${this.checkpointHash} + ${ws._joinBuffer.length} msgs to viewId=${ws._viewId}`);
         return true;
-    }
-
-    _serveCheckpointToWaitingJoiners() {
-        for (const client of this.clients) {
-            if (client._joining && client._waitingForSave && client.readyState === WebSocket.OPEN) {
-                client._waitingForSave = false;
-                if (this.checkpointHash) {
-                    this.serveCheckpoint(client);
-                } else {
-                    // No checkpoint at all — activate as first
-                    this.sendControl(client, 0x05, 0, JSON.stringify({ first: true, seq: this.seq }));
-                    client._joining = false;
-                    this.activeClients.add(client);
-                }
-            }
-        }
     }
 
     announceJoin(viewId) {
@@ -541,10 +542,11 @@ function roomSummary(room) {
         seq: room.seq,
         clientCount: room.clients.size,
         activeCount: room.activeClients.size,
-        savePending: room.savePending,
+        waitingForCheckpoint: room.waitingForCheckpoint.size,
         checkpointHash: room.checkpointHash,
+        checkpointLocator: room.checkpointLocator,
         checkpointSeq: room.checkpointSeq,
-        unsavedMsgs: room.messageLog.length,
+        logMsgs: room.messageLog.length,
         debugLogSize: room.debugLog.length,
     };
 }
@@ -623,29 +625,36 @@ const requestHandler = (req, res) => {
     const room = rooms.get(roomId);
 
     if (req.method === 'GET') {
-        // Return checkpoint metadata only — the file itself is on the
-        // file storage server, not the relay.
+        // Metadata only. The relay never stores bytes — late joiners
+        // download from `checkpointLocator`.
         if (!room || !room.checkpointHash) { res.writeHead(404); res.end('No checkpoint'); return; }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
             hash: room.checkpointHash,
+            locator: room.checkpointLocator,
             seq: room.checkpointSeq,
         }));
         return;
     }
 
     if (req.method === 'POST') {
-        // Accept hash+seq from client (client already uploaded file to
-        // the file storage server).
+        // Out-of-band checkpoint registration — only used by tests that
+        // want to pre-seed a room before any WS client connects. Body:
+        // JSON { hash, locator? }. In normal operation the first client's
+        // 0x06 registers the checkpoint, and this endpoint is unused.
         const chunks = [];
-        req.on('data', c => chunks.push(c));
+        let total = 0;
+        req.on('data', c => { chunks.push(c); total += c.length; });
         req.on('end', () => {
             try {
-                const body = JSON.parse(Buffer.concat(chunks).toString());
-                const room = getRoom(roomId);
-                room.registerCheckpoint(body.hash, body.seq || room.seq);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ hash: room.checkpointHash, seq: room.checkpointSeq }));
+                const obj = JSON.parse(Buffer.concat(chunks, total).toString());
+                const r = getRoom(roomId);
+                const ok = r.registerCheckpoint(obj.hash, obj.locator || null);
+                res.writeHead(ok ? 200 : 409, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    hash: r.checkpointHash, locator: r.checkpointLocator,
+                    seq: r.checkpointSeq, accepted: ok,
+                }));
             } catch(e) {
                 res.writeHead(400);
                 res.end('Invalid JSON: ' + e.message);
@@ -675,7 +684,6 @@ server.on('upgrade', (req, socket, head) => {
         ws._joining = true;
         ws._joinBuffering = false;
         ws._joinBuffer = [];
-        ws._waitingForSave = false;
         ws._expectedHash = null;
 
         console.log(`[${roomId}] Connected (${room.clients.size} total, ${room.activeClients.size} active)`);
@@ -692,156 +700,95 @@ server.on('upgrade', (req, socket, head) => {
             const viewId = buf.readUInt32BE(1);
 
             // ── 0x04: Join request ──
+            //
+            // Three paths, no save-trigger anywhere:
+            //   1. First client (no checkpoint yet, no active peers) →
+            //      activate immediately; expect this client's 0x06 to
+            //      carry { hash, locator } and register the checkpoint.
+            //   2. Late joiner AND checkpoint already set → serve
+            //      checkpoint + messageLog. Joiner fetches bytes from
+            //      `locator`, verifies, sends 0x06 for confirmation.
+            //   3. Joiner arrives before the first client's 0x06 has
+            //      landed (active peer exists but checkpointHash null) →
+            //      park in waitingForCheckpoint. When first 0x06 comes
+            //      in, `registerCheckpoint` flushes all parked joiners.
             if (type === 0x04) {
                 ws._viewId = viewId;
-                console.log(`[${roomId}] JOIN viewId=${viewId} active=${room.activeClients.size} checkpoint=${!!room.checkpointHash} unsaved=${room.messageLog.length}`);
+                console.log(`[${roomId}] JOIN viewId=${viewId} active=${room.activeClients.size} checkpoint=${!!room.checkpointHash} log=${room.messageLog.length}`);
 
-                // Classification rules (in order):
-                //   1. No active peers AND no checkpoint → genuinely first.
-                //      Activate immediately; the client owns the doc.
-                //   2. Active peers exist → late joiner, regardless of
-                //      whether a checkpoint exists yet. We trigger a fresh
-                //      save on the active peer and serve the resulting
-                //      checkpoint. (The previous code missed this when
-                //      checkpointHash was still null — both tabs of a doc
-                //      racing each other ended up classified as "first",
-                //      so neither saw the other's edits.)
-                //   3. No active peers but a checkpoint exists → late
-                //      joiner, no save needed, serve cached.
-                if (room.activeClients.size === 0 && !room.checkpointHash) {
-                    console.log(`[${roomId}]   → First client (no peers, no checkpoint)`);
+                if (room.checkpointHash) {
+                    // Checkpoint exists — serve it. This covers both
+                    // "active peer present" and "all peers gone but
+                    // room cached" cases (we don't care which).
+                    room.serveCheckpoint(ws);
+                    return;
+                }
+                if (room.activeClients.size === 0) {
+                    // Genuinely first client. Activate and expect
+                    // their 0x06 to register the checkpoint.
+                    console.log(`[${roomId}]   → First client — activating, awaiting 0x06 to register checkpoint`);
                     room.sendControl(ws, 0x05, 0, JSON.stringify({ first: true, seq: 0 }));
                     ws._joining = false;
                     room.activeClients.add(ws);
                     return;
                 }
-                if (room.activeClients.size === 0) {
-                    console.log(`[${roomId}]   → No active peers, serving cached checkpoint`);
-                    room.serveCheckpoint(ws);
-                    return;
-                }
-                // Active peer(s) — wait for a fresh save (which may be the
-                // active peer's very first save if no checkpoint exists yet).
-                console.log(`[${roomId}]   → Active peer present, requesting fresh save (unsaved=${room.messageLog.length}, hasCheckpoint=${!!room.checkpointHash})`);
-                ws._waitingForSave = true;
-                if (!room.savePending) {
-                    room.triggerSave();
-                }
+                // Active peer present but checkpoint not yet registered.
+                // Park until the first client's 0x06 lands.
+                console.log(`[${roomId}]   → Waiting for first client's 0x06 to register checkpoint`);
+                room.waitingForCheckpoint.add(ws);
                 return;
             }
 
-            // ── 0x07: Checkpoint report (hash + seq, NO file) ──
-            // The client has already saved the file to the file storage
-            // server. It now reports the hash + seq to the relay so we can
-            // coordinate late joiners.
-            // Frame: [0x07][viewId 4b][seq 4b][hash string (optional)]
-            if (type === 0x07) {
-                let checkpointSeq = room.seq;
-                let hash = null;
-                if (buf.length >= 9) {
-                    checkpointSeq = buf.readUInt32BE(5);
-                    if (buf.length > 9) {
-                        // Remaining bytes are the hash string
-                        hash = buf.slice(9).toString();
-                    }
-                }
-                if (!hash) {
-                    // Legacy: client sent file bytes. Compute hash from data.
-                    const fileData = buf.length > 9 ? buf.slice(9) : buf.slice(5);
-                    hash = crypto.createHash('sha256').update(fileData).digest('hex').substring(0, 16);
-                }
-
-                const hasWaitingJoiners = [...room.clients].some(c => c._waitingForSave);
-                const hasDownloadingJoiners = [...room.clients].some(c => c._joinBuffering);
-
-                if (!room.savePending && (hasWaitingJoiners || hasDownloadingJoiners)) {
-                    console.log(`[${roomId}] IGNORING voluntary checkpoint (hash=${hash} seq=${checkpointSeq}) — joiners active`);
-                    return;
-                }
-
-                console.log(`[${roomId}] CHECKPOINT REPORT: hash=${hash}, seq=${checkpointSeq}, roomSeq=${room.seq}`);
-                room.registerCheckpoint(hash, checkpointSeq);
-
-                // Notify waiting joiners that checkpoint is ready
-                for (const client of room.clients) {
-                    if (client._waitingForSave && client.readyState === WebSocket.OPEN) {
-                        client._waitingForSave = false;
-                        room.serveCheckpoint(client);
-                    }
-                }
-                return;
-            }
-
-            // ── 0x06: Join ready (with checkpoint hash verification) ──
+            // ── 0x06: Join ready ──
+            //
+            // Payload: JSON { hash, locator? }
+            //   hash    — sha256 of the plaintext bytes the client loaded
+            //   locator — URL the file manager serves those bytes from
+            //             (optional; only the FIRST client's 0x06 uses it)
+            //
+            // First client (_joining=false — already activated on 0x04):
+            //   uses this to register the room checkpoint. One-shot.
+            // Late joiner (_joining=true, served a checkpoint on 0x04):
+            //   confirms hash match. Mismatch → 0x0A redirect at locator.
             if (type === 0x06) {
-                if (!ws._joining) return;
-
-                // Parse the hash the client loaded
                 let clientHash = null;
+                let clientLocator = null;
                 if (buf.length > 5) {
                     try {
                         const info = JSON.parse(buf.slice(5).toString());
-                        clientHash = info.hash;
+                        clientHash = info.hash || null;
+                        clientLocator = info.locator || null;
                     } catch(e) {}
                 }
 
-                const expected = ws._expectedHash || room.checkpointHash;
-
-                if (expected && clientHash && clientHash !== expected) {
-                    // MISMATCH between what the relay has stored and what
-                    // the client just computed from the file storage.
-                    //
-                    // Telling the client to re-download is a dead-end if the
-                    // file in /api/files doesn't actually have the expected
-                    // hash — the client downloads the same bytes, computes
-                    // the same hash, and we loop forever (0x0A → re-download
-                    // → 0x06 → 0x0A → …).
-                    //
-                    // The file storage is the source of truth. If our
-                    // expected hash is stale or junk (legacy bytes-as-string)
-                    // and the client's hash is well-formed, accept it: update
-                    // our stored hash and let the client activate. The
-                    // alternative is the user-visible deadlock the activation
-                    // spinner now exposes.
-                    if (Room.isValidHexHash(clientHash) && !Room.isValidHexHash(expected)) {
-                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: stored hash is malformed (legacy junk); accepting client hash=${clientHash}`);
-                        room.checkpointHash = clientHash;
-                        // fall through to the JOIN READY path
-                    } else if (Room.isValidHexHash(clientHash)) {
-                        // Both are valid hex but differ. The most likely
-                        // cause is a previous client uploaded but never
-                        // confirmed via 0x07, or two clients raced. Prefer
-                        // the client's hash (which IS what the file storage
-                        // currently contains) over our stored value, but log
-                        // the divergence so it's diagnosable.
-                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${clientHash} expected=${expected} — accepting client (storage is source of truth)`);
-                        room.checkpointHash = clientHash;
-                        // fall through to JOIN READY
-                    } else {
-                        // Client hash is malformed — old buggy client.
-                        // Fall back to the original re-download dance.
-                        console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${(clientHash||'').substring(0, 24)}… expected=${expected}`);
-                        const info = JSON.stringify({
-                            expected: room.checkpointHash,
-                            url: `/room/${encodeURIComponent(roomId)}/file`,
-                            seq: room.checkpointSeq,
-                        });
-                        room.sendControl(ws, 0x0A, 0, info);
-                        ws._joinBuffering = false;
-                        ws._joinBuffer = [];
-                        room.serveCheckpoint(ws);
-                        return;
+                if (!ws._joining) {
+                    // First client post-activation. Register the
+                    // checkpoint (one-shot) — this flushes any joiners
+                    // that were parked in waitingForCheckpoint.
+                    if (clientHash && !room.checkpointHash) {
+                        room.registerCheckpoint(clientHash, clientLocator);
                     }
+                    return;
                 }
 
-                // Hash matches (or no hash sent — backward compat) — activate
-                const bufferedCount = ws._joinBuffer.length;
-                console.log(`[${roomId}] JOIN READY viewId=${viewId} hash=${clientHash || 'none'} replaying ${bufferedCount} msgs`);
+                // Late joiner confirming hash.
+                const expected = ws._expectedHash || room.checkpointHash;
+                if (expected && clientHash && clientHash !== expected) {
+                    console.log(`[${roomId}] CHECKPOINT MISMATCH viewId=${viewId}: client=${clientHash.substring(0,16)}… expected=${expected.substring(0,16)}… — redirecting to locator`);
+                    room.sendControl(ws, 0x0A, 0, JSON.stringify({
+                        expected,
+                        locator: room.checkpointLocator,
+                        seq: room.checkpointSeq,
+                    }));
+                    ws._joinBuffering = false;
+                    ws._joinBuffer = [];
+                    return;
+                }
 
+                console.log(`[${roomId}] JOIN READY viewId=${viewId} hash=${(clientHash||'none').substring(0,16)}… replaying ${ws._joinBuffer.length} msgs`);
                 for (const frame of ws._joinBuffer) {
                     if (ws.readyState === WebSocket.OPEN) ws.send(frame);
                 }
-
                 ws._joining = false;
                 ws._joinBuffering = false;
                 ws._joinBuffer = [];
@@ -872,6 +819,7 @@ server.on('upgrade', (req, socket, head) => {
         ws.on('close', () => {
             room.clients.delete(ws);
             room.activeClients.delete(ws);
+            room.waitingForCheckpoint.delete(ws);
             if (ws._viewId) room.announceLeave(ws._viewId);
             console.log(`[${roomId}] Disconnected (${room.clients.size} total, ${room.activeClients.size} active)`);
             room.debugAppend('event', {

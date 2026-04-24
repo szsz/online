@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>COOL WASM Viewer — Help & Integration Guide</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #fff; color: #1a1a1a; line-height: 1.55;
+  }
+  .container { max-width: 900px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+  header { border-bottom: 1px solid #e5e7eb; padding-bottom: 1rem; margin-bottom: 2rem; }
+  header h1 { margin: 0 0 .4rem; font-size: 1.9rem; font-weight: 600; }
+  header .sub { color: #666; font-size: .95rem; }
+  h2 { margin-top: 2.5rem; font-size: 1.35rem; border-bottom: 1px solid #f0f0f0; padding-bottom: .35rem; }
+  h3 { margin-top: 1.75rem; font-size: 1.08rem; color: #333; }
+  p, li { color: #333; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: #f6f8fa; padding: .9rem 1rem; border-radius: 6px; overflow-x: auto; font-size: .85rem; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: .5rem 0 1rem; font-size: .93rem; }
+  th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid #eef0f2; vertical-align: top; }
+  th { color: #555; font-weight: 600; font-size: .85rem; text-transform: uppercase; letter-spacing: .03em; }
+  td code { white-space: nowrap; }
+  .ctas { display: flex; gap: .75rem; flex-wrap: wrap; margin: 1.25rem 0; }
+  .cta {
+    display: inline-flex; align-items: center; gap: .5rem;
+    padding: .7rem 1.1rem; border-radius: 8px; font-weight: 600; text-decoration: none;
+    background: #2563eb; color: white; border: 1px solid #2563eb;
+  }
+  .cta.secondary { background: white; color: #2563eb; }
+  .cta:hover { text-decoration: none; filter: brightness(1.05); }
+  .note {
+    background: #fffbea; border-left: 3px solid #f0b429; padding: .6rem .9rem;
+    margin: .75rem 0; border-radius: 4px; color: #5a4a00; font-size: .92rem;
+  }
+  .diagram {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: .9rem 1rem; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: .85rem; line-height: 1.4; overflow-x: auto; margin: .5rem 0 1.25rem;
+    white-space: pre;
+  }
+  .chip {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: .75rem; font-weight: 600; margin-left: .4rem; vertical-align: middle;
+  }
+  .chip-local { background: #dcfce7; color: #166534; }
+  .chip-azure { background: #dbeafe; color: #1e3a8a; }
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+  <h1>COOL WASM Viewer — help &amp; integration guide</h1>
+  <div class="sub">
+    Collabora Online running entirely in the browser over WebAssembly.
+    No LibreOffice server, no WOPI host — the viewer sideloads a ~265 MB
+    WASM editor into an iframe, then keeps it warm for instant document
+    switches. This page explains the moving parts and how to embed them.
+  </div>
+</header>
+
+<h2>Try it now</h2>
+<p>Two viewer modes are available. Click a doc in the file list to open it.</p>
+<div class="ctas">
+  <a class="cta" href="/" target="_blank">Co-editing viewer →</a>
+  <a class="cta secondary" href="/singleuser.html" target="_blank">Single-user viewer →</a>
+</div>
+<p class="note">
+  <strong>First load is slow.</strong> The first time you open a document
+  the browser downloads ~57 MB brotli (≈265 MB raw) of WASM plus ~16 MB
+  brotli (≈94 MB raw) of LibreOffice resources. A Service Worker caches
+  these, so subsequent loads are near-instant.
+</p>
+
+<h2>The three services</h2>
+<p>The system is split into three HTTP endpoints with clearly separate jobs:</p>
+
+<div class="diagram">
+                   ┌─────────────────────────────────┐
+                   │  Browser                        │
+                   │                                 │
+  user types ────▶ │  [viewer page]   [editor iframe]│
+                   │   files.html       cool.html    │
+                   │       │               │ ▲       │
+                   └───────┼───────────────┼─┼───────┘
+                           │ files.* URLs  │ │ relay WS (binary msgs)
+                           ▼               ▼ │
+                    ┌───────────┐    ┌───────┴────┐    ┌──────────┐
+                    │  VIEWER   │    │  EDITOR    │    │  RELAY   │
+                    │  server   │    │  static    │    │  server  │
+                    │  (Express)│    │  (Express) │    │  (ws)    │
+                    └─────┬─────┘    └─────┬──────┘    └────┬─────┘
+                          │                │                │
+                          ▼                ▼                │
+                   Azure Blob         /wasm/&lt;name&gt;           │
+                   (documents)        in-memory upload      messages
+                                                              │
+                                                              ▼
+                                                       fan-out to all
+                                                       clients in room
+</div>
+
+<table>
+  <thead>
+    <tr><th>Service</th><th>Role</th><th>URL (local)</th><th>URL (Azure)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Viewer</strong> <span class="chip chip-local">local</span><span class="chip chip-azure">azure</span></td>
+      <td>
+        Sidebar UI with file list, drag-drop upload, folder tree.
+        Embeds the editor in an iframe, orchestrates hot-switches,
+        serves <code>/api/files/</code>, <code>/api/blobs/</code>,
+        <code>/api/keys/</code>, <code>/api/folders/</code>. Also serves
+        this page.
+      </td>
+      <td><a href="https://viewer.szebeni.hu/">viewer.szebeni.hu</a></td>
+      <td>
+        <a href="https://szebeni-wasm-viewer.azurewebsites.net/">szebeni-wasm-viewer.azurewebsites.net</a><br>
+        <a href="https://files.atgpartners.info/">files.atgpartners.info</a> <em>(vanity)</em>
+      </td>
+    </tr>
+    <tr>
+      <td><strong>Editor</strong> <span class="chip chip-local">local</span><span class="chip chip-azure">azure</span></td>
+      <td>
+        Static host for the WASM bundle (<code>cool.html</code>,
+        <code>online.wasm</code>, <code>soffice.data</code>, bundle.js/css,
+        l10n). Accepts transient per-session doc uploads at
+        <code>/wasm/&lt;name&gt;</code>. Serves pre-brotli'd variants
+        when <code>Accept-Encoding: br</code>.
+      </td>
+      <td><a href="https://wasm.atgpartners.info/">wasm.atgpartners.info</a></td>
+      <td><a href="https://szebeni-wasm-static.azurewebsites.net/">szebeni-wasm-static.azurewebsites.net</a></td>
+    </tr>
+    <tr>
+      <td><strong>Relay</strong> <span class="chip chip-local">local</span><span class="chip chip-azure">azure</span></td>
+      <td>
+        Ordering server for co-editing. Assigns monotonic sequence numbers
+        to every broadcast, stores checkpoint hashes, hands new joiners a
+        replay window. Never stores document bytes — checkpoints live on
+        the viewer as content-addressed blobs. WebSocket-only.
+      </td>
+      <td><code>wss://relay.atgpartners.info</code></td>
+      <td><code>wss://szebeni-wasm-relay.azurewebsites.net</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  Locally the three run behind <code>wasm/launch-sni-router.sh</code>, which
+  terminates TLS on <code>:443</code> and routes by SNI to each service's
+  own port (<code>:6934</code> / <code>:6932</code> / <code>:9091</code>).
+  On Azure they are three App Services, fronted by Azure's own TLS.
+</p>
+
+<h2>Document storage</h2>
+<p>
+  Files are content-addressed (SHA-256). The viewer maintains two
+  indexes: <code>_meta/&lt;url-encoded-name&gt;.json</code> maps a display
+  name to its current <code>{hash, size, updatedAt}</code>, and
+  <code>_blobs/&lt;hash&gt;</code> stores the immutable bytes. Two storage
+  backends ship:
+</p>
+<ul>
+  <li><strong>Local filesystem</strong> (<code>STORAGE_BACKEND=local</code>)
+      — <code>LOCAL_STORAGE_DIR</code> on disk. Used for dev.</li>
+  <li><strong>Azure Blob</strong> (<code>STORAGE_BACKEND=azure</code>) —
+      authenticated via account key or full-container SAS URL
+      (<code>DOC_STORAGE_SAS_URL</code>). Used for the Azure deploy.</li>
+</ul>
+<p>
+  Late joiners download the checkpoint directly from the viewer's
+  <code>/api/blobs/&lt;hash&gt;</code> endpoint, which never lies about
+  bytes (the hash <em>is</em> the URL), so there is no risk of
+  desync between what the relay promised and what the blob endpoint
+  delivers.
+</p>
+
+<h2>Modes: single-user vs co-editing</h2>
+<p>
+  The editor is the same WASM binary either way — the difference is
+  whether a relay WebSocket is attached.
+</p>
+
+<h3>Co-editing mode <span class="chip chip-local">default</span></h3>
+<p>
+  The page at <code>/</code> loads the editor with
+  <code>?relay=wss://&lt;relay-host&gt;/</code>. The embedded
+  <code>relay-adapter.js</code> intercepts every
+  user-input message, routes it through the relay (which assigns a
+  sequence number), and applies only the relay-ordered stream to the
+  local editor. All peers apply the same sequence, so all replicas
+  stay byte-identical. <strong>Use this for any document you want
+  to share.</strong>
+</p>
+
+<h3>Single-user mode</h3>
+<p>
+  The page at <code>/singleuser.html</code> loads the editor without
+  the <code>relay=…</code> parameter. <code>relay-adapter.js</code>
+  detects this and short-circuits to local mode: no WebSocket, no
+  sequence numbers, but the save/hash-tracking bits still run so
+  conflict detection works if someone else edits the file via a
+  different client. <strong>Use this when you're the only editor
+  and want to skip the relay round-trip.</strong>
+</p>
+
+<h2>Integration guide — embedding the editor in your own page</h2>
+<p>
+  The editor is a plain iframe pointing at <code>cool.html</code>.
+  The only coupling to the wrapper page is a small set of URL params
+  and a postMessage protocol. To put the editor in your own page:
+</p>
+
+<h3>1. Cross-origin isolation</h3>
+<p>
+  The WASM threads use <code>SharedArrayBuffer</code>, which requires the
+  <em>top-level</em> page to be cross-origin isolated. Your page must
+  send:
+</p>
+<pre><code>Cross-Origin-Opener-Policy:   same-origin
+Cross-Origin-Embedder-Policy: require-corp
+Permissions-Policy:           cross-origin-isolated=(self "&lt;editor-origin&gt;"),
+                              clipboard-read=(self "&lt;editor-origin&gt;"),
+                              clipboard-write=(self "&lt;editor-origin&gt;")</code></pre>
+<p>
+  Every subresource the top-level page loads must carry
+  <code>Cross-Origin-Resource-Policy: cross-origin</code> (or be
+  same-origin). The editor already does this — your wrapper code must
+  as well.
+</p>
+
+<h3>2. The iframe URL</h3>
+<pre><code>&lt;iframe
+  id="editor-frame"
+  src="&lt;editor-origin&gt;/browser/cool.html
+        ?WOPISrc=&lt;url-encoded-doc-name&gt;
+        &amp;access_token=test
+        &amp;relay=wss%3A%2F%2F&lt;relay-host&gt;"
+  allow="cross-origin-isolated; clipboard-read; clipboard-write"&gt;
+&lt;/iframe&gt;</code></pre>
+<ul>
+  <li><code>WOPISrc</code> — document identifier. For our viewer this is
+      just the file name (<code>report.docx</code>). The editor uses it
+      as the room id and as the key for <code>/api/files/&lt;name&gt;</code>.</li>
+  <li><code>access_token</code> — any non-empty string works for our
+      viewer (no auth beyond the SAS/secret on the backend). A real WOPI
+      host would put a signed bearer token here.</li>
+  <li><code>relay</code> — WebSocket URL to the relay. <em>Omit</em>
+      to enable single-user mode.</li>
+</ul>
+
+<h3>3. Upload the doc to <code>/wasm/&lt;name&gt;</code></h3>
+<p>
+  Before the iframe's WASM calls <code>fopen("/tempdoc")</code> (≈3–6 s into
+  init), the doc bytes must be reachable at
+  <code>&lt;editor-origin&gt;/wasm/&lt;name&gt;</code>. Your wrapper
+  can either push them up with <code>fetch(POST)</code> or rely on the
+  viewer's built-in click handler if you're just embedding the viewer UI.
+  Example:
+</p>
+<pre><code>await fetch(editorOrigin + '/wasm/' + encodeURIComponent(name), {
+  method: 'POST',
+  body: docBytes,   // Blob, ArrayBuffer, or Uint8Array
+});</code></pre>
+<p>
+  The editor serves <code>GET /wasm/&lt;name&gt;</code> back to the WASM
+  later; it's a short-lived transient store, not a canonical place to
+  keep files.
+</p>
+
+<h3>4. postMessage protocol</h3>
+<p>
+  The wrapper talks to the iframe with <code>postMessage</code>. The
+  useful messages (see <code>wasm/relay-adapter.js</code> for the full list):
+</p>
+<table>
+  <thead><tr><th>Direction</th><th>MessageId</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>iframe → parent</td><td><code>App_LoadingStatus</code></td><td>Fires <code>Document_Loaded</code> / <code>Initialized</code> — drop your loading shield here.</td></tr>
+    <tr><td>iframe → parent</td><td><code>RelayActivated</code></td><td>Relay joined + replay done. User can now type.</td></tr>
+    <tr><td>iframe → parent</td><td><code>WasmDocReady</code>, <code>WasmSwitchVisible</code></td><td>First-paint / hot-switch visible. Wrapper drops any switch overlay.</td></tr>
+    <tr><td>iframe → parent</td><td><code>KeyRequest</code></td><td>Client asks for an encryption key for a (fileId, keyVersion). Wrapper fetches from <code>/api/keys/&lt;fileId&gt;/&lt;keyVer&gt;</code> and posts <code>KeyResponse</code> back.</td></tr>
+    <tr><td>parent → iframe</td><td><code>RelaySwitchRoom</code></td><td>Ask an already-warm editor to hot-switch to a different doc (same or compatible type). Bypasses the cold reload.</td></tr>
+    <tr><td>parent → iframe</td><td><code>RelayDisconnect</code> / <code>ForceSave</code></td><td>Clean teardown, or override a save conflict.</td></tr>
+  </tbody>
+</table>
+
+<h3>5. Hot-switch vs cold-reload</h3>
+<p>
+  Opening a document of the <strong>same type</strong> as the current
+  one (writer→writer, calc→calc, impress→impress) can be done with
+  <code>RelaySwitchRoom</code> — the WASM runtime stays mounted,
+  a new doc is pushed in, and the user sees the swap in well under a
+  second. Opening a document of a <strong>different type</strong>
+  (writer→calc) is a cold reload: the iframe's <code>src</code> is
+  replaced and the WASM re-instantiates (~5–10 s thanks to HTTP cache
+  + Service Worker).
+</p>
+
+<h3>6. Style boundaries</h3>
+<p>
+  The editor iframe carries its own CSS. Don't try to reach into it
+  — COOL's style is not a public API. What <em>is</em> stable is the
+  postMessage protocol, URL params, and the three service endpoints
+  documented above.
+</p>
+
+<h2>Running the stack locally</h2>
+<pre><code># Deploy the editor bundle into /tmp/static-deploy/public/
+bash wasm/deploy.sh
+
+# Start the four services (all read wasm/.env)
+node wasm/message-relay.js &amp;
+bash wasm/launch-viewer.sh &amp;
+sudo bash wasm/launch-editor-static.sh &amp;
+sudo bash wasm/launch-sni-router.sh &amp;</code></pre>
+<p>
+  The SNI router needs <code>:443</code> (hence sudo). Relay + viewer +
+  editor-static each have their own HTTPS cert under
+  <code>/etc/letsencrypt/live/</code>.
+</p>
+
+<h2>Running on Azure</h2>
+<p>
+  <code>bash wasm/deploy-azure.sh</code> deploys all three apps into the
+  same resource group. Config lives in <code>wasm/.env.deploy</code>:
+</p>
+<pre><code>RESOURCE_GROUP=Szilveszter-coediting
+APP_SERVICE_PLAN=szebeni-wasm-plan
+VIEWER_APP_NAME=szebeni-wasm-viewer
+RELAY_APP_NAME=szebeni-wasm-relay
+EDITOR_APP_NAME=szebeni-wasm-static
+DOC_STORAGE_ACCOUNT=wopiteststorage
+DOC_STORAGE_KEY=…
+DOC_STORAGE_CONTAINER=documents
+VIEWER_EXTRA_ORIGINS=https://files.atgpartners.info
+EDITOR_EXTRA_ORIGINS=https://files.atgpartners.info</code></pre>
+<p>
+  The first editor deploy is slow (~15 min — brotli -q 11 of 265 MB
+  <code>online.wasm</code> is CPU-bound). Subsequent deploys reuse the
+  cached <code>.br</code> when the source bytes haven't changed.
+</p>
+
+</div>
+</body>
+</html>

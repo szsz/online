@@ -41,6 +41,7 @@ echo "Test output root: $TEST_OUTPUT_ROOT"
 # ── Test definitions ────────────────────────────────────────────────────
 # Each entry:  slug | script | human name | description | shots_dir_name
 TESTS=(
+    "regression-snapshot-injection|test-regression-snapshot-injection.js|Regression: Snapshot Injection|deploy.sh HEAPU8 restore injection must be present in online.js — missing → warm visits re-run full init|none"
     "relay|test-relay.js|Relay Test|WebSocket relay message ordering and delivery|none"
     "2browser|test-cursor-debug.js|2-Browser Co-Edit|Two browsers co-editing with cursor sync|shots"
     "3browser|test-3browsers.js|3-Browser Co-Edit|Three browsers simultaneous co-editing|shots3"
@@ -53,7 +54,9 @@ TESTS=(
     "chart|test-chart.js|Chart Rendering|Writer docx and Calc xlsx with embedded charts|shots-chart"
     "fonts|test-fonts.js|Font Lazy Loading|Rare fonts, browser font access, server fallback, VFS injection|shots-fonts"
     "e2e-upload|test-e2e-upload.js|E2E Upload & Co-Edit|Upload file, background preload, open, co-edit with 2nd browser|shots-e2e-upload"
-    "extreme|test-extreme.js|Extreme Stress|10 browsers, 1000 edits, join/leave cycles with complex docx|shots-extreme"
+    # extreme|test-extreme.js — disabled: 18+ min wall clock on Azure, net
+    # signal is covered by latejoin + stress + 3browser tests. Re-enable
+    # with an opt-in flag if we need it.
     "pptx-viewer|test-pptx-viewer.js|PPTX via Viewer|Slide rendering, navigation, and Slide Show via viewer cold-reload|shots-pptx-viewer"
     "prewarm|test-prewarm.js|Pre-Warm|Viewer pre-warms editor in background; document open near-instant|shots-prewarm"
     "regression-sidebar|test-regression-sidebar.js|Regression: Sidebar Collapse|Sidebar collapses to thin bar on file open; hover/click re-expands|shots-regression-sidebar"
@@ -84,6 +87,7 @@ TESTS=(
     "prewarm-benchmark|test-prewarm-benchmark.js|Prewarm Benchmark|Document open timing for all doc types: first visit vs return visit, cold vs warm cache|shots-prewarm-benchmark"
     "pptx-viewer-slides|test-pptx-viewer-slides.js|PPTX Viewer Slides|Real pptx via viewer: Impress UI, slide panel, navigation, content rendering|shots-pptx-viewer-slides"
     "singleuser|test-singleuser.js|Single-User Mode|Open/edit/save docx, xlsx, pptx without relay in one session|shots-singleuser"
+    "singleuser-viewer|test-singleuser-viewer.js|Single-User via Viewer|Full viewer flow for /singleuser.html: redirect, no relay WS, type + save|shots-singleuser-viewer"
     "cold-open|test-cold-open.js|Cold Start File Open|Deep-link file open on cold start must use cold-reload, not hot-switch|shots-cold-open"
     "viewer-e2e|test-viewer-e2e.js|Viewer E2E|Full viewer flow: deep-link cold start, return visit, cross-type file switch via sidebar|shots-viewer-e2e"
     "folder-api|test-folder-api.js|Folder API|Create folders, upload nested files, download, path traversal rejection|none"

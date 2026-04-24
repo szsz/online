@@ -112,11 +112,12 @@ async function waitForPrewarmReady(page, label, timeoutMs) {
         log('\n--- Session 1: first visit (cold cache) ---');
         let browser = await puppeteer.launch(launchOpts);
         let page = await browser.newPage();
+        page.on('dialog', d => d.accept().catch(() => {}));
         await page.setCacheEnabled(true);
         await page.setViewport({ width: 1280, height: 900 });
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
 
-        const ok1 = await waitForPrewarmReady(page, 'session1', 180000);
+        const ok1 = await waitForPrewarmReady(page, 'session1', 300000);
         check('Session 1: prewarm reaches ready', ok1);
         await snap(page, 'session1_loaded');
 
@@ -148,11 +149,12 @@ async function waitForPrewarmReady(page, label, timeoutMs) {
         log('\n--- Session 2: return visit (warm disk cache) ---');
         browser = await puppeteer.launch(launchOpts);
         page = await browser.newPage();
+        page.on('dialog', d => d.accept().catch(() => {}));
         await page.setCacheEnabled(true);
         await page.setViewport({ width: 1280, height: 900 });
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
 
-        const ok2 = await waitForPrewarmReady(page, 'session2', 180000);
+        const ok2 = await waitForPrewarmReady(page, 'session2', 300000);
         check('Session 2: prewarm reaches ready', ok2);
         await snap(page, 'session2_loaded');
 

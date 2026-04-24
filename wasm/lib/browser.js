@@ -60,6 +60,40 @@ async function launch(opts = {}) {
         ],
     });
 
+    // Auto-accept all blocking dialogs (confirm / alert / prompt /
+    // beforeunload). A concrete case: the viewer's SaveConflict handler
+    // calls `confirm(...)` when storage hash drifts from the client's
+    // expected hash (which happens naturally when a second client joins
+    // the room — two encrypted checkpoint uploads race and produce
+    // different stored hashes). Left unhandled, the dialog blocks the
+    // page's JS thread indefinitely, freezing every page.evaluate /
+    // waitForFunction on that page. Auto-accept keeps the tests moving;
+    // real users still see the dialog on production deploys.
+    function autoAcceptDialogs(page) {
+        page.on('dialog', async d => {
+            try { await d.accept(); } catch (e) {}
+        });
+    }
+    const _origNewPage = browser.newPage.bind(browser);
+    browser.newPage = async function() {
+        const page = await _origNewPage();
+        autoAcceptDialogs(page);
+        return page;
+    };
+    // createBrowserContext returns a BrowserContext whose .newPage()
+    // also needs wrapping.
+    const _origCreateCtx = browser.createBrowserContext.bind(browser);
+    browser.createBrowserContext = async function() {
+        const ctx = await _origCreateCtx();
+        const _origCtxNewPage = ctx.newPage.bind(ctx);
+        ctx.newPage = async function() {
+            const page = await _origCtxNewPage();
+            autoAcceptDialogs(page);
+            return page;
+        };
+        return ctx;
+    };
+
     const cleanup = async () => {
         try { await browser.close(); } catch (e) {}
         try { xvfb.kill('SIGTERM'); } catch (e) {}

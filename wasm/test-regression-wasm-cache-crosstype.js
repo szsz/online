@@ -30,6 +30,8 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-wasm-cache-crosstype';
@@ -91,16 +93,15 @@ const readHeavyTransfers = (page) => readTransfers(page, isHeavy);
 // Filter helper: a transfer that's not the document file itself
 // (cache-test.docx etc.) and not trivially small.
 function isInterestingNonDoc(url) {
-    if (/\/api\/files\//.test(url)) return false;       // doc storage
+    if (/\/api\/files\//.test(url)) return false;       // legacy doc storage
+    if (/\/api\/v2\/file\//.test(url)) return false;    // v2 encrypted doc storage
     if (/\/wasm\/cache-test\./.test(url)) return false; // doc upload
     return true;
 }
 
-async function clickFile(page, name) {
-    await page.waitForFunction(n =>
-        !!document.querySelector(`.file[data-name="${n}"]`),
-        { timeout: 15000 }, name);
-    await page.evaluate(n => document.querySelector(`.file[data-name="${n}"]`).click(), name);
+async function clickFile(page, fileId) {
+    await waitForSidebar(page, fileId, 15000);
+    await clickSidebarFile(page, fileId);
 }
 
 async function waitForDocLoaded(page, kind, timeoutMs) {
@@ -143,20 +144,18 @@ async function waitForDocLoaded(page, kind, timeoutMs) {
     });
 
     try {
-        // Upload fixtures via viewer
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
+        // Upload fixtures via v2 (encrypted). Store fileId + secret per
+        // format for the click step below.
+        const recentList = [];
         for (const f of FORMATS) {
             const src = path.join(__dirname, '..', 'test', 'data', f.src);
             const bytes = fs.readFileSync(src);
-            await up.evaluate(async (n, a) => {
-                await fetch('/api/files/' + encodeURIComponent(n), {
-                    method: 'POST', body: new Blob([new Uint8Array(a)]),
-                });
-            }, f.name, Array.from(bytes));
-            log(`Uploaded ${f.name} (${(bytes.length/1024).toFixed(0)}KB)`);
+            const up = await uploadV2(VIEWER, f.name, bytes);
+            f.fileId = up.fileId;
+            f.b64urlSecret = up.b64urlSecret;
+            recentList.push({ b64urlSecret: up.b64urlSecret, fileId: up.fileId, cachedName: f.name });
+            log(`Uploaded ${f.name} (${(bytes.length/1024).toFixed(0)}KB) → ${up.fileId.substring(0,8)}…`);
         }
-        await up.close();
 
         const page = await browser.newPage();
         await page.setCacheEnabled(true);
@@ -167,6 +166,7 @@ async function waitForDocLoaded(page, kind, timeoutMs) {
         await cdp.send('Network.clearBrowserCache');
 
         log('\n--- Phase 1: prewarm (cold cache, full download expected) ---');
+        await seedRecentFiles(page, recentList);
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         for (let i = 0; i < 240; i++) {
             await sleep(500);
@@ -211,8 +211,11 @@ async function waitForDocLoaded(page, kind, timeoutMs) {
         const snapshotKeysAll = new Set(initialAll.map(t => t.url + '@' + t.startTime));
         for (const f of FORMATS) {
             log(`\n--- Phase 2.${f.kind}: cold-reload to ${f.name} ---`);
-            await clickFile(page, f.name);
-            const ok = await waitForDocLoaded(page, f.kind, 120000);
+            await clickFile(page, f.fileId);
+            // 180s for Azure — cross-type Calc/Impress signals
+            // (Sheet X, Slide Show) take 35–60s after the nav settles;
+            // local is comfortably under 20s.
+            const ok = await waitForDocLoaded(page, f.kind, 180000);
             check(`${f.kind}: document loaded`, ok);
             await snap(page, f.kind + '_loaded');
 

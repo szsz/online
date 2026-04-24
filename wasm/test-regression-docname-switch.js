@@ -10,6 +10,8 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-docname-switch';
@@ -28,13 +30,19 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
-async function getEditorFrame(page) {
-    return page.frames().find(f => f.url().includes('cool.html'));
+async function getEditorFrame(page, requireFileId) {
+    // When requireFileId is set, only match the iframe whose URL references
+    // that fileId — otherwise we latch onto the prewarm blank's frame and
+    // read its (empty/wrong) title-bar value. In v2 the WOPISrc is the
+    // opaque fileId (not the plaintext name).
+    return page.frames().find(f =>
+        f.url().includes('cool.html')
+        && (!requireFileId || f.url().includes(requireFileId)));
 }
 
-async function getDocTitle(page) {
-    const fr = await getEditorFrame(page);
-    if (!fr) return '';
+async function getDocTitle(page, requireFileId) {
+    const fr = await getEditorFrame(page, requireFileId);
+    if (!fr) return { inputValue: '', baseFileName: '' };
     try {
         return await fr.evaluate(() => {
             // COOL exposes the title via wopi.BaseFileName and renders it
@@ -61,23 +69,21 @@ async function getDocTitle(page) {
     });
 
     try {
-        // Upload two fixtures
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
+        // Upload two fixtures via v2 (encrypted).
         const bytes = fs.readFileSync(FIXTURE);
-        for (const name of [DOC_A, DOC_B]) {
-            await up.evaluate(async (n, a) => {
-                await fetch('/api/files/' + encodeURIComponent(n), {
-                    method: 'POST', body: new Blob([new Uint8Array(a)]),
-                });
-            }, name, Array.from(bytes));
-        }
-        await up.close();
-        log(`Uploaded ${DOC_A} and ${DOC_B}`);
+        const upA = await uploadV2(VIEWER, DOC_A, bytes);
+        const upB = await uploadV2(VIEWER, DOC_B, bytes);
+        log(`Uploaded ${DOC_A} → ${upA.fileId.substring(0,8)}… and ${DOC_B} → ${upB.fileId.substring(0,8)}…`);
+
+        const recentList = [
+            { b64urlSecret: upA.b64urlSecret, fileId: upA.fileId, cachedName: DOC_A },
+            { b64urlSecret: upB.b64urlSecret, fileId: upB.fileId, cachedName: DOC_B },
+        ];
 
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 900 });
-        await page.goto(VIEWER + '/#file=' + encodeURIComponent(DOC_A),
+        await seedRecentFiles(page, recentList);
+        await page.goto(VIEWER + '/#file=' + upA.b64urlSecret,
             { waitUntil: 'domcontentloaded' });
 
         // Wait for doc A to load
@@ -103,11 +109,8 @@ async function getDocTitle(page) {
 
         // ── Switch to doc B via the sidebar ──────────────────────────
         log('\n--- Switching to doc B ---');
-        await page.waitForFunction(n =>
-            !!document.querySelector(`.file[data-name="${n}"]`),
-            { timeout: 15000 }, DOC_B);
-        await page.evaluate(n =>
-            document.querySelector(`.file[data-name="${n}"]`).click(), DOC_B);
+        await waitForSidebar(page, upB.fileId, 15000);
+        await clickSidebarFile(page, upB.fileId);
 
         // Wait for the editor to load the new doc (word count changes)
         await sleep(5000);
@@ -139,6 +142,7 @@ async function getDocTitle(page) {
         log('\n--- Case 2: prewarm flow (no deep link) ---');
         const p2 = await browser.newPage();
         await p2.setViewport({ width: 1280, height: 900 });
+        await seedRecentFiles(p2, recentList);
         await p2.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         // Wait for prewarm to complete
         for (let i = 0; i < 240; i++) {
@@ -154,11 +158,8 @@ async function getDocTitle(page) {
         log('After prewarm: input="' + titlePrewarm.inputValue + '"');
 
         // Click doc A
-        await p2.waitForFunction(n =>
-            !!document.querySelector(`.file[data-name="${n}"]`),
-            { timeout: 15000 }, DOC_A);
-        await p2.evaluate(n =>
-            document.querySelector(`.file[data-name="${n}"]`).click(), DOC_A);
+        await waitForSidebar(p2, upA.fileId, 15000);
+        await clickSidebarFile(p2, upA.fileId);
         await sleep(5000);
         for (let i = 0; i < 30; i++) {
             const fr = await getEditorFrame(p2);
@@ -169,8 +170,14 @@ async function getDocTitle(page) {
             }
             await sleep(500);
         }
-        await sleep(2000);
-        const titleA2 = await getDocTitle(p2);
+        // Wait for the title bar to pick up the new doc name — can
+        // lag the doc-loaded signal by several seconds on Azure.
+        let titleA2 = await getDocTitle(p2, upA.fileId);
+        const titleADeadline = Date.now() + 60000;
+        while (!titleA2.inputValue.includes('docname-A') && Date.now() < titleADeadline) {
+            await sleep(500);
+            titleA2 = await getDocTitle(p2, upA.fileId);
+        }
         log('After clicking A: input="' + titleA2.inputValue + '"');
         check('Prewarm→A: title shows "docname-A" after first click',
               titleA2.inputValue.includes('docname-A'),
@@ -183,8 +190,7 @@ async function getDocTitle(page) {
             document.body.classList.remove('docs-hover');
         });
         await sleep(500);
-        await p2.evaluate(n =>
-            document.querySelector(`.file[data-name="${n}"]`).click(), DOC_B);
+        await clickSidebarFile(p2, upB.fileId);
         await sleep(5000);
         for (let i = 0; i < 30; i++) {
             const fr = await getEditorFrame(p2);
@@ -195,8 +201,12 @@ async function getDocTitle(page) {
             }
             await sleep(500);
         }
-        await sleep(2000);
-        const titleB2 = await getDocTitle(p2);
+        let titleB2 = await getDocTitle(p2, upB.fileId);
+        const titleBDeadline = Date.now() + 60000;
+        while (!titleB2.inputValue.includes('docname-B') && Date.now() < titleBDeadline) {
+            await sleep(500);
+            titleB2 = await getDocTitle(p2, upB.fileId);
+        }
         log('After clicking B: input="' + titleB2.inputValue + '"');
         check('A→B: title shows "docname-B" after switching',
               titleB2.inputValue.includes('docname-B'),

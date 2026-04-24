@@ -153,19 +153,14 @@ async function waitForChars(pages, expected, timeout) {
         const up = await browser.newPage();
         await up.goto(BASE, { waitUntil: 'networkidle0' });
         const docBytes = fs.readFileSync(DOC_PATH);
-        await up.evaluate(async (url, name, arr, room, relayHttp) => {
+        await up.evaluate(async (url, name, arr) => {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {
                 method: 'POST',
                 body: new Blob([new Uint8Array(arr)])
             });
-            // Pre-seed relay so late joiners get this file immediately
-            await fetch(relayHttp + '/room/' + encodeURIComponent(room) + '/file', {
-                method: 'POST',
-                body: new Blob([new Uint8Array(arr)])
-            });
-        }, BASE, DOC_NAME, Array.from(docBytes), ROOM, RELAY_HTTP);
+        }, BASE, DOC_NAME, Array.from(docBytes));
         await up.close();
-        log('Uploaded (WOPI + relay)');
+        log('Uploaded to editor /wasm/ (relay checkpoint will be registered by first client)');
 
         // ===== PHASE 1: A opens, types ALPHA =====
         log('\n===== Phase 1: A opens first, types ALPHA =====');
@@ -191,7 +186,16 @@ async function waitForChars(pages, expected, timeout) {
         // ===== PHASE 2: B late-joins, types BETA =====
         log('\n===== Phase 2: B late-joins =====');
         const pageB = await openDoc('B');
-        const bChars = charCount(await getStatus(pageB));
+        // B's openDoc returns as soon as the statusbar shows a char
+        // count; late-join replay of A's ALPHA can lag by several
+        // seconds on Azure. Wait up to 30s for bChars to reach the
+        // post-ALPHA target before asserting.
+        let bChars = charCount(await getStatus(pageB));
+        const bDeadline = Date.now() + 30000;
+        while (bChars < afterAlpha && Date.now() < bDeadline) {
+            await sleep(500);
+            bChars = charCount(await getStatus(pageB));
+        }
         await snap(pageB, 'B_initial');
         log(`B loaded: ${bChars} chars`);
         check('B got saved state from A', bChars >= afterAlpha);
@@ -215,7 +219,12 @@ async function waitForChars(pages, expected, timeout) {
         // ===== PHASE 3: C late-joins while A+B active =====
         log('\n===== Phase 3: C late-joins =====');
         const pageC = await openDoc('C');
-        const cChars = charCount(await getStatus(pageC));
+        let cChars = charCount(await getStatus(pageC));
+        const cDeadline = Date.now() + 30000;
+        while (cChars < afterAlpha + 4 && Date.now() < cDeadline) {
+            await sleep(500);
+            cChars = charCount(await getStatus(pageC));
+        }
         await snap(pageC, 'C_initial');
         log(`C loaded: ${cChars} chars`);
         check('C got saved state from A or B', cChars >= afterAlpha + 4);
@@ -224,10 +233,16 @@ async function waitForChars(pages, expected, timeout) {
         await sleep(5000);
 
         await typeText(pageC, 'C', 'GAMMA');
-        await sleep(15000);
+        // Wait up to 30s for B and C to converge after GAMMA propagates.
+        let bAfterGamma = charCount(await getStatus(pageB));
+        let cAfterGamma = charCount(await getStatus(pageC));
+        const gDeadline = Date.now() + 30000;
+        while (Math.abs(bAfterGamma - cAfterGamma) >= 10 && Date.now() < gDeadline) {
+            await sleep(500);
+            bAfterGamma = charCount(await getStatus(pageB));
+            cAfterGamma = charCount(await getStatus(pageC));
+        }
         const aAfterGamma = charCount(await getStatus(pageA));
-        const bAfterGamma = charCount(await getStatus(pageB));
-        const cAfterGamma = charCount(await getStatus(pageC));
         await snap(pageA, 'A_after_GAMMA');
         await snap(pageB, 'B_after_GAMMA');
         await snap(pageC, 'C_after_GAMMA');
@@ -244,7 +259,12 @@ async function waitForChars(pages, expected, timeout) {
         await sleep(5000);
 
         const pageD = await openDoc('D');
-        const dChars = charCount(await getStatus(pageD));
+        let dChars = charCount(await getStatus(pageD));
+        const dDeadline = Date.now() + 30000;
+        while (dChars < afterAlpha + 9 && Date.now() < dDeadline) {
+            await sleep(500);
+            dChars = charCount(await getStatus(pageD));
+        }
         await snap(pageD, 'D_initial');
         log(`D loaded: ${dChars} chars`);
         check('D got saved state', dChars >= afterAlpha + 9);

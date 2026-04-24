@@ -180,6 +180,30 @@ async function setName(name, hash, size) {
     return meta;
 }
 
+// Merge-patch a single field into the meta record. Used by the v2 API
+// to attach encrypted-name ciphertext without rewriting unrelated fields.
+async function setMetaField(name, field, value) {
+    const sn = safeName(name);
+    const existing = (await readMeta(sn)) || {};
+    existing[field] = value;
+    existing.updatedAt = new Date().toISOString();
+    await writeMeta(sn, existing);
+    return existing;
+}
+
+// Delete a name → hash pointer and its metadata. The underlying _blobs/
+// content is left alone (still referenced by any other name that pointed
+// at the same hash; content-addressable so unique per hash).
+async function deleteName(name) {
+    const sn = safeName(name);
+    try {
+        await container.getBlobClient(metaKey(sn)).deleteIfExists();
+    } catch(e) {}
+    try {
+        await container.getBlobClient(sn).deleteIfExists();
+    } catch(e) {}
+}
+
 async function listNames() {
     // Iterate metadata blobs only; legacy plain-name blobs without metadata
     // would need an extra pass. We list those too so the UI stays complete.
@@ -192,7 +216,11 @@ async function listNames() {
         try {
             const meta = await readMeta(name);
             if (meta) {
-                out.push({ name, hash: meta.hash, size: meta.size, updatedAt: meta.updatedAt });
+                out.push({
+                    name, hash: meta.hash, size: meta.size,
+                    updatedAt: meta.updatedAt,
+                    encName: meta.encName || null,  // v2 per-file name ciphertext
+                });
                 known.add(name);
             }
         } catch (e) {}
@@ -264,7 +292,7 @@ function describe() { return describeSource; }
 
 module.exports = {
     putBlob, getBlobBuffer, pipeBlobTo, statBlob,
-    setName, getName, listNames,
+    setName, getName, listNames, setMetaField, deleteName,
     list, getBuffer, pipeTo, put, stat,
     describe,
 };
