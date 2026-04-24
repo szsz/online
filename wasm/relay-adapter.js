@@ -928,6 +928,51 @@
     // Ctrl+S, the toolbar Save button, and File→Save all funnel through
     // the same .uno:Save command. The Sidebar/Auto-save also produce
     // .uno:Save — that's still legit "user wants to persist this" intent.
+    // Ask the parent viewer to encrypt+store v2 bytes on the editor's
+    // behalf. The editor doesn't hold the content key; only the parent
+    // does (it derived it from the URL fragment's secret on page load).
+    // Returns a Promise<{hash, locator}> resolving with the server-
+    // confirmed hash and the v2 URL future late joiners will fetch
+    // from.
+    function saveViaParent(fileId, bytes, localHashHex) {
+        return new Promise(function(resolve) {
+            var reqId = 'save-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+            var timeoutId = setTimeout(function() {
+                window.removeEventListener('message', onMsg);
+                resolve({ error: 'parent-save-timeout' });
+            }, 30000);
+            function onMsg(ev) {
+                if (typeof ev.data !== 'string') return;
+                try {
+                    var m = JSON.parse(ev.data);
+                    if (!m || m.MessageId !== 'WasmFileSaveResult') return;
+                    if (!m.Values || m.Values.reqId !== reqId) return;
+                    clearTimeout(timeoutId);
+                    window.removeEventListener('message', onMsg);
+                    if (m.Values.ok) {
+                        resolve({
+                            hash: m.Values.hash || localHashHex,
+                            locator: m.Values.locator,
+                        });
+                    } else {
+                        resolve({ error: m.Values.error || 'unknown' });
+                    }
+                } catch(e) {}
+            }
+            window.addEventListener('message', onMsg);
+            try {
+                parent.postMessage(JSON.stringify({
+                    MessageId: 'WasmFileSave',
+                    Values: { fileId: fileId, bytes: Array.from(bytes), reqId: reqId },
+                }), '*');
+            } catch(e) {
+                clearTimeout(timeoutId);
+                window.removeEventListener('message', onMsg);
+                resolve({ error: 'postmessage-' + (e.message || 'unknown') });
+            }
+        });
+    }
+
     function isUserSaveCommand(text) {
         if (!text || !text.startsWith('uno ')) return false;
         var cmd = text.substring(4).split('?')[0].split(/\s/)[0];
@@ -980,83 +1025,90 @@
                     var hashHex = Array.from(hashArr).map(function(b) {
                         return b.toString(16).padStart(2, '0');
                     }).join('');
-                    // 3. Upload file to FILE STORAGE SERVER (the viewer).
-                    //    This is the canonical store; late-joiners read from
-                    //    here. The relay only learns the hash + seq for
-                    //    coordination — it never stores file bytes.
+                    // Branch on v2 vs legacy. V2 files (opaque 64-hex
+                    // fileId) have their encryption key living ONLY in
+                    // the parent viewer's memory — the editor must NOT
+                    // know about it. Send plaintext to the parent via
+                    // postMessage; the viewer encrypts with the
+                    // content key and PUTs to /api/v2/file/<fileId>,
+                    // replying with the new hash + locator. Legacy
+                    // files keep their /api/files/ POST path.
+                    var v2Match = /^[0-9a-f]{64}$/i.test(wopiSrc);
                     var viewerFileUrl = getFileStorageUrl(wopiSrc);
-                    // Send the hash of the version we expect to be on storage.
-                    // If someone modified the file externally, the server returns 409.
-                    var uploadHeaders = {};
-                    if (lastKnownHash) {
-                        uploadHeaders['X-Expected-Hash'] = lastKnownHash;
-                    }
-                    if (forceNextSave) {
-                        uploadHeaders['X-Force-Overwrite'] = 'true';
-                        forceNextSave = false;
-                    }
-                    // Encrypt file bytes before upload if encryption is active
-                    return encryptFileBytes(bytes).then(function(uploadBytes) {
-                    return origFetch(viewerFileUrl, {
-                        method: 'POST',
-                        body: new Blob([uploadBytes]),
-                        mode: 'cors',
-                        headers: uploadHeaders,
-                    });
-                    }).then(function(uploadResp) {
-                        if (uploadResp.status === 409) {
-                            // Conflict: file was modified externally
-                            return uploadResp.json().then(function(conflict) {
-                                console.log('[relay] Save conflict! expected=' +
-                                    (conflict.expectedHash || '').substring(0, 16) +
-                                    '… current=' + (conflict.currentHash || '').substring(0, 16) + '…');
-                                try {
-                                    parent.postMessage(JSON.stringify({
-                                        MessageId: 'SaveConflict',
-                                        Values: {
-                                            expectedHash: conflict.expectedHash,
-                                            currentHash: conflict.currentHash,
-                                            updatedAt: conflict.updatedAt,
-                                        }
-                                    }), '*');
-                                } catch(e) {}
-                                // DON'T update lastKnownHash, DON'T send 0x07 to relay
-                            });
+
+                    var savePromise;
+                    if (v2Match) {
+                        savePromise = saveViaParent(wopiSrc, bytes, hashHex);
+                    } else {
+                        // Legacy plaintext POST (used by tests that
+                        // bypass the viewer or files uploaded before v2).
+                        var uploadHeaders = {};
+                        if (lastKnownHash) uploadHeaders['X-Expected-Hash'] = lastKnownHash;
+                        if (forceNextSave) {
+                            uploadHeaders['X-Force-Overwrite'] = 'true';
+                            forceNextSave = false;
                         }
-                        return uploadResp.json().then(function(result) {
-                            // Success: save lands in storage, update
-                            // our known hash, and rotate the relay
-                            // checkpoint via 0x07. The relay prunes
-                            // the messageLog to seq > saveAtSeq so
-                            // future late joiners land on the new
-                            // baseline. Existing peers are unaffected.
-                            lastKnownHash = result.hash || hashHex;
-                            var locator = viewerFileUrl;
-                            var payload = {
-                                hash: hashHex,
-                                locator: locator,
-                                seq: saveAtSeq,
-                            };
-                            if (ws && connected) {
-                                var bodyStr = JSON.stringify(payload);
-                                var bodyBytes = new TextEncoder().encode(bodyStr);
-                                var frame = new Uint8Array(5 + bodyBytes.length);
-                                frame[0] = 0x07;
-                                frame[1] = (myViewId >>> 24) & 0xFF;
-                                frame[2] = (myViewId >>> 16) & 0xFF;
-                                frame[3] = (myViewId >>> 8) & 0xFF;
-                                frame[4] = myViewId & 0xFF;
-                                frame.set(bodyBytes, 5);
-                                ws.send(frame);
-                                console.log('[relay] Save-rotation 0x07 sent: hash=' + hashHex.substring(0, 16) + '… atSeq=' + saveAtSeq);
+                        savePromise = encryptFileBytes(bytes).then(function(uploadBytes) {
+                            return origFetch(viewerFileUrl, {
+                                method: 'POST',
+                                body: new Blob([uploadBytes]),
+                                mode: 'cors',
+                                headers: uploadHeaders,
+                            });
+                        }).then(function(uploadResp) {
+                            if (uploadResp.status === 409) {
+                                return uploadResp.json().then(function(conflict) {
+                                    console.log('[relay] Save conflict! expected=' +
+                                        (conflict.expectedHash || '').substring(0, 16) + '…');
+                                    try {
+                                        parent.postMessage(JSON.stringify({
+                                            MessageId: 'SaveConflict',
+                                            Values: conflict,
+                                        }), '*');
+                                    } catch(e) {}
+                                    return { conflict: true };
+                                });
                             }
-                            try {
-                                parent.postMessage(JSON.stringify({
-                                    MessageId: 'SaveComplete',
-                                    Values: { hash: hashHex.substring(0, 16), bytes: bytes.length }
-                                }), '*');
-                            } catch(e) {}
+                            return uploadResp.json().then(function(r) {
+                                return { hash: r.hash || hashHex, locator: viewerFileUrl };
+                            });
                         });
+                    }
+
+                    return savePromise.then(function(saveResult) {
+                        if (!saveResult || saveResult.conflict) return;
+                        if (saveResult.error) {
+                            console.error('[relay] Save failed: ' + saveResult.error);
+                            return;
+                        }
+                        lastKnownHash = saveResult.hash;
+                        // Rotate the relay checkpoint. Relay prunes
+                        // messageLog to seq > saveAtSeq so future late
+                        // joiners land on the new baseline.
+                        var payload = {
+                            hash: saveResult.hash,
+                            locator: saveResult.locator,
+                            seq: saveAtSeq,
+                        };
+                        if (ws && connected) {
+                            var bodyBytes = new TextEncoder().encode(JSON.stringify(payload));
+                            var frame = new Uint8Array(5 + bodyBytes.length);
+                            frame[0] = 0x07;
+                            frame[1] = (myViewId >>> 24) & 0xFF;
+                            frame[2] = (myViewId >>> 16) & 0xFF;
+                            frame[3] = (myViewId >>> 8) & 0xFF;
+                            frame[4] = myViewId & 0xFF;
+                            frame.set(bodyBytes, 5);
+                            ws.send(frame);
+                            console.log('[relay] Save-rotation 0x07 sent: hash=' + saveResult.hash.substring(0, 16) +
+                                '… locator=' + saveResult.locator + ' atSeq=' + saveAtSeq);
+                        }
+                        try {
+                            parent.postMessage(JSON.stringify({
+                                MessageId: 'SaveComplete',
+                                Values: { hash: saveResult.hash.substring(0, 16), bytes: bytes.length },
+                            }), '*');
+                        } catch(e) {}
                     });
                 });
             }).catch(function(e) {
@@ -1333,7 +1385,7 @@
                         });
                     }
                     tryNext(0).then(function(buf) {
-                        // Decrypt if encrypted (file has [keyVer:4][nonce:12][ct...])
+                        // Decrypt if encrypted (legacy E2E relay encryption)
                         return decryptFileBytes(new Uint8Array(buf)).then(function(dec) {
                             return dec.buffer || dec;
                         });
@@ -1343,11 +1395,22 @@
                             joinFileHash = Array.from(new Uint8Array(hashBuf)).map(function(b) {
                                 return b.toString(16).padStart(2, '0');
                             }).join('');
-                            var matches = info.hash && info.hash === joinFileHash;
-                            console.log('[relay] Downloaded ' + buf.byteLength + 'B; computed hash=' +
-                                joinFileHash.substring(0, 16) + '…' +
-                                (matches ? ' (matches relay expected)' :
-                                 info.hash ? ' (relay expected ' + info.hash.substring(0, 16) + '… — mismatch will be resolved by relay)' : ''));
+                            // STRICT verify: if the relay advertised a
+                            // hash, the downloaded bytes MUST match. A
+                            // mismatch means the locator points at a
+                            // different version than what the relay
+                            // expects — don't activate on drifted bytes.
+                            // Send 0x06 with our hash so the relay's
+                            // 0x0A redirect logic kicks in; DON'T write
+                            // these bytes to /wasm/<wopiSrc>.
+                            if (info.hash && info.hash !== joinFileHash) {
+                                console.error('[relay] HASH MISMATCH: locator=' + joinFileHash.substring(0, 16) +
+                                    '… relay-expected=' + info.hash.substring(0, 16) +
+                                    '… — abandoning download; relay should send 0x0A redirect');
+                                throw new Error('hash-mismatch');
+                            }
+                            console.log('[relay] Downloaded ' + buf.byteLength + 'B; hash=' +
+                                joinFileHash.substring(0, 16) + '… ✓ matches relay');
                             lateJoinFileReady = true;
                             return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
                         });

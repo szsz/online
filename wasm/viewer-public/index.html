@@ -521,6 +521,65 @@ window.addEventListener('message', function(event) {
                 console.log('[viewer] App_LoadingStatus=Initialized (post-prewarm) — waiting for WasmDocReady');
             }
         }
+
+        // Editor asking the viewer to save a v2-encrypted file. The
+        // editor iframe never sees keys — it hands us plaintext, we
+        // encrypt with the currently-open file's contentKey and PUT
+        // to /api/v2/file/<fileId>. Response posts back so the
+        // adapter can rotate the relay checkpoint.
+        if (msg.MessageId === 'WasmFileSave' && msg.Values) {
+            const { fileId: saveFileId, bytes, reqId } = msg.Values;
+            const respond = (payload) => {
+                try { event.source.postMessage(JSON.stringify({
+                    MessageId: 'WasmFileSaveResult',
+                    Values: Object.assign({ reqId }, payload),
+                }), '*'); } catch(e) {}
+            };
+            if (!currentV2Keys || currentV2Keys.fileId !== saveFileId) {
+                respond({ ok: false, error: 'no-key-for-fileId' });
+                return;
+            }
+            const plaintext = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+            (async () => {
+                try {
+                    const [ctBytes, hashBuf] = await Promise.all([
+                        FileCrypto.encryptBytes(currentV2Keys.contentKey, plaintext),
+                        crypto.subtle.digest('SHA-256', plaintext),
+                    ]);
+                    const ciphertext = bytesToBase64(ctBytes);
+                    const hashHex = Array.from(new Uint8Array(hashBuf))
+                        .map(b => b.toString(16).padStart(2, '0')).join('');
+                    // encName is reused unchanged — filename doesn't
+                    // change on a save. Fetch current encName and
+                    // rewrite it identically. In a tighter integration
+                    // we'd cache this from the initial open.
+                    let encName = '';
+                    try {
+                        const meta = await fetch('/api/v2/file/' + saveFileId);
+                        if (meta.ok) {
+                            const m = await meta.json();
+                            encName = m.encName || '';
+                        }
+                    } catch(e) {}
+                    const putResp = await fetch('/api/v2/file/' + saveFileId, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ciphertext, encName }),
+                    });
+                    if (!putResp.ok) {
+                        respond({ ok: false, error: 'put-failed-' + putResp.status });
+                        return;
+                    }
+                    respond({
+                        ok: true,
+                        hash: hashHex,
+                        locator: FILE_STORAGE_URL + '/api/v2/file/' + saveFileId,
+                    });
+                } catch(e) {
+                    respond({ ok: false, error: 'encrypt-or-put-' + (e.message || 'unknown') });
+                }
+            })();
+        }
     } catch(e) {}
 });
 
@@ -703,6 +762,12 @@ async function uploadFile() {
     refresh();
 }
 
+// Keys for the currently-open file — held in memory only for the
+// lifetime of the tab. The editor iframe never gets these; it asks
+// the viewer to save on its behalf via postMessage (see the
+// `WasmFileSave` listener below).
+let currentV2Keys = null; // { contentKey, nameKey, fileId, secretB64 }
+
 // Open an encrypted file using the URL-fragment secret. Derive keys,
 // fetch the ciphertext, decrypt, upload plaintext bytes to the editor's
 // /wasm/ temp under the opaque fileId (the editor has no key and never
@@ -710,6 +775,7 @@ async function uploadFile() {
 async function openFileBySecret(secretB64) {
     const secret = FileCrypto.b64urlDecode(secretB64);
     const { contentKey, nameKey, fileId } = await FileCrypto.deriveKeys(secret);
+    currentV2Keys = { contentKey, nameKey, fileId, secretB64 };
     setStatus('Fetching encrypted file…');
     const resp = await fetch('/api/v2/file/' + fileId);
     if (!resp.ok) { setStatus('File not found (' + resp.status + ')'); return; }
@@ -771,7 +837,15 @@ async function openFile(name, opts) {
     // use cold reload to avoid signal races with the prewarm WasmDocReady.
     const wasPrewarmReady = prewarmReady;
     const effectiveDocType = opts.docTypeHint || docTypeFor(name);
-    const willHotSwitch = wasPrewarmReady && (effectiveDocType === currentDocType);
+    // V2 opens always cold-reload: hot-switch leaves the iframe's
+    // ?WOPISrc= query pointing at the prewarm blank forever, and the
+    // adapter derives the room locator from that query — so hot-switch
+    // would advertise the blank's /wasm/<blank> URL as the locator
+    // while Kit is actually editing <fileId>. Cold reload costs ~2s
+    // but eliminates the whole stale-WOPISrc class of bug.
+    const willHotSwitch = wasPrewarmReady
+        && (effectiveDocType === currentDocType)
+        && !opts.hashValue;   // hashValue is only set by v2 callers
 
     // Collapse the file sidebar so the editor gets the full viewport.
     // The user can re-open it by hovering the left edge or clicking the bar.
@@ -811,7 +885,7 @@ async function openFile(name, opts) {
     // Reset the shield-floor timer for the new open.
     if (__shieldFloorTimer) { clearTimeout(__shieldFloorTimer); __shieldFloorTimer = null; }
 
-    if (wasPrewarmReady && sameType) {
+    if (willHotSwitch) {
         // HOT SWITCH — same document type, reuse the live WASM.
         // Need file uploaded BEFORE switchdocument fires.
         updateShieldProgress('Opening document…', 30, 'Downloading ' + name);
