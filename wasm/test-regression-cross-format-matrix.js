@@ -93,6 +93,21 @@ async function runCell(page, fromType, toType) {
     const targetFile = FILES[toType].name;
     log(`SWITCH ${fromType} → ${toType}`);
 
+    // Clear stale status DOM from the previous doc-type. Without this,
+    // Writer's #StateWordCount lingers when we switch to Calc (and vice
+    // versa), producing false-positive "loaded" detections — the test
+    // would pass on a NO-OP switch. Clearing forces the new doc to
+    // populate its own status field before we believe the switch worked.
+    await page.evaluate(() => {
+        const wc = document.querySelector('#StateWordCount');
+        const sd = document.querySelector('#StatusDocPos');
+        const ss = document.querySelector('#SlideStatus');
+        if (wc) wc.textContent = '';
+        if (sd) sd.textContent = '';
+        if (ss) ss.textContent = '';
+        window.__bridgeSwitchSent = false;
+    });
+
     const t0 = Date.now();
     // Send switchdocument via the hash-bridge that wasm-loader.js implements.
     await page.evaluate((file) => {
