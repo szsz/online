@@ -88,12 +88,11 @@ static const char* g_argv2 = nullptr;
 // Must be a GLOBAL (not local/stack) so it has a stable address.
 volatile uint32_t g_snapshotSentinel = 0;
 
-// Controls whether Desktop::Main enters the VCL event loop.
-// Controls whether Desktop::Main enters Execute() (VCL event loop).
-// First visit: true → Desktop::Main returns after Phase 1 (for lok_init_2 WaitForReady).
-// After snapshot save: false → Desktop::Main enters Execute().
-// On restore: set false by leakSnapshotPolls so it enters Execute().
-bool g_wasmSkipExecute = true;
+// g_wasmSkipExecute is now defined in LO Core's wasmsnapshot.cxx so it
+// resolves for both LO Core's standalone soffice.js executable and Online's
+// online.js binary (both link libsofficeapp.a). Online code paths that need
+// to read or set it use this extern declaration.
+extern bool g_wasmSkipExecute;
 
 // Desktop::Main phase control:
 // 0 = first visit: run Phase 1, save snapshot, then Phase 2
