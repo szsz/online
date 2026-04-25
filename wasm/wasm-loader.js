@@ -260,12 +260,25 @@
                     if (meta.fingerprint !== BUILD_FINGERPRINT) {
                         return discardStale('stored=' + meta.fingerprint + ' current=' + BUILD_FINGERPRINT);
                     }
-                    // Fingerprint matches — snapshot is valid
+                    // Fingerprint matches — snapshot is valid. Eagerly read
+                    // the heap blob so it's ready before Module.preRun fires.
+                    // Reading 256MB from Cache API takes ~500ms-2s; smaller
+                    // than the wasm-fetch + instantiate that runs in
+                    // parallel, so this isn't on the cold-start critical
+                    // path. (Was previously left as null/'deferred' but
+                    // never actually loaded — making preRun a no-op.)
                     mark('snapshot:exists');
                     logTiming('Snapshot: found (warm start)');
                     window.__wasmSnapshotExists = true;
-                    window.__wasmSnapshotData = null; // will be loaded lazily
-                    return 'deferred';
+                    return heapResp.arrayBuffer().then(function(buf) {
+                        window.__wasmSnapshotData = buf;
+                        mark('snapshot:heap_loaded', (buf.byteLength/1048576).toFixed(0) + 'MB');
+                        return buf;
+                    }).catch(function(e) {
+                        mark('snapshot:heap_load_failed', e.message);
+                        window.__wasmSnapshotData = null;
+                        return null;
+                    });
                 }).catch(function(e) {
                     return discardStale('meta-parse-error: ' + (e.message || ''));
                 });
@@ -273,8 +286,13 @@
             // Dev mode: BUILD_FINGERPRINT not injected. Accept whatever's there.
             mark('snapshot:exists');
             window.__wasmSnapshotExists = true;
-            window.__wasmSnapshotData = null;
-            return 'deferred';
+            return heapResp.arrayBuffer().then(function(buf) {
+                window.__wasmSnapshotData = buf;
+                return buf;
+            }).catch(function(e) {
+                window.__wasmSnapshotData = null;
+                return null;
+            });
         }).catch(function(e) {
             mark('snapshot:cache_error', e.message);
             window.__wasmSnapshotData = null;

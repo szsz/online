@@ -559,6 +559,10 @@ void saveToServer() {
 int main(int argc, char* argv_main[])
 {
     std::cout << "================ Here is main()" << std::endl;
+    MAIN_THREAD_ASYNC_EM_ASM({
+        console.log('TIMING: wasmapp main() entry argc=' + $0
+                    + ' restored=' + (globalThis.__wasmSnapshotRestored ? 1 : 0));
+    }, argc);
 
     assert(argc == 3);
     g_argv1 = argv_main[1] ? argv_main[1] : "";
