@@ -180,7 +180,26 @@
     // Loading it eagerly caused memory pressure that broke __wasm_call_ctors.
     window.__wasmSnapshotData = undefined; // undefined = not yet checked
     window.__wasmSnapshotExists = false;
+    // ── KILLSWITCH: snapshot disabled while warm-restore Phase 2 is in
+    // flight. Setting this true forces every visit to be cold (~30–40s)
+    // but avoids the warm-restore path entirely (where Kit's
+    // ChildSession sees _isDocLoaded=false on the new session because
+    // the snapshot was captured before any user doc loaded). To re-enable
+    // when Phase 2 lands, set to false.
+    var SNAPSHOT_DISABLED = true;
     window.__wasmSnapshotPromise = (function() {
+        if (SNAPSHOT_DISABLED) {
+            mark('snapshot:disabled_by_killswitch');
+            window.__wasmSnapshotData = null;
+            // Also delete any stale Cache Storage entry so subsequent
+            // visits don't even find the metadata.
+            if ('caches' in self) {
+                caches.open('wasm-snapshot').then(function(c) {
+                    return Promise.all([c.delete('/snapshot/heap-v2'), c.delete('/snapshot/meta')]);
+                }).catch(function() {});
+            }
+            return Promise.resolve(null);
+        }
         if (!('caches' in self)) {
             mark('snapshot:no_cache_api');
             window.__wasmSnapshotData = null;
@@ -969,6 +988,13 @@
                         function wakeLO() {
                             try { Module.ccall('wasm_snapshot_complete', null, [], []); }
                             catch(e) { mark('snapshot:wake_error', e.message); }
+                        }
+                        // KILLSWITCH: skip the actual save — just wake LO so
+                        // Execute() proceeds. Pairs with SNAPSHOT_DISABLED above.
+                        if (typeof SNAPSHOT_DISABLED !== 'undefined' && SNAPSHOT_DISABLED) {
+                            mark('snapshot:save_skipped_by_killswitch');
+                            wakeLO();
+                            return;
                         }
                         if (!Module || !Module.HEAPU8) {
                             mark('snapshot:no_heapu8');
