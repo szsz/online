@@ -7,6 +7,7 @@
 # Usage:
 #   bash wasm/deploy.sh              # deploy from default build dir
 #   bash wasm/deploy.sh --no-inject  # skip snapshot injection
+#   bash wasm/deploy.sh --no-brotli  # skip .br regeneration (fast local iter)
 #   bash wasm/deploy.sh --build      # build first, then deploy
 
 set -e
@@ -17,12 +18,27 @@ BUILD_DIR="$REPO_DIR/wasm/online-build"
 PUB="${PUB:-/tmp/static-deploy/public}"
 BROWSER_DIR="$PUB/browser"
 
+# ── Deploy lock ──
+# Prevents two deploys from racing on $BROWSER_DIR (which is what bit us
+# when an ad-hoc brotli run overlapped the deploy's brotli step and a
+# truncated online.wasm.br was served to live browsers).
+LOCK_FILE="${LOCK_FILE:-/tmp/online-deploy.lock}"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "ERROR: another deploy is running (lock at $LOCK_FILE). Wait for it, or pass LOCK_FILE=/dev/null to override." >&2
+    exit 1
+fi
+
 DO_BUILD=false
 DO_INJECT=true
+DO_BROTLI=true
+DO_SMOKE=true
 for arg in "$@"; do
     case "$arg" in
         --build) DO_BUILD=true ;;
         --no-inject) DO_INJECT=false ;;
+        --no-brotli) DO_BROTLI=false ;;
+        --no-smoke) DO_SMOKE=false ;;
     esac
 done
 
@@ -243,14 +259,63 @@ fi
 
 # ── Step 4: Generate Brotli compressed versions ──
 # These MUST match the source files. Stale .br files cause silent
-# binary mismatches that are extremely hard to debug.
+# binary mismatches that are extremely hard to debug — so when
+# --no-brotli skips regeneration, we also drop any existing .br so
+# the server falls back to plain content instead of serving a
+# mismatched payload.
 BROTLI_FILES="online.js online.wasm bundle.js"
+if [ "$DO_BROTLI" = true ]; then
+    for name in $BROTLI_FILES; do
+        src="$STAGE/$name"
+        if [ -f "$src" ]; then
+            echo -n "  Compressing $name → $name.br..."
+            brotli -f "$src" -o "$STAGE/$name.br"
+            echo " $(du -h "$STAGE/$name.br" | cut -f1)"
+        fi
+    done
+else
+    # Skip brotli. For each file: if the existing live .br is still
+    # in sync with the new source (same bytes), keep it so the server
+    # can keep serving compressed. If bytes differ, drop the .br so
+    # the server falls back to plain rather than shipping a stale
+    # mismatched payload. "Same bytes" is approximated by comparing
+    # md5 of the STAGE source to md5 of the current live source —
+    # cheap and correct for this use case.
+    echo "  [--no-brotli] Skipping .br regeneration"
+    for name in $BROTLI_FILES; do
+        stage="$STAGE/$name"
+        live="$BROWSER_DIR/$name"
+        live_br="$BROWSER_DIR/$name.br"
+        if [ ! -f "$live_br" ] || [ ! -f "$live" ]; then
+            continue
+        fi
+        if cmp -s "$stage" "$live" 2>/dev/null; then
+            cp -f "$live_br" "$STAGE/$name.br"
+            echo "  [--no-brotli] $name unchanged → kept existing .br"
+        else
+            rm -f "$live_br"
+            echo "  [--no-brotli] $name CHANGED → dropping stale .br"
+        fi
+    done
+fi
+
+# ── Step 4b: Integrity check on the .br files in staging ──
+# Catches the truncated-Brotli class of bugs (concurrent writes to the
+# live .br file, brotli process killed mid-stream, etc.) BEFORE we
+# move the staging dir to live. Any mismatch fails the deploy with
+# the staged dir intact for inspection.
 for name in $BROTLI_FILES; do
     src="$STAGE/$name"
-    if [ -f "$src" ]; then
-        echo -n "  Compressing $name → $name.br..."
-        brotli -f "$src" -o "$STAGE/$name.br"
-        echo " $(du -h "$STAGE/$name.br" | cut -f1)"
+    br="$STAGE/$name.br"
+    if [ -f "$br" ] && [ -f "$src" ]; then
+        # Decompress to /dev/null and compare byte counts. Faster than
+        # round-tripping to disk; still catches truncation.
+        src_bytes=$(stat -c %s "$src")
+        decomp_bytes=$(brotli -d -c "$br" 2>/dev/null | wc -c)
+        if [ "$src_bytes" != "$decomp_bytes" ]; then
+            echo "ERROR: $name.br decompressed to $decomp_bytes bytes; expected $src_bytes (staging at $STAGE)" >&2
+            exit 1
+        fi
     fi
 done
 
@@ -275,7 +340,7 @@ fi
 # that the editor-static (PUB-rooted) serves them at /dicts/.
 if [ -f "$SCRIPT_DIR/dict-loader.js" ]; then
     cp "$SCRIPT_DIR/dict-loader.js" "$BROWSER_DIR/dict-loader.js"
-    if command -v brotli >/dev/null 2>&1; then
+    if [ "$DO_BROTLI" = true ] && command -v brotli >/dev/null 2>&1; then
         brotli -f -q 11 "$BROWSER_DIR/dict-loader.js"
     else
         rm -f "$BROWSER_DIR/dict-loader.js.br"
@@ -304,7 +369,7 @@ fi
 GLOBAL_JS="$BROWSER_DIR/global.js"
 if [ -f "$GLOBAL_JS" ] && grep -q 'insertAdjacentElement("afterend",brandingLink)' "$GLOBAL_JS"; then
     sed -i 's|\.insertAdjacentElement("afterend",link)\.insertAdjacentElement("afterend",brandingLink)|.insertAdjacentElement("afterend",link)|g' "$GLOBAL_JS"
-    if command -v brotli >/dev/null 2>&1; then
+    if [ "$DO_BROTLI" = true ] && command -v brotli >/dev/null 2>&1; then
         brotli -f -q 11 "$GLOBAL_JS"
     else
         rm -f "$GLOBAL_JS.br"
@@ -356,3 +421,21 @@ echo "=== Deploy complete: fingerprint=$FINGERPRINT ==="
 echo "  online.js:   $(du -h "$BROWSER_DIR/online.js"   | cut -f1) (br: $(du -h "$BROWSER_DIR/online.js.br" 2>/dev/null | cut -f1 || echo 'none'))"
 echo "  online.wasm: $(du -h "$BROWSER_DIR/online.wasm" | cut -f1) (br: $(du -h "$BROWSER_DIR/online.wasm.br" 2>/dev/null | cut -f1 || echo 'none'))"
 echo "  bundle.js:   $(du -h "$BROWSER_DIR/bundle.js"   | cut -f1) (br: $(du -h "$BROWSER_DIR/bundle.js.br" 2>/dev/null | cut -f1 || echo 'none'))"
+
+# ── Step 8: Smoke test ──
+# 60-90s headless puppeteer: opens a known fixture URL, waits for the
+# editor's iframe to render a real-sized canvas. Catches truncated
+# brotli, broken snapshot injection, and broken WASM init that the
+# file-level integrity check above can't see. Skip with --no-smoke.
+if [ "$DO_SMOKE" = true ] && [ -f "$SCRIPT_DIR/test-deploy-smoke.js" ]; then
+    echo ""
+    echo "── Smoke test ──"
+    if (cd "$SCRIPT_DIR" && node test-deploy-smoke.js); then
+        :
+    else
+        echo "  WARNING: smoke test FAILED — deploy artifacts are live but may not work"
+        echo "  See /tmp/smoke-fail.png for the failing render"
+        # Don't exit non-zero: the user may want to investigate against
+        # the live deploy. The loud warning is the gate.
+    fi
+fi
