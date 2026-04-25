@@ -8,15 +8,13 @@
 #   bash wasm/build-wasm.sh --setup      # setup only (pull image, create container, no build)
 #   bash wasm/build-wasm.sh --clean      # force full rebuild of Online (not core)
 #   bash wasm/build-wasm.sh --rebuild-core  # force full rebuild of LO Core
-#   bash wasm/build-wasm.sh --build-core   # auto-select local LO Core build (no prompt)
-#   bash wasm/build-wasm.sh --download    # auto-select Azure blob download (no prompt)
 #   bash wasm/build-wasm.sh --container-name=my-test  # override container name
 #
-# Azure credentials (for --download / option 2):
-#   Create wasm/.env.blobdownload with a SAS URL for the pre-built core blob:
-#
-#     BLOB_DOWNLOAD_URL='https://<account>.blob.core.windows.net/<container>/<blob>?<SAS-query-params>'
-#
+# LO Core source: by default the host's $HOME/libreoffice-core-wasm checkout is
+# bind-mounted into the container at /lo/core. Edits on the host are visible
+# inside the container. Override with $LO_CORE_HOST_DIR. If the host dir does
+# not exist, the container will git clone from $LO_CORE_REPO into its own
+# writable layer instead.
 
 set -e
 
@@ -27,25 +25,25 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONTAINER="lo-wasm-server"
 IMAGE="public.ecr.aws/allotropia/libo-builders/wasm"
-LO_CORE_BRANCH="master"
-LO_CORE_REPO="https://gerrit.libreoffice.org/core"
+LO_CORE_BRANCH="wasm-coediting"
+LO_CORE_REPO="https://github.com/szsz/libreoffice-core-wasm.git"
+LO_CORE_HOST_DIR="${LO_CORE_HOST_DIR:-$HOME/libreoffice-core-wasm}"
 
-# Inside the container the repo is always at /lo/online
+# Inside the container the repo is always at /lo/online and LO core at /lo/core
 CONTAINER_REPO_DIR="/lo/online"
+CONTAINER_CORE_DIR="/lo/core"
 ONLINE_BUILD_DIR="$CONTAINER_REPO_DIR/wasm/online-build"
 
 SETUP_ONLY=false
 CLEAN=false
 REBUILD_CORE=false
 BUILD_CORE=false
-DOWNLOAD=false
 for arg in "$@"; do
     case "$arg" in
         --setup) SETUP_ONLY=true ;;
         --clean) CLEAN=true ;;
         --rebuild-core) REBUILD_CORE=true ;;
         --build-core) BUILD_CORE=true ;;
-        --download) DOWNLOAD=true ;;
         --container-name=*) CONTAINER="${arg#*=}" ;;
     esac
 done
@@ -98,6 +96,15 @@ check_container_mount() {
     fi
 }
 
+# Decide whether to bind-mount the host's LO core checkout
+LO_CORE_MOUNT_ARGS=()
+if [ -d "$LO_CORE_HOST_DIR/.git" ]; then
+    LO_CORE_MOUNT_ARGS=(-v "$LO_CORE_HOST_DIR":"$CONTAINER_CORE_DIR")
+    echo "[OK] LO Core bind-mount: $LO_CORE_HOST_DIR → $CONTAINER_CORE_DIR"
+else
+    echo "[ ] LO Core: no host checkout at $LO_CORE_HOST_DIR; will clone in container"
+fi
+
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
     check_container_mount
     echo "[OK] Container '$CONTAINER'"
@@ -110,6 +117,7 @@ else
         --name "$CONTAINER" \
         --memory=14g \
         -v "$REPO_DIR":"$CONTAINER_REPO_DIR" \
+        "${LO_CORE_MOUNT_ARGS[@]}" \
         "$IMAGE" \
         sleep infinity
     echo "[OK] Container '$CONTAINER' created"
@@ -188,70 +196,38 @@ if [ "$REBUILD_CORE" = true ]; then
 fi
 
 if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 2>/dev/null; then
-    if [ "$BUILD_CORE" = true ]; then
-        REPLY=1
-    elif [ "$DOWNLOAD" = true ]; then
-        REPLY=2
-    else
+    if [ "$BUILD_CORE" != true ]; then
         echo ""
-        echo "  LibreOffice Core not found. Choose:"
-        echo "    1) Clone and build from source (1-3 hours, ~12 GB RAM)"
-        echo "    2) Download pre-built from Azure blob"
-        echo "    3) Exit"
+        echo "  LibreOffice Core not found. Clone and build from source?"
+        echo "  (1-3 hours, ~12 GB RAM)"
         echo ""
-        read -p "  Choice [1/2/3]: " -n 1 -r
+        read -p "  Proceed? [y/N]: " -n 1 -r
         echo ""
+        [[ ! "$REPLY" =~ ^[Yy]$ ]] && exit 0
     fi
 
-    case "$REPLY" in
-        1)
-            if ! docker exec "$CONTAINER" test -d /lo/core/.git 2>/dev/null; then
-                echo "--- Cloning LibreOffice core ($LO_CORE_BRANCH) ---"
-                docker exec "$CONTAINER" bash -c "
-                    mkdir -p /lo
-                    git clone --depth 1 --branch '$LO_CORE_BRANCH' '$LO_CORE_REPO' /lo/core
-                "
-            fi
-            echo "--- Configuring LibreOffice Core ---"
-            docker exec "$CONTAINER" bash -c "
-                # Ensure gcc-12 is default (required by latest LO Core)
-                update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 2>/dev/null
-                update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100 2>/dev/null
-                source /home/builder/emsdk/emsdk_env.sh
-                mkdir -p /lo/core-build && cd /lo/core-build
-                /lo/core/autogen.sh --with-distro=LibreOfficeWASM32 --with-wasm-module='writer calc impress'
-            "
-            echo "--- Building LibreOffice Core ---"
-            docker exec "$CONTAINER" bash -c "
-                source /home/builder/emsdk/emsdk_env.sh
-                cd /lo/core-build && make -rj\$(nproc) 2>&1
-            "
-            echo "[OK] Core build complete"
-            ;;
-        2)
-            AZURE_ENV="$SCRIPT_DIR/.env.blobdownload"
-            if [ ! -f "$AZURE_ENV" ]; then
-                echo "ERROR: $AZURE_ENV not found. Run: bash wasm/azure-create-sas.sh"
-                exit 1
-            fi
-            source "$AZURE_ENV"
-
-            echo "--- Downloading pre-built core from Azure ---"
-            # Download directly into the container and extract there
-            docker exec "$CONTAINER" bash -c "
-                mkdir -p /lo
-                curl -fS -o /tmp/lo-core-wasm.tar.gz '$BLOB_DOWNLOAD_URL'
-                echo '[OK] Downloaded'
-                echo '--- Extracting ---'
-                tar -xzf /tmp/lo-core-wasm.tar.gz -C /lo
-                rm -f /tmp/lo-core-wasm.tar.gz
-            "
-            echo "[OK] Core installed from Azure"
-            ;;
-        *)
-            exit 0
-            ;;
-    esac
+    if ! docker exec "$CONTAINER" test -d /lo/core/.git 2>/dev/null; then
+        echo "--- Cloning LibreOffice core fork ($LO_CORE_BRANCH) ---"
+        docker exec "$CONTAINER" bash -c "
+            mkdir -p /lo
+            git clone --depth 1 --branch '$LO_CORE_BRANCH' '$LO_CORE_REPO' /lo/core
+        "
+    fi
+    echo "--- Configuring LibreOffice Core ---"
+    docker exec "$CONTAINER" bash -c "
+        # Ensure gcc-12 is default (required by latest LO Core)
+        update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 2>/dev/null
+        update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100 2>/dev/null
+        source /home/builder/emsdk/emsdk_env.sh
+        mkdir -p /lo/core-build && cd /lo/core-build
+        /lo/core/autogen.sh --with-distro=LibreOfficeWASM32 --with-wasm-module='writer calc impress'
+    "
+    echo "--- Building LibreOffice Core ---"
+    docker exec "$CONTAINER" bash -c "
+        source /home/builder/emsdk/emsdk_env.sh
+        cd /lo/core-build && make -rj\$(nproc) 2>&1
+    "
+    echo "[OK] Core build complete"
 else
     echo "[OK] LibreOffice Core"
 fi
