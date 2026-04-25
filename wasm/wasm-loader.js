@@ -202,18 +202,34 @@
                 return null;
             }
             // Check fingerprint: reject stale snapshots from older WASM binaries.
-            if (metaResp && BUILD_FINGERPRINT !== '__WASM_BUILD' + '_FINGERPRINT__') {
+            // STRICT: require both (a) the build fingerprint was injected by
+            // deploy.sh AND (b) the saved snapshot has a fingerprint field
+            // matching the current one. Pre-fingerprint snapshots and
+            // missing-meta snapshots are rejected — restoring an
+            // incompatible heap into a different binary leads to UB
+            // (typically a "memory access out of bounds" trap inside
+            // libc++ ostream code as soon as main() runs).
+            var fingerprintInjected = (BUILD_FINGERPRINT !== '__WASM_BUILD' + '_FINGERPRINT__');
+            function discardStale(reason) {
+                mark('snapshot:stale', reason);
+                console.log('[snapshot] Discarding stale snapshot:', reason);
+                return caches.open('wasm-snapshot').then(function(c) {
+                    return Promise.all([c.delete('/snapshot/heap-v2'), c.delete('/snapshot/meta')]);
+                }).then(function() {
+                    window.__wasmSnapshotData = null;
+                    return null;
+                });
+            }
+            if (fingerprintInjected) {
+                if (!metaResp) {
+                    return discardStale('no-meta (legacy save format)');
+                }
                 return metaResp.clone().json().then(function(meta) {
-                    if (meta.fingerprint && meta.fingerprint !== BUILD_FINGERPRINT) {
-                        mark('snapshot:stale', 'stored=' + meta.fingerprint + ' current=' + BUILD_FINGERPRINT);
-                        console.log('[snapshot] Discarding stale snapshot (build fingerprint mismatch)');
-                        // Delete stale snapshot
-                        return caches.open('wasm-snapshot').then(function(c) {
-                            return Promise.all([c.delete('/snapshot/heap-v2'), c.delete('/snapshot/meta')]);
-                        }).then(function() {
-                            window.__wasmSnapshotData = null;
-                            return null;
-                        });
+                    if (!meta.fingerprint) {
+                        return discardStale('meta-without-fingerprint (legacy save)');
+                    }
+                    if (meta.fingerprint !== BUILD_FINGERPRINT) {
+                        return discardStale('stored=' + meta.fingerprint + ' current=' + BUILD_FINGERPRINT);
                     }
                     // Fingerprint matches — snapshot is valid
                     mark('snapshot:exists');
@@ -221,14 +237,11 @@
                     window.__wasmSnapshotExists = true;
                     window.__wasmSnapshotData = null; // will be loaded lazily
                     return 'deferred';
-                }).catch(function() {
-                    // Can't read meta — treat as stale
-                    mark('snapshot:meta_error');
-                    window.__wasmSnapshotData = null;
-                    return null;
+                }).catch(function(e) {
+                    return discardStale('meta-parse-error: ' + (e.message || ''));
                 });
             }
-            // No metadata or fingerprint not injected (dev mode) — accept the snapshot
+            // Dev mode: BUILD_FINGERPRINT not injected. Accept whatever's there.
             mark('snapshot:exists');
             window.__wasmSnapshotExists = true;
             window.__wasmSnapshotData = null;
