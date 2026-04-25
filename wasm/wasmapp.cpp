@@ -100,9 +100,6 @@ bool g_wasmSkipExecute = true;
 // 2 = restore visit: skip Phase 1, run Phase 2 only
 int g_wasmDesktopPhase = 0;
 
-// Controls the PRE_INIT snapshot save wait loop in Kit.cpp.
-std::atomic<bool> g_snapshotWaiting{false};
-
 static char const * tempFile; // null when operating on a local file in the Emscripten file system
 static std::string remoteUrl;
 static std::string fileURL;
@@ -521,14 +518,10 @@ void saveToServer() {
     //TODO: handle fetch->status != 200
 }
 
-// Called by JS after snapshot save. Unblocks Kit.cpp wait loop.
-extern "C" EMSCRIPTEN_KEEPALIVE
-void start_coolwsd_phase2()
-{
-    std::cout << "start_coolwsd_phase2: g_wasmSkipExecute=false, g_snapshotWaiting=false" << std::endl;
-    g_wasmSkipExecute = false;
-    g_snapshotWaiting.store(false);
-}
+// Snapshot wake is now handled by wasm_snapshot_complete() defined in
+// LO core's wasmsnapshot.cxx (signals a condition variable that
+// Desktop::Main blocks on via wasmshim::waitForSnapshot()). app.cxx
+// resets g_wasmSkipExecute itself once the wait returns.
 
 int main(int argc, char* argv_main[])
 {

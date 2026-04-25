@@ -61,32 +61,38 @@
     window.__wasmLogTimingReset = function(label) { delete _timingSeen[label]; };
     logTiming('wasm-loader.js started');
 
-    // Filter out emscripten's worker-mailbox noise. These fire from
-    // every pthread on every iteration of the main loop — on a busy
-    // page that's tens of log lines per second for no diagnostic value.
-    // Wrap console.log/info/debug at capture-time so COOL's own
-    // callers hit the filtered one. Errors/warns pass through.
+    // Filter out emscripten's worker-mailbox noise. The infinite
+    // Atomics.waitAsync().then(checkMailbox) chain pumps __emscripten_
+    // check_mailbox which in turn can fire console.log/warn/error from
+    // WASM-side code via _emscripten_console_* imports. The log text
+    // itself doesn't mention "checkMailbox" — Chrome only shows the
+    // names because the call stack walks through that chain. So we
+    // filter by the CALL STACK of the wrapper, not the message text.
+    // Wrap log/info/debug/warn/error at capture-time; drop any call
+    // whose synchronous stack passes through checkMailbox /
+    // __emscripten_thread_mailbox_await / the _mb wrapper.
     (function filterMailboxSpam() {
-        var patterns = [
-            /__emscripten_thread_mailbox_await/,
-            /\bcheckMailbox\b/,
-        ];
-        function matches(args) {
+        var stackRe = /checkMailbox|__emscripten_thread_mailbox_await|\b_mb\b/;
+        var textRe = /__emscripten_thread_mailbox_await|\bcheckMailbox\b/;
+        function fromMailbox(args) {
+            try {
+                var s = new Error().stack || '';
+                if (stackRe.test(s)) return true;
+            } catch(e) {}
             for (var i = 0; i < args.length; i++) {
                 var a = args[i];
-                if (typeof a !== 'string') continue;
-                for (var j = 0; j < patterns.length; j++) {
-                    if (patterns[j].test(a)) return true;
-                }
+                if (typeof a === 'string' && textRe.test(a)) return true;
             }
             return false;
         }
-        var origLog = console.log;
-        console.log = function() { if (matches(arguments)) return; origLog.apply(console, arguments); };
-        var origInfo = console.info;
-        console.info = function() { if (matches(arguments)) return; origInfo.apply(console, arguments); };
-        var origDebug = console.debug;
-        console.debug = function() { if (matches(arguments)) return; origDebug.apply(console, arguments); };
+        ['log','info','debug','warn','error'].forEach(function(k) {
+            var orig = console[k];
+            if (!orig) return;
+            console[k] = function() {
+                if (fromMailbox(arguments)) return;
+                orig.apply(console, arguments);
+            };
+        });
     })();
 
     mark('loader:start', 'doc=' + docType + ' ext=' + ext);
@@ -902,9 +908,10 @@
             // ── Snapshot signal + save ────────────────────────
             // On restore visits, HEAPU8 was restored before callMain by
             // the deploy.sh injection. LO Core takes SECOND_INIT (fast).
-            // Kit.cpp detects the restore and skips the save.
-            // On first visits, we save HEAPU8 to Cache API after the doc
-            // loads, then call start_coolwsd_phase2 to unblock Kit.cpp.
+            // On first visits: Desktop::Main fires Module.__snapshotReady
+            // after preloading Writer/Calc/Impress; we save HEAPU8 to
+            // Cache API and then call wasm_snapshot_complete() to wake
+            // the LO-side condition variable so Execute() can begin.
             (function() {
                 var wasRestored = !!window.__wasmSnapshotRestored;
                 mark('snapshot:signal', wasRestored ? 'restored' : 'first-visit');
@@ -940,12 +947,21 @@
                 }
 
                 if (!wasRestored) {
-                    // First visit: save after LO init + module preload.
-                    // Desktop::Main signals __loInitDone after preloading modules.
-                    var saveCheck = setInterval(function() {
-                        if (!Module || !Module.HEAPU8) return;
-                        if (!window.__loInitDone) return;
-                        clearInterval(saveCheck);
+                    // First visit: Desktop::Main fires Module.__snapshotReady
+                    // after preloading Writer/Calc/Impress, when the heap is
+                    // in a clean snapshottable state.
+                    Module.__snapshotReady = function() {
+                        // Preserve the legacy global for tests/observers.
+                        window.__loInitDone = true;
+                        function wakeLO() {
+                            try { Module.ccall('wasm_snapshot_complete', null, [], []); }
+                            catch(e) { mark('snapshot:wake_error', e.message); }
+                        }
+                        if (!Module || !Module.HEAPU8) {
+                            mark('snapshot:no_heapu8');
+                            wakeLO();
+                            return;
+                        }
                         mark('snapshot:init_done');
                         // Save only the USED portion of HEAPU8 (typically ~160MB
                         // vs 1GB total). Find last non-zero 4-byte word.
@@ -960,10 +976,6 @@
                         // BSS, and stack — these are initialized by Emscripten's
                         // initRuntime() and must NOT be overwritten on restore.
                         // Everything above is the dynamic heap (malloc'd objects).
-                        // 16MB is a conservative estimate — actual data+BSS+stack
-                        // is typically 5-10MB for this build.
-                        // Read __heap_base via ccall to a C helper.
-                        // This is the boundary between BSS/data (below) and heap (above).
                         var heapBase = 16 * 1024 * 1024; // 16MB default
                         try {
                             heapBase = Module.ccall('get_heap_base', 'number', [], []);
@@ -974,37 +986,26 @@
                         try {
                             var memCopy = new ArrayBuffer(heapSize);
                             new Uint8Array(memCopy).set(Module.HEAPU8.subarray(0, heapSize));
-                            // Use Cache API — handles large blobs efficiently.
-                            // Store metadata alongside the snapshot.
                             var meta = JSON.stringify({ heapBase: heapBase, size: heapSize, ts: Date.now(), fingerprint: BUILD_FINGERPRINT });
                             caches.open('wasm-snapshot').then(function(cache) {
-                                // Save metadata
                                 cache.put('/snapshot/meta', new Response(meta, {
                                     headers: { 'Content-Type': 'application/json' }
                                 }));
-                                // Save heap data
                                 var blob = new Blob([memCopy], { type: 'application/octet-stream' });
                                 return cache.put('/snapshot/heap-v2', new Response(blob));
                             }).then(function() {
                                 mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB via Cache API, heapBase=' + heapBase);
-                                if (false && isBlank(wopiSrc)) {
-                                    // DISABLED: prewarm skip broke hot-switch because
-                                    // COOL's JS framework never initialized (no Execute()).
-                                    // The blank doc must load so hot-switch works.
-                                    mark('snapshot:prewarm_done');
-                                } else {
-                                    // Real document: resume COOLWSD so it enters Execute()
-                                    mark('snapshot:starting_phase2');
-                                    try { Module.ccall('start_coolwsd_phase2', null, [], []); }
-                                    catch(e) { mark('snapshot:phase2_error', e.message); }
-                                }
+                                mark('snapshot:waking_lo');
+                                wakeLO();
                             }).catch(function(err) {
                                 mark('snapshot:save_error', err.message);
-                                // Resume COOLWSD even if save failed
-                                try { Module.ccall('start_coolwsd_phase2', null, [], []); } catch(e) {}
+                                wakeLO(); // wake LO even on save failure
                             });
-                        } catch(ex) { mark('snapshot:save_error', ex.message); }
-                    }, 500);
+                        } catch(ex) {
+                            mark('snapshot:save_error', ex.message);
+                            wakeLO();
+                        }
+                    };
                 }
             })();
         }
