@@ -975,6 +975,15 @@ void COOLWSD::leakSnapshotPolls()
     new (&NewChildrenCV) std::condition_variable();
     NewChildren.clear();
 
+    // Clear Poco's Application singleton pointer. After snapshot restore,
+    // _pInstance is non-null (it was set when the cold-visit COOLWSD ran
+    // Application::setup()). The new COOLWSD() spawned in the warm-visit
+    // path also calls setup(), which has poco_assert(_pInstance == 0) and
+    // would otherwise abort with a Poco::AssertionViolationException.
+    // clearInstancePointer() is a small WASM-only patch we add to Poco's
+    // Application class — see wasm/poco-1.12.4-emscripten.patch.
+    Poco::Util::Application::clearInstancePointer();
+
     // Set g_wasmSkipExecute=false so Desktop::Main enters Execute().
     extern bool g_wasmSkipExecute;
     g_wasmSkipExecute = false;
