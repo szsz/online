@@ -62,6 +62,9 @@ async function waitForDocLoaded(page, label) {
         // Calc: StatusDocPos has "Sheet N of N"
         const sd = document.querySelector('#StatusDocPos');
         if (sd && sd.textContent && sd.textContent.includes('Sheet')) return true;
+        // Impress: SlideStatus has "Slide N of M"
+        const ss = document.querySelector('#SlideStatus');
+        if (ss && ss.textContent && /Slide\s+\d+\s+of\s+\d+/i.test(ss.textContent)) return true;
         return false;
     }, { timeout: TIMEOUT });
     const dur = ((Date.now() - t0) / 1000).toFixed(1);
@@ -254,7 +257,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
     const formats = [
         { name: 'test document.docx', path: path.join(__dirname, '..', 'test', 'data', 'test document.docx'), label: 'docx' },
         { name: 'testdoc.xlsx', path: path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx'), label: 'xlsx' },
-        // pptx is not supported by this WASM build (Impress fails to load)
+        { name: 'testdoc.pptx', path: path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx'), label: 'pptx' },
     ];
 
     let allPassed = true;

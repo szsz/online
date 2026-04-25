@@ -124,16 +124,13 @@ async function runCell(page, fromType, toType) {
 (async () => {
     log('=== Cross-format hot-switch matrix ===');
 
-    // NOTE: impress (pptx) is not yet loadable in this WASM build —
-    // sd module compiles but EM_ASM signatures don't line up with the
-    // pre-built LO Core. Re-enable the impress cells once that's fixed.
     const transitions = [
         ['writer',  'calc'   ], // A1
+        ['writer',  'impress'], // A2
         ['calc',    'writer' ], // B1
-        // ['writer',  'impress'], // A2 — pending impress build fix
-        // ['calc',    'impress'], // B2
-        // ['impress', 'writer' ], // C1
-        // ['impress', 'calc'   ], // C2
+        ['calc',    'impress'], // B2
+        ['impress', 'writer' ], // C1
+        ['impress', 'calc'   ], // C2
     ];
 
     const results = [];
@@ -154,10 +151,16 @@ async function runCell(page, fromType, toType) {
             log(`  uploaded ${info.name}`);
         }
 
-        // 2-cell walk: writer → calc → writer. Covers both writer↔calc
-        // transitions in a single Kit instance, which is the true test
-        // (does the same Kit handle a swap and back).
-        const expectedTransitions = transitions; // already filtered above
+        // 6-cell walk: writer → calc → impress → writer → impress → calc → writer
+        // covers all 6 cells of the matrix (every from/to pair) in one Kit.
+        const expectedTransitions = [
+            ['writer',  'calc'   ], // A1
+            ['calc',    'impress'], // B2
+            ['impress', 'writer' ], // C1
+            ['writer',  'impress'], // A2
+            ['impress', 'calc'   ], // C2
+            ['calc',    'writer' ], // B1
+        ];
 
         // Open the initial doc via WOPISrc, no #switchdoc.
         const ROOM = `cfm-${Date.now()}`;

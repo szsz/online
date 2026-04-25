@@ -388,8 +388,8 @@ async function typeText(page, label, text) {
             }
             await p1.close().catch(() => {});
         } else {
-            log('  PPTX: Failed to load (Impress not supported in this build)');
-            check('PPTX: skipped (Impress not in core)', true);
+            log('  PPTX: Failed to load');
+            check('PPTX: loaded in P1', false);
         }
     }
 

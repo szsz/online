@@ -20,7 +20,7 @@ function check(label, condition) {
 const TEST_FILES = [
     { name: 'test document.docx', src: path.join(__dirname, '..', 'test', 'data', 'test document.docx'), expectedType: 'writer', readySelector: '#StateWordCount', readyText: 'word' },
     { name: 'testdoc.xlsx', src: path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx'), expectedType: 'calc', readySelector: '#StatusDocPos', readyText: 'Sheet' },
-    // pptx not supported yet (sd module not linked)
+    { name: 'testdoc.pptx', src: path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx'), expectedType: 'impress', readySelector: '#SlideStatus', readyText: 'Slide' },
 ];
 
 (async () => {
