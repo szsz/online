@@ -187,6 +187,16 @@
     // the snapshot was captured before any user doc loaded). To re-enable
     // when Phase 2 lands, set to false.
     var SNAPSHOT_DISABLED = true;
+    // When the snapshot is killed there's no value in preloading
+    // Writer/Calc/Impress in Desktop::Main — and worse, doing so
+    // emits notebookbar/sidebar JSDialog payloads for all three over
+    // the fakesocket. dispose() releases the C++ Document but COOL JS
+    // never gets a "remove these buttons" message, so a Writer doc
+    // ends up rendered with leftover Calc tabs ("Formula") and a
+    // duplicate floating-navigator. This flag is read by main.js's
+    // onRuntimeInitialized hook which ccalls wasm_set_preload_disabled
+    // before main() runs Desktop::Main.
+    window.__wasmKillswitchPreloadDisabled = !!SNAPSHOT_DISABLED;
     window.__wasmSnapshotPromise = (function() {
         if (SNAPSHOT_DISABLED) {
             mark('snapshot:disabled_by_killswitch');

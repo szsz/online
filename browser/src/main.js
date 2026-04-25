@@ -149,6 +149,19 @@ if (window.ThisIsTheEmscriptenApp) {
 		}
 	});
 	globalThis.Module.onRuntimeInitialized = function() {
+		// Snapshot killswitch (set in wasm-loader.js): tell LO Core to
+		// skip preloadDocumentModules — those module loads emit
+		// notebookbar/sidebar JSDialog frames that COOL JS never gets
+		// a "remove" for, polluting the Writer UI with Calc tabs and
+		// a duplicate floating-navigator.
+		if (window.__wasmKillswitchPreloadDisabled) {
+			try {
+				globalThis.Module.ccall('wasm_set_preload_disabled',
+					null, ['number'], [1]);
+			} catch (e) {
+				console.warn('wasm_set_preload_disabled failed:', e);
+			}
+		}
 		map.loadDocument(global.socket);
 	};
 	createOnlineModule(globalThis.Module);

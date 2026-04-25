@@ -90,6 +90,13 @@ class NavigatorPanel extends SidebarBase {
 
 		// For calc we do not need to add floating icon
 		if (docType !== 'spreadsheet') {
+			// Idempotent: initializeSpecializedUI fires twice on cold open
+			// (once from the tile layer's beforeAdd, once from Socket.ts on
+			// the status message). Without this, two #floating-navigator
+			// buttons end up in the DOM.
+			while (this.floatingNavIcon.firstChild) {
+				this.floatingNavIcon.removeChild(this.floatingNavIcon.firstChild);
+			}
 			// Create floating navigation button
 			this.createFloatingNavigatorBtn();
 
