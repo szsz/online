@@ -80,9 +80,13 @@ extern "C" EMSCRIPTEN_KEEPALIVE int is_preinit_done()
 
 int coolwsd_server_socket_fd = -1;
 
-// Stored by main() for start_coolwsd_phase2() to use
-static const char* g_argv1 = nullptr;
-static const char* g_argv2 = nullptr;
+// Owning copies of main()'s argv[1..2] (docKind + docDesc). These are
+// std::string (not const char*) so the bytes are safe even if the
+// underlying argv pointer is invalidated, e.g. across snapshot restore
+// where main()'s stack is reused before the COOLWSD::run() thread
+// reads its lambda-captured argv_main.
+static std::string g_argv1;
+static std::string g_argv2;
 
 // Snapshot sentinel — set by Kit.cpp after LO init, polled by JS.
 // Must be a GLOBAL (not local/stack) so it has a stable address.
@@ -527,8 +531,8 @@ int main(int argc, char* argv_main[])
     std::cout << "================ Here is main()" << std::endl;
 
     assert(argc == 3);
-    g_argv1 = argv_main[1];
-    g_argv2 = argv_main[2];
+    g_argv1 = argv_main[1] ? argv_main[1] : "";
+    g_argv2 = argv_main[2] ? argv_main[2] : "";
 
     Log::initialize("WASM", "error");
     Util::setThreadName("main");
@@ -550,8 +554,19 @@ int main(int argc, char* argv_main[])
         {
             Util::setThreadName("COOLWSD::run");
 
-            const std::string docKind = std::string(argv_main[1]);
-            const std::string docDesc = std::string(argv_main[2]);
+            // Use the static globals (set by main() before this thread spawns).
+            // Capturing argv_main by reference [&] is unsafe: main() returns
+            // shortly after .detach(), and the warm-visit thread races with
+            // main()'s return — by the time it reads argv_main on warm, main's
+            // stack is gone and argv_main points to garbage (we observed
+            // docKind="emsc" instead of "server" on snapshot-restore visits).
+            const std::string docKind = g_argv1;
+            const std::string docDesc = g_argv2;
+
+            MAIN_THREAD_ASYNC_EM_ASM({
+                console.log('TIMING: COOLWSD thread docKind=' + UTF8ToString($0)
+                            + ' docDesc.len=' + $1);
+            }, docKind.c_str(), (int)docDesc.size());
 
             if (docKind == "server")
             {
