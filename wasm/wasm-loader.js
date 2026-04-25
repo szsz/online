@@ -960,32 +960,39 @@
                 logTiming(wasRestored ? 'WASM runtime restored from snapshot' : 'WASM runtime initialized (first visit)');
                 window.__wasmJsReady = true;
 
-                // On warm visits the snapshot captured a state where Kit
-                // had already opened blank.docx. The sticky flag that
-                // gates trySendSwitch is therefore structurally true.
+                // ───── PHASE-2 PIECE #3: warm-restore wire protocol ─────
                 //
-                // But there's a second problem specific to cold-reload
-                // opens (viewer path: `cool.html?WOPISrc=<fileId>` with
-                // no #switchdoc=hash): Kit's normal boot path would
-                // load the URL's WOPISrc via the WOPI protocol, but
-                // snapshot restore skips that path — LO Core wakes up
-                // at "blank.docx loaded" and never opens <fileId>. No
-                // canvas paints, docPoll sees nothing, WasmDocReady
-                // never fires, user sees eternal spinner.
+                // PRE-PHASE-2 BEHAVIOR (removed): on wasRestored we set
+                // __wasmInitialDocLoaded=true synchronously and immediately
+                // queued a switchdocument for the user's WOPISrc. That
+                // shortcut races the WS upgrade — the dispatched
+                // 'switchdocument url=...' arrived as the first message on
+                // the new server's accept-loop and was misparsed by
+                // wsd/ClientRequestDispatcher.cpp:889 as "<URL> <appDocId>",
+                // logging `Bad document ID "url=https://..."` and routing
+                // the connection through a half-set-up state from which
+                // ChildSession::loadDocument never completed (the
+                // "nodocloaded" modal alert that blocked warm restore).
                 //
-                // Fix: if the iframe's WOPISrc differs from the blank,
-                // queue a switchdoc to it so Kit actually opens the
-                // target. Uses the same hash-bridge machinery the hot-
-                // switch path uses, so the visiblePoll + docReadyInterval
-                // fire normally.
+                // PHASE-2 BEHAVIOR: on warm restore we follow the SAME
+                // wire protocol as cold start — JS goes through Socket's
+                // normal _onSocketOpen path which sends coolclient +
+                // load url=<wopiSrc>. The new COOLWSD's accept-loop sees
+                // the load URL as its first message (correctly parsed),
+                // does the WS upgrade, and ChildSession loads the user's
+                // doc. The snapshot's value comes from heap-warming
+                // (malloc pages, JIT'd code, fontconfig, factory init),
+                // not from "doc already loaded" — that optimization is
+                // future work (detecting "same URL already in heap" and
+                // short-circuiting loadDocument). Keeping this code path
+                // identical to cold means: zero new failure modes on
+                // warm, just a smaller wall-clock time because the heap
+                // pages are pre-touched.
+                //
+                // No-op block here intentionally — kept as documentation
+                // of what the previous code did and why we removed it.
                 if (wasRestored) {
-                    window.__wasmInitialDocLoaded = true;
-                    mark('snapshot:initialDocLoaded_set_from_restore');
-                    if (wopiSrc && !isBlank(wopiSrc)) {
-                        mark('snapshot:queuing_switchdoc_for_cold_reload', wopiSrc);
-                        pendingSwitchFilename = wopiSrc;
-                        setTimeout(trySendSwitch, 0);
-                    }
+                    mark('snapshot:warm_restore_using_cold_protocol');
                 }
 
                 if (!wasRestored) {
