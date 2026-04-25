@@ -989,71 +989,106 @@
                 }
 
                 if (!wasRestored) {
-                    // First visit: Desktop::Main fires Module.__snapshotReady
-                    // after preloading Writer/Calc/Impress, when the heap is
-                    // in a clean snapshottable state.
-                    Module.__snapshotReady = function() {
-                        // Preserve the legacy global for tests/observers.
+                    // ───── PHASE-2 SNAPSHOT TRIGGER ─────
+                    // Module.__firstDocLoaded fires from kit/ChildSession.cpp
+                    // (via wasmshim::firstDocPainted) when the very first user
+                    // doc finishes loading on this LOK runtime. C++ blocks on
+                    // a condvar until JS captures HEAPU8 and calls
+                    // wasm_first_doc_snapshot_resume.
+                    //
+                    // One-shot. C++ side guards via atomic CAS so subsequent
+                    // doc loads (cross-module switchdoc, second user file)
+                    // don't fire again.
+                    //
+                    // FAILURE REPORTING: any JS exception or missing capability
+                    // calls wasm_snapshot_failed(reason) which both wakes the
+                    // C++ wait and records a structured reason for telemetry.
+                    var SNAPSHOT_FAIL = {
+                        JS_EXCEPTION: 1,
+                        NO_HEAPU8: 2,
+                        CACHE_PUT_FAILED: 3,
+                        TIMEOUT: 4,
+                        KILLED: 5,
+                    };
+                    function reportFailureAndResume(reason, msg) {
+                        mark('snapshot:fail', 'reason=' + reason + ' ' + (msg || ''));
+                        try { Module.ccall('wasm_snapshot_failed', null, ['number'], [reason]); }
+                        catch(e) { mark('snapshot:fail_ccall_error', e.message); }
+                    }
+                    function resumeLO() {
+                        try { Module.ccall('wasm_first_doc_snapshot_resume', null, [], []); }
+                        catch(e) { mark('snapshot:resume_error', e.message); }
+                    }
+
+                    Module.__firstDocLoaded = function(docTypeHint) {
+                        // Preserve legacy global for tests/observers.
                         window.__loInitDone = true;
-                        function wakeLO() {
-                            try { Module.ccall('wasm_snapshot_complete', null, [], []); }
-                            catch(e) { mark('snapshot:wake_error', e.message); }
-                        }
-                        // KILLSWITCH: skip the actual save — just wake LO so
-                        // Execute() proceeds. Pairs with SNAPSHOT_DISABLED above.
-                        if (typeof SNAPSHOT_DISABLED !== 'undefined' && SNAPSHOT_DISABLED) {
-                            mark('snapshot:save_skipped_by_killswitch');
-                            wakeLO();
+                        window.__wasmFirstDocType = docTypeHint || 'text';
+                        mark('snapshot:phase2_trigger', 'docType=' + window.__wasmFirstDocType);
+
+                        if (SNAPSHOT_DISABLED) {
+                            reportFailureAndResume(SNAPSHOT_FAIL.KILLED, 'killswitch');
                             return;
                         }
                         if (!Module || !Module.HEAPU8) {
-                            mark('snapshot:no_heapu8');
-                            wakeLO();
+                            reportFailureAndResume(SNAPSHOT_FAIL.NO_HEAPU8);
                             return;
                         }
-                        mark('snapshot:init_done');
-                        // Save only the USED portion of HEAPU8 (typically ~160MB
-                        // vs 1GB total). Find last non-zero 4-byte word.
+                        // Find last non-zero 4-byte word — capture only the
+                        // used portion (~200MB) instead of full 1GB heap.
                         var u32 = Module.HEAPU32;
                         var lastUsed = 0;
                         for (var i = u32.length - 1; i >= 0; i--) {
                             if (u32[i] !== 0) { lastUsed = (i + 1) * 4; break; }
                         }
-                        // Round up to 64KB page boundary
                         var heapSize = Math.min(((lastUsed + 65535) & ~65535), Module.HEAPU8.byteLength);
-                        // The first ~16MB of WASM memory contains data segments,
-                        // BSS, and stack — these are initialized by Emscripten's
-                        // initRuntime() and must NOT be overwritten on restore.
-                        // Everything above is the dynamic heap (malloc'd objects).
-                        var heapBase = 16 * 1024 * 1024; // 16MB default
+                        var heapBase = 16 * 1024 * 1024;
+                        try { heapBase = Module.ccall('get_heap_base', 'number', [], []); }
+                        catch(e) { mark('snapshot:heap_base_fallback', e.message); }
+
+                        mark('snapshot:capturing', (heapSize / 1048576).toFixed(0) + 'MB');
+                        var t0 = performance.now();
+                        var memCopy;
                         try {
-                            heapBase = Module.ccall('get_heap_base', 'number', [], []);
-                        } catch(e) {
-                            mark('snapshot:heap_base_fallback', e.message);
-                        }
-                        mark('snapshot:saving', (heapSize / 1048576).toFixed(0) + 'MB used, heapBase=' + heapBase);
-                        try {
-                            var memCopy = new ArrayBuffer(heapSize);
+                            memCopy = new ArrayBuffer(heapSize);
                             new Uint8Array(memCopy).set(Module.HEAPU8.subarray(0, heapSize));
-                            var meta = JSON.stringify({ heapBase: heapBase, size: heapSize, ts: Date.now(), fingerprint: BUILD_FINGERPRINT });
-                            caches.open('wasm-snapshot').then(function(cache) {
-                                cache.put('/snapshot/meta', new Response(meta, {
-                                    headers: { 'Content-Type': 'application/json' }
-                                }));
+                        } catch(ex) {
+                            reportFailureAndResume(SNAPSHOT_FAIL.JS_EXCEPTION, 'capture: ' + ex.message);
+                            return;
+                        }
+                        var captureMs = (performance.now() - t0).toFixed(0);
+                        mark('snapshot:captured', captureMs + 'ms');
+
+                        // Resume Kit IMMEDIATELY after capture — before the
+                        // (slow) Cache.put. Kit gets the user's input back
+                        // within ~100-500ms; Cache.put runs in background.
+                        resumeLO();
+
+                        // Async write — even if the tab closes mid-write the
+                        // user's session is unaffected (next visit just runs
+                        // cold). Failure here is non-fatal; we already resumed.
+                        var meta = JSON.stringify({
+                            heapBase: heapBase,
+                            size: heapSize,
+                            ts: Date.now(),
+                            fingerprint: BUILD_FINGERPRINT,
+                            docType: window.__wasmFirstDocType,
+                        });
+                        caches.open('wasm-snapshot').then(function(cache) {
+                            return cache.put('/snapshot/meta', new Response(meta, {
+                                headers: { 'Content-Type': 'application/json' }
+                            })).then(function() {
                                 var blob = new Blob([memCopy], { type: 'application/octet-stream' });
                                 return cache.put('/snapshot/heap-v2', new Response(blob));
-                            }).then(function() {
-                                mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB via Cache API, heapBase=' + heapBase);
-                                mark('snapshot:waking_lo');
-                                wakeLO();
-                            }).catch(function(err) {
-                                mark('snapshot:save_error', err.message);
-                                wakeLO(); // wake LO even on save failure
                             });
-                        } catch(ex) {
-                            mark('snapshot:save_error', ex.message);
-                            wakeLO();
-                        }
+                        }).then(function() {
+                            mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB');
+                        }).catch(function(err) {
+                            // Cache failure — log but don't disturb user.
+                            // wasm_snapshot_failed is informational only at
+                            // this point; resume already happened.
+                            mark('snapshot:cache_put_failed', err.message);
+                        });
                     };
                 }
             })();

@@ -28,6 +28,8 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -79,6 +81,22 @@ extern "C" EMSCRIPTEN_KEEPALIVE int is_preinit_done()
 }
 
 int coolwsd_server_socket_fd = -1;
+// Condvar paired with coolwsd_server_socket_fd. COOLWSDServer::start
+// notifies via notify_coolwsd_server_socket_ready() once the fd is set.
+// HULLO handling waits on this when it arrives before COOLWSD's accept
+// loop is ready (cold-start race; cannot happen on warm restore because
+// the fd is captured in the heap snapshot).
+std::mutex g_coolwsdSocketMutex;
+std::condition_variable g_coolwsdSocketCV;
+
+extern "C" EMSCRIPTEN_KEEPALIVE void notify_coolwsd_server_socket_ready()
+{
+    {
+        std::lock_guard<std::mutex> lk(g_coolwsdSocketMutex);
+        // coolwsd_server_socket_fd is set by COOLWSD.cpp before this fires
+    }
+    g_coolwsdSocketCV.notify_all();
+}
 
 // Owning copies of main()'s argv[1..2] (docKind + docDesc). These are
 // std::string (not const char*) so the bytes are safe even if the
@@ -386,15 +404,27 @@ void handle_cool_message(const char *string_value)
     {
         MAIN_THREAD_EM_ASM({ console.log('TIMING: HULLO received from JS'); });
 
-        // After snapshot restore, coolwsd_server_socket_fd is -1 until
-        // the new COOLWSD starts. Defer HULLO to a thread that can block.
+        // Cold-start race: JS may send HULLO before COOLWSD's accept
+        // loop has finished spinning up. Wait on the condvar that
+        // COOLWSDServer::start signals via notify_coolwsd_server_socket_ready().
+        // Cannot trigger on warm restore because the fd is in the heap.
         if (coolwsd_server_socket_fd == -1)
         {
             std::cout << "HULLO: server not ready, deferring to thread" << std::endl;
             std::thread([]
             {
-                while (coolwsd_server_socket_fd == -1)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::unique_lock<std::mutex> lk(g_coolwsdSocketMutex);
+                bool ok = g_coolwsdSocketCV.wait_for(
+                    lk, std::chrono::seconds(60),
+                    []{ return coolwsd_server_socket_fd != -1; });
+                lk.unlock();
+                if (!ok)
+                {
+                    MAIN_THREAD_ASYNC_EM_ASM({
+                        console.warn('HULLO deferral: COOLWSD not ready after 60s');
+                    });
+                    return;
+                }
                 std::cout << "HULLO (deferred): server ready, fd=" << coolwsd_server_socket_fd << std::endl;
                 handle_cool_message("HULLO");
             }).detach();

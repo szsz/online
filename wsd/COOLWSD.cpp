@@ -3496,10 +3496,17 @@ void COOLWSDServer::stopPrisoners()
     PrisonerPoll->joinThread();
 }
 
+#if MOBILEAPP
+extern "C" void notify_coolwsd_server_socket_ready();
+#endif
+
 void COOLWSDServer::start(std::shared_ptr<ServerSocket>&& serverSocket)
 {
 #if MOBILEAPP
     coolwsd_server_socket_fd = serverSocket->getFD();
+    // Wake any HULLO deferral waiting on this fd (cold-start race
+    // between JS sending HULLO and COOLWSD's accept loop being ready).
+    notify_coolwsd_server_socket_ready();
 #endif
 
 #ifdef __EMSCRIPTEN__

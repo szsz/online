@@ -18,6 +18,17 @@
 
 #include "ChildSession.hpp"
 
+#ifdef __EMSCRIPTEN__
+#include <string_view>
+// Forward-declared instead of #include <wasmsnapshot.hxx> because
+// LO Core's desktop/inc/ is not on Online's include path (and exposing
+// it would invite leakage of other internal LO headers). The symbol
+// resolves via libsofficeapp.a at link time.
+namespace wasmshim {
+    void firstDocPainted(std::string_view docTypeHint);
+}
+#endif
+
 #include <common/Anonymizer.hpp>
 #include <common/HexUtil.hpp>
 #include <common/Log.hpp>
@@ -410,6 +421,29 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         uiLog.logSaveLoad("load", Poco::URI(getJailedFilePath()).getPath(), timeStart);
 
         LOG_TRC("isDocLoaded state after loadDocument: " << _isDocLoaded);
+
+#ifdef __EMSCRIPTEN__
+        // Phase-2 snapshot trigger: fire exactly once when the very
+        // first user document loads on this LOK runtime instance.
+        // wasmshim::firstDocPainted() is one-shot (atomic CAS); later
+        // doc opens (cross-module switchdoc, second user file) are
+        // no-ops. Doc-type hint helps JS plan cross-module switching
+        // on warm restore.
+        if (_isDocLoaded && getLOKitDocument())
+        {
+            const char* docTypeHint = "text";
+            switch (getLOKitDocument()->getDocumentType())
+            {
+                case LOK_DOCTYPE_TEXT:         docTypeHint = "text"; break;
+                case LOK_DOCTYPE_SPREADSHEET:  docTypeHint = "spreadsheet"; break;
+                case LOK_DOCTYPE_PRESENTATION: docTypeHint = "presentation"; break;
+                case LOK_DOCTYPE_DRAWING:      docTypeHint = "drawing"; break;
+                default:                       docTypeHint = "other"; break;
+            }
+            wasmshim::firstDocPainted(docTypeHint);
+        }
+#endif
+
         return _isDocLoaded;
     }
     else if (tokens.equals(0, "extractlinktargets"))
