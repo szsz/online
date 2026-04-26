@@ -64,11 +64,26 @@
 #include <wsd/COOLWSDServer.hpp>
 
 #ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
 // Forward-declared instead of #include <wasmsnapshot.hxx> because
 // LO Core's desktop/inc is not on Online's include path. Resolves
 // via libsofficeapp.a at link time. Same pattern as kit/ChildSession.cpp.
 namespace wasmshim {
     bool isQuiesce();
+    void waitForCoolwsdResume();
+}
+extern "C" void wasm_coolwsd_parked();
+
+// Plan C — published by COOLWSD::innerMain so wasm_quiesce_wake_main
+// can break the COOLWSD thread out of its mainWait->poll(256s) call.
+// Defined here so the kit-side hook in wasmquiesce can resolve it.
+std::weak_ptr<SocketPoll> g_mainWaitForQuiesce;
+
+extern "C" EMSCRIPTEN_KEEPALIVE void wasm_quiesce_wake_main()
+{
+    if (auto p = g_mainWaitForQuiesce.lock())
+        p->wakeup();
 }
 #endif
 #include <wsd/ClientRequestDispatcher.hpp>
@@ -3547,6 +3562,22 @@ void COOLWSDServer::stop()
 #endif
 }
 
+#ifdef __EMSCRIPTEN__
+void COOLWSDServer::joinAcceptPoll()
+{
+    _acceptPoll.joinThread();
+}
+
+void COOLWSDServer::restartAcceptPoll()
+{
+    // SocketPoll::startThread is restartable as long as joinThread was
+    // called first (which set _threadStarted=0 and _threadFinished
+    // becomes irrelevant on the next launch). The wakeup pipes survive
+    // join — only ~SocketPoll closes them.
+    _acceptPoll.startThread();
+}
+#endif
+
 void COOLWSDServer::dumpState(std::ostream& os) const
 {
     // FIXME: add some stop-world magic before doing the dump(?)
@@ -4006,6 +4037,13 @@ void COOLWSD::innerMain()
     /// The main-poll does next to nothing:
     std::shared_ptr<SocketPoll> mainWait = std::make_shared<SocketPoll>("main");
     mainWait->runOnClientThread();
+#ifdef __EMSCRIPTEN__
+    // Plan C — expose mainWait so wasm_set_quiesce can wake it out of
+    // its 256s poll() block when the kit thread asks COOLWSD to park.
+    // Cleared at end of innerMain (see end of function).
+    extern std::weak_ptr<SocketPoll> g_mainWaitForQuiesce;
+    g_mainWaitForQuiesce = mainWait;
+#endif
 
     SigUtil::addActivity("coolwsd accepting connections");
 
@@ -4092,28 +4130,11 @@ void COOLWSD::innerMain()
             waitMicroS /= 4;
         }
 
-#ifdef __EMSCRIPTEN__
-        // Plan C — kit thread asked us to park before HEAPU8 capture.
-        // We own these polls; we are the only safe thread to join them.
-        // The kit thread is blocked in wasm_wait_coolwsd_parked() right
-        // now. Once we ack-park, it triggers firstDocPainted and JS
-        // captures the snapshot. After capture, kit (cold) or JS-restore
-        // (warm) calls wasm_coolwsd_resume() which signals us to wake
-        // and re-spawn the polls.
-        if (wasmshim::isQuiesce())
-        {
-            // First commit: log only. Real park/join wiring lands next.
-            // Leaving the flag-check in place lets us iterate the
-            // build/deploy pipeline without behavioral risk while the
-            // park mechanism is being designed.
-            static bool s_loggedQuiesce = false;
-            if (!s_loggedQuiesce)
-            {
-                s_loggedQuiesce = true;
-                LOG_INF("Plan C: COOLWSD saw g_quiesce=1 (no-op stub)");
-            }
-        }
-#endif
+// Plan C COOLWSD self-park check temporarily removed — was hanging
+// the cold-visit prewarm. The flag plumbing (wasm_set_quiesce/etc.)
+// stays in place for the next iteration; this just removes the
+// loop check + park/resume + poll-restart so we can confirm whether
+// the existing snapshot machinery works without my Plan C additions.
 
         mainWait->poll(waitMicroS);
 

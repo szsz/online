@@ -168,6 +168,14 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
           // from a worker thread later and a MAIN_THREAD_EM_ASM_INT proxy
           // would deadlock against the long-returned WASM main thread.
           try { Module.ccall('wasm_set_warm_restored', null, ['number'], [1]); } catch(e) {}
+          // Plan C — clear the quiesce flag carried over from the snapshot.
+          // The snapshot was captured with the kit thread holding quiesce=1
+          // and the COOLWSD thread parked. On warm restore the COOLWSD
+          // thread is freshly spawned (Web Workers don't survive); we want
+          // it to enter its main loop normally without re-parking. Without
+          // this clear the new COOLWSD thread would self-park and wait
+          // forever for a resume signal that never comes.
+          try { Module.ccall('wasm_set_quiesce', null, ['number'], [0]); } catch(e) {}
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
           // Recreate VFS directories that the restored LO Core expects.

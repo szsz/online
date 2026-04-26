@@ -38,6 +38,16 @@ public:
     void stop();
     void dumpState(std::ostream& os) const;
 
+#ifdef __EMSCRIPTEN__
+    /// Plan C — called from the COOLWSD main poll loop when wasmshim::isQuiesce()
+    /// returns true. Joins _acceptPoll on the SAME thread (the COOLWSD thread is
+    /// itself parking), so we cannot join from any other context. Caller is
+    /// responsible for joining PrisonerPoll / WebServerPoll separately and for
+    /// blocking on the resume condvar after this returns.
+    void joinAcceptPoll();
+    void restartAcceptPoll();
+#endif
+
 private:
     class AcceptPoll : public TerminatingPoll {
     public:

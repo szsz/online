@@ -1033,6 +1033,7 @@
                     }
 
                     Module.__firstDocLoaded = function(docTypeHint) {
+                        console.log('PLAN_C_DBG: Module.__firstDocLoaded ENTERED docType=' + docTypeHint);
                         // Preserve legacy global for tests/observers.
                         window.__loInitDone = true;
                         window.__wasmFirstDocType = docTypeHint || 'text';
@@ -1070,11 +1071,13 @@
                         }
                         var captureMs = (performance.now() - t0).toFixed(0);
                         mark('snapshot:captured', captureMs + 'ms');
+                        console.log('PLAN_C_DBG: heap captured ' + captureMs + 'ms, calling resumeLO');
 
                         // Resume Kit IMMEDIATELY after capture — before the
                         // (slow) Cache.put. Kit gets the user's input back
                         // within ~100-500ms; Cache.put runs in background.
                         resumeLO();
+                        console.log('PLAN_C_DBG: resumeLO returned');
 
                         // Async write — even if the tab closes mid-write the
                         // user's session is unaffected (next visit just runs

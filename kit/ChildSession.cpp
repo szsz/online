@@ -49,6 +49,10 @@ namespace wasmshim {
 // extern "C" is not allowed inside a function body in C++.
 extern "C" int wasm_is_warm_restored();
 extern "C" int wasm_reload_doc_in_place(LibreOfficeKitDocument*, const char*);
+extern "C" void wasm_set_quiesce(int);
+extern "C" void wasm_wait_coolwsd_parked();
+extern "C" void wasm_coolwsd_resume();
+extern "C" void wasm_quiesce_wake_main();
 #endif
 
 #include <Poco/StreamCopier.h>
@@ -551,7 +555,30 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 case LOK_DOCTYPE_DRAWING:      docTypeHint = "drawing"; break;
                 default:                       docTypeHint = "other"; break;
             }
+
+            // Plan C — request COOLWSD self-park before snapshot capture.
+            // Currently DISABLED for iteration: the multi-thread cv handshake
+            // is hanging the cold-visit path. Falling back to baseline (no
+            // park) so we can isolate the failure point. The C++ flag
+            // plumbing stays in place (wasm_set_quiesce/etc. are valid
+            // exports); we just don't toggle them yet. Re-enable by setting
+            // PLAN_C_PARK to 1 and rebuilding.
+#define PLAN_C_PARK 0
+#if PLAN_C_PARK
+            wasm_set_quiesce(1);
+            wasm_quiesce_wake_main();
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('Plan C: kit set quiesce, waiting for COOLWSD park ack'); });
+            wasm_wait_coolwsd_parked();
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('Plan C: COOLWSD parked, capturing snapshot now'); });
+#endif
+
             wasmshim::firstDocPainted(docTypeHint);
+
+#if PLAN_C_PARK
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('Plan C: snapshot done, signalling COOLWSD resume'); });
+            wasm_coolwsd_resume();
+            wasm_set_quiesce(0);
+#endif
         }
 #endif
 
