@@ -8,6 +8,10 @@
 # a simple log.html that the per-build index.html links to.
 set -euo pipefail
 
+# shellcheck source=_lib.sh
+source "$(dirname "$0")/_lib.sh"
+ensure_storage_key
+
 APP_BID="${APP_BUILD_ID:?}"
 ACCT="${AZURE_STORAGE_ACCOUNT:?}"
 SITE="${STATIC_SITE_BASE:?}"
@@ -72,7 +76,6 @@ upload() {
     local src="$1" name="$2"
     az storage blob upload \
         --account-name "$ACCT" \
-        --auth-mode login \
         --container-name '$web' \
         --name "$name" \
         --file "$src" \
@@ -86,7 +89,7 @@ upload "$REPORT_DIR/index.html" "app-builds/$APP_BID/tests/index.html"
 
 # Patch the per-build index.html so the tests box gets a real link.
 PATCHED="$(mktemp)"
-az storage blob download --account-name "$ACCT" --auth-mode login \
+az storage blob download --account-name "$ACCT" \
     --container-name '$web' --name "app-builds/$APP_BID/index.html" \
     --file "$PATCHED" --no-progress >/dev/null
 python3 - "$PATCHED" "$STATUS_TEXT" "$STATUS_COLOUR" <<'PYEOF'
@@ -107,7 +110,7 @@ rm -f "$PATCHED"
 
 # Update manifest with test_report link
 MANIFEST="$(mktemp)"
-az storage blob download --account-name "$ACCT" --auth-mode login \
+az storage blob download --account-name "$ACCT" \
     --container-name '$web' --name "app-builds/$APP_BID/manifest.json" \
     --file "$MANIFEST" --no-progress >/dev/null
 python3 - "$MANIFEST" "$APP_BID" "$TEST_RC" "$DUR" <<'PYEOF'

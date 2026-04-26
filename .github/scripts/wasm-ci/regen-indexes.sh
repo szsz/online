@@ -5,6 +5,10 @@
 #   /app-builds/        — list of online app builds
 set -euo pipefail
 
+# shellcheck source=_lib.sh
+source "$(dirname "$0")/_lib.sh"
+ensure_storage_key
+
 ACCT="${AZURE_STORAGE_ACCOUNT:?}"
 SITE="${STATIC_SITE_BASE:?}"
 
@@ -12,7 +16,6 @@ list_prefix() {
     local prefix="$1"
     az storage blob list \
         --account-name "$ACCT" \
-        --auth-mode login \
         --container-name '$web' \
         --prefix "$prefix" \
         --query "[?ends_with(name, '/manifest.json')].name" \
@@ -49,7 +52,7 @@ HTML
                 # path is "<prefix><id>/manifest.json"
                 id="${mfp#$prefix}"; id="${id%/manifest.json}"
                 local tmp="$WORK/m-$n.json"; n=$((n+1))
-                az storage blob download --account-name "$ACCT" --auth-mode login \
+                az storage blob download --account-name "$ACCT" \
                     --container-name '$web' --name "$mfp" --file "$tmp" --no-progress >/dev/null 2>&1 || continue
                 when="$(jq -r '.completed_utc // ""' "$tmp" 2>/dev/null)"
                 if [[ "$prefix" == "app-builds/" ]]; then
@@ -96,7 +99,8 @@ HTML
 
 upload() {
     local src="$1" name="$2"
-    az storage blob upload --account-name "$ACCT" --auth-mode login \
+    az storage blob upload \
+        --account-name "$ACCT" \
         --container-name '$web' --name "$name" --file "$src" \
         --content-type 'text/html; charset=utf-8' \
         --overwrite --no-progress >/dev/null

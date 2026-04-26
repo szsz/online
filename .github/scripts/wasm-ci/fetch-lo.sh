@@ -9,6 +9,10 @@
 # so re-runs on the same ID don't re-download.
 set -euo pipefail
 
+# shellcheck source=_lib.sh
+source "$(dirname "$0")/_lib.sh"
+ensure_storage_key
+
 LO_BID="${LO_BUILD_ID:?LO_BUILD_ID required}"
 CACHE_ROOT="${CI_STATE_DIR:?CI_STATE_DIR required}/lo-cache"
 DEST="$CACHE_ROOT/$LO_BID"
@@ -24,7 +28,6 @@ fi
 echo "Downloading lo-builds/$LO_BID/MANIFEST.json …"
 az storage blob download \
     --account-name "${AZURE_STORAGE_ACCOUNT:?}" \
-    --auth-mode login \
     --container-name '$web' \
     --name "lo-builds/$LO_BID/MANIFEST.json" \
     --file "$DEST/MANIFEST.json" \
@@ -33,7 +36,6 @@ az storage blob download \
 echo "Downloading lo-builds/$LO_BID/lo-core.tar.zst …"
 az storage blob download \
     --account-name "$AZURE_STORAGE_ACCOUNT" \
-    --auth-mode login \
     --container-name '$web' \
     --name "lo-builds/$LO_BID/lo-core.tar.zst" \
     --file "$TARBALL" \

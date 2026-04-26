@@ -11,6 +11,10 @@
 # should pin to a real ID.
 set -euo pipefail
 
+# shellcheck source=_lib.sh
+source "$(dirname "$0")/_lib.sh"
+ensure_storage_key
+
 APP_BUILD_ID="$(date -u +%Y-%m-%d)-${GH_RUN_NUMBER}"
 
 LO_BID="${LO_BUILD_ID_OVERRIDE:-}"
@@ -26,7 +30,6 @@ if [[ "$LO_BID" == "__LATEST__" ]]; then
     echo "Resolving __LATEST__ against lo-builds/latest.txt …"
     LO_BID="$(az storage blob download \
         --account-name "${AZURE_STORAGE_ACCOUNT:?}" \
-        --auth-mode login \
         --container-name '$web' \
         --name 'lo-builds/latest.txt' \
         --file - 2>/dev/null | tr -d '[:space:]' || true)"

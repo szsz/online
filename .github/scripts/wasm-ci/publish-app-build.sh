@@ -12,6 +12,10 @@
 # and links the test report (filled in later by test-and-publish.sh).
 set -euo pipefail
 
+# shellcheck source=_lib.sh
+source "$(dirname "$0")/_lib.sh"
+ensure_storage_key
+
 APP_BID="${APP_BUILD_ID:?}"
 LO_BID="${LO_BUILD_ID:?}"
 ACCT="${AZURE_STORAGE_ACCOUNT:?}"
@@ -79,7 +83,6 @@ upload() {
     local src="$1" name="$2"
     az storage blob upload \
         --account-name "$ACCT" \
-        --auth-mode login \
         --container-name '$web' \
         --name "$name" \
         --file "$src" \
