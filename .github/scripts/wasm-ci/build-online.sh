@@ -37,6 +37,20 @@ mkdir -p "$STATE_DIR" "$LO_EXTRACTED" "$ONLINE_BUILD" "$EMSDK_CACHE" "$CCACHE_DI
 # 1000 on exit so the runner can recycle the workspace.
 trap 'sudo chown -R 1000:1000 "$WORKSPACE" 2>/dev/null || true' EXIT
 
+# ── Restore source-tree mtimes from git history ────────────────
+# actions/checkout writes every file with `now` as the mtime, so `make`
+# sees configure.ac as newer than aclocal.m4 and tries to regenerate via
+# `./missing aclocal-1.16` — but `missing` is a generated script that was
+# wiped by the same checkout. git-restore-mtime sets each file to its
+# last commit time, keeping incremental builds honest.
+if ! command -v git-restore-mtime >/dev/null 2>&1; then
+    sudo apt-get install -y -qq git-restore-mtime 2>/dev/null || true
+fi
+if command -v git-restore-mtime >/dev/null 2>&1; then
+    echo "--- Restoring workspace mtimes from git history ---"
+    (cd "$WORKSPACE" && git-restore-mtime --skip-missing --quiet 2>&1 | tail -3) || true
+fi
+
 # ── Acquire host-wide lock ──────────────────────────────────────
 exec 9>"$LOCK"
 echo "Acquiring host build lock ($LOCK) …"
@@ -102,15 +116,22 @@ docker exec "$CI_CONTAINER" bash -lc '
     set -euo pipefail
     git config --global --add safe.directory "*" 2>/dev/null || true
     source /home/builder/emsdk/emsdk_env.sh
+
+    EXPORTS_DIR=/lo/core-build/workdir/CustomTarget/desktop/soffice_bin-emscripten-exports
+    if [[ ! -f "$EXPORTS_DIR/exports" ]]; then
+        mkdir -p "$EXPORTS_DIR"
+        printf "_main\n_libreofficekit_hook\n_libreofficekit_hook_2\n_lok_preinit\n_lok_preinit_2\n_doc_postUnoCommand\n" \
+            > "$EXPORTS_DIR/exports"
+    fi
+
+    # autogen.sh ALWAYS — actions/checkout deletes the generated `missing`
+    # script (autotools wrapper). Makefile references it; if absent, an
+    # otherwise-incremental build dies at "/lo/online/missing: not found"
+    # the moment Make decides aclocal needs to re-run.
+    cd /lo/online && ./autogen.sh
+
     cd /lo/online/wasm/online-build
     if [[ ! -f wasm/Makefile ]]; then
-        EXPORTS_DIR=/lo/core-build/workdir/CustomTarget/desktop/soffice_bin-emscripten-exports
-        if [[ ! -f "$EXPORTS_DIR/exports" ]]; then
-            mkdir -p "$EXPORTS_DIR"
-            printf "_main\n_libreofficekit_hook\n_libreofficekit_hook_2\n_lok_preinit\n_lok_preinit_2\n_doc_postUnoCommand\n" \
-                > "$EXPORTS_DIR/exports"
-        fi
-        /lo/online/autogen.sh
         emconfigure /lo/online/configure \
             --disable-werror \
             --with-lokit-path=/lo/core/include \
