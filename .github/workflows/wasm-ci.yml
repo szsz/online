@@ -1,0 +1,87 @@
+name: WASM build, deploy, test
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'wasm/**'
+      - '.github/workflows/wasm-ci.yml'
+      - '.github/scripts/wasm-ci/**'
+  workflow_dispatch:
+    inputs:
+      lo_build_id:
+        description: 'Override LO_BUILD_ID (default: read from wasm/LO_BUILD_ID)'
+        required: false
+        default: ''
+      skip_tests:
+        description: 'Skip the test job (deploy only)'
+        required: false
+        default: 'false'
+
+env:
+  AZURE_STORAGE_ACCOUNT: coolwasmfiles
+  CI_STATE_DIR: /home/localadmin/lo-wasm-ci-state
+  STATIC_SITE_BASE: https://coolwasmfiles.z6.web.core.windows.net
+
+# Both runners on this box share the docker daemon. flock in the scripts
+# guarantees only one CI build at a time on the host; this group prevents
+# two pushes on this same repo from racing each other.
+concurrency:
+  group: wasm-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: [self-hosted, wasm-build]
+    outputs:
+      app_build_id: ${{ steps.ids.outputs.app_build_id }}
+      lo_build_id:  ${{ steps.ids.outputs.lo_build_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve build IDs
+        id: ids
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+        run: bash .github/scripts/wasm-ci/resolve-ids.sh
+
+      - name: Fetch LibreOffice artefacts
+        env:
+          LO_BUILD_ID: ${{ steps.ids.outputs.lo_build_id }}
+        run: bash .github/scripts/wasm-ci/fetch-lo.sh
+
+      - name: Build Online (WASM)
+        env:
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/build-online.sh
+
+      - name: Deploy to Azure App Services
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/deploy.sh
+
+      - name: Publish build artefacts + index
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF: ${{ github.ref }}
+        run: bash .github/scripts/wasm-ci/publish-app-build.sh
+
+  test:
+    needs: build-deploy
+    if: ${{ github.event.inputs.skip_tests != 'true' }}
+    runs-on: [self-hosted, wasm-build]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run test suite + publish report
+        env:
+          APP_BUILD_ID: ${{ needs.build-deploy.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ needs.build-deploy.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.sha }}
+        run: bash .github/scripts/wasm-ci/test-and-publish.sh
