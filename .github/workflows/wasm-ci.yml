@@ -7,6 +7,12 @@ on:
       - 'wasm/**'
       - '.github/workflows/wasm-ci.yml'
       - '.github/scripts/wasm-ci/**'
+  pull_request:
+    paths:
+      - 'wasm/LO_BUILD_ID'
+      - 'wasm/**'
+      - '.github/workflows/wasm-ci.yml'
+      - '.github/scripts/wasm-ci/**'
   workflow_dispatch:
     inputs:
       lo_build_id:
@@ -31,7 +37,71 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Fail-fast LO_BUILD_ID validation. Runs on github-hosted ubuntu-latest
+  # (no secrets, no docker, no self-hosted runner) so it is safe for fork
+  # PRs and free for public repos. Hits ONLY the public static-website
+  # endpoint of coolwasmfiles, no auth required.
+  # Make this job a "Required status check" in the branch protection rule
+  # for `dev` to harden-block PRs that pin a non-existent LO build.
+  # ─────────────────────────────────────────────────────────────────────
+  validate-lo-build:
+    runs-on: ubuntu-latest
+    outputs:
+      lo_build_id: ${{ steps.lo.outputs.lo_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve LO_BUILD_ID
+        id: lo
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          LO_BID="${LO_BUILD_ID_OVERRIDE:-}"
+          if [[ -z "$LO_BID" ]]; then
+              if [[ ! -f wasm/LO_BUILD_ID ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::wasm/LO_BUILD_ID is missing"
+                  exit 1
+              fi
+              LO_BID="$(grep -v '^[[:space:]]*#' wasm/LO_BUILD_ID | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]')"
+          fi
+          if [[ "$LO_BID" == "__LATEST__" ]]; then
+              LO_BID="$(curl -fsSL "$STATIC_SITE_BASE/lo-builds/latest.txt" 2>/dev/null | tr -d '[:space:]' || true)"
+              if [[ -z "$LO_BID" ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::__LATEST__ requested but lo-builds/latest.txt is empty/missing — pin a literal ID or wait for a successful libreoffice-core-wasm CI build"
+                  exit 1
+              fi
+          fi
+          echo "Resolved LO_BUILD_ID: $LO_BID"
+          echo "lo_build_id=$LO_BID" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build artefacts exist on coolwasmfiles
+        env:
+          LO_BUILD_ID: ${{ steps.lo.outputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          MANIFEST_URL="$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/MANIFEST.json"
+          TARBALL_URL="$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/lo-core.tar.zst"
+          ok=true
+          for url in "$MANIFEST_URL" "$TARBALL_URL"; do
+              code="$(curl -fsSL -o /dev/null -w '%{http_code}' --head --max-time 30 "$url" || echo 000)"
+              if [[ "$code" != "200" ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::Missing artefact: $url (HTTP $code)"
+                  ok=false
+              else
+                  echo "  OK ($code) $url"
+              fi
+          done
+          $ok || { echo "::error file=wasm/LO_BUILD_ID::Pinned LO_BUILD_ID '$LO_BUILD_ID' has no valid build at coolwasmfiles. Update wasm/LO_BUILD_ID to a build listed at $STATIC_SITE_BASE/lo-builds/."; exit 1; }
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Heavy jobs only run on push/dispatch — never on PRs. PRs only get the
+  # validate-lo-build gate above.
+  # ─────────────────────────────────────────────────────────────────────
   build-deploy:
+    needs: validate-lo-build
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: [self-hosted, wasm-build]
     outputs:
       app_build_id: ${{ steps.ids.outputs.app_build_id }}
