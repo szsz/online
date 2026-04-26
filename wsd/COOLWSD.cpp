@@ -4130,11 +4130,39 @@ void COOLWSD::innerMain()
             waitMicroS /= 4;
         }
 
-// Plan C COOLWSD self-park check temporarily removed — was hanging
-// the cold-visit prewarm. The flag plumbing (wasm_set_quiesce/etc.)
-// stays in place for the next iteration; this just removes the
-// loop check + park/resume + poll-restart so we can confirm whether
-// the existing snapshot machinery works without my Plan C additions.
+#ifdef __EMSCRIPTEN__
+        // Plan C — COOLWSD self-park before HEAPU8 capture. Earlier
+        // version hung because it called MAIN_THREAD_ASYNC_EM_ASM
+        // inside the park branch (3-4 console.logs), which queued onto
+        // the JS main thread BEFORE the snapshot's
+        // Module.__firstDocLoaded had a chance to run; the kit thread's
+        // firstDocPainted MAIN_THREAD_ASYNC_EM_ASM was queued behind
+        // them and the snapshot capture handler never executed within
+        // the test's 90s prewarm budget. Pure C++ logging only here;
+        // no JS proxy until after we resume.
+        if (wasmshim::isQuiesce())
+        {
+            LOG_INF("Plan C: COOLWSD parking — joining PrisonerPoll, AcceptPoll, WebServerPoll");
+            if (PrisonerPoll)
+                PrisonerPoll->joinThread();
+            if (COOLWSDServer::Instance)
+                COOLWSDServer::Instance->joinAcceptPoll();
+            if (COOLWSDServer::WebServerPoll)
+                COOLWSDServer::WebServerPoll->joinThread();
+            // Tell kit thread we're parked.
+            wasm_coolwsd_parked();
+            // Block until kit (cold) or JS (warm) signals resume.
+            wasmshim::waitForCoolwsdResume();
+            // Re-spawn the polls.
+            if (PrisonerPoll)
+                PrisonerPoll->startThread();
+            if (COOLWSDServer::Instance)
+                COOLWSDServer::Instance->restartAcceptPoll();
+            if (COOLWSDServer::WebServerPoll)
+                COOLWSDServer::WebServerPoll->startThread();
+            LOG_INF("Plan C: COOLWSD resumed");
+        }
+#endif
 
         mainWait->poll(waitMicroS);
 

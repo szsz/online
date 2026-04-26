@@ -885,8 +885,15 @@ async function openFile(name, opts) {
     // removeLayer and have their OWN map.on() handlers that fire into
     // a stale _docLayer. Audit + per-layer removeSection in onRemove
     // is tracked as #129.
-    const willHotSwitch = wasPrewarmReady
-        && (effectiveDocType === currentDocType);
+    // Plan B experimental: try hot-switch for cross-type too.
+    // wasm_reload_doc_in_place falls through to documentLoad for
+    // cross-type, which keeps the iframe alive and skips full WASM
+    // re-init. Known JS-side risk: sectionContainer leak (#129) where
+    // app.sectionContainer sections from prior layer aren't torn down,
+    // their map.on() handlers fire into stale _docLayer. If it
+    // crashes the iframe, fall back to cross-type cold-reload by
+    // restoring the old condition.
+    const willHotSwitch = wasPrewarmReady;
 
     // Collapse the file sidebar so the editor gets the full viewport.
     // The user can re-open it by hovering the left edge or clicking the bar.
