@@ -9,16 +9,6 @@
 # so re-runs on the same ID don't re-download.
 set -euo pipefail
 
-# DEBUG: capture full trace to a host-side log so we can diagnose runner-only
-# failures. Remove this block once stable.
-exec > >(tee -a /tmp/fetch-lo-runner-debug.log) 2>&1
-echo "=== fetch-lo.sh run @ $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
-echo "  pwd=$(pwd)  whoami=$(whoami)  bash=$BASH_VERSION"
-echo "  PATH=$PATH"
-echo "  GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-(unset)}  CI_STATE_DIR=${CI_STATE_DIR:-(unset)}"
-echo "  LO_BUILD_ID=${LO_BUILD_ID:-(unset)}  AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT:-(unset)}"
-set -x
-
 # shellcheck source=_lib.sh
 source "$(dirname "$0")/_lib.sh"
 ensure_storage_key
@@ -41,7 +31,8 @@ az storage blob download \
     --container-name '$web' \
     --name "lo-builds/$LO_BID/MANIFEST.json" \
     --file "$DEST/MANIFEST.json" \
-    --no-progress
+    --no-progress \
+    -o none >/dev/null
 
 echo "Downloading lo-builds/$LO_BID/lo-core.tar.zst …"
 az storage blob download \
@@ -49,7 +40,8 @@ az storage blob download \
     --container-name '$web' \
     --name "lo-builds/$LO_BID/lo-core.tar.zst" \
     --file "$TARBALL" \
-    --no-progress
+    --no-progress \
+    -o none >/dev/null
 
 # Sanity-check sha256 from the manifest if present.
 EXPECTED_SHA="$(jq -r '.lo_core_tar_sha256 // empty' "$DEST/MANIFEST.json" 2>/dev/null || true)"
