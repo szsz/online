@@ -28,11 +28,20 @@ fi
 
 if [[ "$LO_BID" == "__LATEST__" ]]; then
     echo "Resolving __LATEST__ against lo-builds/latest.txt …"
-    LO_BID="$(az storage blob download \
+    # `az storage blob download --file -` writes the blob payload to stdout AND
+    # the operation metadata JSON to stdout, concatenated. Capturing via $(...)
+    # used to make LO_BID become the metadata JSON, then propagate downstream
+    # as a giant path. Download to a temp file and read its contents.
+    TMP_LATEST="$(mktemp)"
+    az storage blob download \
         --account-name "${AZURE_STORAGE_ACCOUNT:?}" \
         --container-name '$web' \
         --name 'lo-builds/latest.txt' \
-        --file - 2>/dev/null | tr -d '[:space:]' || true)"
+        --file "$TMP_LATEST" \
+        --no-progress \
+        -o none >/dev/null 2>&1 || true
+    LO_BID="$(tr -d '[:space:]' < "$TMP_LATEST" 2>/dev/null || true)"
+    rm -f "$TMP_LATEST"
     if [[ -z "$LO_BID" ]]; then
         echo "ERROR: __LATEST__ requested but lo-builds/latest.txt is empty or unreachable." >&2
         echo "       Either run a libreoffice-core-wasm CI build first, or pin a literal ID in wasm/LO_BUILD_ID." >&2
