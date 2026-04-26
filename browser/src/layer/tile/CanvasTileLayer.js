@@ -3846,10 +3846,26 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 	},
 
 	onRemove: function (map) {
-		// Defensive: cross-type hot-switch can call onRemove before
-		// onAdd finished (if a status: with new docType arrives during
-		// the previous layer's onAdd). _oleCSelections, _references,
-		// _cursorMarker etc. may be undefined; guard each access.
+		// Cross-type hot-switch correctness:
+		//
+		// 1. Mark this layer disposed so any leftover-fired event with
+		//    `this` as context can short-circuit instead of touching
+		//    half-torn-down state.
+		//
+		// 2. Unsubscribe ALL handlers that registered with `this` as
+		//    context. CanvasTileLayer.beforeAdd/onAdd registers ~20
+		//    map.on('event', this._handler, this) calls and never had
+		//    a paired off(). When cross-type swap runs removeLayer,
+		//    the new event-fires (status:, hrulerupdate, vrulerupdate,
+		//    referencemarks etc.) re-enter the dead layer with null
+		//    _map / undefined _references and throw.
+		//
+		// 3. Defensive null-guards on members that may be undefined if
+		//    onAdd was interrupted mid-init (cross-type swap before
+		//    onAdd finished).
+		this._isDisposed = true;
+		try { map.off(undefined, undefined, this); } catch(e) { /* ok */ }
+
 		if (this._container) window.L.DomUtil.remove(this._container);
 		if (map._removeZoomLimit) map._removeZoomLimit(this);
 		this._container = null;

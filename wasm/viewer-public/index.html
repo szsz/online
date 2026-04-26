@@ -872,18 +872,14 @@ async function openFile(name, opts) {
     // use cold reload to avoid signal races with the prewarm WasmDocReady.
     const wasPrewarmReady = prewarmReady;
     const effectiveDocType = opts.docTypeHint || docTypeFor(name);
-    // V2 hot-switch enabled (RelaySwitchRoom handler self-updates the
-    // adapter's wopiSrc, so the room locator stays correct on hot-switch
-    // for v2 — relay-adapter.js:206).
-    //
-    // Cross-type hot-switch is STILL disabled. The COOL-JS layer-swap
-    // path has additional races beyond _delayedMessages: removeLayer
-    // synchronously fires events that reference layers in the middle
-    // of being torn down — _map.getPixelBoundsCore on null _map fires
-    // during the swap window, regardless of whether messages are
-    // queued. Phase 1.3b (#129) tracks a more thorough audit of the
-    // L.Layer event-fire paths during onRemove. Until then, cross-type
-    // cold-reload is the safe path.
+    // V2 same-type hot-switch is enabled. Cross-type still cold-reloads
+    // — the docLayer event-handler purge (off(undefined, undefined,
+    // this) in CanvasTileLayer.onRemove) fixes the layer's own
+    // subscriptions, but app.sectionContainer sections (Calc headers,
+    // Impress slide-sorter, etc.) added in onAdd are not torn down on
+    // removeLayer and have their OWN map.on() handlers that fire into
+    // a stale _docLayer. Audit + per-layer removeSection in onRemove
+    // is tracked as #129.
     const willHotSwitch = wasPrewarmReady
         && (effectiveDocType === currentDocType);
 
