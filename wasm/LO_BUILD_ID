@@ -3,5 +3,5 @@
 # Format: YYYY-MM-DD-<run_number> (matches the libreoffice-core-wasm CI run on dev branch).
 # Use the literal token __LATEST__ to follow whatever lo-builds/latest.txt resolves to.
 # First successful LO CI build (for reference): 2026-04-26-3
-# Cache primed at /home/localadmin/lo-wasm-ci-state/lo-cache/2026-04-26-3/
+# Cache primed; debug-instrumented fetch-lo.sh
 __LATEST__
