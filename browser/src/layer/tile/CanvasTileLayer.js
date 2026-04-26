@@ -3846,25 +3846,17 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 	},
 
 	onRemove: function (map) {
-		// Cross-type hot-switch correctness:
+		// Defensive null-guards on members that may be undefined if
+		// onAdd was interrupted mid-init (cross-type swap before
+		// onAdd finished).
 		//
-		// 1. Mark this layer disposed so any leftover-fired event with
-		//    `this` as context can short-circuit instead of touching
-		//    half-torn-down state.
-		//
-		// 2. Unsubscribe ALL handlers that registered with `this` as
-		//    context. CanvasTileLayer.beforeAdd/onAdd registers ~20
-		//    map.on('event', this._handler, this) calls and never had
-		//    a paired off(). When cross-type swap runs removeLayer,
-		//    the new event-fires (status:, hrulerupdate, vrulerupdate,
-		//    referencemarks etc.) re-enter the dead layer with null
-		//    _map / undefined _references and throw.
-		//
-		// 3. Defensive null-guards on members that may be undefined if
-		//    onAdd was interrupted mid-init (cross-type swap before
-		//    onAdd finished).
+		// NOTE: an earlier version called map.off(undefined, undefined, this)
+		// here to purge all this-as-context handlers. That broke same-type
+		// hot-switching because Util.stamp's reuse semantics meant some
+		// handlers were also unstamping. Reverted; cross-type cleanup is
+		// best done via per-layer override that explicitly enumerates
+		// what was registered.
 		this._isDisposed = true;
-		try { map.off(undefined, undefined, this); } catch(e) { /* ok */ }
 
 		if (this._container) window.L.DomUtil.remove(this._container);
 		if (map._removeZoomLimit) map._removeZoomLimit(this);
