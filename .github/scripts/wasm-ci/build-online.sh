@@ -31,6 +31,12 @@ LOCK="$STATE_DIR/host.lock"
 
 mkdir -p "$STATE_DIR" "$LO_EXTRACTED" "$ONLINE_BUILD" "$EMSDK_CACHE" "$CCACHE_DIR"
 
+# ── Cleanup trap: container runs as root and writes into the bind-mounted
+# workspace (autogen.sh / config.h.in / m4/ etc.), leaving root-owned files
+# the next run's actions/checkout can't delete. Always chown back to UID
+# 1000 on exit so the runner can recycle the workspace.
+trap 'sudo chown -R 1000:1000 "$WORKSPACE" 2>/dev/null || true' EXIT
+
 # ── Acquire host-wide lock ──────────────────────────────────────
 exec 9>"$LOCK"
 echo "Acquiring host build lock ($LOCK) …"
