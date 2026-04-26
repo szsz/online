@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Run wasm/run-all-tests.sh and publish a report under app-builds/<ID>/tests/.
+# Run wasm/run-all-tests.sh against the JUST-DEPLOYED Azure App Services
+# (TEST_TARGET=azure-deploy) and publish a report under app-builds/<ID>/tests/.
 #
-# The Azure-deployed services tested are the ones the build-deploy job just
-# pushed. run-all-tests.sh today targets the local launches by default; when
-# adapting tests to point at the deployed Azure URLs, leave the report-name
-# emission alone — this script captures stdout/stderr verbatim and produces
-# a simple log.html that the per-build index.html links to.
+# Isolation from the local dev environment:
+#   - No local services started; tests hit the deployed Azure URLs only.
+#   - URLs sourced from $CI_STATE_DIR/.env.deploy (host-managed, not in repo).
+#   - lib/test-env.js skips its wasm/.env requirement when these URLs are
+#     already in process.env, so we don't need to drop a .env in the runner
+#     checkout.
 set -euo pipefail
 
 # shellcheck source=_lib.sh
@@ -17,6 +19,23 @@ ACCT="${AZURE_STORAGE_ACCOUNT:?}"
 SITE="${STATIC_SITE_BASE:?}"
 WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
 
+# ── Source App Services URLs from the host-managed .env.deploy ──────────
+ENV_DEPLOY_HOST="${CI_STATE_DIR:?}/.env.deploy"
+if [[ ! -f "$ENV_DEPLOY_HOST" ]]; then
+    echo "ERROR: $ENV_DEPLOY_HOST not found — needed for TEST_TARGET=azure-deploy URLs" >&2
+    exit 1
+fi
+# shellcheck disable=SC1090
+set -a; source "$ENV_DEPLOY_HOST"; set +a
+
+# Tests read FILE_STORAGE_URL, EDITOR_URL, RELAY_URL from env (lib/test-env.js).
+# .env.deploy already provides VIEWER_URL/EDITOR_URL/RELAY_URL with the right
+# values; FILE_STORAGE_URL is the viewer (which fronts the document storage).
+export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in .env.deploy}"
+export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in .env.deploy}"
+export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in .env.deploy}"
+export TEST_TARGET="azure-deploy"
+
 REPORT_DIR="$(mktemp -d)"
 trap "rm -rf '$REPORT_DIR'" EXIT
 
@@ -24,8 +43,18 @@ LOG="$REPORT_DIR/run.log"
 SUMMARY_JSON="$REPORT_DIR/summary.json"
 START_TS="$(date -u +%s)"
 
+{
+    echo "=== TEST_TARGET=$TEST_TARGET ==="
+    echo "  FILE_STORAGE_URL=$FILE_STORAGE_URL"
+    echo "  EDITOR_URL=$EDITOR_URL"
+    echo "  RELAY_URL=$RELAY_URL"
+    echo "  APP_BUILD_ID=$APP_BID  LO_BUILD_ID=${LO_BUILD_ID:-?}"
+    echo "  GIT_SHA=${GIT_SHA:-?}"
+    echo "==========================================="
+} > "$LOG"
+
 set +e
-( cd "$WORKSPACE/wasm" && bash run-all-tests.sh ) > "$LOG" 2>&1
+( cd "$WORKSPACE/wasm" && bash run-all-tests.sh ) >> "$LOG" 2>&1
 TEST_RC=$?
 set -e
 END_TS="$(date -u +%s)"
