@@ -527,6 +527,41 @@ window.addEventListener('message', function(event) {
         // encrypt with the currently-open file's contentKey and PUT
         // to /api/v2/file/<fileId>. Response posts back so the
         // adapter can rotate the relay checkpoint.
+        // Editor (late joiner) asking the viewer to fetch + decrypt a
+        // v2 file. The relay checkpoint's locator is /api/v2/file/<id>,
+        // which serves CIPHERTEXT. Only the viewer has the content key;
+        // the editor can't decrypt. We fetch, decrypt, and post the
+        // plaintext back as base64.
+        if (msg.MessageId === 'WasmFileLoad' && msg.Values) {
+            const { fileId: loadFileId, reqId: loadReqId } = msg.Values;
+            const respondLoad = (payload) => {
+                try { event.source.postMessage(JSON.stringify({
+                    MessageId: 'WasmFileLoadResult',
+                    Values: Object.assign({ reqId: loadReqId }, payload),
+                }), '*'); } catch(e) {}
+            };
+            if (!currentV2Keys || currentV2Keys.fileId !== loadFileId) {
+                respondLoad({ ok: false, error: 'no-key-for-fileId' });
+                return;
+            }
+            (async () => {
+                try {
+                    const resp = await fetch('/api/v2/file/' + loadFileId);
+                    if (!resp.ok) {
+                        respondLoad({ ok: false, error: 'fetch-' + resp.status });
+                        return;
+                    }
+                    const j = await resp.json();
+                    const ctBytes = Uint8Array.from(atob(j.ciphertext), c => c.charCodeAt(0));
+                    const plaintext = await FileCrypto.decryptBytes(currentV2Keys.contentKey, ctBytes);
+                    respondLoad({ ok: true, bytes: bytesToBase64(plaintext) });
+                } catch(e) {
+                    respondLoad({ ok: false, error: 'decrypt-' + (e.message || 'unknown') });
+                }
+            })();
+            return;
+        }
+
         if (msg.MessageId === 'WasmFileSave' && msg.Values) {
             const { fileId: saveFileId, bytes, reqId } = msg.Values;
             const respond = (payload) => {
@@ -837,15 +872,20 @@ async function openFile(name, opts) {
     // use cold reload to avoid signal races with the prewarm WasmDocReady.
     const wasPrewarmReady = prewarmReady;
     const effectiveDocType = opts.docTypeHint || docTypeFor(name);
-    // V2 opens always cold-reload: hot-switch leaves the iframe's
-    // ?WOPISrc= query pointing at the prewarm blank forever, and the
-    // adapter derives the room locator from that query — so hot-switch
-    // would advertise the blank's /wasm/<blank> URL as the locator
-    // while Kit is actually editing <fileId>. Cold reload costs ~2s
-    // but eliminates the whole stale-WOPISrc class of bug.
+    // V2 hot-switch enabled (RelaySwitchRoom handler self-updates the
+    // adapter's wopiSrc, so the room locator stays correct on hot-switch
+    // for v2 — relay-adapter.js:206).
+    //
+    // Cross-type hot-switch is STILL disabled. The COOL-JS layer-swap
+    // path has additional races beyond _delayedMessages: removeLayer
+    // synchronously fires events that reference layers in the middle
+    // of being torn down — _map.getPixelBoundsCore on null _map fires
+    // during the swap window, regardless of whether messages are
+    // queued. Phase 1.3b (#129) tracks a more thorough audit of the
+    // L.Layer event-fire paths during onRemove. Until then, cross-type
+    // cold-reload is the safe path.
     const willHotSwitch = wasPrewarmReady
-        && (effectiveDocType === currentDocType)
-        && !opts.hashValue;   // hashValue is only set by v2 callers
+        && (effectiveDocType === currentDocType);
 
     // Collapse the file sidebar so the editor gets the full viewport.
     // The user can re-open it by hovering the left edge or clicking the bar.

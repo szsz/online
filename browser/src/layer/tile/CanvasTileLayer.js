@@ -3846,16 +3846,20 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 	},
 
 	onRemove: function (map) {
-		window.L.DomUtil.remove(this._container);
-		map._removeZoomLimit(this);
+		// Defensive: cross-type hot-switch can call onRemove before
+		// onAdd finished (if a status: with new docType arrives during
+		// the previous layer's onAdd). _oleCSelections, _references,
+		// _cursorMarker etc. may be undefined; guard each access.
+		if (this._container) window.L.DomUtil.remove(this._container);
+		if (map._removeZoomLimit) map._removeZoomLimit(this);
 		this._container = null;
 		this._tileZoom = null;
-		TileManager.clearPreFetch();
+		try { TileManager.clearPreFetch(); } catch(e) { /* ok during cross-type tear-down */ }
 		clearTimeout(this._previewInvalidator);
 
-		app.activeDocument.activeView.clearTextSelection();
+		try { app.activeDocument.activeView.clearTextSelection(); } catch(e) { /* ok during cross-type tear-down */ }
 
-		if (!this._oleCSelections.empty()) {
+		if (this._oleCSelections && !this._oleCSelections.empty()) {
 			this._oleCSelections.clear();
 		}
 
@@ -3863,10 +3867,10 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 			this._cursorMarker.remove();
 		}
 
-		TextSelections.dispose();
+		try { TextSelections.dispose(); } catch(e) { /* ok during cross-type tear-down */ }
 
-		this._removeSplitters();
-		window.L.DomUtil.remove(this._canvasContainer);
+		try { this._removeSplitters(); } catch(e) { /* ok during cross-type tear-down */ }
+		if (this._canvasContainer) window.L.DomUtil.remove(this._canvasContainer);
 	},
 
 	getEvents: function () {
