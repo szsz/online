@@ -275,6 +275,20 @@ class NavigatorPanel extends SidebarBase {
 		}
 
 		if (this.navigationPanel) {
+			// Idempotent: remove any prior navContainer/navHeader/navSearchWrapper
+			// before inserting fresh ones. initializeImpl fires twice on cold open
+			// (TileLayer.beforeAdd + Socket._onStatusMsg) AND on every cross-type
+			// switch — without this guard, every Impress doc-load (cold or after
+			// hot-switch) prepends a second '#navigation-options-wrapper' panel.
+			['navigation-options-wrapper', 'navigation-search-wrapper']
+				.forEach((id) => {
+					const existing = this.navigationPanel.querySelector('#' + id);
+					if (existing) existing.remove();
+				});
+			// navHeader has no id; remove all `.navigation-header` children
+			this.navigationPanel.querySelectorAll(':scope > .navigation-header')
+				.forEach((el) => el.remove());
+
 			// Insert navigation container as the first child & navHeader as next-child of navigator-panel
 			this.navigationPanel.prepend(navContainer);
 			if (this.map.isText()) {

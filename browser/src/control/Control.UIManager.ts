@@ -551,6 +551,15 @@ class UIManager extends window.L.Control {
 		{ const el = document.getElementById('selectbackground'); if (el) el.style.display = 'none'; }
 		$('#toolbar-wrapper').removeClass('spreadsheet');
 
+		// Clear stale status-bar text from the previous doc type. Without
+		// this, switching writer→calc leaves "1,652 words" still visible
+		// next to the new "Sheet 1 of 1", and switching to impress leaves
+		// both Writer and Calc text behind. The new type's status:
+		// message will repopulate the relevant field a moment later.
+		{ const el = document.getElementById('StateWordCount'); if (el) el.textContent = ''; }
+		{ const el = document.getElementById('StatusDocPos');   if (el) el.textContent = ''; }
+		{ const el = document.getElementById('SlideStatus');    if (el) el.textContent = ''; }
+
 		// Destroy Calc-specific controls
 		if (this.sheetsBar) { try { this.sheetsBar.remove(); } catch(e) {} this.sheetsBar = null; }
 		if (this.map.formulabar) { try { this.map.formulabar.remove(); } catch(e) {} this.map.formulabar = null; }

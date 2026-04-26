@@ -451,38 +451,25 @@
                             var dt = (performance.now() - sw).toFixed(0);
                             mark('msg:' + txt.split(' ')[0].replace(':',''), dt + 'ms  ' + txt.substring(0, 80));
                         }
-                        // Cross-type hot-switch: detect doc type change from
-                        // status message and recreate the tile layer + UI.
+                        // Cross-type hot-switch detection used to live HERE,
+                        // synchronously nulling map._docLayer before Socket._onStatusMsg
+                        // had a chance to run. That introduced a window where
+                        // every state-change message (.uno:PageStatus, etc.)
+                        // arriving between this onmessage hook and Socket's
+                        // _onStatusMsg lookup-and-swap was routed to a null
+                        // docLayer and silently dropped — which is why
+                        // #SlideStatus stayed empty when switching to Impress.
+                        //
+                        // Socket._onStatusMsg already detects type mismatch
+                        // and does an ATOMIC swap (remove old layer, create
+                        // new layer of correct type, call initializeSpecializedUI,
+                        // initializeNotebookbarInCore, initializeSidebar) all
+                        // within the same synchronous call. So we just let
+                        // status: flow through to Socket and stop fighting it
+                        // here. wasm-loader.js retains the timing-mark hooks
+                        // above but no longer manipulates the doc layer.
                         if (txt.indexOf('status:') === 0 && window.__bridgeSwitchSent) {
-                            try {
-                                // Extract type from status JSON. Use full ev.data
-                                // (not truncated txt) and regex instead of JSON.parse
-                                // because the status may have non-standard JSON.
-                                var fullData = typeof ev.data === 'string' ? ev.data : '';
-                                var typeMatch = fullData.match(/"type"\s*:\s*"(\w+)"/);
-                                var json = typeMatch ? { type: typeMatch[1] } : null;
-                                if (!json) throw new Error('no type in status');
-                                var map = window.app && window.app.map;
-                                if (json.type && map && map._docLayer && map._docLayer._docType &&
-                                    json.type !== map._docLayer._docType) {
-                                    var oldType = map._docLayer._docType;
-                                    console.log('[wasm-loader] Cross-type: ' + oldType + ' → ' + json.type);
-                                    // Remove old layer and clear TileManager's cached reference
-                                    try { map.removeLayer(map._docLayer); } catch(e) {}
-                                    map._docLayer = null;
-                                    if (typeof TileManager !== 'undefined' && TileManager._docLayer) {
-                                        TileManager._docLayer = null;
-                                    }
-                                    // Reinitialize UI for new type (creates correct
-                                    // notebookbar, toolbar, sidebar)
-                                    map.uiManager.initializeSpecializedUI(json.type);
-                                    // The status message will now be processed by
-                                    // Socket._onStatusMsg which will create the new
-                                    // doc layer since _docLayer is now null.
-                                }
-                            } catch(e) {
-                                console.error('[wasm-loader] Cross-type error:', e);
-                            }
+                            mark('msg:status_post_switch');
                         }
                         return origOnMsg.apply(this, arguments);
                     };
