@@ -18,6 +18,9 @@
 
 #include "ChildSession.hpp"
 
+#include <algorithm>
+#include <cctype>
+
 #ifdef __EMSCRIPTEN__
 #include <string_view>
 // Forward-declared instead of #include <wasmsnapshot.hxx> because
@@ -39,6 +42,14 @@ namespace wasmshim {
 #define LOK_USE_UNSTABLE_API
 #include <LibreOfficeKit/LibreOfficeKit.hxx>
 #include <LibreOfficeKit/LibreOfficeKitEnums.h>
+
+#ifdef __EMSCRIPTEN__
+// Plan B + warm-restore C entry points exported by libsofficeapp.a.
+// Declared at file scope (after LibreOfficeKit.h is included) because
+// extern "C" is not allowed inside a function body in C++.
+extern "C" int wasm_is_warm_restored();
+extern "C" int wasm_reload_doc_in_place(LibreOfficeKitDocument*, const char*);
+#endif
 
 #include <Poco/StreamCopier.h>
 #include <Poco/URI.h>
@@ -330,12 +341,29 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         InputProcessingManager processInput(getProtocol(), false);
         WatchdogGuard watchdogGuard;
 
+        // Phase timing — every step posted to the JS console so we can see
+        // exactly where the 40 s of a "hot" switch goes (documentLoad,
+        // initializeForRendering, status:, etc.). Quick to read without
+        // wading through the loolkit log.
+        const auto swT0 = std::chrono::steady_clock::now();
+        auto swMs = [&swT0]() {
+            return (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - swT0).count();
+        };
+#ifdef __EMSCRIPTEN__
+#define SW_MARK(label) MAIN_THREAD_ASYNC_EM_ASM({ console.log('SWITCHDOC[+' + $0 + 'ms] ' + UTF8ToString($1)); }, swMs(), label)
+#else
+#define SW_MARK(label) ((void)0)
+#endif
+        SW_MARK("entered handler");
+
         std::string fileUrl;
         if (arg.substr(0, 4) == "url=")
         {
             const std::string remoteUrl = arg.substr(4);
             LOG_INF("SWITCHDOC: fetching from " << remoteUrl);
 
+            SW_MARK("fetch:start");
             emscripten_fetch_attr_t attr;
             emscripten_fetch_attr_init(&attr);
             strcpy(attr.requestMethod, "GET");
@@ -349,6 +377,7 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 return false;
             }
             LOG_INF("SWITCHDOC: fetched " << fetch->numBytes << " bytes");
+            SW_MARK("fetch:done");
 
             static int switchCounter = 0;
             const std::string tempPath = "/tempdoc_switch" + std::to_string(++switchCounter);
@@ -361,6 +390,7 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             emscripten_fetch_close(fetch);
             fileUrl = "file://" + tempPath;
             LOG_INF("SWITCHDOC: wrote to " << tempPath);
+            SW_MARK("file:written");
         }
         else
         {
@@ -368,25 +398,104 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         }
 
         auto loKit = _docManager->getLOKit();
-        LOG_INF("SWITCHDOC: calling documentLoad(" << fileUrl << ")");
-        auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), "Language=en-US,Batch=true");
-        LOG_INF("SWITCHDOC: documentLoad returned " << (rawDoc ? "non-null" : "null"));
-        auto newDoc = std::shared_ptr<lok::Document>(rawDoc);
-        if (!newDoc || !newDoc->get())
+        std::shared_ptr<lok::Document> newDoc;
+
+        // Plan B — try in-place reload first. Reuses the existing frame
+        // and skips ~30 s of model creation + view setup + factory init
+        // inside loKit->documentLoad. Only works for same-format swaps;
+        // for cross-format we fall through to the full documentLoad.
+        // Same-format detection: compare new file's extension to the
+        // existing doc's reported document type.
+        bool inPlaceTried = false;
+        bool inPlaceOk = false;
+        // Cap consecutive in-place reloads. The 3rd in a row hangs
+        // inside loadComponentFromURL("_self") — accumulated frame/view
+        // state survives the simple xPrev->dispose() in
+        // wasm_reload_doc_in_place. Forcing a documentLoad fallback
+        // every 3rd switch lets the user keep clicking; the cost is one
+        // ~15s cold-style switch every other hot pair.
+        static int s_consecutiveInPlace = 0;
+        const int kInPlaceCap = 2;
+        std::shared_ptr<lok::Document> existing = _docManager->getLOKitDocument();
+        if (existing && existing->get() && s_consecutiveInPlace < kInPlaceCap)
         {
-            LOG_ERR("SWITCHDOC: failed to load " << fileUrl << ": " << loKit->getError());
-            sendTextFrameAndLogError("error: cmd=switchdocument kind=faileddocloading");
-            return false;
+            int existingType = existing->getDocumentType();
+            // Map fileUrl extension → expected doc type.
+            int desiredType = LOK_DOCTYPE_OTHER;
+            const auto dotPos = fileUrl.find_last_of('.');
+            if (dotPos != std::string::npos)
+            {
+                std::string ext = fileUrl.substr(dotPos + 1);
+                std::transform(ext.begin(), ext.end(), ext.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+                if (ext == "docx" || ext == "doc" || ext == "odt" || ext == "rtf" || ext == "txt")
+                    desiredType = LOK_DOCTYPE_TEXT;
+                else if (ext == "xlsx" || ext == "xls" || ext == "ods" || ext == "csv" || ext == "tsv")
+                    desiredType = LOK_DOCTYPE_SPREADSHEET;
+                else if (ext == "pptx" || ext == "ppt" || ext == "odp")
+                    desiredType = LOK_DOCTYPE_PRESENTATION;
+            }
+            if (desiredType != LOK_DOCTYPE_OTHER && existingType == desiredType)
+            {
+                inPlaceTried = true;
+                SW_MARK("inPlace:start");
+                int rc = wasm_reload_doc_in_place(existing->get(), fileUrl.c_str());
+                SW_MARK("inPlace:done");
+                if (rc == 0)
+                {
+                    LOG_INF("SWITCHDOC: in-place reload succeeded (consecutive=" << (s_consecutiveInPlace + 1) << ")");
+                    inPlaceOk = true;
+                    s_consecutiveInPlace++;
+                    newDoc = existing;  // same lok::Document wrapper, but
+                                        // its underlying mxComponent now
+                                        // points at the new file's model.
+                }
+                else
+                {
+                    LOG_INF("SWITCHDOC: in-place reload returned " << rc << ", falling back to documentLoad");
+                }
+            }
         }
-        _docManager->setLOKitDocument(newDoc);
-        newDoc->initializeForRendering("");
-        _viewId = newDoc->getView();
-        _docManager->registerViewCallback(_viewId);
+        if (!inPlaceOk)
+            s_consecutiveInPlace = 0;
+
+        if (!inPlaceOk)
+        {
+            LOG_INF("SWITCHDOC: calling documentLoad(" << fileUrl << ")");
+            SW_MARK("documentLoad:start");
+            auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), "Language=en-US,Batch=true");
+            SW_MARK("documentLoad:done");
+            newDoc = std::shared_ptr<lok::Document>(rawDoc);
+            if (!newDoc || !newDoc->get())
+            {
+                LOG_ERR("SWITCHDOC: failed to load " << fileUrl << ": " << loKit->getError());
+                sendTextFrameAndLogError("error: cmd=switchdocument kind=faileddocloading");
+                return false;
+            }
+            _docManager->setLOKitDocument(newDoc);
+            SW_MARK("setLOKitDocument:done");
+            newDoc->initializeForRendering("");
+            SW_MARK("initializeForRendering:done");
+            _viewId = newDoc->getView();
+            _docManager->registerViewCallback(_viewId);
+            SW_MARK("registerViewCallback:done");
+        }
+        else
+        {
+            // In-place path: same document object, refresh the view.
+            newDoc->initializeForRendering("");
+            SW_MARK("initializeForRendering:done");
+            _viewId = newDoc->getView();
+            _docManager->registerViewCallback(_viewId);
+            SW_MARK("registerViewCallback:done");
+        }
 
         sendTextFrame("invalidatetiles: EMPTY");
 
         const std::string status = LOKitHelper::documentStatus(newDoc->get());
+        SW_MARK("documentStatus:done");
         sendTextFrame("status: " + status);
+        SW_MARK("status_sent");
 
         _docManager->notifyViewInfo();
         sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
@@ -398,6 +507,8 @@ bool ChildSession::_handleInput(const char *buffer, int length)
 
         _isDocLoaded = true;
         LOG_INF("SWITCHDOC: complete, viewId=" << _viewId);
+        SW_MARK("complete");
+#undef SW_MARK
         return true;
     }
 #endif
@@ -622,6 +733,15 @@ bool ChildSession::_handleInput(const char *buffer, int length)
     }
     else if (!_isDocLoaded)
     {
+#ifdef __EMSCRIPTEN__
+        // Warm-restore only — see ClientSession.cpp comment.
+        if (wasm_is_warm_restored())
+        {
+            LOG_WRN("Dropping early Kit message [" << tokens[0]
+                    << "] before doc loaded (warm-restore replay race)");
+            return false;
+        }
+#endif
         sendTextFrameAndLogError("error: cmd=" + tokens[0] + " kind=nodocloaded");
         return false;
     }

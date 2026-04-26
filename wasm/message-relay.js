@@ -22,11 +22,10 @@
 //   0x02 = client joined  (server -> all, JSON {viewId, seq})
 //   0x03 = client left    (server -> all, JSON {viewId, seq})
 //   0x04 = join-request   (client -> server, payload = WOPISrc)
-//   0x05 = join-response  (server -> client, JSON {hash, url, seq, first, msgCount})
-//   0x06 = join-ready     (client -> server, payload = JSON {hash} — checkpoint hash verification)
-//   0x07 = file-upload    (client -> server, payload = file bytes)
-//   0x08 = save-trigger   (server -> one client)
-//   0x0A = checkpoint-mismatch (server -> client, JSON {expected, url, seq}) — re-download required
+//   0x05 = join-response  (server -> client, JSON {first, hash?, locator?, seq, cursors?, msgCount})
+//   0x06 = join-ready     (client -> server, JSON {hash, locator?} — first client registers, late joiner confirms)
+//   0x07 = save-rotation  (client -> server, JSON {hash, locator, seq, cursors} — after Ctrl+S)
+//   0x0A = checkpoint-mismatch (server -> client, JSON {expected, locator, seq}) — re-download required
 
 const WebSocket = require('ws');
 const https = require('https');
@@ -526,16 +525,24 @@ class Room {
     // responsible for hash-verifying whatever it downloads against
     // `hash`.
     //
-    // Peer cursor state from the checkpoint is prepended to the
-    // replay buffer as ordinary 0x00 broadcast frames — no special
-    // client-side handling needed, the adapter processes them the
-    // same way it processes any other buffered message.
+    // Peer cursor state is shipped as ordinary 0x00 broadcast frames,
+    // but ONLY when the checkpoint has rotated (seq > 0) — at that
+    // point the matching broadcasts have been pruned from messageLog
+    // and the cursor snapshot is the only way a late joiner learns
+    // peer cursor positions.
+    //
+    // At the initial checkpoint (seq=0) the messageLog is whole and
+    // ALREADY contains every cursor broadcast, so prepending would
+    // double-deliver them — the late joiner's Kit would process the
+    // same textselection/invalidateviewcursor twice and diverge.
     serveCheckpoint(ws) {
         if (!this.checkpointHash) return false;
         const cursorFrames = [];
-        for (const entry of this.checkpointCursors || []) {
-            try { cursorFrames.push(Buffer.from(entry.frame, 'base64')); }
-            catch(e) {}
+        if (this.checkpointSeq > 0) {
+            for (const entry of this.checkpointCursors || []) {
+                try { cursorFrames.push(Buffer.from(entry.frame, 'base64')); }
+                catch(e) {}
+            }
         }
         const info = JSON.stringify({
             first: false,

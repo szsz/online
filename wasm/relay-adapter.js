@@ -393,11 +393,8 @@
         // First client registers the room checkpoint via its 0x06
         // payload: { hash, locator }. `hash` is sha256(plaintext) of
         // /wasm/<wopiSrc>; `locator` is the URL late joiners will
-        // fetch those bytes from (today the same /wasm/<wopiSrc>
-        // endpoint on the editor origin; a content-addressable URL
-        // later). Late joiners just echo back the `hash` they
-        // computed — the relay uses that to confirm they got the
-        // right bytes, no locator needed.
+        // fetch those bytes from. Late joiners just echo back the
+        // `hash` they computed.
         var wasmUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
         function sendReady(hash) {
             lastKnownHash = hash || lastKnownHash;
@@ -410,37 +407,65 @@
                         (isFirstClient && hash ? ' locator=' + wasmUrl : ''));
             sendToRelay(0x06, myViewId, readyPayload);
         }
-        if (!joinFileHash && isFirstClient) {
-            origFetch(wasmUrl).then(function(r) { return r.arrayBuffer(); })
-                .then(function(buf) {
-                    return crypto.subtle.digest('SHA-256', buf);
-                }).then(function(hashBuf) {
-                    var arr = new Uint8Array(hashBuf);
-                    var hex = Array.from(arr).map(function(b) {
-                        return b.toString(16).padStart(2, '0');
-                    }).join('');
-                    joinFileHash = hex;
-                    sendReady(hex);
-                }).catch(function(e) {
-                    console.warn('[relay] First-client hash self-compute failed:', e);
-                    sendReady(null);
-                });
-        } else {
-            sendReady(joinFileHash);
-        }
-        // Enter replay mode: all messages from the buffer will be routed
-        // to local Kit (not remote clients) so the doc catches up.
-        // Replay mode ends when we receive 0x02 (join acknowledged).
+        // Enter replay mode BEFORE sending 0x06 — the relay replays
+        // _joinBuffer frames back to us the instant it receives 0x06,
+        // and the first echoed 0x00 can land before sendToRelay's
+        // promise has resolved. If replayMode is still false, A's
+        // edits get routed to a remote client and never reach the
+        // local Kit — B stays stuck on the pre-join baseline.
         if (!isFirstClient) {
             replayMode = true;
             console.log('[relay] Replay mode ON — buffered messages → local Kit');
         }
+
+        // Fetch the E2E encryption key BEFORE sending 0x06. Replay
+        // frames arrive the instant the relay sees 0x06. If the key
+        // isn't ready by then, looksEncrypted === false (because
+        // encryptionEnabled is still false), the encrypted payload
+        // is treated as plaintext, the UTF-8 garbage fails the
+        // isUserInput prefix check and gets silently dropped — B
+        // ends up with 0 of A's edits applied.
+        function enableEncryptionThenReady() {
+            function proceed() {
+                if (!joinFileHash && isFirstClient) {
+                    origFetch(wasmUrl).then(function(r) { return r.arrayBuffer(); })
+                        .then(function(buf) { return crypto.subtle.digest('SHA-256', buf); })
+                        .then(function(hashBuf) {
+                            joinFileHash = Array.from(new Uint8Array(hashBuf)).map(function(b) {
+                                return b.toString(16).padStart(2, '0');
+                            }).join('');
+                            sendReady(joinFileHash);
+                        }).catch(function(e) {
+                            console.warn('[relay] First-client hash self-compute failed:', e);
+                            sendReady(null);
+                        });
+                } else {
+                    sendReady(joinFileHash);
+                }
+            }
+            if (singleUserMode) { proceed(); return; }
+            var keyBaseUrl = getFileStorageUrl(wopiSrc);
+            if (!keyBaseUrl) { proceed(); return; }
+            var kvUrl = keyBaseUrl.replace(/\/api\/files\/.*/, '/api/keys/current-version');
+            origFetch(kvUrl, { mode: 'cors' }).then(function(r) { return r.json(); })
+                .then(function(data) {
+                    currentKeyVer = data.keyVersion;
+                    return fetchKey(currentKeyVer);
+                }).then(function() {
+                    encryptionEnabled = true;
+                    console.log('[relay] E2E encryption enabled, keyVersion=' + currentKeyVer);
+                    proceed();
+                }).catch(function(e) {
+                    console.warn('[relay] Encryption key fetch failed, running unencrypted:', e.message);
+                    proceed();
+                });
+        }
+        enableEncryptionThenReady();
+
         try { parent.postMessage(JSON.stringify({
             MessageId: 'RelayLateJoinPhase',
             Values: { phase: 'replaying' }
         }), '*'); } catch(e) {}
-        // 0x06 is sent by sendReady() above — either synchronously with
-        // joinFileHash, or async after the first-client hash self-compute.
 
         // Tell the parent viewer that input is now accepted. Until this
         // fires the viewer keeps its loading shield up — otherwise the
@@ -452,24 +477,6 @@
                 Values: { viewId: myViewId, isFirstClient: isFirstClient }
             }), '*');
         } catch(e) {}
-
-        // Enable E2E encryption — request the current key before sending anything
-        if (!singleUserMode) {
-            var keyBaseUrl = getFileStorageUrl(wopiSrc);
-            if (keyBaseUrl) {
-                var kvUrl = keyBaseUrl.replace(/\/api\/files\/.*/, '/api/keys/current-version');
-                origFetch(kvUrl, { mode: 'cors' }).then(function(r) { return r.json(); })
-                    .then(function(data) {
-                        currentKeyVer = data.keyVersion;
-                        return fetchKey(currentKeyVer);
-                    }).then(function() {
-                        encryptionEnabled = true;
-                        console.log('[relay] E2E encryption enabled, keyVersion=' + currentKeyVer);
-                    }).catch(function(e) {
-                        console.warn('[relay] Encryption key fetch failed, running unencrypted:', e.message);
-                    });
-            }
-        }
 
         // Announce presence
         sendToRelay(0x00, myViewId, 'presence viewId=' + myViewId + ' name=' + myName);
@@ -918,12 +925,6 @@
     }
     setTimeout(globalPollReady, 1000);
 
-    // --- Save-trigger handler ---
-    function handleSaveTrigger() {
-        console.log('[relay] Save-trigger received');
-        saveAndUploadCheckpoint();
-    }
-
     // True when the COOL JS layer dispatches a user-initiated save.
     // Ctrl+S, the toolbar Save button, and File→Save all funnel through
     // the same .uno:Save command. The Sidebar/Auto-save also produce
@@ -1287,12 +1288,6 @@
 
     // --- Process relay message ---
     function processRelayMessage(msg) {
-        // 0x08: Save-trigger
-        if (msg.type === 0x08) {
-            handleSaveTrigger();
-            return;
-        }
-
         // 0x0A: Checkpoint mismatch — relay rejected our hash, must re-download
         if (msg.type === 0x0A) {
             try {
@@ -1351,34 +1346,75 @@
                         Values: { phase: 'downloading', msgCount: info.msgCount || 0, seq: info.seq }
                     }), '*'); } catch(e) {}
 
-                    // Primary: the checkpoint's `locator` (set by the
-                    // first client in its 0x06). Fallback: the editor's
-                    // own /wasm/<wopiSrc> — for the common case where
-                    // the viewer POSTed plaintext there before spawning
-                    // this iframe, the bytes will match anyway.
+                    // Primary: the checkpoint's `locator`. For v2 files
+                    // the locator is /api/v2/file/<fileId> which serves
+                    // ciphertext — the adapter can't decrypt it (content
+                    // key lives in the parent viewer only), so ship that
+                    // fetch through the parent via postMessage and let
+                    // the viewer return plaintext bytes. For non-v2
+                    // locators, fetch directly. Fallback in either case:
+                    // the editor's own /wasm/<wopiSrc> where the viewer
+                    // POSTed plaintext before spawning us.
+                    var v2Re = /\/api\/v2\/file\/([0-9a-f]{64})/i;
+                    var v2Match = info.locator && info.locator.match(v2Re);
                     var sources = [];
-                    if (info.locator) sources.push({ kind: 'locator', url: info.locator });
+                    if (info.locator) {
+                        sources.push({
+                            kind: v2Match ? 'v2-via-parent' : 'locator',
+                            url: info.locator,
+                            v2FileId: v2Match ? v2Match[1] : null,
+                        });
+                    }
                     if (!info.locator || info.locator !== editorWopiUrl) {
                         sources.push({ kind: 'editor-wasm', url: editorWopiUrl });
                     }
 
-                    // Walk sources in order; take the first one that
-                    // returns bytes. If info.hash is advertised we still
-                    // compute sha256 for the log line, but we do NOT
-                    // reject non-matching sources — the relay's 0x06
-                    // handler tolerates minor hash divergence (and in
-                    // the common case `/wasm/` holds the same plaintext
-                    // as what the first client had).
+                    function fetchViaParent(fileId) {
+                        return new Promise(function(resolve, reject) {
+                            var reqId = 'fetch-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+                            var timeoutId = setTimeout(function() {
+                                window.removeEventListener('message', onMsg);
+                                reject(new Error('parent-fetch-timeout'));
+                            }, 30000);
+                            function onMsg(ev) {
+                                var m; try { m = JSON.parse(ev.data); } catch(e) { return; }
+                                if (!m || m.MessageId !== 'WasmFileLoadResult') return;
+                                if (!m.Values || m.Values.reqId !== reqId) return;
+                                clearTimeout(timeoutId);
+                                window.removeEventListener('message', onMsg);
+                                if (!m.Values.ok) return reject(new Error(m.Values.error || 'parent-fetch-failed'));
+                                try {
+                                    var b64 = m.Values.bytes;
+                                    var bin = atob(b64);
+                                    var arr = new Uint8Array(bin.length);
+                                    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                                    resolve(arr.buffer);
+                                } catch(e) { reject(e); }
+                            }
+                            window.addEventListener('message', onMsg);
+                            parent.postMessage(JSON.stringify({
+                                MessageId: 'WasmFileLoad',
+                                Values: { fileId: fileId, reqId: reqId }
+                            }), '*');
+                        });
+                    }
+
                     function tryNext(idx) {
                         if (idx >= sources.length) {
                             return Promise.reject(new Error('all sources exhausted'));
                         }
                         var s = sources[idx];
-                        var opts = s.kind === 'editor-wasm' ? {} : { mode: 'cors' };
-                        return origFetch(s.url, opts).then(function(r) {
-                            if (!r.ok) throw new Error(s.kind + ' ' + r.status);
-                            return r.arrayBuffer();
-                        }).catch(function(e) {
+                        var p;
+                        if (s.kind === 'v2-via-parent') {
+                            p = fetchViaParent(s.v2FileId);
+                        } else {
+                            var opts = s.kind === 'editor-wasm' ? {} : { mode: 'cors' };
+                            p = origFetch(s.url, opts).then(function(r) {
+                                if (!r.ok) throw new Error(s.kind + ' ' + r.status);
+                                return r.arrayBuffer();
+                            });
+                        }
+                        return p.catch(function(e) {
                             if (e.message === 'all sources exhausted') throw e;
                             console.log('[relay] Source "' + s.kind + '" failed (' + e.message + '), trying next');
                             return tryNext(idx + 1);
@@ -1441,10 +1477,25 @@
             try {
                 var joinInfo = JSON.parse(new TextDecoder().decode(msg.payload));
                 console.log('[relay] Client joined: viewId=' + joinInfo.viewId + ' seq=' + joinInfo.seq);
-                // If this is OUR join announcement, replay is done
+                // If this is OUR join announcement, replay is done — BUT
+                // only after any queued-for-kit replay frames have been
+                // drained. _kitMessageQueue holds 0x00 frames that arrived
+                // before Kit was ready; if we flip replayMode here while
+                // those are still pending, their later processUIMessage
+                // run sees replayMode=false and ships them to a remote
+                // client, leaving the local doc stuck on the pre-join
+                // baseline. Defer the flip until the queue is empty.
                 if (joinInfo.viewId === myViewId && replayMode) {
-                    replayMode = false;
-                    console.log('[relay] Replay mode OFF — ' + lastSeq + ' messages applied to local Kit');
+                    var flipStart = Date.now();
+                    (function flipWhenDrained() {
+                        if (_kitMessageQueue.length === 0 || Date.now() - flipStart > 30000) {
+                            replayMode = false;
+                            console.log('[relay] Replay mode OFF — ' + lastSeq +
+                                ' messages applied to local Kit (queue=' + _kitMessageQueue.length + ')');
+                        } else {
+                            setTimeout(flipWhenDrained, 100);
+                        }
+                    })();
                 }
                 if (joinInfo.viewId !== myViewId && !remoteClients[joinInfo.viewId]) {
                     createRemoteClient(joinInfo.viewId);
@@ -1502,7 +1553,7 @@
         var msg = parseFrame(event.data);
         if (!msg) return;
 
-        if (msg.type === 0x05 || msg.type === 0x08 || msg.type === 0x0A) {
+        if (msg.type === 0x05 || msg.type === 0x0A) {
             processRelayMessage(msg);
             return;
         }

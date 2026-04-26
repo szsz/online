@@ -173,6 +173,22 @@ if (window.ThisIsTheEmscriptenApp) {
 			doRestore();
 		}
 	});
+	// Capture full abort context for Phase 2.1 debugging — emscripten's
+	// "Aborted(Assertion failed)" without a payload is too generic to act
+	// on. With this hook we get the actual abort string + a JS stack frame
+	// at the moment abort() was called.
+	globalThis.Module.onAbort = function(what) {
+		try {
+			console.log('WASM_ABORT', JSON.stringify({
+				what: String(what).substring(0, 500),
+				stack: new Error().stack ? new Error().stack.substring(0, 1500) : null,
+				wasRestored: !!globalThis.__wasmSnapshotRestored,
+				preRunFired: !!globalThis.__preRunFired,
+				preRunState: globalThis.__preRunState,
+			}));
+		} catch(e) { console.log('onAbort log failed:', e.message); }
+	};
+
 	globalThis.Module.onRuntimeInitialized = function() {
 		// Snapshot killswitch (set in wasm-loader.js): tell LO Core to
 		// skip preloadDocumentModules — those module loads emit

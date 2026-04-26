@@ -180,12 +180,12 @@
     // Loading it eagerly caused memory pressure that broke __wasm_call_ctors.
     window.__wasmSnapshotData = undefined; // undefined = not yet checked
     window.__wasmSnapshotExists = false;
-    // ── KILLSWITCH: snapshot disabled while warm-restore Phase 2 is in
-    // flight. Setting this true forces every visit to be cold (~30–40s)
-    // but avoids the warm-restore path entirely (where Kit's
-    // ChildSession sees _isDocLoaded=false on the new session because
-    // the snapshot was captured before any user doc loaded). To re-enable
-    // when Phase 2 lands, set to false.
+    // KILLSWITCH (2026-04-26): the addRunDependency dup-id assert is fixed
+    // (emscripten-module.js now uses 'snapshot-load-emm'), and warm restore
+    // reaches `emscripten:calledRun` + `snapshot:signal restored` at ~5.1 s
+    // (vs ~8.6 s cold). BUT the user-facing doc-load on warm still hangs:
+    // WasmDocReady postMessage never fires through the cold-protocol load.
+    // Until that final piece is in: keep cold-only.
     var SNAPSHOT_DISABLED = true;
     // When the snapshot is killed there's no value in preloading
     // Writer/Calc/Impress in Desktop::Main — and worse, doing so
@@ -1208,6 +1208,20 @@
                     parent.postMessage(JSON.stringify({
                         MessageId: 'App_LoadingStatus',
                         Values: { Status: 'Initialized' }
+                    }), '*');
+                } catch(e) {}
+                // Dedicated "iframe is now ready to receive switchdocument"
+                // signal. Map.js fires App_LoadingStatus=Initialized when the
+                // COOL framework boots — far earlier than __wasmInitialDocLoaded.
+                // The viewer used to key prewarmReady on that early message and
+                // would dispatch a hot-switch before trySendSwitch could deliver
+                // it, so the user saw a 30 s wait while the polled retry waited
+                // for the prewarm doc to actually paint.
+                try {
+                    var pwWopi = new URLSearchParams(window.location.search).get('WOPISrc') || '';
+                    parent.postMessage(JSON.stringify({
+                        MessageId: 'WasmPrewarmReady',
+                        Values: { filename: pwWopi }
                     }), '*');
                 } catch(e) {}
                 // ── COPY override ─────────────────────────────────────

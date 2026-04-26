@@ -62,6 +62,15 @@
 #include <net/DelaySocket.hpp>
 #include <net/ServerSocket.hpp>
 #include <wsd/COOLWSDServer.hpp>
+
+#ifdef __EMSCRIPTEN__
+// Forward-declared instead of #include <wasmsnapshot.hxx> because
+// LO Core's desktop/inc is not on Online's include path. Resolves
+// via libsofficeapp.a at link time. Same pattern as kit/ChildSession.cpp.
+namespace wasmshim {
+    bool isQuiesce();
+}
+#endif
 #include <wsd/ClientRequestDispatcher.hpp>
 #include <wsd/DocumentBroker.hpp>
 #include <wsd/PlatformDesktop.hpp>
@@ -4082,6 +4091,29 @@ void COOLWSD::innerMain()
                 std::min(UnitWSD::get().getTimeoutMilliSeconds(), std::chrono::milliseconds(1000));
             waitMicroS /= 4;
         }
+
+#ifdef __EMSCRIPTEN__
+        // Plan C — kit thread asked us to park before HEAPU8 capture.
+        // We own these polls; we are the only safe thread to join them.
+        // The kit thread is blocked in wasm_wait_coolwsd_parked() right
+        // now. Once we ack-park, it triggers firstDocPainted and JS
+        // captures the snapshot. After capture, kit (cold) or JS-restore
+        // (warm) calls wasm_coolwsd_resume() which signals us to wake
+        // and re-spawn the polls.
+        if (wasmshim::isQuiesce())
+        {
+            // First commit: log only. Real park/join wiring lands next.
+            // Leaving the flag-check in place lets us iterate the
+            // build/deploy pipeline without behavioral risk while the
+            // park mechanism is being designed.
+            static bool s_loggedQuiesce = false;
+            if (!s_loggedQuiesce)
+            {
+                s_loggedQuiesce = true;
+                LOG_INF("Plan C: COOLWSD saw g_quiesce=1 (no-op stub)");
+            }
+        }
+#endif
 
         mainWait->poll(waitMicroS);
 

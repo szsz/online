@@ -164,6 +164,10 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
           if (_saved && _ptSelf > 0) HEAPU8.set(_saved, _ptSelf);
           try { if (typeof PThread !== 'undefined' && PThread.threadInitTLS) PThread.threadInitTLS(); } catch(e) {}
           try { if (typeof writeStackCookie === 'function') writeStackCookie(); } catch(e) {}
+          // Tell C++ via the synchronous atomic — Desktop::Main reads this
+          // from a worker thread later and a MAIN_THREAD_EM_ASM_INT proxy
+          // would deadlock against the long-returned WASM main thread.
+          try { Module.ccall('wasm_set_warm_restored', null, ['number'], [1]); } catch(e) {}
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
           // Recreate VFS directories that the restored LO Core expects.

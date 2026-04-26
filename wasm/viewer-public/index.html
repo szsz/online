@@ -490,26 +490,33 @@ window.addEventListener('message', function(event) {
                 }).catch(function(e) { console.error('[viewer] Key request failed:', e); });
         }
 
-        // App_LoadingStatus=Initialized fires once when COOL initializes.
-        // We only trust it for the very first prewarm — once we're past
-        // that, all subsequent doc-open shield-drops go through
-        // WasmDocReady (which actually waits for the new doc's canvas
-        // to paint). Without this gate, hot-switches between two similar
-        // docs (where docPoll's `postSwitchAccept` flag fires at 500 ms
-        // after switchSendT) drop the shield before the canvas updates.
-        if (msg.MessageId === 'App_LoadingStatus' && msg.Values && msg.Values.Status === 'Initialized') {
+        // WasmPrewarmReady fires from wasm-loader.js once the prewarm doc
+        // has actually painted (__wasmInitialDocLoaded=true). This is the
+        // ONLY signal that means "the iframe is ready to receive
+        // switchdocument" — without this, a hot-switch dispatched in
+        // response to App_LoadingStatus=Initialized will sit in
+        // pendingSwitchFilename for 20-30 s while polled trySendSwitch
+        // retries wait for the prewarm to actually finish.
+        if (msg.MessageId === 'WasmPrewarmReady') {
             if (!prewarmReady) {
                 prewarmReady = true;
                 setPrewarmStatus('✅ Editor pre-warmed — pick a file', true);
                 viewerLog('Editor pre-warmed (ready to open files)');
                 if (!currentFile) {
-                    // Pure prewarm (no file requested) — just hide the shield
                     hideShield();
                     return;
                 }
-                // A file is being opened (deep-link or clicked during prewarm).
-                // Fall through to the cold-reload handler below to set docReady.
             }
+        }
+
+        // App_LoadingStatus=Initialized has TWO emitters: COOL Map.js (early
+        // — fires when the framework boots) and wasm-loader.js docPoll (late
+        // — same moment as WasmPrewarmReady). We can't tell them apart by
+        // message shape, so the early one will fire first and we use it
+        // ONLY for cold reloads (where the iframe is recreated and there's
+        // no switchdocument that needs the late signal). For post-prewarm
+        // hot-switches we trust WasmDocReady, which gates on canvas paint.
+        if (msg.MessageId === 'App_LoadingStatus' && msg.Values && msg.Values.Status === 'Initialized') {
             // For cold-reload cross-type switches, WasmDocReady never fires
             // (no switchdocument in the new iframe). Accept Initialized as ready.
             if (window.__viewerState && window.__viewerState.lastOpenMode &&
@@ -517,8 +524,6 @@ window.addEventListener('message', function(event) {
                 console.log('[viewer] App_LoadingStatus=Initialized (cold reload) — treating as doc ready');
                 docReady = true;
                 tryDropShield('cold-reload-initialized');
-            } else {
-                console.log('[viewer] App_LoadingStatus=Initialized (post-prewarm) — waiting for WasmDocReady');
             }
         }
 

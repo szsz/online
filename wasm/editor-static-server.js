@@ -56,16 +56,12 @@ function hashJsFiles() {
         const base = name.replace('.js', '');
         const hashed = `${base}.${hash}.js`;
         jsHashMap[name] = hashed;
-        // Create/update the hashed symlink (or copy)
+        // Create the new hashed symlink (or copy) if it doesn't exist.
+        // Keep older hashed versions around: tabs already running (and
+        // service-worker-cached cool.html payloads) reference the OLD
+        // hashed name, and we'd rather serve them the old code than
+        // 404. Clean up only files older than 24h at startup.
         const dest = path.join(browserDir, hashed);
-        // Remove old hashed versions
-        try {
-            for (const f of fs.readdirSync(browserDir)) {
-                if (f.startsWith(base + '.') && f.endsWith('.js') && f !== name && f !== hashed) {
-                    fs.unlinkSync(path.join(browserDir, f));
-                }
-            }
-        } catch(e) {}
         if (!fs.existsSync(dest)) {
             try { fs.symlinkSync(name, dest); }
             catch(e) { fs.copyFileSync(src, dest); }
@@ -73,35 +69,78 @@ function hashJsFiles() {
         console.log(`  ${name} → ${hashed}`);
     }
 }
+// GC old hashed JS (>24h) — runs once at startup.
+function gcOldHashedJs() {
+    const browserDir = path.join(PUB, 'browser');
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    for (const name of HASHED_JS) {
+        const base = name.replace('.js', '');
+        try {
+            for (const f of fs.readdirSync(browserDir)) {
+                if (!f.startsWith(base + '.') || !f.endsWith('.js') || f === name) continue;
+                if (f === jsHashMap[name]) continue;
+                const p = path.join(browserDir, f);
+                try {
+                    const st = fs.lstatSync(p);
+                    if (st.mtimeMs < cutoff) {
+                        fs.unlinkSync(p);
+                        console.log(`  GC old hashed: ${f}`);
+                    }
+                } catch(e) {}
+            }
+        } catch(e) {}
+    }
+}
 console.log('Content-hashed JS files:');
 hashJsFiles();
-// Rebuild hashes on SIGHUP (useful after deploying new code)
-// Regenerate stale .br files (called on startup and SIGHUP)
+gcOldHashedJs();
+// Regenerate stale .br files. Called at startup + on SIGHUP.
+// Runs brotli ASYNCHRONOUSLY — the 266MB online.wasm takes ~14min to
+// compress and would freeze the event loop for that long if we used
+// execSync. While compressing, the server serves plain (uncompressed)
+// files; the .br becomes available once the background job lands.
 const BROTLI_ASSETS = ['online.js', 'online.wasm', 'bundle.js', 'bundle.css'];
+const { spawn } = require('child_process');
+const _brotliInflight = new Set();
 function refreshBrotli() {
-    const { execSync } = require('child_process');
     const browserDir = path.join(PUB, 'browser');
     for (const name of BROTLI_ASSETS) {
+        if (_brotliInflight.has(name)) continue;
         const src = path.join(browserDir, name);
         const br = src + '.br';
         if (!fs.existsSync(src)) continue;
         const srcMtime = fs.statSync(src).mtimeMs;
         const brMtime = fs.existsSync(br) ? fs.statSync(br).mtimeMs : 0;
         if (srcMtime > brMtime) {
-            console.log(`  Regenerating ${name}.br (source newer than .br)...`);
-            try {
-                execSync(`brotli -f "${src}" -o "${br}"`, { timeout: 300000 });
-                console.log(`    → ${name}.br: ${fs.statSync(br).size} bytes`);
-            } catch(e) {
-                console.error(`    Failed to compress ${name}: ${e.message}`);
-                // Delete stale .br so the server serves uncompressed
-                try { fs.unlinkSync(br); } catch(e2) {}
-            }
+            // Drop any stale .br up-front so while the new one is
+            // being built the server falls back to uncompressed.
+            try { if (brMtime > 0) fs.unlinkSync(br); } catch(e) {}
+            console.log(`  Regenerating ${name}.br in background…`);
+            _brotliInflight.add(name);
+            const brTmp = br + '.tmp';
+            const child = spawn('brotli', ['-f', src, '-o', brTmp], { stdio: 'ignore' });
+            child.on('exit', (code) => {
+                _brotliInflight.delete(name);
+                if (code === 0 && fs.existsSync(brTmp)) {
+                    try {
+                        fs.renameSync(brTmp, br);
+                        console.log(`    → ${name}.br: ${fs.statSync(br).size} bytes`);
+                    } catch(e) {
+                        console.error(`    ${name}.br rename failed: ${e.message}`);
+                    }
+                } else {
+                    console.error(`    ${name}.br failed: exit=${code}`);
+                    try { fs.unlinkSync(brTmp); } catch(e) {}
+                }
+            });
+            child.on('error', (e) => {
+                _brotliInflight.delete(name);
+                console.error(`    ${name}.br spawn error: ${e.message}`);
+            });
         }
     }
 }
-// Run on startup (may take a few minutes for online.wasm)
-console.log('Checking Brotli freshness:');
+console.log('Checking Brotli freshness (async):');
 refreshBrotli();
 
 process.on('SIGHUP', () => {

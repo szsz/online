@@ -568,25 +568,36 @@ int main(int argc, char* argv_main[])
     g_argv1 = argv_main[1] ? argv_main[1] : "";
     g_argv2 = argv_main[2] ? argv_main[2] : "";
 
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: pre Log::initialize'); });
     Log::initialize("WASM", "error");
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: Log::initialize done'); });
     Util::setThreadName("main");
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: setThreadName done'); });
 
     fakeSocketSetLoggingCallback([](const std::string& line)
                                  {
                                      LOG_TRC_NOFILE(line);
                                  });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: fakeSocketSetLoggingCallback done'); });
 
     char *argv[2];
     argv[0] = strdup("wasm");
     argv[1] = nullptr;
 
     fakeClientFd = fakeSocketSocket();
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: fakeSocketSocket done fd=' + $0); }, fakeClientFd);
 
     // We run COOLWSD::run() in a thread of its own so that main() can return.
     std::thread(
         [&]
         {
+            // FIRST line of the thread — fires before anything that could
+            // touch /dev/urandom, fakesocket, Util::setThreadName, etc.
+            // Lets us tell whether the thread even starts on warm visits.
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD thread ENTERED'); });
+
             Util::setThreadName("COOLWSD::run");
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD thread setThreadName done'); });
 
             // Use the static globals (set by main() before this thread spawns).
             // Capturing argv_main by reference [&] is unsafe: main() returns
@@ -649,15 +660,20 @@ int main(int argc, char* argv_main[])
                 int isRestore = MAIN_THREAD_EM_ASM_INT({
                     return globalThis.__wasmSnapshotRestored ? 1 : 0;
                 });
+                MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: isRestore=' + $0); }, isRestore);
                 if (isRestore)
                 {
                     // Leak stale poll objects from snapshot — their dtors
                     // would try to join dead threads → deadlock.
+                    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: calling leakSnapshotPolls'); });
                     COOLWSD::leakSnapshotPolls();
+                    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: leakSnapshotPolls done'); });
                 }
             }
 #endif
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: new COOLWSD'); });
             COOLWSD *coolwsd = new COOLWSD();
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD::run() invoking'); });
             coolwsd->run(1, argv);
             auto t_end = std::chrono::steady_clock::now();
             { auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();

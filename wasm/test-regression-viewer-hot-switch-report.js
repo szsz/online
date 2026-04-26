@@ -117,20 +117,16 @@ async function clickFileAndMeasure(page, label, fileMatch) {
         if (s.visible && !sawUp) { shieldUpT = Date.now(); sawUp = true; }
         const probe = await probeIframeContent(page);
         lastProbe = probe;
-        // Doc considered "loaded with content" when:
-        //  - any of wc/sd/ss has matching pattern
-        //  - AND (canvas pixels differ from beforeProbe OR status differs)
-        const hasStatus =
-            /\d+\s+characters?/.test(probe.wc || '') ||
-            /Sheet\s+\d+\s+of\s+\d+/.test(probe.sd || '') ||
-            /Slide\s+\d+\s+of\s+\d+/i.test(probe.ss || '');
-        const contentChanged = (
-            probe.wc !== beforeProbe.wc ||
-            probe.sd !== beforeProbe.sd ||
-            probe.ss !== beforeProbe.ss ||
-            (probe.canvasPx && probe.canvasPx !== beforeProbe.canvasPx)
-        );
-        if (sawUp && hasStatus && contentChanged) {
+        // Doc considered "loaded with content" when status has a NON-ZERO
+        // count for the doc-type's expected field. "0 words, 0 characters"
+        // is the prewarm blank's content showing through during a still-
+        // pending hot-switch — wait for the actual file's word count.
+        const wcMatch = (probe.wc || '').match(/([\d,]+)\s+words?,\s+([\d,]+)\s+characters?/);
+        const wcNonZero = wcMatch && parseInt(wcMatch[1].replace(/,/g, '')) > 0;
+        const sdMatch = /Sheet\s+\d+\s+of\s+\d+/.test(probe.sd || '');
+        const ssMatch = /Slide\s+\d+\s+of\s+\d+/i.test(probe.ss || '');
+        const hasStatus = wcNonZero || sdMatch || ssMatch;
+        if (sawUp && hasStatus) {
             contentReadyT = Date.now();
             break;
         }
@@ -235,6 +231,7 @@ function generateReport() {
             if (t.includes('PostMessage ignored')) return;
             if (/^\s*$/.test(t)) return;
             if (t.includes('Hot') || t.includes('cold') || t.includes('switch') ||
+                t.includes('SWITCHDOC') ||
                 t.includes('Editor iframe') || t.includes('Document ready') ||
                 t.includes('jserror') || t.includes('Error') ||
                 t.includes('lastOpenMode') || t.includes('Cross-type')) {
@@ -260,6 +257,23 @@ function generateReport() {
         const fileList = await listFiles(page);
         log('File list (' + fileList.length + ' entries): ' + JSON.stringify(fileList));
         await snap(page, 'uploaded', '3 files uploaded — file list populated');
+
+        // Wait for prewarm to complete (WasmPrewarmReady fires when the
+        // iframe's blank.docx is fully painted and __wasmInitialDocLoaded
+        // is true). Without this, the first click runs while the iframe
+        // is still booting and we can't measure a true hot-switch.
+        log('Waiting for prewarm to complete (window.__viewerState.prewarmReady)…');
+        const prewarmT0 = Date.now();
+        try {
+            await page.waitForFunction(
+                () => !!(window.__viewerState && window.__viewerState.prewarmReady),
+                { timeout: 90000, polling: 500 }
+            );
+            log(`Prewarm ready after ${((Date.now() - prewarmT0) / 1000).toFixed(1)}s`);
+        } catch (e) {
+            log(`Prewarm wait TIMED OUT after ${((Date.now() - prewarmT0) / 1000).toFixed(1)}s — first click will be cold`, 'viewer');
+        }
+        await snap(page, 'prewarm-ready', 'Prewarm complete — ready to click files');
 
         // Walk through 3 clicks (one per format), then back to first
         const sequence = [
