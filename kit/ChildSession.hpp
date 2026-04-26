@@ -19,6 +19,14 @@
 #include <chrono>
 #include <queue>
 
+#ifdef __EMSCRIPTEN__
+// Defined in LO Core's wasmsnapshot.cxx. Returns 1 while
+// wasmshim::warmupCoreFactories is loading-and-disposing module factories.
+// ChildSession drops outbound frames during the window so JSDialog/
+// notebookbar payloads from those throwaway modules don't leak to JS.
+extern "C" int wasm_is_ui_emission_suppressed();
+#endif
+
 namespace lok
 {
 class Document;
@@ -114,6 +122,15 @@ public:
 
     bool sendTextFrame(const char* buffer, int length) override
     {
+#ifdef __EMSCRIPTEN__
+        // Phase-1.4 silent warmup: drop JSDialog/notebookbar/sidebar
+        // frames emitted by the throwaway module instances created by
+        // wasmshim::warmupCoreFactories. The user's actual doc-load
+        // happens AFTER warmup returns and the flag is cleared, so no
+        // real-doc frames are affected.
+        if (wasm_is_ui_emission_suppressed())
+            return true;
+#endif
         if (_docManager == nullptr)
         {
 
@@ -128,6 +145,10 @@ public:
 
     bool sendBinaryFrame(const char* buffer, int length) override
     {
+#ifdef __EMSCRIPTEN__
+        if (wasm_is_ui_emission_suppressed())
+            return true;
+#endif
         if (_docManager == nullptr)
         {
             LOG_TRC("No DocManager; dropping binary to client-" << getId());
