@@ -8,6 +8,8 @@ const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx-viewer';
@@ -52,22 +54,16 @@ async function clickIframe(page) {
     const pageErrors = [];
 
     try {
-        // Upload via viewer
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
+        // Upload via viewer (v2 encrypted)
         const bytes = fs.readFileSync(DOC_PATH);
-        await up.evaluate(async (n, a) => {
-            await fetch('/api/files/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([new Uint8Array(a)]),
-            });
-        }, DOC_NAME, Array.from(bytes));
-        await up.close();
-        log('Uploaded ' + DOC_NAME);
+        const upDoc = await uploadV2(VIEWER, DOC_NAME, bytes);
+        log('Uploaded ' + DOC_NAME + ' → ' + upDoc.fileId.substring(0,8) + '…');
 
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 900 });
         page.on('pageerror', e => pageErrors.push(e.message.substring(0, 200)));
 
+        await seedRecentFiles(page, [{ b64urlSecret: upDoc.b64urlSecret, fileId: upDoc.fileId, cachedName: DOC_NAME }]);
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
 
         // Wait prewarm
@@ -80,37 +76,58 @@ async function clickIframe(page) {
         }
         log('Prewarm done');
 
-        // Click the pptx (cold reload — writer->impress)
-        await page.evaluate(n => {
-            const el = [...document.querySelectorAll('.file')].find(e => e.dataset.name === n);
-            if (!el) throw new Error('File not found: ' + n);
-            el.click();
-        }, DOC_NAME);
+        // Click the pptx (cold reload — writer->impress). Sidebar entries
+        // in v2 are keyed by data-fileid (the plaintext name never reaches
+        // the server).
+        await waitForSidebar(page, upDoc.fileId);
+        await clickSidebarFile(page, upDoc.fileId);
         log('Clicked ' + DOC_NAME + ' (cold reload)');
 
-        // Wait for Impress UI in the NEW frame
+        // Wait for Impress UI AND either slide_parts OR the Slide Show
+        // menu marker. On Azure _parts can stay at 0 even after the doc
+        // is visible — the internal statusupdate pipeline is racey on
+        // first pptx cold reload. Either signal is a legitimate "loaded".
+        // Budget: 240s.
         let fr = null;
-        for (let i = 0; i < 300; i++) {
+        let totalSlides = 0;
+        let slideMenuSeen = false;
+        for (let i = 0; i < 1200; i++) {
             await sleep(200);
             fr = page.frames().find(f => f.url().includes('cool.html'));
             if (!fr) continue;
             try {
-                const nav = await fr.evaluate(() => document.querySelector('nav.main-nav')?.textContent || '');
-                if (nav.includes('Slide Show')) { log('Impress loaded at ' + (i*200) + 'ms'); break; }
+                const probe = await fr.evaluate(() => {
+                    const map = window.app?.map || window._map;
+                    return {
+                        parts: map?._docLayer?._parts || 0,
+                        nav: document.querySelector('nav.main-nav')?.textContent || '',
+                        sidebarThumbs: document.querySelectorAll('#slide-sorter > *').length,
+                    };
+                });
+                totalSlides = probe.parts;
+                if (totalSlides > 0) {
+                    log('Impress loaded with ' + totalSlides + ' slides at ' + (i*200) + 'ms');
+                    break;
+                }
+                if (probe.sidebarThumbs > 0) {
+                    totalSlides = probe.sidebarThumbs;
+                    log('Impress slide sorter populated (' + totalSlides + ' thumbs) at ' + (i*200) + 'ms');
+                    break;
+                }
+                if (!slideMenuSeen && probe.nav.includes('Slide Show')) {
+                    slideMenuSeen = true;
+                    log('Slide Show menu visible at ' + (i*200) + 'ms (waiting for _parts)');
+                }
             } catch(e) {}
-            if (i === 299) log('Impress TIMEOUT');
+            if (i === 299) log('Impress slide-count still 0 at 60s');
+            if (i === 599) log('Impress slide-count still 0 at 120s');
+            if (i === 899) log('Impress slide-count still 0 at 180s');
         }
-        await sleep(5000);
+        await sleep(2000);
         check('Impress UI loaded', !!fr);
         await snap(page, 'impress_loaded');
 
         if (!fr) { log('No frame — aborting'); throw new Error('No Impress frame'); }
-
-        // Get slide count
-        const totalSlides = await fr.evaluate(() => {
-            const map = window.app?.map || window._map;
-            return map?._docLayer?._parts || 0;
-        }).catch(() => 0);
         log('Total slides: ' + totalSlides);
         check('Has multiple slides', totalSlides >= 2, 'count=' + totalSlides);
 

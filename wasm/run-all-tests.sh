@@ -41,6 +41,9 @@ echo "Test output root: $TEST_OUTPUT_ROOT"
 # ── Test definitions ────────────────────────────────────────────────────
 # Each entry:  slug | script | human name | description | shots_dir_name
 TESTS=(
+    "regression-snapshot-injection|test-regression-snapshot-injection.js|Regression: Snapshot Injection|deploy.sh HEAPU8 restore injection must be present in online.js — missing → warm visits re-run full init|none"
+    "regression-checkpoint-cursor-delete|test-regression-checkpoint-cursor-delete.js|Regression: Checkpoint Rotation + Cursor + Late-Join Delete|A inserts, B selects, A saves → checkpoint rotates with cursor snapshot, C joins and sees B's selection, B deletes and all three converge|shots-regression-checkpoint-cursor"
+    "regression-insert-table|test-regression-insert-table.js|Regression: Insert Table (LO Core crash)|SvxAutoFormatData copy-ctor OOB in .uno:InsertTable — single-browser repro. Expected to FAIL until the LO Core fix lands.|shots-regression-insert-table"
     "relay|test-relay.js|Relay Test|WebSocket relay message ordering and delivery|none"
     "2browser|test-cursor-debug.js|2-Browser Co-Edit|Two browsers co-editing with cursor sync|shots"
     "3browser|test-3browsers.js|3-Browser Co-Edit|Three browsers simultaneous co-editing|shots3"
@@ -53,7 +56,9 @@ TESTS=(
     "chart|test-chart.js|Chart Rendering|Writer docx and Calc xlsx with embedded charts|shots-chart"
     "fonts|test-fonts.js|Font Lazy Loading|Rare fonts, browser font access, server fallback, VFS injection|shots-fonts"
     "e2e-upload|test-e2e-upload.js|E2E Upload & Co-Edit|Upload file, background preload, open, co-edit with 2nd browser|shots-e2e-upload"
-    "extreme|test-extreme.js|Extreme Stress|10 browsers, 1000 edits, join/leave cycles with complex docx|shots-extreme"
+    # extreme|test-extreme.js — disabled: 18+ min wall clock on Azure, net
+    # signal is covered by latejoin + stress + 3browser tests. Re-enable
+    # with an opt-in flag if we need it.
     "pptx-viewer|test-pptx-viewer.js|PPTX via Viewer|Slide rendering, navigation, and Slide Show via viewer cold-reload|shots-pptx-viewer"
     "prewarm|test-prewarm.js|Pre-Warm|Viewer pre-warms editor in background; document open near-instant|shots-prewarm"
     "regression-sidebar|test-regression-sidebar.js|Regression: Sidebar Collapse|Sidebar collapses to thin bar on file open; hover/click re-expands|shots-regression-sidebar"
@@ -65,6 +70,7 @@ TESTS=(
     "regression-shield-timing|test-regression-shield-timing.js|Regression: Loading Shield Timing|Viewer shield must stay up until the new doc's canvas pixels actually paint, never before|shots-regression-shield-timing"
     "regression-hash-deeplink|test-regression-hash-deeplink.js|Regression: Hash Deep Link|Per-file URL fragment: clicking a file updates #file=<name>; /#file=X opens X directly; back/forward navigates|shots-regression-hash-deeplink"
     "regression-shield-prewarm-race|test-regression-shield-prewarm-race.js|Regression: Shield Prewarm Race|Loading shield must stay up across prewarm/click race; deep-link and click-during-prewarm|shots-regression-shield-prewarm-race"
+    "regression-prewarm-ready-signal|test-regression-prewarm-ready-signal.js|Regression: Prewarm-Ready Signal Ordering|Viewer's prewarmReady must gate on the late WasmPrewarmReady from wasm-loader, not the early App_LoadingStatus from COOL Map.js|none"
     "regression-wasm-cache-crosstype|test-regression-wasm-cache-crosstype.js|Regression: WASM Cache Cross-Type|online.wasm + soffice.data must come from cache (not the wire) on writer→calc→impress switches and after page reload|shots-regression-wasm-cache-crosstype"
     "regression-wasm-cache-revisit|test-regression-wasm-cache-revisit.js|Regression: WASM Cache Revisit|Close browser entirely and re-launch (persistent userDataDir) — heavy assets must come from disk cache, not the wire|shots-regression-wasm-cache-revisit"
     "regression-viewer-cache|test-regression-viewer-cache.js|Regression: Viewer Document Cache|/api/files/<doc> + /blank.docx must send ETag/Last-Modified and answer 304 on conditional GET (covers the doc storage path)|none"
@@ -84,6 +90,7 @@ TESTS=(
     "prewarm-benchmark|test-prewarm-benchmark.js|Prewarm Benchmark|Document open timing for all doc types: first visit vs return visit, cold vs warm cache|shots-prewarm-benchmark"
     "pptx-viewer-slides|test-pptx-viewer-slides.js|PPTX Viewer Slides|Real pptx via viewer: Impress UI, slide panel, navigation, content rendering|shots-pptx-viewer-slides"
     "singleuser|test-singleuser.js|Single-User Mode|Open/edit/save docx, xlsx, pptx without relay in one session|shots-singleuser"
+    "singleuser-viewer|test-singleuser-viewer.js|Single-User via Viewer|Full viewer flow for /singleuser.html: redirect, no relay WS, type + save|shots-singleuser-viewer"
     "cold-open|test-cold-open.js|Cold Start File Open|Deep-link file open on cold start must use cold-reload, not hot-switch|shots-cold-open"
     "viewer-e2e|test-viewer-e2e.js|Viewer E2E|Full viewer flow: deep-link cold start, return visit, cross-type file switch via sidebar|shots-viewer-e2e"
     "folder-api|test-folder-api.js|Folder API|Create folders, upload nested files, download, path traversal rejection|none"

@@ -3846,16 +3846,28 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 	},
 
 	onRemove: function (map) {
-		window.L.DomUtil.remove(this._container);
-		map._removeZoomLimit(this);
+		// Defensive null-guards on members that may be undefined if
+		// onAdd was interrupted mid-init (cross-type swap before
+		// onAdd finished).
+		//
+		// NOTE: an earlier version called map.off(undefined, undefined, this)
+		// here to purge all this-as-context handlers. That broke same-type
+		// hot-switching because Util.stamp's reuse semantics meant some
+		// handlers were also unstamping. Reverted; cross-type cleanup is
+		// best done via per-layer override that explicitly enumerates
+		// what was registered.
+		this._isDisposed = true;
+
+		if (this._container) window.L.DomUtil.remove(this._container);
+		if (map._removeZoomLimit) map._removeZoomLimit(this);
 		this._container = null;
 		this._tileZoom = null;
-		TileManager.clearPreFetch();
+		try { TileManager.clearPreFetch(); } catch(e) { /* ok during cross-type tear-down */ }
 		clearTimeout(this._previewInvalidator);
 
-		app.activeDocument.activeView.clearTextSelection();
+		try { app.activeDocument.activeView.clearTextSelection(); } catch(e) { /* ok during cross-type tear-down */ }
 
-		if (!this._oleCSelections.empty()) {
+		if (this._oleCSelections && !this._oleCSelections.empty()) {
 			this._oleCSelections.clear();
 		}
 
@@ -3863,10 +3875,10 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 			this._cursorMarker.remove();
 		}
 
-		TextSelections.dispose();
+		try { TextSelections.dispose(); } catch(e) { /* ok during cross-type tear-down */ }
 
-		this._removeSplitters();
-		window.L.DomUtil.remove(this._canvasContainer);
+		try { this._removeSplitters(); } catch(e) { /* ok during cross-type tear-down */ }
+		if (this._canvasContainer) window.L.DomUtil.remove(this._canvasContainer);
 	},
 
 	getEvents: function () {

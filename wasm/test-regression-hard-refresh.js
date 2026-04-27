@@ -21,6 +21,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-hard-refresh';
 
@@ -44,23 +45,18 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
 
     const docName = 'hardrefresh-' + Date.now() + '.docx';
 
-    // Upload
-    const { browser: bUp, cleanup: cUp } = await launch();
-    const pUp = await bUp.newPage();
-    await pUp.goto(VIEWER + '/');
-    await pUp.evaluate(async (name, a) => {
-        await fetch('/api/files/' + name, { method: 'POST', body: new Blob([new Uint8Array(a)]) });
-    }, docName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'))));
-    await pUp.close();
-    await cUp();
-    console.log('[setup] Uploaded ' + docName);
+    // Upload via v2 (encrypted): generate secret, derive keys, encrypt,
+    // PUT /api/v2/file/<fileId>. Browser opens via /#file=<b64urlSecret>.
+    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
+    console.log('[setup] Uploaded v2 ' + docName + ' as ' + fileId.substring(0,8) + '…');
 
     // ═══ Phase 1: Open, type, NO save ═══
     console.log('\n=== Phase 1: Open doc, type XYZ, do NOT save ===');
     const { browser: bA, cleanup: cA } = await launch();
     const pA = await bA.newPage();
     await pA.setViewport({ width: 1280, height: 900 });
-    await pA.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fA;
     for (let i = 0; i < 300; i++) {
@@ -99,7 +95,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     console.log('\n=== Phase 2: Hard refresh (navigate to same URL) ===');
     // This is equivalent to the user pressing F5 — the page reloads,
     // WebSocket closes instantly, no save triggered.
-    await pA.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
     console.log('  Page reloaded');
 
     // Wait for editor to load again
@@ -133,12 +129,15 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         cc2 > cc0,
         'got=' + cc2 + ' initial=' + cc0);
 
-    // Check stored file
-    const storedSize = await pA.evaluate(async (name) => {
-        const r = await fetch('/api/files/' + encodeURIComponent(name));
-        return r.ok ? (await r.arrayBuffer()).byteLength : -1;
-    }, docName);
-    console.log('  Stored file: ' + storedSize + ' bytes');
+    // Check stored (encrypted) file size via v2 endpoint. No save was
+    // triggered, so this should match the initial ciphertext size.
+    const storedSize = await pA.evaluate(async (id) => {
+        const r = await fetch('/api/v2/file/' + id);
+        if (!r.ok) return -1;
+        const j = await r.json();
+        return j.size;
+    }, fileId);
+    console.log('  Stored file (ciphertext): ' + storedSize + ' bytes');
 
     await cA();
     console.log('\n' + (allPassed ? '✓ ALL PASSED' : '✗ SOME FAILED'));

@@ -6,6 +6,8 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const EDITOR = env.EDITOR_URL;
@@ -21,16 +23,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
                '--enable-features=SharedArrayBuffer'],
     });
 
-    // Pre-upload doc to viewer
-    const up = await browser.newPage();
-    await up.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
+    // Pre-upload doc via v2 (encrypted)
     const bytes = fs.readFileSync(DOC_PATH);
-    await up.evaluate(async (n, arr) => {
-        await fetch('/api/files/' + encodeURIComponent(n), {
-            method: 'POST', body: new Blob([new Uint8Array(arr)]),
-        });
-    }, DOC_NAME, Array.from(bytes));
-    await up.close();
+    const upDoc = await uploadV2(VIEWER, DOC_NAME, bytes);
 
     const page = await browser.newPage();
 
@@ -68,6 +63,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
     // Open viewer, wait full pre-warm
     ev('test:goto_viewer');
+    await seedRecentFiles(page, [{ b64urlSecret: upDoc.b64urlSecret, fileId: upDoc.fileId, cachedName: DOC_NAME }]);
     await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
     ev('test:viewer_loaded');
 
@@ -82,12 +78,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     }
     ev('test:prewarm_ready');
 
-    // Click file — START switch profile
+    // Click file — START switch profile (v2 sidebar uses data-fileid)
+    await waitForSidebar(page, upDoc.fileId);
     ev('test:click_file_START');
     const switchStart = Date.now();
-    await page.evaluate((n) => {
-        document.querySelector(`.file[data-name="${n}"]`).click();
-    }, DOC_NAME);
+    await clickSidebarFile(page, upDoc.fileId);
     ev('test:after_click');
 
     // Wait for word count to change (real doc rendered)

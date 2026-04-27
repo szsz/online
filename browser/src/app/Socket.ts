@@ -906,6 +906,17 @@ class Socket {
 			console.log('Cross-type switch: ' +
 				this._map._docLayer._docType + ' → ' + command.type +
 				' — removing old doc layer to create correct type');
+			// Discard delayed messages: they were buffered for the OLD
+			// doc-type (e.g. spreadsheet-shaped status: with parts /
+			// splitPanes), and replaying them against the new layer
+			// (e.g. ImpressTileLayer) throws — Impress has no
+			// _splitPanesContext. The new doc-type's own messages will
+			// arrive shortly via the WS.
+			if (this._delayedMessages.length) {
+				console.log('Cross-type: discarding ' +
+					this._delayedMessages.length + ' delayed messages');
+				this._delayedMessages = [];
+			}
 			try {
 				this._map.removeLayer(this._map._docLayer);
 			} catch(e: any) {

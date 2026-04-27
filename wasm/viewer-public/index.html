@@ -82,6 +82,8 @@ h3 { margin: 5px 0; }
 </style>
 </head>
 <body>
+<script src="lib/file-crypto.js"></script>
+<script src="lib/recent-files.js"></script>
 <div id="sidebar-hover-zone"></div>
 <div id="files">
     <h3>Files</h3>
@@ -288,16 +290,43 @@ function updateShieldProgress(label, pct, detail) {
 // RelayActivated leaves the user staring at a doc that silently refuses
 // to accept input; RelayActivated without WasmDocReady would expose the
 // blank prewarm doc.
+// Absolute floor: once we begin loading a file, force-drop the shield
+// after 90 s no matter what. Guards the click-during-prewarm flow where
+// the new target iframe can hang on Azure and leave the user with an
+// eternal spinner. Set on first tryDropShield for a given file.
+var __shieldFloorTimer = null;
+function armShieldFloor() {
+    if (__shieldFloorTimer || !currentFile) return;
+    __shieldFloorTimer = setTimeout(function() {
+        __shieldFloorTimer = null;
+        var sh = document.getElementById('editor-shield');
+        if (sh && sh.classList.contains('active')) {
+            console.warn('[viewer] Shield floor timeout (90s) — forcing drop');
+            docReady = true; relayActivated = true;
+            hideShield();
+            setStatus('Loaded (timeout) — ' + currentFile);
+        }
+    }, 90000);
+}
+var __timingSummaryPrintedFor = null;
 function tryDropShield(reason, docMs) {
     if (!currentFile) return;
+    armShieldFloor();
     if (docReady && relayActivated) {
-        viewerLog('Document ready: ' + currentFile);
-        // Print full timing summary
-        var summary = Object.keys(__vMilestones).map(function(k) {
-            return '  ' + k + ': ' + (__vMilestones[k] / 1000).toFixed(2) + 's';
-        }).join('\n');
-        console.log('%c[TIMING SUMMARY] (from viewer page navigation)\n' + summary,
-            'color: #1b5e20; font-weight: bold; font-size: 12px');
+        // Only print the summary + "Document ready" log ONCE per open.
+        // WasmDocReady can fire more than once (docPoll + switchdoc
+        // docReadyInterval both post it), and tryDropShield is called
+        // from multiple signal handlers — without this guard the
+        // browser console shows two identical summaries.
+        if (__timingSummaryPrintedFor !== currentFile) {
+            __timingSummaryPrintedFor = currentFile;
+            viewerLog('Document ready: ' + currentFile);
+            var summary = Object.keys(__vMilestones).map(function(k) {
+                return '  ' + k + ': ' + (__vMilestones[k] / 1000).toFixed(2) + 's';
+            }).join('\n');
+            console.log('%c[TIMING SUMMARY] (from viewer page navigation)\n' + summary,
+                'color: #1b5e20; font-weight: bold; font-size: 12px');
+        }
         updateShieldProgress('Ready', 100, currentFile);
         setTimeout(function() {
             hideShield();
@@ -461,26 +490,33 @@ window.addEventListener('message', function(event) {
                 }).catch(function(e) { console.error('[viewer] Key request failed:', e); });
         }
 
-        // App_LoadingStatus=Initialized fires once when COOL initializes.
-        // We only trust it for the very first prewarm — once we're past
-        // that, all subsequent doc-open shield-drops go through
-        // WasmDocReady (which actually waits for the new doc's canvas
-        // to paint). Without this gate, hot-switches between two similar
-        // docs (where docPoll's `postSwitchAccept` flag fires at 500 ms
-        // after switchSendT) drop the shield before the canvas updates.
-        if (msg.MessageId === 'App_LoadingStatus' && msg.Values && msg.Values.Status === 'Initialized') {
+        // WasmPrewarmReady fires from wasm-loader.js once the prewarm doc
+        // has actually painted (__wasmInitialDocLoaded=true). This is the
+        // ONLY signal that means "the iframe is ready to receive
+        // switchdocument" — without this, a hot-switch dispatched in
+        // response to App_LoadingStatus=Initialized will sit in
+        // pendingSwitchFilename for 20-30 s while polled trySendSwitch
+        // retries wait for the prewarm to actually finish.
+        if (msg.MessageId === 'WasmPrewarmReady') {
             if (!prewarmReady) {
                 prewarmReady = true;
                 setPrewarmStatus('✅ Editor pre-warmed — pick a file', true);
                 viewerLog('Editor pre-warmed (ready to open files)');
                 if (!currentFile) {
-                    // Pure prewarm (no file requested) — just hide the shield
                     hideShield();
                     return;
                 }
-                // A file is being opened (deep-link or clicked during prewarm).
-                // Fall through to the cold-reload handler below to set docReady.
             }
+        }
+
+        // App_LoadingStatus=Initialized has TWO emitters: COOL Map.js (early
+        // — fires when the framework boots) and wasm-loader.js docPoll (late
+        // — same moment as WasmPrewarmReady). We can't tell them apart by
+        // message shape, so the early one will fire first and we use it
+        // ONLY for cold reloads (where the iframe is recreated and there's
+        // no switchdocument that needs the late signal). For post-prewarm
+        // hot-switches we trust WasmDocReady, which gates on canvas paint.
+        if (msg.MessageId === 'App_LoadingStatus' && msg.Values && msg.Values.Status === 'Initialized') {
             // For cold-reload cross-type switches, WasmDocReady never fires
             // (no switchdocument in the new iframe). Accept Initialized as ready.
             if (window.__viewerState && window.__viewerState.lastOpenMode &&
@@ -488,9 +524,116 @@ window.addEventListener('message', function(event) {
                 console.log('[viewer] App_LoadingStatus=Initialized (cold reload) — treating as doc ready');
                 docReady = true;
                 tryDropShield('cold-reload-initialized');
-            } else {
-                console.log('[viewer] App_LoadingStatus=Initialized (post-prewarm) — waiting for WasmDocReady');
+                // Also flip prewarmReady so the NEXT open in this session
+                // can take the same-type hot-switch path. Earlier we kept
+                // this on WasmPrewarmReady only, but that fires AFTER the
+                // shield-drop signal — by then the test/user already
+                // clicked the next file and the iframe was replaced
+                // before the postMessage landed. Using the same early
+                // signal that drops the shield ensures prewarmReady is
+                // visible for the click that immediately follows.
+                // Sending switchdocument too early is safe: the iframe's
+                // trySendSwitch retries on a 50 ms poll until
+                // __wasmInitialDocLoaded is set.
+                if (!prewarmReady) {
+                    prewarmReady = true;
+                    viewerLog('Cold-reload iframe ready — same-type hot-switch armed');
+                }
             }
+        }
+
+        // Editor asking the viewer to save a v2-encrypted file. The
+        // editor iframe never sees keys — it hands us plaintext, we
+        // encrypt with the currently-open file's contentKey and PUT
+        // to /api/v2/file/<fileId>. Response posts back so the
+        // adapter can rotate the relay checkpoint.
+        // Editor (late joiner) asking the viewer to fetch + decrypt a
+        // v2 file. The relay checkpoint's locator is /api/v2/file/<id>,
+        // which serves CIPHERTEXT. Only the viewer has the content key;
+        // the editor can't decrypt. We fetch, decrypt, and post the
+        // plaintext back as base64.
+        if (msg.MessageId === 'WasmFileLoad' && msg.Values) {
+            const { fileId: loadFileId, reqId: loadReqId } = msg.Values;
+            const respondLoad = (payload) => {
+                try { event.source.postMessage(JSON.stringify({
+                    MessageId: 'WasmFileLoadResult',
+                    Values: Object.assign({ reqId: loadReqId }, payload),
+                }), '*'); } catch(e) {}
+            };
+            if (!currentV2Keys || currentV2Keys.fileId !== loadFileId) {
+                respondLoad({ ok: false, error: 'no-key-for-fileId' });
+                return;
+            }
+            (async () => {
+                try {
+                    const resp = await fetch('/api/v2/file/' + loadFileId);
+                    if (!resp.ok) {
+                        respondLoad({ ok: false, error: 'fetch-' + resp.status });
+                        return;
+                    }
+                    const j = await resp.json();
+                    const ctBytes = Uint8Array.from(atob(j.ciphertext), c => c.charCodeAt(0));
+                    const plaintext = await FileCrypto.decryptBytes(currentV2Keys.contentKey, ctBytes);
+                    respondLoad({ ok: true, bytes: bytesToBase64(plaintext) });
+                } catch(e) {
+                    respondLoad({ ok: false, error: 'decrypt-' + (e.message || 'unknown') });
+                }
+            })();
+            return;
+        }
+
+        if (msg.MessageId === 'WasmFileSave' && msg.Values) {
+            const { fileId: saveFileId, bytes, reqId } = msg.Values;
+            const respond = (payload) => {
+                try { event.source.postMessage(JSON.stringify({
+                    MessageId: 'WasmFileSaveResult',
+                    Values: Object.assign({ reqId }, payload),
+                }), '*'); } catch(e) {}
+            };
+            if (!currentV2Keys || currentV2Keys.fileId !== saveFileId) {
+                respond({ ok: false, error: 'no-key-for-fileId' });
+                return;
+            }
+            const plaintext = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+            (async () => {
+                try {
+                    const [ctBytes, hashBuf] = await Promise.all([
+                        FileCrypto.encryptBytes(currentV2Keys.contentKey, plaintext),
+                        crypto.subtle.digest('SHA-256', plaintext),
+                    ]);
+                    const ciphertext = bytesToBase64(ctBytes);
+                    const hashHex = Array.from(new Uint8Array(hashBuf))
+                        .map(b => b.toString(16).padStart(2, '0')).join('');
+                    // encName is reused unchanged — filename doesn't
+                    // change on a save. Fetch current encName and
+                    // rewrite it identically. In a tighter integration
+                    // we'd cache this from the initial open.
+                    let encName = '';
+                    try {
+                        const meta = await fetch('/api/v2/file/' + saveFileId);
+                        if (meta.ok) {
+                            const m = await meta.json();
+                            encName = m.encName || '';
+                        }
+                    } catch(e) {}
+                    const putResp = await fetch('/api/v2/file/' + saveFileId, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ciphertext, encName }),
+                    });
+                    if (!putResp.ok) {
+                        respond({ ok: false, error: 'put-failed-' + putResp.status });
+                        return;
+                    }
+                    respond({
+                        ok: true,
+                        hash: hashHex,
+                        locator: FILE_STORAGE_URL + '/api/v2/file/' + saveFileId,
+                    });
+                } catch(e) {
+                    respond({ ok: false, error: 'encrypt-or-put-' + (e.message || 'unknown') });
+                }
+            })();
         }
     } catch(e) {}
 });
@@ -507,9 +650,15 @@ async function startPrewarm() {
     // into WASM init). The iframe load + blank doc upload overlap.
     const iframe = document.getElementById('editor-frame');
     viewerLog('Editor iframe loading');
+    // Prewarm is stand-alone: the blank doc is local state and will be
+    // replaced by a real doc (hot-switch or cold reload) as soon as the
+    // user opens something. Don't wire up the relay for the blank —
+    // connecting to a relay room we're about to abandon just burns a WS
+    // handshake and keeps a ghost room alive for cleanup. The real
+    // relay room is set by openFile() via RelaySwitchRoom or the cold
+    // reload coolUrl.
     iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                + '&access_token=test'
-               + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(BLANK_FILENAME)))
                + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                + '&viewerT0=' + window.__viewerT0;
@@ -532,37 +681,42 @@ async function startPrewarm() {
 let currentUploadFolder = '';
 
 async function refresh() {
-    const [filesResp, foldersResp] = await Promise.all([
-        fetch('/api/files/'), fetch('/api/folders')
-    ]);
-    const files = (await filesResp.json()).filter(f =>
-        f.name !== BLANK_FILENAME && !f.name.startsWith('__system__'));
-    let folders = [];
-    try { folders = await foldersResp.json(); } catch(e) {}
-
-    // Build tree: {__files: [], subfolder: {__files: [], ...}}
-    const tree = { __files: [] };
-    // Register explicit folders
-    for (const fp of folders) {
-        let node = tree;
-        for (const part of fp.split('/')) {
-            if (!node[part]) node[part] = { __files: [] };
-            node = node[part];
-        }
+    // v2-only sidebar: render files this browser knows about via
+    // localStorage (RecentFiles). The server's plaintext /api/files/
+    // listing is intentionally ignored — we don't want to surface or
+    // decrypt documents whose secret we never saw. If you want a file
+    // listed here, upload it (this browser keeps the secret) or open
+    // its /#file=<secret> URL once (the secret lands in localStorage).
+    const list = document.getElementById('list');
+    const recent = typeof RecentFiles !== 'undefined' ? RecentFiles.list() : [];
+    if (recent.length === 0) {
+        list.innerHTML =
+            '<div style="padding:12px 8px;color:#888;font-size:12px;line-height:1.5">' +
+            'No encrypted files yet.<br>Upload a file to start — the secret goes in the URL, which only you hold.' +
+            '</div>';
+        return;
     }
-    // Place files into their folders
-    for (const f of files) {
-        const parts = f.name.split('/');
-        let node = tree;
-        for (let i = 0; i < parts.length - 1; i++) {
-            if (!node[parts[i]]) node[parts[i]] = { __files: [] };
-            node = node[parts[i]];
-        }
-        node.__files.push(f);
+    let html = '<h4 style="margin:8px 0 4px 8px">🔒 Encrypted files</h4>';
+    for (const r of recent) {
+        const name = r.cachedName || '(locked)';
+        const id = r.fileId.substring(0, 8);
+        const when = r.lastVisited ? new Date(r.lastVisited).toLocaleString() : '';
+        html += `<div class="file" style="padding-left:8px" data-name="${r.fileId}" data-fileid="${r.fileId}">` +
+                `<span style="flex:1">${name}</span>` +
+                `<span style="color:#999;font-size:10px;font-family:monospace">${id}</span>` +
+                `</div>`;
+        _attachClickAfter(r);
     }
-
-    document.getElementById('list').innerHTML = renderTree(tree, '', 0);
+    list.innerHTML = html;
+    // Re-attach click handlers (innerHTML wipes inline listeners).
+    for (const r of recent) {
+        const el = list.querySelector(`.file[data-fileid="${r.fileId}"]`);
+        if (el) el.addEventListener('click', () => {
+            location.hash = '#file=' + r.secret;
+        });
+    }
 }
+function _attachClickAfter() { /* no-op — kept for forward refactors */ }
 
 function renderTree(node, pathPrefix, depth) {
     let html = '';
@@ -617,16 +771,101 @@ async function createFolder() {
     refresh();
 }
 
+// btoa(String.fromCharCode.apply(null, bigArray)) blows the call stack for
+// anything > ~100KB in most browsers. Convert in fixed-size chunks.
+function bytesToBase64(bytes) {
+    let s = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(s);
+}
+
 async function uploadFile() {
     const fileInput = document.getElementById('upload');
     for (const f of fileInput.files) {
-        const fullName = currentUploadFolder ? currentUploadFolder + '/' + f.name : f.name;
-        setStatus('Uploading ' + fullName);
-        await fetch('/api/files/' + encodeURIComponent(fullName), { method: 'POST', body: f });
+        setStatus('Encrypting ' + f.name + '…');
+        const secret = FileCrypto.generateSecret();
+        const { contentKey, nameKey, fileId } = await FileCrypto.deriveKeys(secret);
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const [ctBytes, encNameBytes] = await Promise.all([
+            FileCrypto.encryptBytes(contentKey, bytes),
+            FileCrypto.encryptName(nameKey, f.name),
+        ]);
+        const ciphertext = bytesToBase64(ctBytes);
+        const encName    = bytesToBase64(encNameBytes);
+        setStatus('Uploading ' + f.name + '…');
+        const resp = await fetch('/api/v2/file/' + fileId, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ciphertext, encName }),
+        });
+        if (!resp.ok) {
+            const err = await resp.text().catch(() => '');
+            setStatus('Upload failed: ' + resp.status + (err ? ' — ' + err.substring(0, 120) : ''));
+            continue;
+        }
+        const secretB64 = FileCrypto.b64urlEncode(secret);
+        RecentFiles.remember({ secret: secretB64, fileId, cachedName: f.name });
+        // Put the secret into the URL fragment so the user can bookmark it.
+        // Only do this if only one file was uploaded; otherwise leave the hash alone.
+        if (fileInput.files.length === 1) location.hash = '#file=' + secretB64;
     }
     setStatus('Uploaded ' + fileInput.files.length + ' file(s)');
     fileInput.value = '';
     refresh();
+}
+
+// Keys for the currently-open file — held in memory only for the
+// lifetime of the tab. The editor iframe never gets these; it asks
+// the viewer to save on its behalf via postMessage (see the
+// `WasmFileSave` listener below).
+let currentV2Keys = null; // { contentKey, nameKey, fileId, secretB64 }
+
+// Open an encrypted file using the URL-fragment secret. Derive keys,
+// fetch the ciphertext, decrypt, upload plaintext bytes to the editor's
+// /wasm/ temp under the opaque fileId (the editor has no key and never
+// sees the filename), then trigger a hot-switch/cold-reload.
+async function openFileBySecret(secretB64) {
+    const secret = FileCrypto.b64urlDecode(secretB64);
+    const { contentKey, nameKey, fileId } = await FileCrypto.deriveKeys(secret);
+    currentV2Keys = { contentKey, nameKey, fileId, secretB64 };
+    setStatus('Fetching encrypted file…');
+    const resp = await fetch('/api/v2/file/' + fileId);
+    if (!resp.ok) { setStatus('File not found (' + resp.status + ')'); return; }
+    const payload = await resp.json();
+    const ct = Uint8Array.from(atob(payload.ciphertext), c => c.charCodeAt(0));
+    const plainBytes = await FileCrypto.decryptBytes(contentKey, ct);
+    let cachedName = null;
+    if (payload.encName) {
+        try {
+            const nameCt = Uint8Array.from(atob(payload.encName), c => c.charCodeAt(0));
+            cachedName = await FileCrypto.decryptName(nameKey, nameCt);
+        } catch(e) { console.warn('[v2] decryptName failed', e); }
+    }
+    RecentFiles.remember({ secret: secretB64, fileId, cachedName });
+    // Hand plaintext to the editor under the opaque fileId — LO sees it
+    // as a filename, the server/editor never learned the real name.
+    await fetch(EDITOR + '/wasm/' + fileId, {
+        method: 'POST', body: plainBytes, mode: 'cors',
+    });
+    // Use the fileId as WOPISrc; the editor chrome title can be set
+    // by wasm-loader from a postMessage once we wire that up.
+    currentFile = fileId;
+    // skipDownload: we already staged plaintext at /wasm/<fileId>; the
+    // legacy /api/files/<name> fetch in openFile would 404 on an opaque
+    // fileId. hashValue: keep the URL as #file=<secret>, never leak the
+    // fileId into the hash. docTypeHint: fileId has no extension, so
+    // infer the doc type from the decrypted filename — otherwise
+    // xlsx/pptx would be misclassified as writer and hot-switches would
+    // mix up docLayer state.
+    openFile(fileId, {
+        skipDownload: true,
+        hashValue: secretB64,
+        docTypeHint: cachedName ? docTypeFor(cachedName) : 'writer',
+        displayName: cachedName || null,
+    });
 }
 
 // URL fragment format: #file=<url-encoded filename>.
@@ -637,20 +876,46 @@ function currentHashFile() {
     return m ? decodeURIComponent(m[1]) : null;
 }
 
-async function openFile(name) {
+async function openFile(name, opts) {
+    opts = opts || {};
     viewerLog('Opening file: ' + name);
     const t0 = Date.now();
     currentFile = name;
-    // Keep the URL in sync with the open file. The hashchange listener below
-    // guards against re-entering openFile() when we triggered the change
-    // ourselves (hash already matches currentFile).
-    const wantHash = '#file=' + encodeURIComponent(name);
+    // Keep the URL in sync with the open file. For v2 opens the caller
+    // passes hashValue=<secret> so the hash stays as the shareable
+    // secret, not the opaque fileId.
+    const wantHash = '#file=' +
+        (opts.hashValue !== undefined ? opts.hashValue : encodeURIComponent(name));
     if (location.hash !== wantHash) location.hash = wantHash;
     // Snapshot prewarmReady at the START of openFile (before async
     // downloads). If the prewarm completes during the download, we still
     // use cold reload to avoid signal races with the prewarm WasmDocReady.
     const wasPrewarmReady = prewarmReady;
-    const willHotSwitch = wasPrewarmReady && (docTypeFor(name) === currentDocType);
+    const effectiveDocType = opts.docTypeHint || docTypeFor(name);
+    // V2 same-type hot-switch is enabled. Cross-type still cold-reloads
+    // — the docLayer event-handler purge (off(undefined, undefined,
+    // this) in CanvasTileLayer.onRemove) fixes the layer's own
+    // subscriptions, but app.sectionContainer sections (Calc headers,
+    // Impress slide-sorter, etc.) added in onAdd are not torn down on
+    // removeLayer and have their OWN map.on() handlers that fire into
+    // a stale _docLayer. Audit + per-layer removeSection in onRemove
+    // is tracked as #129.
+    // Plan B for SAME-TYPE only. Cross-type via switchdocument was
+    // tried (allowed wasPrewarmReady alone) but the C++ side
+    // (wasm_reload_doc_in_place → loadComponentFromURL("_self"))
+    // succeeds while the COOL JS layer swap fails:
+    // "Cannot read properties of null (reading 'getPixelBoundsCore')"
+    // — the new doc's layer never paints. Test screenshots showed
+    // the loading shield remaining up while the test mistakenly
+    // declared success based on stale status text from the prior doc.
+    // Cross-type stays on cold-reload until #129 (sectionContainer
+    // leak in CanvasTileLayer.onRemove) is properly fixed.
+    const willHotSwitch = wasPrewarmReady
+        && (effectiveDocType === currentDocType);
+    console.log('[viewer] hot-switch decision: willHotSwitch=' + willHotSwitch +
+        ' wasPrewarmReady=' + wasPrewarmReady +
+        ' effectiveDocType=' + effectiveDocType +
+        ' currentDocType=' + currentDocType);
 
     // Collapse the file sidebar so the editor gets the full viewport.
     // The user can re-open it by hovering the left edge or clicking the bar.
@@ -666,16 +931,20 @@ async function openFile(name) {
 
     // Start downloading the file from Azure. For cold reloads, we also
     // start the iframe in parallel — the file just needs to arrive at
-    // /wasm/ before Kit opens it (~3-6s into WASM init).
-    const filePromise = fetch('/api/files/' + encodeURIComponent(name))
-        .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
+    // /wasm/ before Kit opens it (~3-6s into WASM init). v2 callers
+    // already staged plaintext at /wasm/<fileId> and pass skipDownload.
+    const filePromise = opts.skipDownload
+        ? Promise.resolve(null)
+        : fetch('/api/files/' + encodeURIComponent(name))
+            .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
 
     if (!willHotSwitch) {
         updateShieldProgress('Initializing app…', 15, 'Loading WebAssembly editor + downloading file');
     }
 
     const iframe = document.getElementById('editor-frame');
-    const newDocType = docTypeFor(name);
+    // v2 opens pass docTypeHint because the opaque fileId has no extension.
+    const newDocType = opts.docTypeHint || docTypeFor(name);
     const sameType = newDocType === currentDocType;
 
     // Reset shield-drop signals. For hot-switches, we need fresh signals
@@ -683,17 +952,21 @@ async function openFile(name) {
     // everything anyway.
     docReady = false;
     relayActivated = SINGLE_USER; // In readonly mode, no relay to wait for
+    // Reset the shield-floor timer for the new open.
+    if (__shieldFloorTimer) { clearTimeout(__shieldFloorTimer); __shieldFloorTimer = null; }
 
-    if (wasPrewarmReady && sameType) {
+    if (willHotSwitch) {
         // HOT SWITCH — same document type, reuse the live WASM.
         // Need file uploaded BEFORE switchdocument fires.
         updateShieldProgress('Opening document…', 30, 'Downloading ' + name);
         const buf = await filePromise;
         updateShieldProgress('Opening document…', 50, 'Transferring to editor');
-        await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-            method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-        });
-        try { iframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+        if (buf) {
+            await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
+                method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+            });
+            try { iframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+        }
         if (!SINGLE_USER) {
             const newRoom = relayRoom(name);
             iframe.contentWindow.postMessage(JSON.stringify({
@@ -702,8 +975,12 @@ async function openFile(name) {
             }), '*');
         }
         const base = iframe.src.split('#')[0];
-        iframe.src = base + '#switchdoc=' + encodeURIComponent(name);
-        setStatus('Opening ' + name);
+        // Pass displayName alongside the WOPISrc so the editor chrome
+        // shows the human name instead of the opaque fileId.
+        const switchSuffix = opts.displayName
+            ? '&displayName=' + encodeURIComponent(opts.displayName) : '';
+        iframe.src = base + '#switchdoc=' + encodeURIComponent(name) + switchSuffix;
+        setStatus('Opening ' + (opts.displayName || name));
         window.__viewerState.lastOpenMode = 'hot';
     } else {
         // COLD RELOAD — start iframe IMMEDIATELY, upload file in parallel.
@@ -715,7 +992,9 @@ async function openFile(name) {
                       + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
                       + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                       + '&UserName=' + encodeURIComponent(MY_USER_NAME)
-                      + '&viewerT0=' + window.__viewerT0;
+                      + '&viewerT0=' + window.__viewerT0
+                      + (opts.displayName
+                          ? '&displayName=' + encodeURIComponent(opts.displayName) : '');
         try {
             iframe.contentWindow.postMessage(JSON.stringify({
                 MessageId: 'RelayDisconnect', Values: {}
@@ -734,8 +1013,10 @@ async function openFile(name) {
         setStatus('Loading ' + name + (sameType ? '' : ' (type change ' + currentDocType + '→' + newDocType + ')'));
         window.__viewerState.lastOpenMode = 'cold-typechange';
 
-        // Upload file in background — it'll arrive before Kit needs it
+        // Upload file in background — it'll arrive before Kit needs it.
+        // When skipDownload was set the plaintext is already at /wasm/<fileId>.
         filePromise.then(buf => {
+            if (!buf) return;
             return fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
                 method: 'POST', body: new Uint8Array(buf), mode: 'cors',
             }).then(() => {
@@ -748,21 +1029,34 @@ async function openFile(name) {
     window.__viewerState.lastOpenStart = t0;
 }
 
-// Browser navigation (back/forward, or the user editing the hash directly):
-// if the hash now names a DIFFERENT file, open it. Same-file is a no-op so
-// we don't re-open the doc we just opened via click.
+// Treat the hash as a base64url-encoded 128-bit secret when it looks
+// like one (22 url-safe chars — exact length for 16 raw bytes). Plain
+// filenames are legacy and are passed through to openFile() unchanged
+// (will be removed when migration is done).
+function isFragmentSecret(s) {
+    return typeof s === 'string' && /^[A-Za-z0-9_-]{22}$/.test(s);
+}
+
 window.addEventListener('hashchange', function() {
-    const name = currentHashFile();
-    if (name && name !== currentFile) openFile(name);
+    const val = currentHashFile();
+    if (!val) return;
+    if (isFragmentSecret(val)) {
+        openFileBySecret(val);
+    } else if (val !== currentFile) {
+        openFile(val);
+    }
 });
 
 // Kick off. Start the editor iframe FIRST (prewarm or direct open),
 // then populate the file sidebar in parallel. The Azure file list
 // takes ~7s — don't let it block the editor initialization.
 (async function init() {
-    const hashFile = currentHashFile();
-    if (hashFile) {
-        openFile(hashFile);
+    const val = currentHashFile();
+    if (isFragmentSecret(val)) {
+        startPrewarm();
+        openFileBySecret(val);
+    } else if (val) {
+        openFile(val);
     } else {
         startPrewarm();
     }

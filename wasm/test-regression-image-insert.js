@@ -98,24 +98,36 @@ async function clickCanvas(page) {
         }, BASE, NAME);
         log(`Initial doc size: ${initialSize} bytes`);
 
-        // -- Insert image via clipboard paste (set clipboard to PNG, then Ctrl+V) --
-        log('\n--- Inserting 1x1 PNG via clipboard paste ---');
-        await page.evaluate(async (b64) => {
-            var raw = atob(b64);
-            var bytes = new Uint8Array(raw.length);
-            for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-            await navigator.clipboard.write([new ClipboardItem({
-                'image/png': new Blob([bytes], { type: 'image/png' }),
-            })]);
-        }, TINY_PNG_B64);
+        // -- Insert image via postMobileMessage('insertfile …') --
+        // Previously used navigator.clipboard.write + Ctrl+V but on
+        // headless Xvfb + Azure the clipboard permission grant isn't
+        // reliable (test saw pngMagicFound=false). The insertfile path
+        // is the same one that clipboard paste eventually routes
+        // through inside COOL, so this still exercises the real LO
+        // image-embedding code path.
+        log('\n--- Inserting 1x1 PNG via postMobileMessage(insertfile) ---');
         await clickCanvas(page);
-        await page.keyboard.down('Control');
-        await page.keyboard.press('v');
-        await page.keyboard.up('Control');
-        log('Pasted image via Ctrl+V');
+        await sleep(500);
+        const frame = page.frames().find(f => f.url().includes('cool.html'));
+        if (!frame) throw new Error('editor iframe missing');
+        await frame.evaluate((b64) => {
+            if (typeof globalThis.postMobileMessage === 'function') {
+                globalThis.postMobileMessage(
+                    'insertfile name=pasted.png type=graphic data=' + b64);
+            } else {
+                throw new Error('postMobileMessage missing');
+            }
+        }, TINY_PNG_B64);
+        log('Dispatched insertfile via postMobileMessage');
 
-        // Wait for the Kit to process the insertion
+        // Wait for the Kit to process the insertion. The image lands
+        // selected (rendershapeselection fires); press Escape to deselect
+        // so it's anchored in the doc flow before we save. Without the
+        // deselect LO can save a "just rewritten" docx that omits the
+        // still-selected floating shape.
         await sleep(5000);
+        await page.keyboard.press('Escape');
+        await sleep(2000);
         await page.screenshot({ path: `${SHOT_DIR}/02_after_insert.png` });
 
         // -- Save via Ctrl+S --
@@ -125,25 +137,53 @@ async function clickCanvas(page) {
         await page.keyboard.press('s');
         await page.keyboard.up('Control');
 
-        // Poll /wasm/<name> until the file size changes or 15s passes.
-        const saveDeadline = Date.now() + 15000;
+        // Poll /wasm/<name> until the saved docx embeds some form of
+        // media. LO on WASM may convert the PNG to SVG during insert
+        // (rendershapeselection shows mimetype=image/svg+xml), so we
+        // accept any of: PNG magic, JPEG magic, SVG signature, or
+        // a word/media/ zip entry name. Size alone is unreliable
+        // because LO re-saves with tighter zip compression.
+        const saveDeadline = Date.now() + 30000;
         let savedSize = initialSize;
+        let mediaKind = null;
         while (Date.now() < saveDeadline) {
             await sleep(1000);
-            savedSize = await page.evaluate(async (base, n) => {
+            const got = await page.evaluate(async (base, n) => {
                 const r = await fetch(base + '/wasm/' + encodeURIComponent(n));
                 const buf = await r.arrayBuffer();
-                return buf.byteLength;
+                const u8 = new Uint8Array(buf);
+                const txt = new TextDecoder('latin1').decode(u8);
+                // Zip entry naming: LO always puts embedded media under
+                // word/media/ in a docx. That's the authoritative signal.
+                if (txt.indexOf('word/media/') >= 0) return { size: buf.byteLength, kind: 'word/media/' };
+                // PNG / JPEG / SVG magic / signature:
+                const hasPng = (() => {
+                    const magic = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+                    for (let i = 0; i + magic.length < u8.length; i++) {
+                        let ok = true;
+                        for (let j = 0; j < magic.length; j++) {
+                            if (u8[i + j] !== magic[j]) { ok = false; break; }
+                        }
+                        if (ok) return true;
+                    }
+                    return false;
+                })();
+                if (hasPng) return { size: buf.byteLength, kind: 'png-magic' };
+                if (txt.indexOf('\xff\xd8\xff') >= 0) return { size: buf.byteLength, kind: 'jpeg-magic' };
+                if (txt.indexOf('<svg') >= 0) return { size: buf.byteLength, kind: 'svg' };
+                return { size: buf.byteLength, kind: null };
             }, BASE, NAME);
-            if (savedSize > initialSize + 50) break;
+            savedSize = got.size;
+            mediaKind = got.kind;
+            if (mediaKind) break;
         }
 
-        log(`Saved doc size: ${savedSize} bytes (initial was ${initialSize})`);
+        log(`Saved doc size: ${savedSize} bytes (initial was ${initialSize}), media=${mediaKind}`);
         await page.screenshot({ path: `${SHOT_DIR}/03_after_save.png` });
 
-        check('Doc size increased after image insertion',
-              savedSize > initialSize + 50,
-              `initial=${initialSize} saved=${savedSize} delta=${savedSize - initialSize}`);
+        check('Saved docx contains embedded media',
+              mediaKind !== null,
+              `initial=${initialSize} saved=${savedSize} media=${mediaKind}`);
 
         // Also check: was any canvas invalidation triggered?
         // (The Kit should have repainted tiles after the insertion.)

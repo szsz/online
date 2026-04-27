@@ -2,6 +2,8 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 const VIEWER = env.FILE_STORAGE_URL;
 const DOC_NAME = 'profile-canvas.odt';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -10,14 +12,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const browser = await puppeteer.launch({
         headless: 'new', args: ['--no-sandbox','--ignore-certificate-errors','--enable-features=SharedArrayBuffer'],
     });
-    const up = await browser.newPage();
-    await up.goto(VIEWER + '/');
     const bytes = fs.readFileSync(path.join(__dirname,'..','test','data','3pages.odt'));
-    await up.evaluate(async (n,a) => fetch('/api/files/'+encodeURIComponent(n),{method:'POST',body:new Blob([new Uint8Array(a)])}), DOC_NAME, Array.from(bytes));
-    await up.close();
+    const up = await uploadV2(VIEWER, DOC_NAME, bytes);
 
     const page = await browser.newPage();
+    await seedRecentFiles(page, [{ b64urlSecret: up.b64urlSecret, fileId: up.fileId, cachedName: DOC_NAME }]);
     await page.goto(VIEWER + '/');
+    await waitForSidebar(page, up.fileId);
     while (true) {
         await sleep(500);
         const fr = page.frames().find(f => f.url().includes('cool.html'));
@@ -31,7 +32,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     });
     console.log('Baseline canvas hash:', baselineCanvas?.substring(0,60));
     const t0 = Date.now();
-    await page.evaluate(n => document.querySelector(`.file[data-name="${n}"]`).click(), DOC_NAME);
+    await clickSidebarFile(page, up.fileId);
     console.log('Clicked at t=0');
     let firstCanvasChange = -1, firstWcChange = -1;
     for (let i = 0; i < 200; i++) {

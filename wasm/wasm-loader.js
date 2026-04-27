@@ -9,7 +9,15 @@
 
     var params = new URLSearchParams(window.location.search);
     var wopiSrc = params.get('WOPISrc') || '';
-    var ext = wopiSrc.split('.').pop().toLowerCase().split('?')[0];
+    // displayName is the plaintext filename the user sees in the title bar
+    // and #document-name-input. For v2-encrypted opens the WOPISrc is an
+    // opaque fileId; the parent viewer passes the decrypted filename as
+    // a separate query param so the editor can display a human label.
+    var displayName = params.get('displayName') || '';
+    // Use displayName's extension (if given) for docType detection, since
+    // v2 fileIds have no extension. Fall back to WOPISrc's extension.
+    var typingSource = displayName || wopiSrc;
+    var ext = typingSource.split('.').pop().toLowerCase().split('?')[0];
     var docType = 'writer';
     if (['xlsx','xls','ods','csv','tsv'].indexOf(ext) >= 0) docType = 'calc';
     else if (['pptx','ppt','odp','ppsx','pps'].indexOf(ext) >= 0) docType = 'impress';
@@ -35,16 +43,103 @@
 
     // ── Human-readable timing (from navigation start, visible in console) ──
     var _timingMilestones = {};
+    // Dedupe labels — logTiming is called from multiple signal paths
+    // (docPoll, trySendSwitch's docReadyInterval, switchdoc's own
+    // poll). Same label firing more than once just clutters the log.
+    var _timingSeen = {};
     function logTiming(label) {
+        if (_timingSeen[label]) return;
+        _timingSeen[label] = true;
         var ms = msSinceNav();
         _timingMilestones[label] = ms;
         console.log('%c[TIMING] ' + label + ' @ ' + (ms / 1000).toFixed(2) + 's (from navigation)',
             'color: #1565c0; font-weight: bold; font-size: 13px');
     }
     window.__wasmLogTiming = logTiming;
+    // Reset so a switchdoc into a different file can log "Document
+    // ready" again for that file. Called by checkHashSwitch.
+    window.__wasmLogTimingReset = function(label) { delete _timingSeen[label]; };
     logTiming('wasm-loader.js started');
 
+    // Filter out emscripten's worker-mailbox noise. The infinite
+    // Atomics.waitAsync().then(checkMailbox) chain pumps __emscripten_
+    // check_mailbox which in turn can fire console.log/warn/error from
+    // WASM-side code via _emscripten_console_* imports. The log text
+    // itself doesn't mention "checkMailbox" — Chrome only shows the
+    // names because the call stack walks through that chain. So we
+    // filter by the CALL STACK of the wrapper, not the message text.
+    // Wrap log/info/debug/warn/error at capture-time; drop any call
+    // whose synchronous stack passes through checkMailbox /
+    // __emscripten_thread_mailbox_await / the _mb wrapper.
+    (function filterMailboxSpam() {
+        var stackRe = /checkMailbox|__emscripten_thread_mailbox_await|\b_mb\b/;
+        var textRe = /__emscripten_thread_mailbox_await|\bcheckMailbox\b/;
+        function fromMailbox(args) {
+            try {
+                var s = new Error().stack || '';
+                if (stackRe.test(s)) return true;
+            } catch(e) {}
+            for (var i = 0; i < args.length; i++) {
+                var a = args[i];
+                if (typeof a === 'string' && textRe.test(a)) return true;
+            }
+            return false;
+        }
+        ['log','info','debug','warn','error'].forEach(function(k) {
+            var orig = console[k];
+            if (!orig) return;
+            console[k] = function() {
+                if (fromMailbox(arguments)) return;
+                orig.apply(console, arguments);
+            };
+        });
+    })();
+
     mark('loader:start', 'doc=' + docType + ' ext=' + ext);
+
+    // If the viewer supplied a plaintext displayName, override COOL's
+    // default title (WOPISrc-based, which is the opaque fileId in v2)
+    // persistently. COOL repopulates #document-name-input asynchronously
+    // from wopi events that arrive long after load, and its own UI code
+    // will clobber any one-off assignment. Use a MutationObserver on
+    // the input and a long-running interval so we always win.
+    if (displayName) {
+        var applyName = function() {
+            try {
+                if (window.app && window.app.map && window.app.map['wopi']) {
+                    window.app.map['wopi'].BaseFileName = displayName;
+                    window.app.map['wopi'].BreadcrumbDocName = displayName;
+                }
+                var ni = document.querySelector('#document-name-input');
+                if (ni && ni.value !== displayName) ni.value = displayName;
+                try { document.title = displayName; } catch(e) {}
+            } catch(e) {}
+        };
+        var overrideStart = Date.now();
+        var overrideInt = setInterval(function() {
+            applyName();
+            if (Date.now() - overrideStart > 120000) clearInterval(overrideInt);
+        }, 250);
+        // Watch for late DOM insertion of the input; once it appears,
+        // attach a MutationObserver so we re-apply if COOL ever resets
+        // it back to the fileId.
+        var observerInstalled = false;
+        var watchInt = setInterval(function() {
+            var ni = document.querySelector('#document-name-input');
+            if (ni && !observerInstalled) {
+                observerInstalled = true;
+                try {
+                    new MutationObserver(function() {
+                        if (ni.value !== displayName) ni.value = displayName;
+                    }).observe(ni, { attributes: true, attributeFilter: ['value'] });
+                } catch(e) {}
+                // Also watch property writes via a setInterval fallback —
+                // MutationObserver only catches attribute changes, not
+                // direct .value assignments that don't reflect to DOM.
+            }
+            if (Date.now() - overrideStart > 120000) clearInterval(watchInt);
+        }, 500);
+    }
 
     // ───── SERVICE WORKER REGISTRATION ─────
     // Register sw.js to lock the heavy WASM assets into Cache Storage.
@@ -85,7 +180,36 @@
     // Loading it eagerly caused memory pressure that broke __wasm_call_ctors.
     window.__wasmSnapshotData = undefined; // undefined = not yet checked
     window.__wasmSnapshotExists = false;
+    // KILLSWITCH (2026-04-26): the addRunDependency dup-id assert is fixed
+    // (emscripten-module.js now uses 'snapshot-load-emm'), and warm restore
+    // reaches `emscripten:calledRun` + `snapshot:signal restored` at ~5.1 s
+    // (vs ~8.6 s cold). BUT the user-facing doc-load on warm still hangs:
+    // WasmDocReady postMessage never fires through the cold-protocol load.
+    // Until that final piece is in: keep cold-only.
+    var SNAPSHOT_DISABLED = true;
+    // When the snapshot is killed there's no value in preloading
+    // Writer/Calc/Impress in Desktop::Main — and worse, doing so
+    // emits notebookbar/sidebar JSDialog payloads for all three over
+    // the fakesocket. dispose() releases the C++ Document but COOL JS
+    // never gets a "remove these buttons" message, so a Writer doc
+    // ends up rendered with leftover Calc tabs ("Formula") and a
+    // duplicate floating-navigator. This flag is read by main.js's
+    // onRuntimeInitialized hook which ccalls wasm_set_preload_disabled
+    // before main() runs Desktop::Main.
+    window.__wasmKillswitchPreloadDisabled = !!SNAPSHOT_DISABLED;
     window.__wasmSnapshotPromise = (function() {
+        if (SNAPSHOT_DISABLED) {
+            mark('snapshot:disabled_by_killswitch');
+            window.__wasmSnapshotData = null;
+            // Also delete any stale Cache Storage entry so subsequent
+            // visits don't even find the metadata.
+            if ('caches' in self) {
+                caches.open('wasm-snapshot').then(function(c) {
+                    return Promise.all([c.delete('/snapshot/heap-v2'), c.delete('/snapshot/meta')]);
+                }).catch(function() {});
+            }
+            return Promise.resolve(null);
+        }
         if (!('caches' in self)) {
             mark('snapshot:no_cache_api');
             window.__wasmSnapshotData = null;
@@ -107,37 +231,68 @@
                 return null;
             }
             // Check fingerprint: reject stale snapshots from older WASM binaries.
-            if (metaResp && BUILD_FINGERPRINT !== '__WASM_BUILD' + '_FINGERPRINT__') {
-                return metaResp.clone().json().then(function(meta) {
-                    if (meta.fingerprint && meta.fingerprint !== BUILD_FINGERPRINT) {
-                        mark('snapshot:stale', 'stored=' + meta.fingerprint + ' current=' + BUILD_FINGERPRINT);
-                        console.log('[snapshot] Discarding stale snapshot (build fingerprint mismatch)');
-                        // Delete stale snapshot
-                        return caches.open('wasm-snapshot').then(function(c) {
-                            return Promise.all([c.delete('/snapshot/heap-v2'), c.delete('/snapshot/meta')]);
-                        }).then(function() {
-                            window.__wasmSnapshotData = null;
-                            return null;
-                        });
-                    }
-                    // Fingerprint matches — snapshot is valid
-                    mark('snapshot:exists');
-                    logTiming('Snapshot: found (warm start)');
-                    window.__wasmSnapshotExists = true;
-                    window.__wasmSnapshotData = null; // will be loaded lazily
-                    return 'deferred';
-                }).catch(function() {
-                    // Can't read meta — treat as stale
-                    mark('snapshot:meta_error');
+            // STRICT: require both (a) the build fingerprint was injected by
+            // deploy.sh AND (b) the saved snapshot has a fingerprint field
+            // matching the current one. Pre-fingerprint snapshots and
+            // missing-meta snapshots are rejected — restoring an
+            // incompatible heap into a different binary leads to UB
+            // (typically a "memory access out of bounds" trap inside
+            // libc++ ostream code as soon as main() runs).
+            var fingerprintInjected = (BUILD_FINGERPRINT !== '__WASM_BUILD' + '_FINGERPRINT__');
+            function discardStale(reason) {
+                mark('snapshot:stale', reason);
+                console.log('[snapshot] Discarding stale snapshot:', reason);
+                return caches.open('wasm-snapshot').then(function(c) {
+                    return Promise.all([c.delete('/snapshot/heap-v2'), c.delete('/snapshot/meta')]);
+                }).then(function() {
                     window.__wasmSnapshotData = null;
                     return null;
                 });
             }
-            // No metadata or fingerprint not injected (dev mode) — accept the snapshot
+            if (fingerprintInjected) {
+                if (!metaResp) {
+                    return discardStale('no-meta (legacy save format)');
+                }
+                return metaResp.clone().json().then(function(meta) {
+                    if (!meta.fingerprint) {
+                        return discardStale('meta-without-fingerprint (legacy save)');
+                    }
+                    if (meta.fingerprint !== BUILD_FINGERPRINT) {
+                        return discardStale('stored=' + meta.fingerprint + ' current=' + BUILD_FINGERPRINT);
+                    }
+                    // Fingerprint matches — snapshot is valid. Eagerly read
+                    // the heap blob so it's ready before Module.preRun fires.
+                    // Reading 256MB from Cache API takes ~500ms-2s; smaller
+                    // than the wasm-fetch + instantiate that runs in
+                    // parallel, so this isn't on the cold-start critical
+                    // path. (Was previously left as null/'deferred' but
+                    // never actually loaded — making preRun a no-op.)
+                    mark('snapshot:exists');
+                    logTiming('Snapshot: found (warm start)');
+                    window.__wasmSnapshotExists = true;
+                    return heapResp.arrayBuffer().then(function(buf) {
+                        window.__wasmSnapshotData = buf;
+                        mark('snapshot:heap_loaded', (buf.byteLength/1048576).toFixed(0) + 'MB');
+                        return buf;
+                    }).catch(function(e) {
+                        mark('snapshot:heap_load_failed', e.message);
+                        window.__wasmSnapshotData = null;
+                        return null;
+                    });
+                }).catch(function(e) {
+                    return discardStale('meta-parse-error: ' + (e.message || ''));
+                });
+            }
+            // Dev mode: BUILD_FINGERPRINT not injected. Accept whatever's there.
             mark('snapshot:exists');
             window.__wasmSnapshotExists = true;
-            window.__wasmSnapshotData = null;
-            return 'deferred';
+            return heapResp.arrayBuffer().then(function(buf) {
+                window.__wasmSnapshotData = buf;
+                return buf;
+            }).catch(function(e) {
+                window.__wasmSnapshotData = null;
+                return null;
+            });
         }).catch(function(e) {
             mark('snapshot:cache_error', e.message);
             window.__wasmSnapshotData = null;
@@ -296,38 +451,25 @@
                             var dt = (performance.now() - sw).toFixed(0);
                             mark('msg:' + txt.split(' ')[0].replace(':',''), dt + 'ms  ' + txt.substring(0, 80));
                         }
-                        // Cross-type hot-switch: detect doc type change from
-                        // status message and recreate the tile layer + UI.
+                        // Cross-type hot-switch detection used to live HERE,
+                        // synchronously nulling map._docLayer before Socket._onStatusMsg
+                        // had a chance to run. That introduced a window where
+                        // every state-change message (.uno:PageStatus, etc.)
+                        // arriving between this onmessage hook and Socket's
+                        // _onStatusMsg lookup-and-swap was routed to a null
+                        // docLayer and silently dropped — which is why
+                        // #SlideStatus stayed empty when switching to Impress.
+                        //
+                        // Socket._onStatusMsg already detects type mismatch
+                        // and does an ATOMIC swap (remove old layer, create
+                        // new layer of correct type, call initializeSpecializedUI,
+                        // initializeNotebookbarInCore, initializeSidebar) all
+                        // within the same synchronous call. So we just let
+                        // status: flow through to Socket and stop fighting it
+                        // here. wasm-loader.js retains the timing-mark hooks
+                        // above but no longer manipulates the doc layer.
                         if (txt.indexOf('status:') === 0 && window.__bridgeSwitchSent) {
-                            try {
-                                // Extract type from status JSON. Use full ev.data
-                                // (not truncated txt) and regex instead of JSON.parse
-                                // because the status may have non-standard JSON.
-                                var fullData = typeof ev.data === 'string' ? ev.data : '';
-                                var typeMatch = fullData.match(/"type"\s*:\s*"(\w+)"/);
-                                var json = typeMatch ? { type: typeMatch[1] } : null;
-                                if (!json) throw new Error('no type in status');
-                                var map = window.app && window.app.map;
-                                if (json.type && map && map._docLayer && map._docLayer._docType &&
-                                    json.type !== map._docLayer._docType) {
-                                    var oldType = map._docLayer._docType;
-                                    console.log('[wasm-loader] Cross-type: ' + oldType + ' → ' + json.type);
-                                    // Remove old layer and clear TileManager's cached reference
-                                    try { map.removeLayer(map._docLayer); } catch(e) {}
-                                    map._docLayer = null;
-                                    if (typeof TileManager !== 'undefined' && TileManager._docLayer) {
-                                        TileManager._docLayer = null;
-                                    }
-                                    // Reinitialize UI for new type (creates correct
-                                    // notebookbar, toolbar, sidebar)
-                                    map.uiManager.initializeSpecializedUI(json.type);
-                                    // The status message will now be processed by
-                                    // Socket._onStatusMsg which will create the new
-                                    // doc layer since _docLayer is now null.
-                                }
-                            } catch(e) {
-                                console.error('[wasm-loader] Cross-type error:', e);
-                            }
+                            mark('msg:status_post_switch');
                         }
                         return origOnMsg.apply(this, arguments);
                     };
@@ -341,15 +483,28 @@
             // new filename. COOL reads the title from wopi.BaseFileName
             // and renders it in #document-name-input. Without this the
             // title stays on the prewarm blank or the first doc opened.
-            try {
-                if (window.app && window.app.map && window.app.map['wopi']) {
-                    window.app.map['wopi'].BaseFileName = filename;
-                    window.app.map['wopi'].BreadcrumbDocName = filename;
-                }
-                var nameInput = document.querySelector('#document-name-input');
-                if (nameInput) nameInput.value = filename;
-                document.title = filename;
-            } catch(e) {}
+            // Retry briefly because in the prewarm-then-click flow the
+            // input element or wopi map can be reset by a late onWopiProps
+            // fire; a short poll keeps our value wins.
+            // Prefer the plaintext displayName when the viewer supplied
+            // one (v2 opens). filename is the WOPISrc — an opaque 64-hex
+            // fileId in the v2 case, which would be ugly in the title bar.
+            var titleText = displayName || filename;
+            try { document.title = titleText; } catch(e) {}
+            var docNameSetStart = Date.now();
+            var docNameSetInt = setInterval(function() {
+                try {
+                    if (window.app && window.app.map && window.app.map['wopi']) {
+                        window.app.map['wopi'].BaseFileName = titleText;
+                        window.app.map['wopi'].BreadcrumbDocName = titleText;
+                    }
+                    var nameInput = document.querySelector('#document-name-input');
+                    if (nameInput && nameInput.value !== titleText) {
+                        nameInput.value = titleText;
+                    }
+                } catch(e) {}
+                if (Date.now() - docNameSetStart > 15000) clearInterval(docNameSetInt);
+            }, 250);
         } catch(e) {
             mark('bridge:switchdoc_error', e.message);
         }
@@ -375,17 +530,44 @@
                 } catch(e) {}
                 if (typeof hideOverlay === 'function') hideOverlay();
 
-                // After canvas change, wait for status bar to populate.
+                // Gate WasmDocReady on BOTH:
+                //   (a) status bar has a real value ("N characters",
+                //       "Sheet X of Y", "Slide X of Y") — means Kit
+                //       finished layout
+                //   (b) canvas has been stable for STABILITY_MS — tiles
+                //       have stopped arriving
+                //
+                // A previous iteration also required "≥ 3 distinct
+                // canvas samples" to guard against firing after a
+                // single partial tile landed. But on the warm path
+                // (snapshot restore), the canvas can stabilize
+                // immediately after one paint, and the 3-sample guard
+                // never unlocked → WasmDocReady never fired → shield
+                // stayed up forever. Dropped it; (a)+(b) is enough
+                // (the parent visiblePoll already confirms the canvas
+                // differs from the pre-switch baseline, so we know
+                // SOME paint happened before we entered this block).
+                var STABILITY_MS = 1200;
                 var readyStart = performance.now();
+                var lastSample = null;
+                var lastChangeAt = performance.now();
                 var docReadyInterval = setInterval(function() {
                     var wc = document.querySelector('#StateWordCount');
                     var dp = document.querySelector('#StatusDocPos');
                     var wcReady = wc && wc.textContent && /character|word|cell|slide/i.test(wc.textContent);
                     var dpReady = dp && dp.textContent && /Sheet|Slide/i.test(dp.textContent);
-                    if (wcReady || dpReady) {
+                    var statusReady = wcReady || dpReady;
+                    var sample = snapshotCanvas();
+                    if (sample !== lastSample) {
+                        lastSample = sample;
+                        lastChangeAt = performance.now();
+                    }
+                    var stableFor = performance.now() - lastChangeAt;
+                    if (statusReady && stableFor >= STABILITY_MS) {
                         var rdt = (performance.now() - readyStart).toFixed(0);
-                        mark('bridge:doc_ready', rdt + 'ms');
+                        mark('bridge:doc_ready', rdt + 'ms, stable ' + stableFor.toFixed(0) + 'ms');
                         clearInterval(docReadyInterval);
+                        window.__wasmLoadedDocName = filename;
                         try {
                             parent.postMessage(JSON.stringify({
                                 MessageId: 'WasmDocReady',
@@ -402,7 +584,7 @@
                             }), '*');
                         } catch(e) {}
                     }
-                }, 100);
+                }, 200);
             }
             if (performance.now() - watchStart > 30000) clearInterval(visiblePollInterval);
         }, 50);
@@ -416,7 +598,16 @@
         lastHash = h;
         var m = h.match(/^#switchdoc=(.+)$/);
         if (!m) return;
-        var filename = decodeURIComponent(m[1]);
+        // switchdoc fragment is either `#switchdoc=<filename>` (legacy) or
+        // `#switchdoc=<fileId>&displayName=<encoded>` (v2). Parse both.
+        var raw = m[1];
+        var amp = raw.indexOf('&');
+        var filename = decodeURIComponent(amp >= 0 ? raw.substring(0, amp) : raw);
+        if (amp >= 0) {
+            var tail = new URLSearchParams(raw.substring(amp + 1));
+            var dn = tail.get('displayName');
+            if (dn) displayName = dn; // hoisted var from the init block
+        }
         window.__bridgeLastSwitch = filename;
         pendingSwitchFilename = filename;
         mark('bridge:switchdoc_seen', filename);
@@ -433,6 +624,10 @@
         // Reset pre-warm flag so docPollInterval re-arms and signals 'ready'
         // again when the new doc is actually visible.
         window.__wasmPrewarmReady = false;
+        // Clear the "Document ready" dedupe so the new target can log it.
+        if (typeof window.__wasmLogTimingReset === 'function') {
+            window.__wasmLogTimingReset('Document ready');
+        }
         // Also re-arm the docPoll so it sees the new word count change.
         if (typeof startDocPoll === 'function') startDocPoll();
         trySendSwitch();
@@ -760,81 +955,156 @@
             // ── Snapshot signal + save ────────────────────────
             // On restore visits, HEAPU8 was restored before callMain by
             // the deploy.sh injection. LO Core takes SECOND_INIT (fast).
-            // Kit.cpp detects the restore and skips the save.
-            // On first visits, we save HEAPU8 to Cache API after the doc
-            // loads, then call start_coolwsd_phase2 to unblock Kit.cpp.
+            // On first visits: Desktop::Main fires Module.__snapshotReady
+            // after preloading Writer/Calc/Impress; we save HEAPU8 to
+            // Cache API and then call wasm_snapshot_complete() to wake
+            // the LO-side condition variable so Execute() can begin.
             (function() {
                 var wasRestored = !!window.__wasmSnapshotRestored;
                 mark('snapshot:signal', wasRestored ? 'restored' : 'first-visit');
                 logTiming(wasRestored ? 'WASM runtime restored from snapshot' : 'WASM runtime initialized (first visit)');
                 window.__wasmJsReady = true;
 
+                // ───── PHASE-2 PIECE #3: warm-restore wire protocol ─────
+                //
+                // PRE-PHASE-2 BEHAVIOR (removed): on wasRestored we set
+                // __wasmInitialDocLoaded=true synchronously and immediately
+                // queued a switchdocument for the user's WOPISrc. That
+                // shortcut races the WS upgrade — the dispatched
+                // 'switchdocument url=...' arrived as the first message on
+                // the new server's accept-loop and was misparsed by
+                // wsd/ClientRequestDispatcher.cpp:889 as "<URL> <appDocId>",
+                // logging `Bad document ID "url=https://..."` and routing
+                // the connection through a half-set-up state from which
+                // ChildSession::loadDocument never completed (the
+                // "nodocloaded" modal alert that blocked warm restore).
+                //
+                // PHASE-2 BEHAVIOR: on warm restore we follow the SAME
+                // wire protocol as cold start — JS goes through Socket's
+                // normal _onSocketOpen path which sends coolclient +
+                // load url=<wopiSrc>. The new COOLWSD's accept-loop sees
+                // the load URL as its first message (correctly parsed),
+                // does the WS upgrade, and ChildSession loads the user's
+                // doc. The snapshot's value comes from heap-warming
+                // (malloc pages, JIT'd code, fontconfig, factory init),
+                // not from "doc already loaded" — that optimization is
+                // future work (detecting "same URL already in heap" and
+                // short-circuiting loadDocument). Keeping this code path
+                // identical to cold means: zero new failure modes on
+                // warm, just a smaller wall-clock time because the heap
+                // pages are pre-touched.
+                //
+                // No-op block here intentionally — kept as documentation
+                // of what the previous code did and why we removed it.
+                if (wasRestored) {
+                    mark('snapshot:warm_restore_using_cold_protocol');
+                }
+
                 if (!wasRestored) {
-                    // First visit: save after LO init + module preload.
-                    // Desktop::Main signals __loInitDone after preloading modules.
-                    var saveCheck = setInterval(function() {
-                        if (!Module || !Module.HEAPU8) return;
-                        if (!window.__loInitDone) return;
-                        clearInterval(saveCheck);
-                        mark('snapshot:init_done');
-                        // Save only the USED portion of HEAPU8 (typically ~160MB
-                        // vs 1GB total). Find last non-zero 4-byte word.
+                    // ───── PHASE-2 SNAPSHOT TRIGGER ─────
+                    // Module.__firstDocLoaded fires from kit/ChildSession.cpp
+                    // (via wasmshim::firstDocPainted) when the very first user
+                    // doc finishes loading on this LOK runtime. C++ blocks on
+                    // a condvar until JS captures HEAPU8 and calls
+                    // wasm_first_doc_snapshot_resume.
+                    //
+                    // One-shot. C++ side guards via atomic CAS so subsequent
+                    // doc loads (cross-module switchdoc, second user file)
+                    // don't fire again.
+                    //
+                    // FAILURE REPORTING: any JS exception or missing capability
+                    // calls wasm_snapshot_failed(reason) which both wakes the
+                    // C++ wait and records a structured reason for telemetry.
+                    var SNAPSHOT_FAIL = {
+                        JS_EXCEPTION: 1,
+                        NO_HEAPU8: 2,
+                        CACHE_PUT_FAILED: 3,
+                        TIMEOUT: 4,
+                        KILLED: 5,
+                    };
+                    function reportFailureAndResume(reason, msg) {
+                        mark('snapshot:fail', 'reason=' + reason + ' ' + (msg || ''));
+                        try { Module.ccall('wasm_snapshot_failed', null, ['number'], [reason]); }
+                        catch(e) { mark('snapshot:fail_ccall_error', e.message); }
+                    }
+                    function resumeLO() {
+                        try { Module.ccall('wasm_first_doc_snapshot_resume', null, [], []); }
+                        catch(e) { mark('snapshot:resume_error', e.message); }
+                    }
+
+                    Module.__firstDocLoaded = function(docTypeHint) {
+                        console.log('PLAN_C_DBG: Module.__firstDocLoaded ENTERED docType=' + docTypeHint);
+                        // Preserve legacy global for tests/observers.
+                        window.__loInitDone = true;
+                        window.__wasmFirstDocType = docTypeHint || 'text';
+                        mark('snapshot:phase2_trigger', 'docType=' + window.__wasmFirstDocType);
+
+                        if (SNAPSHOT_DISABLED) {
+                            reportFailureAndResume(SNAPSHOT_FAIL.KILLED, 'killswitch');
+                            return;
+                        }
+                        if (!Module || !Module.HEAPU8) {
+                            reportFailureAndResume(SNAPSHOT_FAIL.NO_HEAPU8);
+                            return;
+                        }
+                        // Find last non-zero 4-byte word — capture only the
+                        // used portion (~200MB) instead of full 1GB heap.
                         var u32 = Module.HEAPU32;
                         var lastUsed = 0;
                         for (var i = u32.length - 1; i >= 0; i--) {
                             if (u32[i] !== 0) { lastUsed = (i + 1) * 4; break; }
                         }
-                        // Round up to 64KB page boundary
                         var heapSize = Math.min(((lastUsed + 65535) & ~65535), Module.HEAPU8.byteLength);
-                        // The first ~16MB of WASM memory contains data segments,
-                        // BSS, and stack — these are initialized by Emscripten's
-                        // initRuntime() and must NOT be overwritten on restore.
-                        // Everything above is the dynamic heap (malloc'd objects).
-                        // 16MB is a conservative estimate — actual data+BSS+stack
-                        // is typically 5-10MB for this build.
-                        // Read __heap_base via ccall to a C helper.
-                        // This is the boundary between BSS/data (below) and heap (above).
-                        var heapBase = 16 * 1024 * 1024; // 16MB default
+                        var heapBase = 16 * 1024 * 1024;
+                        try { heapBase = Module.ccall('get_heap_base', 'number', [], []); }
+                        catch(e) { mark('snapshot:heap_base_fallback', e.message); }
+
+                        mark('snapshot:capturing', (heapSize / 1048576).toFixed(0) + 'MB');
+                        var t0 = performance.now();
+                        var memCopy;
                         try {
-                            heapBase = Module.ccall('get_heap_base', 'number', [], []);
-                        } catch(e) {
-                            mark('snapshot:heap_base_fallback', e.message);
-                        }
-                        mark('snapshot:saving', (heapSize / 1048576).toFixed(0) + 'MB used, heapBase=' + heapBase);
-                        try {
-                            var memCopy = new ArrayBuffer(heapSize);
+                            memCopy = new ArrayBuffer(heapSize);
                             new Uint8Array(memCopy).set(Module.HEAPU8.subarray(0, heapSize));
-                            // Use Cache API — handles large blobs efficiently.
-                            // Store metadata alongside the snapshot.
-                            var meta = JSON.stringify({ heapBase: heapBase, size: heapSize, ts: Date.now(), fingerprint: BUILD_FINGERPRINT });
-                            caches.open('wasm-snapshot').then(function(cache) {
-                                // Save metadata
-                                cache.put('/snapshot/meta', new Response(meta, {
-                                    headers: { 'Content-Type': 'application/json' }
-                                }));
-                                // Save heap data
+                        } catch(ex) {
+                            reportFailureAndResume(SNAPSHOT_FAIL.JS_EXCEPTION, 'capture: ' + ex.message);
+                            return;
+                        }
+                        var captureMs = (performance.now() - t0).toFixed(0);
+                        mark('snapshot:captured', captureMs + 'ms');
+                        console.log('PLAN_C_DBG: heap captured ' + captureMs + 'ms, calling resumeLO');
+
+                        // Resume Kit IMMEDIATELY after capture — before the
+                        // (slow) Cache.put. Kit gets the user's input back
+                        // within ~100-500ms; Cache.put runs in background.
+                        resumeLO();
+                        console.log('PLAN_C_DBG: resumeLO returned');
+
+                        // Async write — even if the tab closes mid-write the
+                        // user's session is unaffected (next visit just runs
+                        // cold). Failure here is non-fatal; we already resumed.
+                        var meta = JSON.stringify({
+                            heapBase: heapBase,
+                            size: heapSize,
+                            ts: Date.now(),
+                            fingerprint: BUILD_FINGERPRINT,
+                            docType: window.__wasmFirstDocType,
+                        });
+                        caches.open('wasm-snapshot').then(function(cache) {
+                            return cache.put('/snapshot/meta', new Response(meta, {
+                                headers: { 'Content-Type': 'application/json' }
+                            })).then(function() {
                                 var blob = new Blob([memCopy], { type: 'application/octet-stream' });
                                 return cache.put('/snapshot/heap-v2', new Response(blob));
-                            }).then(function() {
-                                mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB via Cache API, heapBase=' + heapBase);
-                                if (false && isBlank(wopiSrc)) {
-                                    // DISABLED: prewarm skip broke hot-switch because
-                                    // COOL's JS framework never initialized (no Execute()).
-                                    // The blank doc must load so hot-switch works.
-                                    mark('snapshot:prewarm_done');
-                                } else {
-                                    // Real document: resume COOLWSD so it enters Execute()
-                                    mark('snapshot:starting_phase2');
-                                    try { Module.ccall('start_coolwsd_phase2', null, [], []); }
-                                    catch(e) { mark('snapshot:phase2_error', e.message); }
-                                }
-                            }).catch(function(err) {
-                                mark('snapshot:save_error', err.message);
-                                // Resume COOLWSD even if save failed
-                                try { Module.ccall('start_coolwsd_phase2', null, [], []); } catch(e) {}
                             });
-                        } catch(ex) { mark('snapshot:save_error', ex.message); }
-                    }, 500);
+                        }).then(function() {
+                            mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB');
+                        }).catch(function(err) {
+                            // Cache failure — log but don't disturb user.
+                            // wasm_snapshot_failed is informational only at
+                            // this point; resume already happened.
+                            mark('snapshot:cache_put_failed', err.message);
+                        });
+                    };
                 }
             })();
         }
@@ -898,6 +1168,18 @@
             if (runtimeReady && canvases > 0 && loaded && changed && !window.__wasmPrewarmReady) {
                 window.__wasmPrewarmReady = true;
                 window.__wasmInitialDocLoaded = true;  // sticky one-shot
+                // Authoritative "LO is painting this doc" flag for the
+                // initial-load path (cold-reload iframe opens with the
+                // target's WOPISrc and no switchdoc). Tests should read
+                // window.__wasmLoadedDocName to know which doc is
+                // actually rendered (vs prewarm). The switchdoc path
+                // updates this separately via the docReadyInterval
+                // inside checkHashSwitch.
+                try {
+                    var initParams = new URLSearchParams(window.location.search);
+                    var initWopi = initParams.get('WOPISrc') || '';
+                    if (initWopi) window.__wasmLoadedDocName = initWopi;
+                } catch(e) {}
                 prewarmWordCountAtReady = wc ? wc.textContent : '';
                 mark('prewarm:ready');
                 logTiming('Document ready');
@@ -929,6 +1211,20 @@
                     parent.postMessage(JSON.stringify({
                         MessageId: 'App_LoadingStatus',
                         Values: { Status: 'Initialized' }
+                    }), '*');
+                } catch(e) {}
+                // Dedicated "iframe is now ready to receive switchdocument"
+                // signal. Map.js fires App_LoadingStatus=Initialized when the
+                // COOL framework boots — far earlier than __wasmInitialDocLoaded.
+                // The viewer used to key prewarmReady on that early message and
+                // would dispatch a hot-switch before trySendSwitch could deliver
+                // it, so the user saw a 30 s wait while the polled retry waited
+                // for the prewarm doc to actually paint.
+                try {
+                    var pwWopi = new URLSearchParams(window.location.search).get('WOPISrc') || '';
+                    parent.postMessage(JSON.stringify({
+                        MessageId: 'WasmPrewarmReady',
+                        Values: { filename: pwWopi }
                     }), '*');
                 } catch(e) {}
                 // ── COPY override ─────────────────────────────────────

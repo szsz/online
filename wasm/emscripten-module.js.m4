@@ -17,7 +17,11 @@ function createEmscriptenModule(documentKind, documentDescriptor) {
 			if (_snapshotDepAdded || !globalThis.__wasmSnapshotExists) return;
 			_snapshotDepAdded = true;
 			console.log('[snapshot] preRun: adding dependency for deferred snapshot load');
-			Module['addRunDependency']('snapshot-load');
+			// Use a unique dep id to avoid colliding with main.js's
+			// addRunDependency('snapshot-load') — the assert at
+			// online.js:1150 (`!runDependencyTracking[id]`) fires if both
+			// run on the same Module. Both deps must reach 0 for callMain.
+			Module['addRunDependency']('snapshot-load-emm');
 			caches.open('wasm-snapshot').then(function(cache) {
 				return Promise.all([
 					cache.match('/snapshot/heap-v2'),
@@ -38,10 +42,10 @@ function createEmscriptenModule(documentKind, documentDescriptor) {
 				} else {
 					console.log('[snapshot] Cache entry missing');
 				}
-				Module['removeRunDependency']('snapshot-load');
+				Module['removeRunDependency']('snapshot-load-emm');
 			}).catch(function(e) {
 				console.error('[snapshot] Deferred load error:', e);
-				Module['removeRunDependency']('snapshot-load');
+				Module['removeRunDependency']('snapshot-load-emm');
 			});
 		}],
 	};

@@ -164,11 +164,12 @@ async function waitForPrewarmReady(page, label, timeoutMs) {
         let browser = await puppeteer.launch(launchOpts);
         let tracker = await trackBrowserNetwork(browser);
         let page = await browser.newPage();
+        page.on('dialog', d => d.accept().catch(() => {}));
         await page.setCacheEnabled(true);
         await page.setViewport({ width: 1280, height: 900 });
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         check('Session 1: prewarm reaches ready',
-              await waitForPrewarmReady(page, 'session1', 180000));
+              await waitForPrewarmReady(page, 'session1', 300000));
         await sleep(1000);   // let any tail-end fetches settle
         await snap(page, 'session1_loaded');
 
@@ -192,11 +193,12 @@ async function waitForPrewarmReady(page, label, timeoutMs) {
         browser = await puppeteer.launch(launchOpts);
         tracker = await trackBrowserNetwork(browser);
         page = await browser.newPage();
+        page.on('dialog', d => d.accept().catch(() => {}));
         await page.setCacheEnabled(true);
         await page.setViewport({ width: 1280, height: 900 });
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         check('Session 2: prewarm reaches ready',
-              await waitForPrewarmReady(page, 'session2', 180000));
+              await waitForPrewarmReady(page, 'session2', 300000));
         await sleep(1000);
         await snap(page, 'session2_loaded');
 

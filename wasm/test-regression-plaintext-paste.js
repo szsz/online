@@ -17,6 +17,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-plaintext-paste';
 const REPORT = '/tmp/static-deploy/public/reports/regression-plaintext-paste-detail.html';
@@ -36,20 +37,16 @@ function check(label, cond, ev) {
 
     const { browser, cleanup } = await launch();
 
-    // Upload a unique test doc
+    // Upload a unique test doc via v2 (encrypted)
     const docName = 'plaintext-paste-' + Date.now() + '.docx';
-    const up = await browser.newPage();
-    await up.goto(VIEWER + '/');
-    await up.evaluate(async (name, a) => {
-        await fetch('/api/files/' + name, { method: 'POST', body: new Blob([new Uint8Array(a)]) });
-    }, docName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'))));
-    await up.close();
+    const docBytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, docBytes);
 
     const page = await browser.newPage();
     const cdp = await page.createCDPSession();
     await cdp.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
     await page.setViewport({ width: 1280, height: 900 });
-    await page.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await page.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     // Wait for editor to fully load
     let editorFrame;

@@ -28,6 +28,8 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -79,29 +81,45 @@ extern "C" EMSCRIPTEN_KEEPALIVE int is_preinit_done()
 }
 
 int coolwsd_server_socket_fd = -1;
+// Condvar paired with coolwsd_server_socket_fd. COOLWSDServer::start
+// notifies via notify_coolwsd_server_socket_ready() once the fd is set.
+// HULLO handling waits on this when it arrives before COOLWSD's accept
+// loop is ready (cold-start race; cannot happen on warm restore because
+// the fd is captured in the heap snapshot).
+std::mutex g_coolwsdSocketMutex;
+std::condition_variable g_coolwsdSocketCV;
 
-// Stored by main() for start_coolwsd_phase2() to use
-static const char* g_argv1 = nullptr;
-static const char* g_argv2 = nullptr;
+extern "C" EMSCRIPTEN_KEEPALIVE void notify_coolwsd_server_socket_ready()
+{
+    {
+        std::lock_guard<std::mutex> lk(g_coolwsdSocketMutex);
+        // coolwsd_server_socket_fd is set by COOLWSD.cpp before this fires
+    }
+    g_coolwsdSocketCV.notify_all();
+}
+
+// Owning copies of main()'s argv[1..2] (docKind + docDesc). These are
+// std::string (not const char*) so the bytes are safe even if the
+// underlying argv pointer is invalidated, e.g. across snapshot restore
+// where main()'s stack is reused before the COOLWSD::run() thread
+// reads its lambda-captured argv_main.
+static std::string g_argv1;
+static std::string g_argv2;
 
 // Snapshot sentinel — set by Kit.cpp after LO init, polled by JS.
 // Must be a GLOBAL (not local/stack) so it has a stable address.
 volatile uint32_t g_snapshotSentinel = 0;
 
-// Controls whether Desktop::Main enters the VCL event loop.
-// Controls whether Desktop::Main enters Execute() (VCL event loop).
-// First visit: true → Desktop::Main returns after Phase 1 (for lok_init_2 WaitForReady).
-// After snapshot save: false → Desktop::Main enters Execute().
-// On restore: set false by leakSnapshotPolls so it enters Execute().
-bool g_wasmSkipExecute = true;
+// g_wasmSkipExecute is now defined in LO Core's wasmsnapshot.cxx so it
+// resolves for both LO Core's standalone soffice.js executable and Online's
+// online.js binary (both link libsofficeapp.a). Online code paths that need
+// to read or set it use this extern declaration.
+extern bool g_wasmSkipExecute;
 
 // Desktop::Main phase control:
 // 0 = first visit: run Phase 1, save snapshot, then Phase 2
 // 2 = restore visit: skip Phase 1, run Phase 2 only
 int g_wasmDesktopPhase = 0;
-
-// Controls the PRE_INIT snapshot save wait loop in Kit.cpp.
-std::atomic<bool> g_snapshotWaiting{false};
 
 static char const * tempFile; // null when operating on a local file in the Emscripten file system
 static std::string remoteUrl;
@@ -170,7 +188,11 @@ extern "C"
 EMSCRIPTEN_KEEPALIVE
 int create_remote_client()
 {
-    assert(coolwsd_server_socket_fd != -1);
+    if (coolwsd_server_socket_fd == -1)
+    {
+        std::cerr << "create_remote_client: server socket not ready, returning -1" << std::endl;
+        return -1;
+    }
 
     int clientId;
     {
@@ -382,15 +404,27 @@ void handle_cool_message(const char *string_value)
     {
         MAIN_THREAD_EM_ASM({ console.log('TIMING: HULLO received from JS'); });
 
-        // After snapshot restore, coolwsd_server_socket_fd is -1 until
-        // the new COOLWSD starts. Defer HULLO to a thread that can block.
+        // Cold-start race: JS may send HULLO before COOLWSD's accept
+        // loop has finished spinning up. Wait on the condvar that
+        // COOLWSDServer::start signals via notify_coolwsd_server_socket_ready().
+        // Cannot trigger on warm restore because the fd is in the heap.
         if (coolwsd_server_socket_fd == -1)
         {
             std::cout << "HULLO: server not ready, deferring to thread" << std::endl;
             std::thread([]
             {
-                while (coolwsd_server_socket_fd == -1)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::unique_lock<std::mutex> lk(g_coolwsdSocketMutex);
+                bool ok = g_coolwsdSocketCV.wait_for(
+                    lk, std::chrono::seconds(60),
+                    []{ return coolwsd_server_socket_fd != -1; });
+                lk.unlock();
+                if (!ok)
+                {
+                    MAIN_THREAD_ASYNC_EM_ASM({
+                        console.warn('HULLO deferral: COOLWSD not ready after 60s');
+                    });
+                    return;
+                }
                 std::cout << "HULLO (deferred): server ready, fd=" << coolwsd_server_socket_fd << std::endl;
                 handle_cool_message("HULLO");
             }).detach();
@@ -517,45 +551,67 @@ void saveToServer() {
     //TODO: handle fetch->status != 200
 }
 
-// Called by JS after snapshot save. Unblocks Kit.cpp wait loop.
-extern "C" EMSCRIPTEN_KEEPALIVE
-void start_coolwsd_phase2()
-{
-    std::cout << "start_coolwsd_phase2: g_wasmSkipExecute=false, g_snapshotWaiting=false" << std::endl;
-    g_wasmSkipExecute = false;
-    g_snapshotWaiting.store(false);
-}
+// Snapshot wake is now handled by wasm_snapshot_complete() defined in
+// LO core's wasmsnapshot.cxx (signals a condition variable that
+// Desktop::Main blocks on via wasmshim::waitForSnapshot()). app.cxx
+// resets g_wasmSkipExecute itself once the wait returns.
 
 int main(int argc, char* argv_main[])
 {
     std::cout << "================ Here is main()" << std::endl;
+    MAIN_THREAD_ASYNC_EM_ASM({
+        console.log('TIMING: wasmapp main() entry argc=' + $0
+                    + ' restored=' + (globalThis.__wasmSnapshotRestored ? 1 : 0));
+    }, argc);
 
     assert(argc == 3);
-    g_argv1 = argv_main[1];
-    g_argv2 = argv_main[2];
+    g_argv1 = argv_main[1] ? argv_main[1] : "";
+    g_argv2 = argv_main[2] ? argv_main[2] : "";
 
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: pre Log::initialize'); });
     Log::initialize("WASM", "error");
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: Log::initialize done'); });
     Util::setThreadName("main");
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: setThreadName done'); });
 
     fakeSocketSetLoggingCallback([](const std::string& line)
                                  {
                                      LOG_TRC_NOFILE(line);
                                  });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: fakeSocketSetLoggingCallback done'); });
 
     char *argv[2];
     argv[0] = strdup("wasm");
     argv[1] = nullptr;
 
     fakeClientFd = fakeSocketSocket();
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: fakeSocketSocket done fd=' + $0); }, fakeClientFd);
 
     // We run COOLWSD::run() in a thread of its own so that main() can return.
     std::thread(
         [&]
         {
-            Util::setThreadName("COOLWSD::run");
+            // FIRST line of the thread — fires before anything that could
+            // touch /dev/urandom, fakesocket, Util::setThreadName, etc.
+            // Lets us tell whether the thread even starts on warm visits.
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD thread ENTERED'); });
 
-            const std::string docKind = std::string(argv_main[1]);
-            const std::string docDesc = std::string(argv_main[2]);
+            Util::setThreadName("COOLWSD::run");
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD thread setThreadName done'); });
+
+            // Use the static globals (set by main() before this thread spawns).
+            // Capturing argv_main by reference [&] is unsafe: main() returns
+            // shortly after .detach(), and the warm-visit thread races with
+            // main()'s return — by the time it reads argv_main on warm, main's
+            // stack is gone and argv_main points to garbage (we observed
+            // docKind="emsc" instead of "server" on snapshot-restore visits).
+            const std::string docKind = g_argv1;
+            const std::string docDesc = g_argv2;
+
+            MAIN_THREAD_ASYNC_EM_ASM({
+                console.log('TIMING: COOLWSD thread docKind=' + UTF8ToString($0)
+                            + ' docDesc.len=' + $1);
+            }, docKind.c_str(), (int)docDesc.size());
 
             if (docKind == "server")
             {
@@ -604,15 +660,20 @@ int main(int argc, char* argv_main[])
                 int isRestore = MAIN_THREAD_EM_ASM_INT({
                     return globalThis.__wasmSnapshotRestored ? 1 : 0;
                 });
+                MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: isRestore=' + $0); }, isRestore);
                 if (isRestore)
                 {
                     // Leak stale poll objects from snapshot — their dtors
                     // would try to join dead threads → deadlock.
+                    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: calling leakSnapshotPolls'); });
                     COOLWSD::leakSnapshotPolls();
+                    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: leakSnapshotPolls done'); });
                 }
             }
 #endif
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: new COOLWSD'); });
             COOLWSD *coolwsd = new COOLWSD();
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD::run() invoking'); });
             coolwsd->run(1, argv);
             auto t_end = std::chrono::steady_clock::now();
             { auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();

@@ -62,6 +62,30 @@
 #include <net/DelaySocket.hpp>
 #include <net/ServerSocket.hpp>
 #include <wsd/COOLWSDServer.hpp>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+// Forward-declared instead of #include <wasmsnapshot.hxx> because
+// LO Core's desktop/inc is not on Online's include path. Resolves
+// via libsofficeapp.a at link time. Same pattern as kit/ChildSession.cpp.
+namespace wasmshim {
+    bool isQuiesce();
+    void waitForCoolwsdResume();
+}
+extern "C" void wasm_coolwsd_parked();
+
+// Plan C — published by COOLWSD::innerMain so wasm_quiesce_wake_main
+// can break the COOLWSD thread out of its mainWait->poll(256s) call.
+// Defined here so the kit-side hook in wasmquiesce can resolve it.
+std::weak_ptr<SocketPoll> g_mainWaitForQuiesce;
+
+extern "C" EMSCRIPTEN_KEEPALIVE void wasm_quiesce_wake_main()
+{
+    if (auto p = g_mainWaitForQuiesce.lock())
+        p->wakeup();
+}
+#endif
 #include <wsd/ClientRequestDispatcher.hpp>
 #include <wsd/DocumentBroker.hpp>
 #include <wsd/PlatformDesktop.hpp>
@@ -974,6 +998,15 @@ void COOLWSD::leakSnapshotPolls()
     new (&NewChildrenMutex) std::mutex();
     new (&NewChildrenCV) std::condition_variable();
     NewChildren.clear();
+
+    // Clear Poco's Application singleton pointer. After snapshot restore,
+    // _pInstance is non-null (it was set when the cold-visit COOLWSD ran
+    // Application::setup()). The new COOLWSD() spawned in the warm-visit
+    // path also calls setup(), which has poco_assert(_pInstance == 0) and
+    // would otherwise abort with a Poco::AssertionViolationException.
+    // clearInstancePointer() is a small WASM-only patch we add to Poco's
+    // Application class — see wasm/poco-1.12.4-emscripten.patch.
+    Poco::Util::Application::clearInstancePointer();
 
     // Set g_wasmSkipExecute=false so Desktop::Main enters Execute().
     extern bool g_wasmSkipExecute;
@@ -3487,10 +3520,17 @@ void COOLWSDServer::stopPrisoners()
     PrisonerPoll->joinThread();
 }
 
+#if MOBILEAPP
+extern "C" void notify_coolwsd_server_socket_ready();
+#endif
+
 void COOLWSDServer::start(std::shared_ptr<ServerSocket>&& serverSocket)
 {
 #if MOBILEAPP
     coolwsd_server_socket_fd = serverSocket->getFD();
+    // Wake any HULLO deferral waiting on this fd (cold-start race
+    // between JS sending HULLO and COOLWSD's accept loop being ready).
+    notify_coolwsd_server_socket_ready();
 #endif
 
 #ifdef __EMSCRIPTEN__
@@ -3521,6 +3561,22 @@ void COOLWSDServer::stop()
     _admin.stop();
 #endif
 }
+
+#ifdef __EMSCRIPTEN__
+void COOLWSDServer::joinAcceptPoll()
+{
+    _acceptPoll.joinThread();
+}
+
+void COOLWSDServer::restartAcceptPoll()
+{
+    // SocketPoll::startThread is restartable as long as joinThread was
+    // called first (which set _threadStarted=0 and _threadFinished
+    // becomes irrelevant on the next launch). The wakeup pipes survive
+    // join — only ~SocketPoll closes them.
+    _acceptPoll.startThread();
+}
+#endif
 
 void COOLWSDServer::dumpState(std::ostream& os) const
 {
@@ -3981,6 +4037,13 @@ void COOLWSD::innerMain()
     /// The main-poll does next to nothing:
     std::shared_ptr<SocketPoll> mainWait = std::make_shared<SocketPoll>("main");
     mainWait->runOnClientThread();
+#ifdef __EMSCRIPTEN__
+    // Plan C — expose mainWait so wasm_set_quiesce can wake it out of
+    // its 256s poll() block when the kit thread asks COOLWSD to park.
+    // Cleared at end of innerMain (see end of function).
+    extern std::weak_ptr<SocketPoll> g_mainWaitForQuiesce;
+    g_mainWaitForQuiesce = mainWait;
+#endif
 
     SigUtil::addActivity("coolwsd accepting connections");
 
@@ -4066,6 +4129,40 @@ void COOLWSD::innerMain()
                 std::min(UnitWSD::get().getTimeoutMilliSeconds(), std::chrono::milliseconds(1000));
             waitMicroS /= 4;
         }
+
+#ifdef __EMSCRIPTEN__
+        // Plan C — COOLWSD self-park before HEAPU8 capture. Earlier
+        // version hung because it called MAIN_THREAD_ASYNC_EM_ASM
+        // inside the park branch (3-4 console.logs), which queued onto
+        // the JS main thread BEFORE the snapshot's
+        // Module.__firstDocLoaded had a chance to run; the kit thread's
+        // firstDocPainted MAIN_THREAD_ASYNC_EM_ASM was queued behind
+        // them and the snapshot capture handler never executed within
+        // the test's 90s prewarm budget. Pure C++ logging only here;
+        // no JS proxy until after we resume.
+        if (wasmshim::isQuiesce())
+        {
+            LOG_INF("Plan C: COOLWSD parking — joining PrisonerPoll, AcceptPoll, WebServerPoll");
+            if (PrisonerPoll)
+                PrisonerPoll->joinThread();
+            if (COOLWSDServer::Instance)
+                COOLWSDServer::Instance->joinAcceptPoll();
+            if (COOLWSDServer::WebServerPoll)
+                COOLWSDServer::WebServerPoll->joinThread();
+            // Tell kit thread we're parked.
+            wasm_coolwsd_parked();
+            // Block until kit (cold) or JS (warm) signals resume.
+            wasmshim::waitForCoolwsdResume();
+            // Re-spawn the polls.
+            if (PrisonerPoll)
+                PrisonerPoll->startThread();
+            if (COOLWSDServer::Instance)
+                COOLWSDServer::Instance->restartAcceptPoll();
+            if (COOLWSDServer::WebServerPoll)
+                COOLWSDServer::WebServerPoll->startThread();
+            LOG_INF("Plan C: COOLWSD resumed");
+        }
+#endif
 
         mainWait->poll(waitMicroS);
 

@@ -17,6 +17,7 @@ const __cl = require('./lib/inject-checklist');
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-latejoin-unsaved';
 
@@ -39,17 +40,11 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await page.screenshot({ path: `${SHOTS}/${f}` });
     }
 
-    // Upload fresh doc
+    // Upload fresh doc via v2 (encrypted)
     const docName = 'ljunsaved-' + Date.now() + '.docx';
-    const { browser: browserUp, cleanup: cleanupUp } = await launch();
-    const up = await browserUp.newPage();
-    await up.goto(VIEWER + '/');
-    await up.evaluate(async (name, a) => {
-        await fetch('/api/files/' + name, { method: 'POST', body: new Blob([new Uint8Array(a)]) });
-    }, docName, Array.from(fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'))));
-    await up.close();
-    await cleanupUp();
-    console.log('[setup] Uploaded ' + docName);
+    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
+    console.log('[setup] Uploaded v2 ' + docName + ' → ' + fileId.substring(0,8) + '…');
 
     // ═══ CASE 1: A types (no save), B joins while A is still open ═══
     console.log('\n=== CASE 1: A types (no save), B joins while A is open ===');
@@ -57,7 +52,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const { browser: browserA, cleanup: cleanupA } = await launch();
     const pageA = await browserA.newPage();
     await pageA.setViewport({ width: 1280, height: 900 });
-    await pageA.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pageA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let frameA;
     for (let i = 0; i < 300; i++) {
@@ -104,7 +99,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const ctxB = await browserA.createBrowserContext();
     const pageB = await ctxB.newPage();
     await pageB.setViewport({ width: 1280, height: 900 });
-    await pageB.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pageB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let frameB;
     for (let i = 0; i < 300; i++) {
@@ -141,14 +136,13 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     check('CASE1: A still has content after B joined', ccA2 >= ccA1,
         'A_now=' + ccA2 + ' A_before=' + ccA1);
 
-    // Check the stored file wasn't overwritten with blank
-    const storedSize = await pageA.evaluate(async (name) => {
-        const r = await fetch('/api/files/' + encodeURIComponent(name));
+    // Check the stored (encrypted) file wasn't overwritten with blank
+    const storedSize = await pageA.evaluate(async (id) => {
+        const r = await fetch('/api/v2/file/' + id);
         if (!r.ok) return -1;
-        const buf = await r.arrayBuffer();
-        return buf.byteLength;
-    }, docName);
-    check('CASE1: Stored file not tiny (>1000 bytes)', storedSize > 1000,
+        return (await r.json()).size;
+    }, fileId);
+    check('CASE1: Stored file not tiny (>1000 bytes ciphertext)', storedSize > 1000,
         'storedSize=' + storedSize);
 
     await snap(pageA, 'case1_A_final');
@@ -165,7 +159,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const { browser: browserC, cleanup: cleanupC } = await launch();
     const pageC = await browserC.newPage();
     await pageC.setViewport({ width: 1280, height: 900 });
-    await pageC.goto(VIEWER + '/#file=' + docName, { waitUntil: 'domcontentloaded' });
+    await pageC.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let frameC;
     for (let i = 0; i < 300; i++) {

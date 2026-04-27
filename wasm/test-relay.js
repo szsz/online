@@ -48,29 +48,23 @@ let bActivated = false;
 const clientA = new WebSocket(RELAY, { rejectUnauthorized: false });
 const clientB = new WebSocket(RELAY, { rejectUnauthorized: false });
 
+// First client's 0x06 carries { hash, locator } — that's what registers
+// the room's checkpoint. Late joiners echo back the `hash` they got
+// from 0x05. All 64-hex hashes here are fixtures; in production the
+// hash is sha256 of the real bytes.
+const FAKE_HASH = 'deadbeef'.repeat(8);
+const FAKE_LOCATOR = 'https://example.test/fake';
+
 clientA.on('message', (data) => {
     const msg = parseFrame(data);
     if (msg.type === 0x05) {
-        // Join response — send join-ready
         console.log('A got join-response: ' + (msg.json ? JSON.stringify(msg.json) : 'empty'));
-        clientA.send(makeFrame(0x06, viewIdA, ''));
+        // A is the first client — register the checkpoint via 0x06.
+        clientA.send(makeFrame(0x06, viewIdA, JSON.stringify({
+            hash: FAKE_HASH, locator: FAKE_LOCATOR,
+        })));
         aActivated = true;
         tryRunTest();
-        return;
-    }
-    if (msg.type === 0x08) {
-        // Save-trigger from the relay (another peer is joining and the
-        // relay wants us to produce a checkpoint). Send back a 0x07 with
-        // a dummy hash so the joining peer can proceed.
-        const fakeHash = 'deadbeef'.repeat(8);  // 64-char hex
-        const hashBuf = Buffer.from(fakeHash);
-        const frame = Buffer.alloc(5 + 4 + hashBuf.length);
-        frame[0] = 0x07;
-        frame.writeUInt32BE(viewIdA, 1);
-        frame.writeUInt32BE(0, 5);  // seq
-        hashBuf.copy(frame, 9);
-        clientA.send(frame);
-        console.log('A handled save-trigger (sent fake checkpoint)');
         return;
     }
     if (msg.type === 0x00) aReceived.push(msg);
@@ -80,21 +74,11 @@ clientB.on('message', (data) => {
     const msg = parseFrame(data);
     if (msg.type === 0x05) {
         console.log('B got join-response: ' + (msg.json ? JSON.stringify(msg.json) : 'empty'));
-        clientB.send(makeFrame(0x06, viewIdB, ''));
+        // B is a late joiner — echo the hash we expect.
+        const hash = msg.json && msg.json.hash ? msg.json.hash : FAKE_HASH;
+        clientB.send(makeFrame(0x06, viewIdB, JSON.stringify({ hash })));
         bActivated = true;
         tryRunTest();
-        return;
-    }
-    if (msg.type === 0x08) {
-        const fakeHash = 'deadbeef'.repeat(8);
-        const hashBuf = Buffer.from(fakeHash);
-        const frame = Buffer.alloc(5 + 4 + hashBuf.length);
-        frame[0] = 0x07;
-        frame.writeUInt32BE(viewIdB, 1);
-        frame.writeUInt32BE(0, 5);
-        hashBuf.copy(frame, 9);
-        clientB.send(frame);
-        console.log('B handled save-trigger (sent fake checkpoint)');
         return;
     }
     if (msg.type === 0x00) bReceived.push(msg);

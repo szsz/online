@@ -62,6 +62,9 @@ async function waitForDocLoaded(page, label) {
         // Calc: StatusDocPos has "Sheet N of N"
         const sd = document.querySelector('#StatusDocPos');
         if (sd && sd.textContent && sd.textContent.includes('Sheet')) return true;
+        // Impress: SlideStatus has "Slide N of M"
+        const ss = document.querySelector('#SlideStatus');
+        if (ss && ss.textContent && /Slide\s+\d+\s+of\s+\d+/i.test(ss.textContent)) return true;
         return false;
     }, { timeout: TIMEOUT });
     const dur = ((Date.now() - t0) / 1000).toFixed(1);
@@ -251,23 +254,26 @@ async function testFormat(browser, docName, docPath, formatLabel) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const { browser, cleanup } = await launch();
-
     const formats = [
         { name: 'test document.docx', path: path.join(__dirname, '..', 'test', 'data', 'test document.docx'), label: 'docx' },
         { name: 'testdoc.xlsx', path: path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx'), label: 'xlsx' },
-        // pptx is not supported by this WASM build (Impress fails to load)
+        { name: 'testdoc.pptx', path: path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx'), label: 'pptx' },
     ];
 
     let allPassed = true;
     const results = [];
 
+    // Launch a FRESH browser per format. Reusing the same Chromium across
+    // formats accumulated state (Service Worker registrations, IndexedDB,
+    // Cache Storage from prior format) that broke later format opens —
+    // docx would pass and xlsx would fail with 5min wait timeouts.
     for (const fmt of formats) {
         if (!fs.existsSync(fmt.path)) {
             log(`SKIP: ${fmt.path} not found`);
             results.push({ label: fmt.label, passed: false, reason: 'file not found' });
             continue;
         }
+        const { browser, cleanup } = await launch();
         try {
             const passed = await testFormat(browser, fmt.name, fmt.path, fmt.label);
             results.push({ label: fmt.label, passed });
@@ -277,9 +283,8 @@ async function testFormat(browser, docName, docPath, formatLabel) {
             results.push({ label: fmt.label, passed: false, reason: e.message });
             allPassed = false;
         }
+        await cleanup();
     }
-
-    await cleanup();
 
     log('\n' + '='.repeat(50));
     log('RESULTS');

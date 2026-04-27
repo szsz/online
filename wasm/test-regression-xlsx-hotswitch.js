@@ -23,6 +23,8 @@ const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-xlsx-hotswitch';
@@ -115,20 +117,20 @@ async function waitForNewDocReady(page, timeoutMs) {
     const { browser, cleanup } = await launch();
 
     try {
-        // Upload two xlsx files. testdoc.xlsx and convert-to.xlsx both have
-        // 1 sheet → both render "Sheet 1 of 1" in the status bar, which is
-        // the exact condition that triggered the bug.
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
+        // Upload two xlsx files via v2 (encrypted). testdoc.xlsx and
+        // convert-to.xlsx both have 1 sheet → both render "Sheet 1 of 1"
+        // in the status bar, which is the exact condition that triggered
+        // the bug.
+        const uploads = {};
         for (const [name, src] of [[A_NAME, 'testdoc.xlsx'], [B_NAME, 'convert-to.xlsx']]) {
             const bytes = fs.readFileSync(path.join(DATA_DIR, src));
-            await up.evaluate(async (n, a) => {
-                await fetch('/api/files/' + encodeURIComponent(n), {
-                    method: 'POST', body: new Blob([new Uint8Array(a)]) });
-            }, name, Array.from(bytes));
-            log(`Uploaded ${name} (${src}, ${bytes.length}B)`);
+            const up = await uploadV2(VIEWER, name, bytes);
+            uploads[name] = up;
+            log(`Uploaded ${name} (${src}, ${bytes.length}B) → ${up.fileId.substring(0,8)}…`);
         }
-        await up.close();
+        const recentList = [A_NAME, B_NAME].map(n => ({
+            b64urlSecret: uploads[n].b64urlSecret, fileId: uploads[n].fileId, cachedName: n,
+        }));
 
         const page = await browser.newPage();
         await page.setCacheEnabled(false);  // force fresh wasm-loader.js etc.
@@ -139,6 +141,7 @@ async function waitForNewDocReady(page, timeoutMs) {
             if (/docPoll-DBG|switch|prewarm|SWITCHDOC/i.test(t))
                 console.log(`  [iframe] ${t.substring(0, 240)}`);
         });
+        await seedRecentFiles(page, recentList);
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
 
         // Wait for prewarm
@@ -156,12 +159,14 @@ async function waitForNewDocReady(page, timeoutMs) {
 
         // Open A (cold reload because prewarm=writer, A=calc)
         log(`\n--- Opening ${A_NAME} (first xlsx) ---`);
-        await page.waitForFunction(n => !!document.querySelector(`.file[data-name="${n}"]`),
-            { timeout: 15000 }, A_NAME);
-        await page.evaluate(n =>
-            document.querySelector(`.file[data-name="${n}"]`).click(), A_NAME);
+        await waitForSidebar(page, uploads[A_NAME].fileId, 15000);
+        await clickSidebarFile(page, uploads[A_NAME].fileId);
 
-        const resA = await waitForNewDocReady(page, 60000);
+        // 240s for Azure. Cold-reload to Calc needs Writer → Calc
+        // WASM re-instantiation + prewarm-ready signal flip; across
+        // the compounded WAN round-trips on Azure this can push past
+        // 90s. Local still completes in <20s.
+        const resA = await waitForNewDocReady(page, 240000);
         check(`${A_NAME} ready after cold reload`, resA.ok, resA.ok ? `${resA.ms}ms` : 'timeout');
         await snap(page, 'A_loaded');
         if (!resA.ok) throw new Error('A did not load');
@@ -175,14 +180,16 @@ async function waitForNewDocReady(page, timeoutMs) {
         // produce "Sheet 1 of 1" status → the bug condition.
         log(`\n--- Hot-switching to ${B_NAME} (xlsx → xlsx) ---`);
         const tSwitch = Date.now();
-        await page.evaluate(n =>
-            document.querySelector(`.file[data-name="${n}"]`).click(), B_NAME);
+        await clickSidebarFile(page, uploads[B_NAME].fileId);
 
         // This is the core regression assertion. With the bug, this
         // resolves at ~60s (timeout). With the fix, it completes in a
         // few seconds. 15s is a comfortable ceiling that cleanly
         // separates broken from fixed.
-        const resB = await waitForNewDocReady(page, 30000);
+        // 60s for the second (hot-switch) open. Hot-switch reuses the
+        // WASM runtime so the budget stays tight, but Azure still adds
+        // ~15s of relay round-trip on top of local's ~3–5s, so 30→60.
+        const resB = await waitForNewDocReady(page, 60000);
         const switchMs = Date.now() - tSwitch;
         check(`${B_NAME} ready after xlsx → xlsx hot-switch`,
               resB.ok, resB.ok ? `${resB.ms}ms, wall=${switchMs}ms` : `timeout (wall=${switchMs}ms)`);

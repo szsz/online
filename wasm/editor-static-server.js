@@ -43,7 +43,7 @@ fs.mkdirSync(DOCS, { recursive: true });
 // <name>.<hash>.js symlinks. cool.html is rewritten on-the-fly to
 // reference the hashed filenames. The hashed files are served with
 // immutable cache headers so browsers never use stale code.
-const HASHED_JS = ['wasm-loader.js', 'relay-adapter.js'];
+const HASHED_JS = ['wasm-loader.js', 'relay-adapter.js', 'dict-loader.js'];
 const jsHashMap = {};  // 'wasm-loader.js' → 'wasm-loader.a1b2c3d4.js'
 
 function hashJsFiles() {
@@ -56,16 +56,12 @@ function hashJsFiles() {
         const base = name.replace('.js', '');
         const hashed = `${base}.${hash}.js`;
         jsHashMap[name] = hashed;
-        // Create/update the hashed symlink (or copy)
+        // Create the new hashed symlink (or copy) if it doesn't exist.
+        // Keep older hashed versions around: tabs already running (and
+        // service-worker-cached cool.html payloads) reference the OLD
+        // hashed name, and we'd rather serve them the old code than
+        // 404. Clean up only files older than 24h at startup.
         const dest = path.join(browserDir, hashed);
-        // Remove old hashed versions
-        try {
-            for (const f of fs.readdirSync(browserDir)) {
-                if (f.startsWith(base + '.') && f.endsWith('.js') && f !== name && f !== hashed) {
-                    fs.unlinkSync(path.join(browserDir, f));
-                }
-            }
-        } catch(e) {}
         if (!fs.existsSync(dest)) {
             try { fs.symlinkSync(name, dest); }
             catch(e) { fs.copyFileSync(src, dest); }
@@ -73,35 +69,78 @@ function hashJsFiles() {
         console.log(`  ${name} → ${hashed}`);
     }
 }
+// GC old hashed JS (>24h) — runs once at startup.
+function gcOldHashedJs() {
+    const browserDir = path.join(PUB, 'browser');
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    for (const name of HASHED_JS) {
+        const base = name.replace('.js', '');
+        try {
+            for (const f of fs.readdirSync(browserDir)) {
+                if (!f.startsWith(base + '.') || !f.endsWith('.js') || f === name) continue;
+                if (f === jsHashMap[name]) continue;
+                const p = path.join(browserDir, f);
+                try {
+                    const st = fs.lstatSync(p);
+                    if (st.mtimeMs < cutoff) {
+                        fs.unlinkSync(p);
+                        console.log(`  GC old hashed: ${f}`);
+                    }
+                } catch(e) {}
+            }
+        } catch(e) {}
+    }
+}
 console.log('Content-hashed JS files:');
 hashJsFiles();
-// Rebuild hashes on SIGHUP (useful after deploying new code)
-// Regenerate stale .br files (called on startup and SIGHUP)
+gcOldHashedJs();
+// Regenerate stale .br files. Called at startup + on SIGHUP.
+// Runs brotli ASYNCHRONOUSLY — the 266MB online.wasm takes ~14min to
+// compress and would freeze the event loop for that long if we used
+// execSync. While compressing, the server serves plain (uncompressed)
+// files; the .br becomes available once the background job lands.
 const BROTLI_ASSETS = ['online.js', 'online.wasm', 'bundle.js', 'bundle.css'];
+const { spawn } = require('child_process');
+const _brotliInflight = new Set();
 function refreshBrotli() {
-    const { execSync } = require('child_process');
     const browserDir = path.join(PUB, 'browser');
     for (const name of BROTLI_ASSETS) {
+        if (_brotliInflight.has(name)) continue;
         const src = path.join(browserDir, name);
         const br = src + '.br';
         if (!fs.existsSync(src)) continue;
         const srcMtime = fs.statSync(src).mtimeMs;
         const brMtime = fs.existsSync(br) ? fs.statSync(br).mtimeMs : 0;
         if (srcMtime > brMtime) {
-            console.log(`  Regenerating ${name}.br (source newer than .br)...`);
-            try {
-                execSync(`brotli -f "${src}" -o "${br}"`, { timeout: 300000 });
-                console.log(`    → ${name}.br: ${fs.statSync(br).size} bytes`);
-            } catch(e) {
-                console.error(`    Failed to compress ${name}: ${e.message}`);
-                // Delete stale .br so the server serves uncompressed
-                try { fs.unlinkSync(br); } catch(e2) {}
-            }
+            // Drop any stale .br up-front so while the new one is
+            // being built the server falls back to uncompressed.
+            try { if (brMtime > 0) fs.unlinkSync(br); } catch(e) {}
+            console.log(`  Regenerating ${name}.br in background…`);
+            _brotliInflight.add(name);
+            const brTmp = br + '.tmp';
+            const child = spawn('brotli', ['-f', src, '-o', brTmp], { stdio: 'ignore' });
+            child.on('exit', (code) => {
+                _brotliInflight.delete(name);
+                if (code === 0 && fs.existsSync(brTmp)) {
+                    try {
+                        fs.renameSync(brTmp, br);
+                        console.log(`    → ${name}.br: ${fs.statSync(br).size} bytes`);
+                    } catch(e) {
+                        console.error(`    ${name}.br rename failed: ${e.message}`);
+                    }
+                } else {
+                    console.error(`    ${name}.br failed: exit=${code}`);
+                    try { fs.unlinkSync(brTmp); } catch(e) {}
+                }
+            });
+            child.on('error', (e) => {
+                _brotliInflight.delete(name);
+                console.error(`    ${name}.br spawn error: ${e.message}`);
+            });
         }
     }
 }
-// Run on startup (may take a few minutes for online.wasm)
-console.log('Checking Brotli freshness:');
+console.log('Checking Brotli freshness (async):');
 refreshBrotli();
 
 process.on('SIGHUP', () => {
@@ -109,6 +148,44 @@ process.on('SIGHUP', () => {
     hashJsFiles();
     refreshBrotli();
 });
+
+// Matches wasm/editor-server.js WASM_LOADER_INJECT — the stock cool.html from
+// the LO build doesn't reference wasm-loader.js or relay-adapter.js, so we
+// splice them in on the fly. Also adds the loading-overlay markup the viewer
+// shield fade-out expects.
+const WASM_LOADER_INJECT = `
+<style id="wasm-loading-style">
+  #wasm-loading-overlay {
+    position: fixed; inset: 0; background: #f5f5f5; z-index: 999999;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; color: #333;
+  }
+  #wasm-spinner {
+    width: 64px; height: 64px; border: 6px solid #ddd; border-top-color: #4a90e2;
+    border-radius: 50%; animation: wasmspin 1s linear infinite;
+    margin-bottom: 16px;
+  }
+  @keyframes wasmspin { to { transform: rotate(360deg); } }
+  #wasm-progress-label { font-size: 15px; font-weight: 500; margin-bottom: 8px; }
+  #wasm-progress-bar {
+    width: 300px; height: 12px; background: #e0e0e0; border-radius: 6px; overflow: hidden; margin-bottom: 6px;
+  }
+  #wasm-progress-bar-fill {
+    height: 100%; background: linear-gradient(90deg, #4a90e2, #357abd); width: 0%;
+    transition: width 0.3s ease;
+  }
+  #wasm-progress-detail { font-size: 12px; color: #666; }
+</style>
+<div id="wasm-loading-overlay">
+  <div id="wasm-spinner"></div>
+  <div id="wasm-progress-label">Loading editor…</div>
+  <div id="wasm-progress-bar"><div id="wasm-progress-bar-fill"></div></div>
+  <div id="wasm-progress-detail"></div>
+</div>
+<script type="text/javascript" src="dict-loader.js"></script>
+<script type="text/javascript" src="wasm-loader.js"></script>
+<script type="text/javascript" src="relay-adapter.js"></script>
+`;
 
 const MIME = {
     '.html': 'text/html',
@@ -245,12 +322,27 @@ function handler(req, res) {
         }
     }
 
-    // cool.html — rewrite JS references to content-hashed filenames.
-    // This ensures browsers always load the correct version after a deploy.
+    // cool.html — inject the wasm-loader + relay-adapter blocks (the stock
+    // COOL build doesn't reference them), strip the integrator branding
+    // hooks (we don't theme the editor; these would 404 and spam the
+    // console), then rewrite JS references to the content-hashed filenames
+    // so browsers always load the correct version after a deploy.
     if (pathname.endsWith('/cool.html')) {
         const filepath = path.join(PUB, pathname);
         if (fs.existsSync(filepath)) {
             let html = fs.readFileSync(filepath, 'utf8');
+            if (!html.includes('wasm-loader.js')) {
+                const anchor = '<input type="hidden" id="init-mobile-app-os-type" value="EMSCRIPTEN" />';
+                if (html.includes(anchor)) {
+                    html = html.replace(anchor, anchor + '\n' + WASM_LOADER_INJECT);
+                } else {
+                    html = html.replace('</body>', WASM_LOADER_INJECT + '</body>');
+                }
+            }
+            // Strip the integrator branding hooks. They reference
+            // branding.css / branding.js which we don't ship.
+            html = html.replace(/\s*<link rel="stylesheet" href="branding\.css" \/>/g, '');
+            html = html.replace(/\s*<script src="branding\.js"><\/script>/g, '');
             for (const [orig, hashed] of Object.entries(jsHashMap)) {
                 html = html.replace(new RegExp(orig.replace('.', '\\.'), 'g'), hashed);
             }

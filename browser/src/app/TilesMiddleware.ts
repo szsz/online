@@ -1606,6 +1606,8 @@ class TileManager {
 		}
 
 		if (
+			app.map._docLayer &&
+			app.map._docLayer._debug &&
 			app.map._docLayer._debug.tileInvalidationsOn &&
 			part === app.map._docLayer._selectedPart
 		) {

@@ -28,8 +28,13 @@ const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
+// Map docName → { fileId, b64urlSecret } so open/click paths can use the
+// opaque v2 WOPISrc value (plaintext names never reach the server).
+const FILE_IDS = {};
+const FILE_SECRETS = {};
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-calc-impress';
 const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
 const STAMP = Date.now();
@@ -129,6 +134,19 @@ async function openViewer(browser) {
     await cdp.send('Browser.grantPermissions', {
         permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
     });
+    // Seed the v2 sidebar from the FILE_IDS registry so this page's
+    // sidebar renders every uploaded fixture without needing a
+    // server-side listing.
+    const rfList = Object.entries(FILE_IDS).map(([name, fileId]) => ({
+        fileId, cachedName: name,
+        secret: FILE_SECRETS[name] || '',
+        lastVisited: new Date().toISOString(),
+    }));
+    if (rfList.length) {
+        await page.evaluateOnNewDocument((list) => {
+            localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
+        }, rfList);
+    }
     await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: 60000 });
     for (let i = 0; i < 240; i++) {
         await sleep(500);
@@ -141,22 +159,25 @@ async function openViewer(browser) {
 }
 
 async function clickFile(page, name) {
-    await page.waitForFunction(n => !!document.querySelector(`.file[data-name="${n}"]`),
-        { timeout: 30000 }, name);
-    await page.evaluate(n =>
-        document.querySelector(`.file[data-name="${n}"]`).click(), name);
+    const id = FILE_IDS[name];
+    if (!id) throw new Error('No fileId known for ' + name);
+    await page.waitForFunction(i => !!document.querySelector(`.file[data-fileid="${i}"]`),
+        { timeout: 30000 }, id);
+    await page.evaluate(i =>
+        document.querySelector(`.file[data-fileid="${i}"]`).click(), id);
 }
 
 async function waitForDocReady(page, fileName, timeoutMs) {
     // For cross-type opens (writer->calc, writer->impress) the viewer
     // REPLACES the iframe. We must wait for the new iframe whose URL
-    // contains the requested filename — otherwise we read stale state
-    // from the previous iframe and conclude "ready" instantly.
-    const enc = encodeURIComponent(fileName);
+    // contains the requested fileId (in v2 the WOPISrc is the opaque
+    // fileId) — otherwise we read stale state from the previous iframe
+    // and conclude "ready" instantly.
+    const id = FILE_IDS[fileName] || encodeURIComponent(fileName);
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
         const fr = await getFrame(page);
-        if (fr && fr.url().includes(enc)) {
+        if (fr && fr.url().includes(id)) {
             const ready = await fr.evaluate(() => !!window.__wasmPrewarmReady).catch(() => false);
             if (ready) {
                 for (let j = 0; j < 60; j++) {
@@ -192,14 +213,12 @@ async function focusForType(page, docType) {
 }
 
 async function uploadDoc(browser, name, src) {
-    const up = await browser.newPage();
-    await up.goto(VIEWER + '/');
     const bytes = fs.readFileSync(path.join(DATA_DIR, src));
-    await up.evaluate(async (n, a) =>
-        fetch('/api/files/' + encodeURIComponent(n), { method: 'POST', body: new Blob([new Uint8Array(a)]) }),
-        name, Array.from(bytes));
-    await up.close();
-    log(`Uploaded ${name} (${bytes.length}B)`);
+    const up = await uploadV2(VIEWER, name, bytes);
+    FILE_IDS[name] = up.fileId;
+    FILE_SECRETS[name] = up.b64urlSecret;
+    log(`Uploaded v2 ${name} (${bytes.length}B) → ${up.fileId.substring(0,8)}…`);
+    return up;
 }
 
 (async () => {
@@ -224,7 +243,10 @@ async function uploadDoc(browser, name, src) {
 
             for (const [b, label] of [[A, 'A'], [B, 'B']]) {
                 await clickFile(b.page, fileName);
-                const took = await waitForDocReady(b.page, fileName, 60000);
+                // 360s. Azure cross-type cold reload + compounded
+                // prewarm + TheFakeWebSocket + Module.calledRun waits
+                // can exceed 240s on slow runs.
+                const took = await waitForDocReady(b.page, fileName, 360000);
                 check(`${label} loaded ${docType}`, took >= 0, took >= 0 ? `${took}ms` : 'timeout');
                 if (took < 0) throw new Error(`${label} did not load`);
                 const installed = await installEditObserver(b.page);

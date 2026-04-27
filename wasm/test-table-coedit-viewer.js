@@ -5,6 +5,8 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-table-coedit';
@@ -100,17 +102,11 @@ async function canvasFingerprint(fr, len) {
     const errors = { A: [], B: [] };
 
     try {
-        // Upload
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
+        // Upload via v2 (encrypted)
         const bytes = fs.readFileSync(DOC_PATH);
-        await up.evaluate(async (n, a) => {
-            await fetch('/api/files/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([new Uint8Array(a)]),
-            });
-        }, DOC_NAME, Array.from(bytes));
-        await up.close();
-        log('Uploaded ' + DOC_NAME);
+        const upDoc = await uploadV2(VIEWER, DOC_NAME, bytes);
+        log('Uploaded ' + DOC_NAME + ' → ' + upDoc.fileId.substring(0,8) + '…');
+        const recentList = [{ b64urlSecret: upDoc.b64urlSecret, fileId: upDoc.fileId, cachedName: DOC_NAME }];
 
         // ─── Browser A (separate context — WASM SharedArrayBuffer isolation) ───
         log('\n--- Browser A ---');
@@ -118,15 +114,15 @@ async function canvasFingerprint(fr, len) {
         const pA = await ctxA.newPage();
         await pA.setViewport({ width: 1280, height: 900 });
         pA.on('pageerror', e => errors.A.push(e.message.substring(0, 150)));
+        await seedRecentFiles(pA, recentList);
         await pA.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         for (let i = 0; i < 80; i++) {
             await sleep(500);
             try { const fr = pA.frames().find(f => f.url().includes('cool.html'));
                   if (fr && await fr.evaluate(() => !!window.__wasmPrewarmReady)) break; } catch(e) {}
         }
-        await pA.evaluate(n => {
-            [...document.querySelectorAll('.file')].find(e => e.dataset.name === n).click();
-        }, DOC_NAME);
+        await waitForSidebar(pA, upDoc.fileId);
+        await clickSidebarFile(pA, upDoc.fileId);
         const frA = await waitWriter(pA, 60000);
         check('A: Writer loaded', !!frA);
         if (!frA) throw new Error('A timeout');
@@ -139,15 +135,15 @@ async function canvasFingerprint(fr, len) {
         const pB = await ctxB.newPage();
         await pB.setViewport({ width: 1280, height: 900 });
         pB.on('pageerror', e => errors.B.push(e.message.substring(0, 150)));
+        await seedRecentFiles(pB, recentList);
         await pB.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         for (let i = 0; i < 80; i++) {
             await sleep(500);
             try { const fr = pB.frames().find(f => f.url().includes('cool.html'));
                   if (fr && await fr.evaluate(() => !!window.__wasmPrewarmReady)) break; } catch(e) {}
         }
-        await pB.evaluate(n => {
-            [...document.querySelectorAll('.file')].find(e => e.dataset.name === n).click();
-        }, DOC_NAME);
+        await waitForSidebar(pB, upDoc.fileId);
+        await clickSidebarFile(pB, upDoc.fileId);
         const frB = await waitWriter(pB, 60000);
         check('B: Writer loaded', !!frB);
         if (!frB) throw new Error('B timeout');

@@ -2,15 +2,26 @@
 // Verifies the viewer-server folder endpoints and storage layer folder support.
 
 const http = require('http');
-const VIEWER = process.env.VIEWER_URL || 'http://localhost:6934';
+const https = require('https');
+const env = require('./lib/test-env');
+// The rest of the suite reads from lib/test-env (which loads wasm/.env).
+// Fall back to the on-host HTTPS port; the server binds TLS only, so plain
+// http:// would get TLS alert bytes back and crash the HTTP parser.
+const VIEWER = process.env.VIEWER_URL
+    || env.FILE_STORAGE_URL
+    || 'https://localhost:6934';
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
 
 function api(method, path, body, headers) {
     return new Promise((resolve, reject) => {
         const url = new URL(path, VIEWER);
+        // Route through the right module for the URL scheme — VIEWER may
+        // be HTTPS on Azure; the hardcoded http.request silently sent
+        // TLS records at :443 as plain HTTP and barfed on the decryption.
+        const lib = url.protocol === 'https:' ? https : http;
         const opts = { method, headers: headers || {} };
-        const req = http.request(url, opts, (res) => {
+        const req = lib.request(url, opts, (res) => {
             let data = '';
             res.on('data', c => data += c);
             res.on('end', () => {

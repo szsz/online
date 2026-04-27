@@ -132,23 +132,77 @@ if (window.ThisIsTheEmscriptenApp) {
 		var g = typeof globalThis !== 'undefined' ? globalThis :
 		        typeof self !== 'undefined' ? self : {};
 		g.__preRunFired = true;
-		var snapData = g.__wasmSnapshotData;
-		var mod = g.Module; // globalThis.Module is the Emscripten module
-		g.__preRunState = {
-			hasSnap: !!snapData,
-			snapLen: snapData ? snapData.byteLength : 0,
-			hasHeap: !!(mod && mod.HEAPU8),
-			heapLen: mod && mod.HEAPU8 ? mod.HEAPU8.length : 0,
-		};
-		if (snapData && mod && mod.HEAPU8) {
-			var src = new Uint8Array(snapData);
-			if (src.length <= mod.HEAPU8.length) {
-				mod.HEAPU8.set(src);
-				g.__wasmSnapshotRestored = true;
+		var mod = g.Module;
+
+		// If a snapshot exists but its heap blob is still loading from
+		// Cache API, block preRun via addRunDependency until the load
+		// resolves. Without this, preRun fires synchronously, sees
+		// __wasmSnapshotData=null, and skips the restore — silently
+		// downgrading every "warm" visit to a cold start.
+		var promise = g.__wasmSnapshotPromise;
+		var doRestore = function() {
+			var snapData = g.__wasmSnapshotData;
+			g.__preRunState = {
+				hasSnap: !!snapData,
+				snapLen: snapData ? snapData.byteLength : 0,
+				hasHeap: !!(mod && mod.HEAPU8),
+				heapLen: mod && mod.HEAPU8 ? mod.HEAPU8.length : 0,
+			};
+			if (snapData && mod && mod.HEAPU8) {
+				var src = new Uint8Array(snapData);
+				if (src.length <= mod.HEAPU8.length) {
+					mod.HEAPU8.set(src);
+					g.__wasmSnapshotRestored = true;
+				}
 			}
+		};
+
+		if (promise && typeof mod.addRunDependency === 'function') {
+			mod.addRunDependency('snapshot-load');
+			promise.then(function() {
+				doRestore();
+				mod.removeRunDependency('snapshot-load');
+			}).catch(function() {
+				// On any error, proceed with no snapshot. preRun's
+				// removeRunDependency must still fire or main() never runs.
+				mod.removeRunDependency('snapshot-load');
+			});
+		} else {
+			// No snapshot promise — first visit, or addRunDependency not
+			// available (shouldn't happen with -s FORCE_FILESYSTEM=1).
+			doRestore();
 		}
 	});
+	// Capture full abort context for Phase 2.1 debugging — emscripten's
+	// "Aborted(Assertion failed)" without a payload is too generic to act
+	// on. With this hook we get the actual abort string + a JS stack frame
+	// at the moment abort() was called.
+	globalThis.Module.onAbort = function(what) {
+		try {
+			console.log('WASM_ABORT', JSON.stringify({
+				what: String(what).substring(0, 500),
+				stack: new Error().stack ? new Error().stack.substring(0, 1500) : null,
+				wasRestored: !!globalThis.__wasmSnapshotRestored,
+				preRunFired: !!globalThis.__preRunFired,
+				preRunState: globalThis.__preRunState,
+			}));
+		} catch(e) { console.log('onAbort log failed:', e.message); }
+	};
+
 	globalThis.Module.onRuntimeInitialized = function() {
+		// Snapshot killswitch (set in wasm-loader.js): tell LO Core to
+		// skip preloadDocumentModules — those module loads emit
+		// notebookbar/sidebar JSDialog frames that COOL JS never gets
+		// a "remove" for, polluting the Writer UI with Calc tabs and
+		// a duplicate floating-navigator.
+		if (window.__wasmKillswitchPreloadDisabled) {
+			try {
+				globalThis.Module.ccall('wasm_set_preload_disabled',
+					null, ['number'], [1]);
+			} catch (e) {
+				console.warn('wasm_set_preload_disabled failed:', e);
+			}
+		}
 		map.loadDocument(global.socket);
 	};
 	createOnlineModule(globalThis.Module);

@@ -103,7 +103,7 @@ if $DO_CREATE; then
                 --resource-group "$RESOURCE_GROUP" \
                 --plan "$APP_SERVICE_PLAN" \
                 --name "$APP" \
-                --runtime "NODE:20-lts" \
+                --runtime "NODE:24-lts" \
                 2>"$ERR_FILE" >/dev/null; then
             echo "    created"
         elif grep -qiE "already (exists|in use)|WebsiteAlreadyExists" "$ERR_FILE"; then
@@ -131,6 +131,17 @@ fi
 configure_settings() {
     echo "=== Configuring App Settings ==="
 
+    # ALLOWED_ORIGINS: editor + viewer each default their CORS allow-list to
+    # FILE_STORAGE_URL, which covers the azurewebsites.net hostnames. When a
+    # vanity domain is in use (files.atgpartners.info → viewer), we need both
+    # sides to accept that origin for CORS and for the viewer's
+    # Permissions-Policy. Build the comma-separated lists once here.
+    local VIEWER_ALLOWED EDITOR_ALLOWED
+    VIEWER_ALLOWED="$VIEWER_URL,$EDITOR_URL"
+    [[ -n "${VIEWER_EXTRA_ORIGINS:-}" ]] && VIEWER_ALLOWED="$VIEWER_ALLOWED,$VIEWER_EXTRA_ORIGINS"
+    EDITOR_ALLOWED="$VIEWER_URL"
+    [[ -n "${EDITOR_EXTRA_ORIGINS:-}" ]] && EDITOR_ALLOWED="$EDITOR_ALLOWED,$EDITOR_EXTRA_ORIGINS"
+
     # Viewer settings — uses Azure Blob storage backend in App Services.
     # The viewer-server.js defaults to STORAGE_BACKEND=local for dev; we
     # explicitly set it to azure here so the deployed instance reads/writes
@@ -147,7 +158,8 @@ configure_settings() {
             DOC_STORAGE_ACCOUNT="$DOC_STORAGE_ACCOUNT" \
             DOC_STORAGE_KEY="$DOC_STORAGE_KEY" \
             DOC_STORAGE_CONTAINER="$DOC_STORAGE_CONTAINER" \
-            WEBSITE_NODE_DEFAULT_VERSION="~20" \
+            ALLOWED_ORIGINS="$VIEWER_ALLOWED" \
+            WEBSITE_NODE_DEFAULT_VERSION="~24" \
         > /dev/null
 
     # Relay settings
@@ -157,7 +169,7 @@ configure_settings() {
         --name "$RELAY_APP_NAME" \
         --settings \
             FILE_STORAGE_URL="$VIEWER_URL" \
-            WEBSITE_NODE_DEFAULT_VERSION="~20" \
+            WEBSITE_NODE_DEFAULT_VERSION="~24" \
         > /dev/null
 
     # Enable WebSockets on relay
@@ -175,7 +187,8 @@ configure_settings() {
         --settings \
             FILE_STORAGE_URL="$VIEWER_URL" \
             RELAY_URL="$RELAY_URL" \
-            WEBSITE_NODE_DEFAULT_VERSION="~20" \
+            ALLOWED_ORIGINS="$EDITOR_ALLOWED" \
+            WEBSITE_NODE_DEFAULT_VERSION="~24" \
         > /dev/null
 
     echo ""
@@ -277,8 +290,9 @@ VJSON
     # Served by viewer-server.js at / and as the prewarm-doc fallback for
     # /blank.docx when storage doesn't have one.
     mkdir -p "$VDIR/viewer-public"
-    cp "$SCRIPT_DIR/viewer-public/index.html"  "$VDIR/viewer-public/"
-    cp "$SCRIPT_DIR/viewer-public/blank.docx"  "$VDIR/viewer-public/"
+    # Copy the whole viewer-public/ tree so new assets (singleuser.html,
+    # help.html, images, …) don't have to be added to this list one by one.
+    cp -r "$SCRIPT_DIR/viewer-public/." "$VDIR/viewer-public/"
 
     # Legacy upload-only UI (editor.html). Served at /upload for
     # backwards compatibility with old share links.
@@ -345,42 +359,238 @@ if $DO_EDITOR; then
 }
 EJSON
 
+    # Locate build artifacts. The WASM build produces two parallel trees:
+    #   wasm/online-build/wasm/         → online.wasm, online.worker.js
+    #   wasm/online-build/browser/dist/ → cool.html, bundle.js, online.js,
+    #                                     online.wasm, soffice.data, …
+    # (the legacy `browser/dist` at the repo root is not produced by this
+    #  build; keep it as a fallback for old setups).
+    BUILD_ROOT="$SCRIPT_DIR/online-build"
+    BUILD_WASM="$BUILD_ROOT/wasm"
+    BUILD_DIST="$BUILD_ROOT/browser/dist"
+    if [[ ! -d "$BUILD_DIST" ]]; then
+        BUILD_DIST="$REPO_ROOT/browser/dist"
+    fi
+
     # Browser dist (cool.html, bundle.js, CSS, images, l10n)
-    DIST_SRC="$REPO_ROOT/browser/dist"
-    if [[ -d "$DIST_SRC" ]]; then
-        echo "  Copying browser/dist/..."
+    if [[ -d "$BUILD_DIST" ]]; then
+        echo "  Copying browser/dist/ from $BUILD_DIST ..."
         mkdir -p "$EDIR/browser/dist"
-        cp -r "$DIST_SRC/"* "$EDIR/browser/dist/"
+        cp -r "$BUILD_DIST/." "$EDIR/browser/dist/"
     else
-        echo "  WARNING: browser/dist/ not found — build the browser first (make)"
+        echo "  ERROR: browser/dist/ not found (tried $BUILD_ROOT/browser/dist and $REPO_ROOT/browser/dist)"
+        echo "         Build the editor first: bash wasm/build-wasm.sh"
+        exit 1
     fi
 
     # WASM artifacts — copied to BOTH root (for direct /online.wasm access)
     # and browser/dist/ (since cool.html loads online.js from /browser/,
     # which then spawns /browser/online.worker.js relative to itself).
-    echo "  Copying WASM artifacts..."
-    for f in online.js online.wasm online.data online.worker.js soffice.data soffice.data.js.metadata; do
-        if [[ -f "$SCRIPT_DIR/$f" ]]; then
-            cp "$SCRIPT_DIR/$f" "$EDIR/"
-            cp "$SCRIPT_DIR/$f" "$EDIR/browser/dist/"
-        else
-            echo "    WARNING: $f not found"
+    #
+    # Artifact pairing: online.js + online.wasm are produced together; the JS
+    # embeds data-section sizes the engine validates against the .wasm bytes.
+    # Mixing a fresh online.js with a stale online.wasm (e.g. from a parallel
+    # link target) will decode fine but fail to instantiate with
+    # 'CompileError: section extends past end'. Pick ONE source directory
+    # that has both, then copy both from there — never mix sources.
+    echo "  Picking paired online.{js,wasm}..."
+    PAIRED_DIR=""
+    for d in "$BUILD_DIST" "$BUILD_WASM"; do
+        if [[ -f "$d/online.js" && -f "$d/online.wasm" ]]; then
+            PAIRED_DIR="$d"; break
         fi
     done
+    if [[ -z "$PAIRED_DIR" ]]; then
+        echo "  ERROR: no directory contains BOTH online.js and online.wasm."
+        echo "         Checked: $BUILD_DIST  $BUILD_WASM"
+        echo "         Build the editor first: bash wasm/build-wasm.sh"
+        exit 1
+    fi
+    # Warn loudly if the other tree has a different online.wasm — that means
+    # the build system has two link targets in flight, and whichever one we
+    # didn't pick will silently become wrong on the next rebuild.
+    OTHER_DIR=""
+    [[ "$PAIRED_DIR" == "$BUILD_DIST" ]] && OTHER_DIR="$BUILD_WASM" || OTHER_DIR="$BUILD_DIST"
+    if [[ -f "$OTHER_DIR/online.wasm" ]] && \
+       ! cmp -s "$PAIRED_DIR/online.wasm" "$OTHER_DIR/online.wasm"; then
+        echo "  WARNING: $OTHER_DIR/online.wasm differs from the one picked."
+        echo "           If a later step reads from $OTHER_DIR it will mismatch."
+        echo "             picked:   $(md5sum "$PAIRED_DIR/online.wasm" | cut -c1-16)  $PAIRED_DIR/online.wasm"
+        echo "             discard:  $(md5sum "$OTHER_DIR/online.wasm"  | cut -c1-16)  $OTHER_DIR/online.wasm"
+    fi
+    echo "  Paired artefacts source: $PAIRED_DIR"
+    echo "    online.js    md5(head)=$(head -c 65536 "$PAIRED_DIR/online.js" | md5sum | cut -c1-16)"
+    echo "    online.wasm  md5=$(md5sum "$PAIRED_DIR/online.wasm" | cut -c1-16)"
+
+    echo "  Copying WASM artifacts..."
+    find_artifact() {
+        local name=$1
+        # online.js + online.wasm MUST come from the paired dir (never mix).
+        if [[ "$name" == "online.js" || "$name" == "online.wasm" ]]; then
+            [[ -f "$PAIRED_DIR/$name" ]] && { echo "$PAIRED_DIR/$name"; return 0; }
+            return 1
+        fi
+        # Everything else: prefer the paired dir, fall back to the other.
+        for d in "$PAIRED_DIR" "$OTHER_DIR"; do
+            [[ -f "$d/$name" ]] && { echo "$d/$name"; return 0; }
+        done
+        return 1
+    }
+    for f in online.js online.wasm online.data online.worker.js soffice.data soffice.data.js.metadata emscripten-module.js; do
+        src="$(find_artifact "$f" || true)"
+        if [[ -n "$src" ]]; then
+            cp "$src" "$EDIR/$f"
+            cp "$src" "$EDIR/browser/dist/$f"
+        else
+            # online.data is only present for --preload-file builds; absence
+            # is not fatal for the --package build variant.
+            case "$f" in
+                online.data) ;;
+                *) echo "    WARNING: $f not found in $BUILD_WASM or $BUILD_DIST" ;;
+            esac
+        fi
+    done
+
+    # ── Inject snapshot restore into online.js ──────────────────────
+    # The build's raw online.js does not know about the lok_preinit_2
+    # SECOND_INIT protocol. wasm/deploy.sh runs a Python patcher that
+    # inserts the HEAPU8 restore + stack-cookie bypass + mailbox silencing.
+    # Run the same patch here so the Azure editor also takes the fast
+    # return-visit path.
+    echo "  Patching online.js (snapshot restore injection)..."
+    python3 - "$EDIR/online.js" "$EDIR/browser/dist/online.js" <<'PYEOF'
+import sys
+INJECT = """    // Snapshot FULL restore + leak stale thread-owning objects.
+    if (!ENVIRONMENT_IS_PTHREAD && typeof globalThis !== 'undefined' &&
+        globalThis.__wasmSnapshotData && HEAPU8) {
+      try {
+        var _snapSrc = new Uint8Array(globalThis.__wasmSnapshotData);
+        if (_snapSrc.length <= HEAPU8.length) {
+          var _ptSelf = 0;
+          try { _ptSelf = _pthread_self(); } catch(e) {}
+          var _saved = null;
+          if (_ptSelf > 0) {
+            _saved = new Uint8Array(512);
+            _saved.set(HEAPU8.subarray(_ptSelf, _ptSelf + 512));
+          }
+          HEAPU8.set(_snapSrc);
+          if (_saved && _ptSelf > 0) HEAPU8.set(_saved, _ptSelf);
+          try { if (typeof PThread !== 'undefined' && PThread.threadInitTLS) PThread.threadInitTLS(); } catch(e) {}
+          try { if (typeof writeStackCookie === 'function') writeStackCookie(); } catch(e) {}
+          Module.__snapRestoredBeforeMain = true;
+          globalThis.__wasmSnapshotRestored = true;
+          try {
+            var _fs = Module.FS || FS;
+            ['/instdir/user','/instdir/user/config',
+             '/instdir/user/extensions','/instdir/user/extensions/bundled',
+             '/instdir/user/extensions/shared','/instdir/user/extensions/tmp',
+             '/instdir/user/uno_packages','/instdir/user/uno_packages/cache',
+             '/instdir/user/registry','/instdir/user/registry/data',
+             '/tmp/user','/tmp/user/docs','/tmp/.config'
+            ].forEach(function(d) { try { _fs.mkdir(d); } catch(e) {} });
+            try { _fs.writeFile('/instdir/user/registrymodifications.xcu',
+              '<?xml version=\"1.0\" encoding=\"UTF-8\"?>\\n<oor:items xmlns:oor=\"http://openoffice.org/2001/registry\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\\n</oor:items>\\n');
+            } catch(e) {}
+            try {
+              var _tmpDir = Module.ccall('get_temp_dir_path', 'string', [], []);
+              if (_tmpDir) {
+                var _parts = _tmpDir.split('/').filter(Boolean);
+                var _cur = '';
+                for (var _i = 0; _i < _parts.length; _i++) {
+                  _cur += '/' + _parts[_i];
+                  try { _fs.mkdir(_cur); } catch(e) {}
+                }
+              }
+            } catch(e) {}
+          } catch(e) {}
+          console.log('[snapshot] Full restore: ' + _snapSrc.length + ' bytes');
+        }
+      } catch(ex) {
+        console.error('[snapshot] Restore error:', ex);
+      }
+      globalThis.__wasmSnapshotData = null;
+    }
+"""
+TARGET = '    if (shouldRunNow) callMain(args);'
+for path in sys.argv[1:]:
+    with open(path) as f: c = f.read()
+    if '__wasmSnapshotData' in c:
+        print(f'    {path}: already patched, skipping')
+        continue
+    if c.count(TARGET) != 1:
+        print(f'    WARNING: {path}: expected 1 callMain target, skipping snapshot injection')
+        continue
+    c = c.replace(TARGET, INJECT + TARGET, 1)
+    # Silence checkStackCookie after snapshot restore
+    t2 = 'function checkStackCookie() {'
+    if c.count(t2) == 1:
+        c = c.replace(t2, 'function checkStackCookie() { if (Module.__snapRestoredBeforeMain) return; // skip after snapshot', 1)
+    # Silence the mailbox .then chain spam
+    for t3 in ('assert(wait.async);\n        wait.value.then(checkMailbox);',
+               'assert(wait.async);wait.value.then(checkMailbox);'):
+        if t3 in c:
+            c = c.replace(t3, 'if(wait.async)wait.value.then(function _mb(){checkMailbox();});', 1)
+            break
+    with open(path, 'w') as f: f.write(c)
+    print(f'    {path}: patched')
+PYEOF
 
     # Relay adapter, wasm-loader, and the Service Worker — copied to both
     # the editor root (for any legacy /relay-adapter.js references) AND
     # under browser/dist/ so cool.html's relative `<script src="…">` and
     # `navigator.serviceWorker.register('sw.js')` resolve via the
     # /browser/ static route.
-    for f in relay-adapter.js wasm-loader.js sw.js; do
+    for f in relay-adapter.js wasm-loader.js sw.js dict-loader.js; do
         if [[ -f "$SCRIPT_DIR/$f" ]]; then
             cp "$SCRIPT_DIR/$f" "$EDIR/"
             cp "$SCRIPT_DIR/$f" "$EDIR/browser/dist/"
         else
-            echo "    WARNING: $f not found — viewer hot-switch / SW cache will fail without it"
+            case "$f" in
+                dict-loader.js) echo "    NOTE: $f not found — spellcheck lazy-load disabled" ;;
+                *) echo "    WARNING: $f not found — viewer hot-switch / SW cache will fail without it" ;;
+            esac
         fi
     done
+
+    # Lazy-load spellcheck dictionaries — produced by wasm/build-dicts.sh.
+    # We deploy them under <app>/dicts/ so dict-loader.js (which resolves
+    # /dicts/ relative to its own script URL) finds them on the editor
+    # origin. Each <lang>.tar.gz is fetched on demand by the client.
+    DICTS_SRC="$SCRIPT_DIR/online-build/dicts"
+    if [[ -d "$DICTS_SRC" ]] && ls "$DICTS_SRC"/*.tar.gz >/dev/null 2>&1; then
+        mkdir -p "$EDIR/dicts"
+        cp -f "$DICTS_SRC"/*.tar.gz "$EDIR/dicts/"
+        cp -f "$DICTS_SRC/manifest.json" "$EDIR/dicts/"
+        DICT_COUNT=$(ls "$EDIR/dicts"/*.tar.gz | wc -l)
+        echo "  Bundled $DICT_COUNT language dict bundles ($(du -sh "$EDIR/dicts" | cut -f1))"
+    else
+        echo "  NOTE: no dict bundles — run 'bash wasm/build-dicts.sh' first (spellcheck will be disabled)"
+    fi
+
+    # Strip the branding-{desktop,mobile,tablet}.css load in global.js.
+    # Stock global.js appends a <link rel="stylesheet" href="branding-<form>.css">
+    # at runtime. We don't ship integrator themes, so that 404s — patching
+    # the insertion out keeps the browser console clean. cool.html's
+    # <link>/<script> branding refs are stripped at request time by
+    # editor-server.js.
+    for p in "$EDIR/browser/dist/global.js"; do
+        if [[ -f "$p" ]] && grep -q 'insertAdjacentElement("afterend",brandingLink)' "$p"; then
+            sed -i 's|\.insertAdjacentElement("afterend",link)\.insertAdjacentElement("afterend",brandingLink)|.insertAdjacentElement("afterend",link)|g' "$p"
+            echo "  Patched $(basename $p): stripped branding-<form>.css load"
+        fi
+    done
+
+    # Substitute the build fingerprint in wasm-loader.js. Snapshots saved by
+    # an old build are discarded on restore when the fingerprint differs
+    # from the running binary — so every deploy must rewrite the placeholder
+    # with an identifier of THIS online.wasm.
+    if [[ -f "$EDIR/online.wasm" ]]; then
+        FINGERPRINT=$(md5sum "$EDIR/online.wasm" | cut -c1-16)
+        echo "  Build fingerprint: $FINGERPRINT"
+        for p in "$EDIR/wasm-loader.js" "$EDIR/browser/dist/wasm-loader.js"; do
+            [[ -f "$p" ]] && sed -i "s|__WASM_BUILD_FINGERPRINT__|$FINGERPRINT|g" "$p"
+        done
+    fi
 
     # Install dependencies
     echo "  Installing npm dependencies..."

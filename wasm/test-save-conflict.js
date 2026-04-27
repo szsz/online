@@ -17,9 +17,14 @@ const env = require('./lib/test-env');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 
 const BASE = env.EDITOR_URL;
-const VIEWER = env.VIEWER_URL || 'http://localhost:6934';
+// Accept VIEWER_URL (legacy) or FILE_STORAGE_URL (canonical suite var).
+const VIEWER = env.VIEWER_URL || env.FILE_STORAGE_URL || 'http://localhost:6934';
+// Dispatch HTTP/HTTPS per URL scheme so the Azure (HTTPS) deploy doesn't
+// send plain HTTP into a TLS socket.
+const httpLib = (u) => new URL(u, VIEWER).protocol === 'https:' ? https : http;
 const REPORT_DIR = '/tmp/static-deploy/public/reports';
 const DOC_NAME = 'conflict-test-' + Date.now() + '.docx';
 const T0 = Date.now();
@@ -36,11 +41,13 @@ async function snap(page, name, caption) {
     return filename;
 }
 
-// Upload a file to viewer storage directly via HTTP (bypassing browser)
+// Upload a file to viewer storage directly (bypassing browser). Uses
+// the right transport (http/https) for the VIEWER URL scheme.
 function uploadToViewerStorage(name, buffer) {
     return new Promise((resolve, reject) => {
         const url = new URL('/api/files/' + encodeURIComponent(name), VIEWER);
-        const req = http.request(url, { method: 'POST' }, (res) => {
+        const lib = httpLib(url);
+        const req = lib.request(url, { method: 'POST' }, (res) => {
             let body = '';
             res.on('data', c => body += c);
             res.on('end', () => {
@@ -53,11 +60,12 @@ function uploadToViewerStorage(name, buffer) {
     });
 }
 
-// Get file metadata from viewer storage
+// Get file metadata from viewer storage.
 function getFileInfo(name) {
     return new Promise((resolve, reject) => {
         const url = new URL('/api/files/' + encodeURIComponent(name), VIEWER);
-        http.get(url, (res) => {
+        const lib = httpLib(url);
+        lib.get(url, (res) => {
             resolve({ status: res.statusCode, hash: res.headers['x-content-hash'] });
         }).on('error', reject);
     });

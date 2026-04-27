@@ -1,8 +1,10 @@
 const puppeteer = require('puppeteer');
-const VIEWER = env.FILE_STORAGE_URL;
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
+const VIEWER = env.FILE_STORAGE_URL;
 
 (async () => {
     const browser = await puppeteer.launch({
@@ -12,14 +14,9 @@ const env = require('./lib/test-env');
     });
     const ctx = await browser.createBrowserContext();
 
-    // Pre-upload doc to viewer
-    const pre = await ctx.newPage();
-    await pre.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
+    // Pre-upload doc via v2 (encrypted)
     const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'test document.docx'));
-    await pre.evaluate(async (n, arr) => {
-        await fetch('/api/files/' + encodeURIComponent(n), { method: 'POST', body: new Blob([new Uint8Array(arr)]) });
-    }, 'trace-doc.docx', Array.from(bytes));
-    await pre.close();
+    const up = await uploadV2(VIEWER, 'trace-doc.docx', bytes);
 
     const page = await ctx.newPage();
     const allMsgs = [];
@@ -33,13 +30,15 @@ const env = require('./lib/test-env');
     page.on('pageerror', e => allMsgs.push(`PE: ${e.message.substring(0, 150)}`));
 
     const t0 = Date.now();
+    await seedRecentFiles(page, [{ b64urlSecret: up.b64urlSecret, fileId: up.fileId, cachedName: 'trace-doc.docx' }]);
     await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
     // Wait prewarm
     await page.waitForFunction(() => window.__viewerState && window.__viewerState.prewarmReady, { timeout: 120000 });
     console.log(`Prewarm at ${Date.now() - t0}ms`);
 
-    // Click file
-    await page.evaluate(() => document.querySelector('.file[data-name="trace-doc.docx"]').click());
+    // Click file (v2 sidebar entries are keyed by fileId)
+    await waitForSidebar(page, up.fileId);
+    await clickSidebarFile(page, up.fileId);
 
     // Wait for switch
     await new Promise(r => setTimeout(r, 30000));

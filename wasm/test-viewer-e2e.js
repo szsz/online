@@ -7,6 +7,8 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const { uploadV2 } = require('./lib/v2-upload');
+const { seedRecentFiles, waitForSidebar } = require('./lib/v2-test-helper');
 
 const VIEWER = process.env.VIEWER_URL || 'https://viewer.szebeni.hu';
 const SHOT_DIR = '/tmp/static-deploy/public/shots-viewer-e2e';
@@ -86,6 +88,22 @@ async function clickEditor(page) {
     });
 
     try {
+        // Upload test fixtures via v2: a docx (for TESTs 1-2) and an xlsx
+        // (for TEST 3 sidebar click to a different-type file).
+        const docName = 'viewer-e2e-' + Date.now() + '.docx';
+        const xlsxName = 'viewer-e2e-' + Date.now() + '.xlsx';
+        const docBytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+        const xlsxSrc = path.join(__dirname, '..', 'test', 'data', 'convert-to.xlsx');
+        const xlsxBytes = fs.existsSync(xlsxSrc) ? fs.readFileSync(xlsxSrc) : docBytes;
+        const up1 = await uploadV2(VIEWER, docName, docBytes);
+        const up2 = await uploadV2(VIEWER, xlsxName, xlsxBytes);
+        log(`Uploaded v2 ${docName}, ${xlsxName}`);
+
+        const recentList = [
+            { b64urlSecret: up1.b64urlSecret, fileId: up1.fileId, cachedName: docName },
+            { b64urlSecret: up2.b64urlSecret, fileId: up2.fileId, cachedName: xlsxName },
+        ];
+
         // ═══════════════════════════════════════════
         // TEST 1: Deep-link cold start
         // ═══════════════════════════════════════════
@@ -103,10 +121,9 @@ async function clickEditor(page) {
         await page1.evaluate(() => caches.delete('wasm-snapshot').catch(() => {}));
         log('Snapshot cleared');
 
-        // Navigate to viewer with deep link
-        const docName = 'Simple small document.docx';
-        log(`Opening: ${VIEWER}/#file=${encodeURIComponent(docName)}`);
-        await page1.goto(`${VIEWER}/#file=${encodeURIComponent(docName)}`, {
+        // Navigate to viewer with deep link (v2 secret)
+        log(`Opening: ${VIEWER}/#file=${up1.b64urlSecret}`);
+        await page1.goto(`${VIEWER}/#file=${up1.b64urlSecret}`, {
             waitUntil: 'domcontentloaded', timeout: 30000
         });
         await snap(page1, 'test1_viewer_loaded');
@@ -155,9 +172,11 @@ async function clickEditor(page) {
             if (t.includes('[TIMING]')) log(`  [viewer] ${t.replace(/%c/g, '').replace(/color:.*$/,'').trim()}`);
         });
 
-        log(`Opening: ${VIEWER}/#file=${encodeURIComponent(docName)}`);
+        // Seed the sidebar so TEST 3 has files to click (must be before goto).
+        await seedRecentFiles(page2, recentList);
+        log(`Opening: ${VIEWER}/#file=${up1.b64urlSecret}`);
         const t2Start = Date.now();
-        await page2.goto(`${VIEWER}/#file=${encodeURIComponent(docName)}`, {
+        await page2.goto(`${VIEWER}/#file=${up1.b64urlSecret}`, {
             waitUntil: 'domcontentloaded', timeout: 30000
         });
 
@@ -185,28 +204,15 @@ async function clickEditor(page) {
         await page2.mouse.move(5, 400);
         await sleep(1000);
 
-        // Find and click a DIFFERENT TYPE file (xlsx) to force cold reload.
-        // Hot-switch (same type) has known issues with relay re-activation.
-        const clicked = await page2.evaluate(() => {
-            const files = document.querySelectorAll('.file');
-            for (const f of files) {
-                const name = f.dataset.name || '';
-                if (name.endsWith('.xlsx') && !name.includes('__prewarm')) {
-                    f.click();
-                    return name;
-                }
-            }
-            // Fallback: any non-docx file
-            for (const f of files) {
-                const name = f.dataset.name || '';
-                if (!name.includes('Simple small') && !name.includes('__prewarm') &&
-                    !name.endsWith('.docx')) {
-                    f.click();
-                    return name;
-                }
-            }
-            return null;
-        });
+        // Click our pre-seeded xlsx file (different type → cold reload).
+        // v2 sidebar entries are keyed by data-fileid; we find ours by that
+        // attribute so we don't depend on server-side file listing.
+        const clicked = await page2.evaluate(id => {
+            const el = document.querySelector(`.file[data-fileid="${id}"]`);
+            if (!el) return null;
+            el.click();
+            return el.dataset.name || el.textContent || id;
+        }, up2.fileId);
 
         if (clicked) {
             log(`Clicked file: ${clicked}`);

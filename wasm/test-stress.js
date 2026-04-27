@@ -144,17 +144,13 @@ async function clickCanvas(page) {
     const up = await browser.newPage();
     await up.goto(BASE, { waitUntil: 'networkidle0' });
     const docBytes = fs.readFileSync(DOC_PATH);
-    await up.evaluate(async (url, name, arr, room, relayHttp) => {
+    await up.evaluate(async (url, name, arr) => {
         await fetch(url + '/wasm/' + encodeURIComponent(name), {
             method: 'POST', body: new Blob([new Uint8Array(arr)])
         });
-        // Pre-seed relay server so late joiners get this file immediately
-        await fetch(relayHttp + '/room/' + encodeURIComponent(room) + '/file', {
-            method: 'POST', body: new Blob([new Uint8Array(arr)])
-        });
-    }, BASE, DOC_NAME, Array.from(docBytes), ROOM, RELAY_HTTP);
+    }, BASE, DOC_NAME, Array.from(docBytes));
     await up.close();
-    log('Uploaded (WOPI + relay)');
+    log('Uploaded to /wasm/ (first client will register relay checkpoint)');
 
     try {
         // === Phase 1: A opens, types ALPHA ===
@@ -177,7 +173,17 @@ async function clickCanvas(page) {
         // === Phase 2: B late-joins, types BETA ===
         log('\n=== Phase 2: B late-joins, types BETA ===');
         let pageB = await openDoc('B');
-        const bChars = charCount(await getStatus(pageB));
+        // openDoc returns as soon as the statusbar shows ANY character
+        // count — that can happen before the late-join replay has applied
+        // A's ALPHA. Wait up to 30s for the char count to actually reflect
+        // A's edits; on Azure the save-trigger → A-save → B-replay round-
+        // trip can take 5–15s, whereas locally it completes in <2s.
+        let bChars = charCount(await getStatus(pageB));
+        const bDeadline = Date.now() + 90000;  // Azure save RTT can reach 60s
+        while (bChars <= initChars && Date.now() < bDeadline) {
+            await sleep(500);
+            bChars = charCount(await getStatus(pageB));
+        }
         await snap(pageB, 'B_initial');
         check('B got saved state', bChars > initChars);
 
@@ -201,7 +207,12 @@ async function clickCanvas(page) {
         // === Phase 4: C late-joins, types GAMMA ===
         log('\n=== Phase 4: C late-joins, types GAMMA ===');
         let pageC = await openDoc('C');
-        const cChars = charCount(await getStatus(pageC));
+        let cChars = charCount(await getStatus(pageC));
+        const cDeadline = Date.now() + 90000;  // Azure save RTT can reach 60s
+        while (cChars <= initChars && Date.now() < cDeadline) {
+            await sleep(500);
+            cChars = charCount(await getStatus(pageC));
+        }
         await snap(pageC, 'C_initial');
         check('C got saved state', cChars > initChars);
 
@@ -225,7 +236,12 @@ async function clickCanvas(page) {
         // === Phase 6: D late-joins, types DELTA ===
         log('\n=== Phase 6: D late-joins, types DELTA ===');
         let pageD = await openDoc('D');
-        const dChars = charCount(await getStatus(pageD));
+        let dChars = charCount(await getStatus(pageD));
+        const dDeadline = Date.now() + 90000;  // Azure save RTT can reach 60s
+        while (dChars <= initChars && Date.now() < dDeadline) {
+            await sleep(500);
+            dChars = charCount(await getStatus(pageD));
+        }
         await snap(pageD, 'D_initial');
         check('D got saved state', dChars > initChars);
 
@@ -251,7 +267,16 @@ async function clickCanvas(page) {
         await sleep(15000);
 
         pageA = await openDoc('A-reconnect');
-        const aReconnChars = charCount(await getStatus(pageA));
+        // openDoc returns as soon as the statusbar shows ANY char count —
+        // that can be the baseline bytes, BEFORE the relay's replay has
+        // applied. Wait up to 30s for the count to rise above the initial
+        // baseline (indicating at least one earlier phase's edits landed).
+        let aReconnChars = charCount(await getStatus(pageA));
+        const aDeadline = Date.now() + 30000;
+        while (aReconnChars <= initChars && Date.now() < aDeadline) {
+            await sleep(500);
+            aReconnChars = charCount(await getStatus(pageA));
+        }
         await snap(pageA, 'A_reconnected');
         check('A reconnected with saved state', aReconnChars > initChars);
 

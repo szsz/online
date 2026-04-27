@@ -60,16 +60,10 @@ async function uploadFile(browser, name, filePath, room) {
     const up = await browser.newPage();
     await up.goto(BASE, { waitUntil: 'domcontentloaded' });
     const bytes = fs.readFileSync(filePath);
-    await up.evaluate(async (url, n, arr, r, relayHttp) => {
+    await up.evaluate(async (url, n, arr) => {
         const body = new Blob([new Uint8Array(arr)]);
         await fetch(url + '/wasm/' + encodeURIComponent(n), { method: 'POST', body });
-        // Pre-seed relay
-        if (r) {
-            await fetch(relayHttp + '/room/' + encodeURIComponent(r) + '/file', {
-                method: 'POST', body: new Blob([new Uint8Array(arr)]),
-            });
-        }
-    }, BASE, name, Array.from(bytes), room || '', RELAY_HTTP);
+    }, BASE, name, Array.from(bytes));
     await up.close();
     log(`  Uploaded ${name} (${(bytes.length/1024).toFixed(0)}KB)`);
 }
@@ -394,8 +388,8 @@ async function typeText(page, label, text) {
             }
             await p1.close().catch(() => {});
         } else {
-            log('  PPTX: Failed to load (Impress not supported in this build)');
-            check('PPTX: skipped (Impress not in core)', true);
+            log('  PPTX: Failed to load');
+            check('PPTX: loaded in P1', false);
         }
     }
 

@@ -40,3 +40,28 @@
  
  #
  # System Specific Libraries
+--- poco-1.12.4-all/Util/include/Poco/Util/Application.h.orig	2022-10-31 18:44:32.000000000 +0100
++++ poco-1.12.4-all/Util/include/Poco/Util/Application.h	2026-04-25 12:00:00.000000000 +0000
+@@ -191,6 +191,11 @@
+ 	static Application& instance();
++
++	/// WASM snapshot helper: forcibly clear the static singleton pointer
++	/// without running ~Application(). Needed when the heap is restored
++	/// from a captured snapshot and a fresh Application is being created.
++	static void clearInstancePointer();
+ 		/// Returns a reference to the Application singleton.
+ 		///
+ 		/// Throws a NullPointerException if no Application instance exists.
+--- poco-1.12.4-all/Util/src/Application.cpp.orig	2022-10-31 18:44:32.000000000 +0100
++++ poco-1.12.4-all/Util/src/Application.cpp	2026-04-25 12:00:00.000000000 +0000
+@@ -889,3 +889,11 @@
+ } } // namespace Poco::Util
++
++// WASM snapshot helper appended outside the class body to avoid
++// re-mangling and keep the patch minimal.
++namespace Poco { namespace Util {
++void Application::clearInstancePointer()
++{
++    _pInstance = 0;
++}
++}}
