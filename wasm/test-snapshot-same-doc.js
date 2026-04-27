@@ -207,7 +207,7 @@ function printPhases(events, label) {
         // Forward interesting iframe console lines so we can see them in-line.
         page.on('console', m => {
             const t = m.text();
-            if (/\[TIMING\]|\[profile\b|snapshot:|SECOND_INIT|prewarm:ready|calledRun|PLAN_C|abort|unreachable|RuntimeError|TypeError|Pthread .* sent an error|WASM_ABORT|jserror/.test(t)) {
+            if (/\[TIMING\]|\bTIMING:|\[profile\b|snapshot:|SECOND_INIT|prewarm:ready|calledRun|PLAN_C|abort|unreachable|RuntimeError|TypeError|Pthread|WASM_ABORT|WASM_THREAD|jserror|wasmapp|leakSnapshot|^WARM_DBG|onAbort|isRestore=|worker|pthread/i.test(t)) {
                 log('  [console/' + run + '] ' + t.substring(0, 360));
             }
         });

@@ -180,8 +180,22 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
           // Without this the new threads dereference dangling waiter
           // pointers in the captured pthread structs and trap with
           // "RuntimeError: unreachable" during the first cond/mutex op.
-          try { Module.ccall('wasm_warm_restore_reset', null, [], []); } catch(e) {
+          console.log('WARM_DBG: about to call wasm_warm_restore_reset');
+          try { Module.ccall('wasm_warm_restore_reset', null, [], []);
+              console.log('WARM_DBG: wasm_warm_restore_reset returned OK');
+          } catch(e) {
               console.warn('wasm_warm_restore_reset failed:', e);
+          }
+          // SolarMutex was held by a captured-but-now-dead thread. Reset
+          // ownership so a fresh thread can acquire/release without
+          // hitting IsCurrentThread() abort in doRelease. (Defense-in-
+          // depth — the cold-side firstDocPainted release-before-park
+          // change should leave the SolarMutex unowned at capture, so
+          // this should be a no-op going forward.)
+          try { Module.ccall('wasm_warm_restore_solar_mutex_reset', null, [], []);
+              console.log('WARM_DBG: SolarMutex reset OK');
+          } catch(e) {
+              console.warn('SolarMutex reset failed:', e);
           }
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
@@ -215,6 +229,41 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
             } catch(e) {}
           } catch(e) {}
           console.log('[snapshot] Full restore: ' + _snapSrc.length + ' bytes');
+          // Patch PThread machinery so we can observe worker spawns on warm-restore
+          try {
+            if (typeof PThread !== 'undefined') {
+              var _origAlloc = PThread.allocateUnusedWorker.bind(PThread);
+              PThread.allocateUnusedWorker = function() {
+                console.log('WARM_DBG: PThread.allocateUnusedWorker called');
+                var _r = _origAlloc();
+                var _w = PThread.unusedWorkers[PThread.unusedWorkers.length - 1];
+                if (_w) {
+                  _w.addEventListener('error', function(e) {
+                    console.error('WARM_DBG: WORKER ERROR ' + (e.filename||'') + ':' + (e.lineno||'') + ' ' + (e.message||''));
+                  });
+                  _w.addEventListener('messageerror', function(e) {
+                    console.error('WARM_DBG: WORKER MESSAGEERROR ' + e);
+                  });
+                }
+                return _r;
+              };
+              var _origLoadMod = PThread.loadWasmModuleToWorker.bind(PThread);
+              PThread.loadWasmModuleToWorker = function(w) {
+                console.log('WARM_DBG: PThread.loadWasmModuleToWorker called workerID=' + (w && w.workerID));
+                var _origOnMsg = w.onmessage;
+                var _p = _origLoadMod(w);
+                var _wrappedOnMsg = w.onmessage;
+                w.onmessage = function(e) {
+                  if (e && e.data && e.data.cmd) {
+                    console.log('WARM_DBG: worker->main msg cmd=' + e.data.cmd + ' workerID=' + w.workerID);
+                  }
+                  return _wrappedOnMsg.call(w, e);
+                };
+                return _p;
+              };
+            }
+          } catch(e) { console.warn('WARM_DBG: PThread instrumentation failed', e); }
+          console.log('WARM_DBG: inject block done, about to fall through to callMain');
         }
       } catch(ex) {
         console.error('[snapshot] Restore error:', ex);

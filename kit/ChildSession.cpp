@@ -616,17 +616,24 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                                (wasm_is_plan_c_enabled() == 1);
             if (planC)
             {
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC begin — set_quiesce(1)'); });
                 wasm_set_quiesce(1);
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: quiesce_wake_main'); });
                 wasm_quiesce_wake_main();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: wait_coolwsd_parked'); });
                 wasm_wait_coolwsd_parked();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd parked, calling firstDocPainted'); });
             }
 #endif
             wasmshim::firstDocPainted(docTypeHint);
 #ifdef __EMSCRIPTEN__
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: firstDocPainted returned'); });
             if (planC)
             {
                 wasm_set_quiesce(0);
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC resume — coolwsd_resume'); });
                 wasm_coolwsd_resume();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd_resume returned'); });
             }
 #endif
         }

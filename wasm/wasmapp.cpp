@@ -587,6 +587,8 @@ int main(int argc, char* argv_main[])
     fakeClientFd = fakeSocketSocket();
     MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: fakeSocketSocket done fd=' + $0); }, fakeClientFd);
 
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: about to spawn COOLWSD thread'); });
+
     // We run COOLWSD::run() in a thread of its own so that main() can return.
     std::thread(
         [&]
@@ -594,6 +596,12 @@ int main(int argc, char* argv_main[])
             // FIRST line of the thread — fires before anything that could
             // touch /dev/urandom, fakesocket, Util::setThreadName, etc.
             // Lets us tell whether the thread even starts on warm visits.
+            // Try multiple log paths so we can see which (if any) reach JS:
+            //  - stderr (printf via emscripten -> console.error)
+            //  - direct EM_ASM (sync, runs on the worker thread itself)
+            //  - MAIN_THREAD_ASYNC_EM_ASM (proxied to main thread)
+            fprintf(stderr, "WASM_THREAD_STDERR: COOLWSD thread function entered\n");
+            EM_ASM({ console.log('WASM_THREAD_EM_ASM: COOLWSD thread function entered'); });
             MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD thread ENTERED'); });
 
             Util::setThreadName("COOLWSD::run");
@@ -681,6 +689,8 @@ int main(int argc, char* argv_main[])
             delete coolwsd;
         })
         .detach();
+
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: main: COOLWSD thread spawned + detached'); });
 
     std::cout << "================ main() is returning" << std::endl;
     return 0;
