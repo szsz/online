@@ -532,6 +532,27 @@ bool ChildSession::_handleInput(const char *buffer, int length)
     {
         if (_isDocLoaded)
         {
+#ifdef __EMSCRIPTEN__
+            // Plan C warm-restore: the captured snapshot already has
+            // _isDocLoaded=true with the (cold-visit) doc fully loaded.
+            // Treat the new "load" command as a re-attach: re-send the
+            // status+loaded frames so COOL JS can render the existing
+            // model instead of the stock "docalreadyloaded" error.
+            if (wasm_is_warm_restored() && getLOKitDocument())
+            {
+                LOG_INF("LOAD: warm-restore re-attach — re-sending status/loaded for existing doc");
+                const std::string status = LOKitHelper::documentStatus(getLOKitDocument()->get());
+                sendTextFrame("status: " + status);
+                _docManager->notifyViewInfo();
+                sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
+                std::ostringstream loadedMsg;
+                loadedMsg << "loaded: viewid=" << _viewId
+                          << " views=" << _docManager->getViewsCount()
+                          << " isfirst=true";
+                sendTextFrame(loadedMsg.str());
+                return true;
+            }
+#endif
             sendTextFrameAndLogError("error: cmd=load kind=docalreadyloaded");
             return false;
         }

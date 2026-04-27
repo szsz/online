@@ -1099,7 +1099,7 @@
                         // try to warm-restore — which is currently broken and
                         // hangs the test. Once warm-restore is stable, replace
                         // this block with the original cache.put.
-                        var BRINGUP_PERSIST = false;
+                        var BRINGUP_PERSIST = true;
                         if (BRINGUP_PERSIST) {
                             var meta = JSON.stringify({
                                 heapBase: heapBase,
@@ -1108,6 +1108,12 @@
                                 fingerprint: BUILD_FINGERPRINT,
                                 docType: window.__wasmFirstDocType,
                             });
+                            // Fire the cache.put IMMEDIATELY (truly async,
+                            // off-thread). When this was deferred until
+                            // prewarmReady the puppeteer session would close
+                            // the browser before the put finished and the
+                            // warm visit saw an empty cache.
+                            mark('snapshot:save_starting', '');
                             caches.open('wasm-snapshot').then(function(cache) {
                                 return cache.put('/snapshot/meta', new Response(meta, {
                                     headers: { 'Content-Type': 'application/json' }

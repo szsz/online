@@ -177,7 +177,10 @@ function printPhases(events, label) {
     const bytes = fs.readFileSync(DOC_PATH);
     const up = await uploadV2(VIEWER, 'snapshot-same-doc.docx', bytes);
     log('Uploaded: ' + up.fileId.substring(0, 8) + '…');
-    const fileUrl = VIEWER + '/#file=' + up.b64urlSecret;
+    // Opt-in to Plan C warm-restore via URL query (deployed default keeps
+    // SNAPSHOT_DISABLED=true; the wasm-loader picks ?planc=1 up at runtime
+    // and flips it false for this tab only).
+    const fileUrl = VIEWER + '/?planc=1#file=' + up.b64urlSecret;
 
     // Persistent profile shared across both sessions so Cache Storage
     // + Disk Cache + IndexedDB survive browser close.
@@ -204,10 +207,11 @@ function printPhases(events, label) {
         // Forward interesting iframe console lines so we can see them in-line.
         page.on('console', m => {
             const t = m.text();
-            if (/\[TIMING\]|\[profile\b|snapshot:|SECOND_INIT|prewarm:ready|calledRun/.test(t)) {
-                log('  [console/' + run + '] ' + t.substring(0, 200));
+            if (/\[TIMING\]|\[profile\b|snapshot:|SECOND_INIT|prewarm:ready|calledRun|PLAN_C|abort|unreachable|RuntimeError|TypeError|Pthread .* sent an error|WASM_ABORT|jserror/.test(t)) {
+                log('  [console/' + run + '] ' + t.substring(0, 360));
             }
         });
+        page.on('pageerror', e => log('  [pageerror/' + run + '] ' + (e.message || '').substring(0, 360) + '\n' + (e.stack || '').substring(0, 800)));
         await page.setCacheEnabled(true);
         await page.setViewport({ width: 1280, height: 900 });
 
@@ -241,6 +245,42 @@ function printPhases(events, label) {
         }
 
         results.push({ run, wall, ready, timings, xfers });
+
+        // Wait up to 30 s for the snapshot to actually persist to Cache
+        // Storage before tearing down the browser. Without this the
+        // cold session can close the browser while the 162 MB Cache.put
+        // is still in flight, and the warm session sees an empty cache.
+        if (run === 'cold') {
+            // __prewarmTimings is in the editor iframe, not the viewer page.
+            // Wait by polling the iframe through page.frames().
+            const got = await new Promise(async resolve => {
+                const t0 = Date.now();
+                const tick = async () => {
+                    if (Date.now() - t0 > 60000) return resolve(false);
+                    for (const f of page.frames()) {
+                        try {
+                            const ok = await f.evaluate(() => {
+                                var t = window.__prewarmTimings || [];
+                                for (var i = 0; i < t.length; i++) {
+                                    if (t[i].name === 'snapshot:saved' ||
+                                        t[i].name === 'snapshot:cache_put_failed') return true;
+                                }
+                                return false;
+                            }).catch(() => false);
+                            if (ok) return resolve(true);
+                        } catch (e) { /* iframe gone */ }
+                    }
+                    setTimeout(tick, 250);
+                };
+                tick();
+            });
+            log('  [' + run + '] snapshot persisted=' + got + ', closing browser');
+            // Extra grace period so IndexedDB Cache.put fully flushes to disk
+            // before Chrome tears down the persistent profile dir. Without
+            // this we'd see snapshot:saved fire but the on-disk Cache entry
+            // would be incomplete and the warm visit reads back not-found.
+            await sleep(3000);
+        }
         await browser.close();
         // Brief gap so Chrome fully releases the profile dir locks.
         await sleep(1500);

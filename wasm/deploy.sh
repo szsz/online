@@ -176,6 +176,13 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
           // this clear the new COOLWSD thread would self-park and wait
           // forever for a resume signal that never comes.
           try { Module.ccall('wasm_set_quiesce', null, ['number'], [0]); } catch(e) {}
+          // Reinitialize the mutex/CV pairs that were captured mid-park.
+          // Without this the new threads dereference dangling waiter
+          // pointers in the captured pthread structs and trap with
+          // "RuntimeError: unreachable" during the first cond/mutex op.
+          try { Module.ccall('wasm_warm_restore_reset', null, [], []); } catch(e) {
+              console.warn('wasm_warm_restore_reset failed:', e);
+          }
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
           // Recreate VFS directories that the restored LO Core expects.
