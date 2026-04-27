@@ -95,7 +95,8 @@ docker rm -f "$CI_CONTAINER" >/dev/null 2>&1 || true
 
 docker run -d \
     --name "$CI_CONTAINER" \
-    --memory=14g \
+    --memory=16g \
+    --memory-swap=28g \
     -v "$WORKSPACE":/lo/online \
     -v "$LO_EXTRACTED":/lo \
     -v "$ONLINE_BUILD":/lo/online/wasm/online-build \
