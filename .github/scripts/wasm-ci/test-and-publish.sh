@@ -39,6 +39,16 @@ export TEST_TARGET="azure-deploy"
 REPORT_DIR="$(mktemp -d)"
 trap "rm -rf '$REPORT_DIR'" EXIT
 
+# Direct run-all-tests.sh's per-test HTML reports + screenshots into a
+# per-build subtree so we can upload them all together at the end. The
+# layout (created by run-all-tests.sh + generate-report.js):
+#   $TEST_OUTPUT/reports/index.html             — top-level test grid
+#   $TEST_OUTPUT/reports/<slug>.html            — per-test detail page
+#   $TEST_OUTPUT/shots[-<slug>]/*.png           — screenshots
+TEST_OUTPUT="$REPORT_DIR/output"
+mkdir -p "$TEST_OUTPUT"
+export TEST_OUTPUT_ROOT="$TEST_OUTPUT"
+
 LOG="$REPORT_DIR/run.log"
 SUMMARY_JSON="$REPORT_DIR/summary.json"
 START_TS="$(date -u +%s)"
@@ -50,6 +60,7 @@ START_TS="$(date -u +%s)"
     echo "  RELAY_URL=$RELAY_URL"
     echo "  APP_BUILD_ID=$APP_BID  LO_BUILD_ID=${LO_BUILD_ID:-?}"
     echo "  GIT_SHA=${GIT_SHA:-?}"
+    echo "  TEST_OUTPUT_ROOT=$TEST_OUTPUT_ROOT"
     echo "==========================================="
 } > "$LOG"
 
@@ -84,6 +95,8 @@ if [[ "$TEST_RC" != 0 ]]; then STATUS_COLOUR="#c62828"; STATUS_TEXT="FAILED (exi
 # HTML-escape the log
 LOG_ESC="$(python3 -c 'import html,sys; print(html.escape(open(sys.argv[1]).read()))' "$LOG")"
 
+HAS_RICH_REPORT="$( [[ -f "$TEST_OUTPUT/reports/index.html" ]] && echo 1 || echo 0 )"
+
 cat > "$REPORT_DIR/index.html" <<HTML
 <!doctype html>
 <meta charset="utf-8">
@@ -94,27 +107,57 @@ h1{margin-bottom:.2rem}.muted{color:#666}
 .badge{display:inline-block;padding:.2rem .6rem;border-radius:4px;color:white;background:$STATUS_COLOUR;font-weight:600}
 pre{background:#0b1021;color:#d6e1ff;padding:1rem;border-radius:6px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.4}
 a{color:#0066cc}
+.box{border:1px solid #ddd;border-radius:6px;padding:1rem;margin:1rem 0}
 </style>
 <h1>Tests for online build <code>$APP_BID</code></h1>
 <p>Status: <span class="badge">$STATUS_TEXT</span> · duration ${DUR}s</p>
-<p><a href="../">← back to build summary</a> · <a href="summary.json">summary.json</a></p>
+<p><a href="../">← back to build summary</a> · <a href="summary.json">summary.json</a> · <a href="run.log">raw run.log</a></p>
+$( [[ "$HAS_RICH_REPORT" == 1 ]] && cat <<RICH
+<div class="box">
+  <h3>Per-test reports + screenshots</h3>
+  <p>Browse the full grid: <a href="output/reports/"><strong>open the test report grid</strong></a>.</p>
+  <p>Each row links to its per-test detail page with screenshots, timings, and step-level checks.</p>
+</div>
+RICH
+)
+<details><summary>Wrapper run.log (full stdout/stderr)</summary>
 <pre>$LOG_ESC</pre>
+</details>
 HTML
 
 upload() {
     local src="$1" name="$2"
-    az storage blob upload \
-        --account-name "$ACCT" \
-        --container-name '$web' \
-        --name "$name" \
-        --file "$src" \
-        --overwrite \
-        --no-progress >/dev/null
+    local ctype=""
+    case "$src" in
+        *.png) ctype="image/png" ;;
+        *.html) ctype="text/html; charset=utf-8" ;;
+        *.json) ctype="application/json" ;;
+        *.log|*.txt) ctype="text/plain; charset=utf-8" ;;
+    esac
+    local args=(--account-name "$ACCT" --container-name '$web'
+                --name "$name" --file "$src" --overwrite --no-progress)
+    [[ -n "$ctype" ]] && args+=(--content-type "$ctype")
+    az storage blob upload "${args[@]}" >/dev/null
 }
 
 upload "$LOG"                  "app-builds/$APP_BID/tests/run.log"
 upload "$SUMMARY_JSON"         "app-builds/$APP_BID/tests/summary.json"
 upload "$REPORT_DIR/index.html" "app-builds/$APP_BID/tests/index.html"
+
+# Upload the rich per-test report tree (HTML + screenshots) if it exists.
+# Use upload-batch for efficiency; a single tests run can produce hundreds
+# of screenshots across ~50 test slugs.
+if [[ "$HAS_RICH_REPORT" == 1 ]]; then
+    echo "Uploading per-test reports + screenshots from $TEST_OUTPUT …"
+    az storage blob upload-batch \
+        --account-name "$ACCT" \
+        --destination '$web' \
+        --destination-path "app-builds/$APP_BID/tests/output" \
+        --source "$TEST_OUTPUT" \
+        --pattern '*' \
+        --overwrite \
+        --no-progress 2>&1 | tail -5 || true
+fi
 
 # Patch the per-build index.html so the tests box gets a real link.
 PATCHED="$(mktemp)"
