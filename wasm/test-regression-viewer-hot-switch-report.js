@@ -14,10 +14,19 @@ const SHOTS_DIR = REPORT_DIR + '/shots';
 // puppeteer's fileInput.uploadFile(path) presents the file with the
 // BASENAME of the source path, so the viewer's display name (cachedName)
 // is e.g. "test document.docx". We match clicks by that basename.
+// `expect` is the per-fixture status fingerprint that proves THIS file
+// is the one rendered (vs the prior doc's status text bleeding through
+// during a still-pending switch, which trashed earlier test runs).
+//   docx → #StateWordCount  must show 1,652 words
+//   xlsx → #StatusDocPos    must show "Sheet 1 of 1"
+//   pptx → #SlideStatus     must show "Slide 1 of 4"
 const FIXTURES = [
-    { label: 'docx', src: '/home/localadmin/online/test/data/test document.docx' },
-    { label: 'xlsx', src: '/home/localadmin/online/test/data/testdoc.xlsx' },
-    { label: 'pptx', src: '/home/localadmin/online/test/data/testdoc.pptx' },
+    { label: 'docx', src: '/home/localadmin/online/test/data/test document.docx',
+      expect: { field: 'wc', regex: /1[,.]?652\s+words?,\s+9[,.]?159\s+characters?/ } },
+    { label: 'xlsx', src: '/home/localadmin/online/test/data/testdoc.xlsx',
+      expect: { field: 'sd', regex: /Sheet\s+1\s+of\s+1/ } },
+    { label: 'pptx', src: '/home/localadmin/online/test/data/testdoc.pptx',
+      expect: { field: 'ss', regex: /Slide\s+1\s+of\s+4/i } },
 ].map(f => ({ ...f, name: path.basename(f.src) }));
 
 const T0 = Date.now();
@@ -92,7 +101,7 @@ async function probeIframeContent(page) {
     } catch(e) { return { err: 'frame eval: ' + e.message }; }
 }
 
-async function clickFileAndMeasure(page, label, fileMatch) {
+async function clickFileAndMeasure(page, label, fileMatch, expect) {
     log(`---- click ${label}: ${fileMatch} ----`, 'click');
     const beforeProbe = await probeIframeContent(page);
     log(`pre-click iframe state: ${JSON.stringify(beforeProbe)}`);
@@ -107,29 +116,45 @@ async function clickFileAndMeasure(page, label, fileMatch) {
     }, fileMatch);
     if (!ok) throw new Error('No file matched: ' + fileMatch);
 
-    // Wait for shield UP, then for content to actually CHANGE from
-    // pre-click probe (status text differs OR canvas pixels change).
-    let shieldUpT = null, contentReadyT = null, sawUp = false;
+    // Three independent signals must all be true before declaring
+    // contentReady:
+    //   1. Shield went UP and then came BACK DOWN. Viewer's
+    //      tryDropShield only drops on docReady && relayActivated.
+    //      Earlier test ignored shield-down and passed instantly on
+    //      any non-empty status field — but the prior doc's status
+    //      text persists in the iframe DOM during a stuck switch, so
+    //      the test reported success while screenshots showed the
+    //      shield with "Loading document…" still up.
+    //   2. The fixture-specific `expect.field` matches `expect.regex`.
+    //      The regex is unique to THIS file (e.g. "1,652 words…" for
+    //      test document.docx, "Sheet 1 of 1" for testdoc.xlsx,
+    //      "Slide 1 of 4" for testdoc.pptx). Generic "Sheet N of N"
+    //      from the prior xlsx will not match an expected pptx test.
+    //   3. The iframe's canvas has non-transparent pixels at center —
+    //      proves the doc actually painted (not a transparent canvas
+    //      with the loading shield showing through).
+    let shieldUpT = null, contentReadyT = null, sawUp = false, sawDown = false;
+    let lastFailReason = '';
     const deadline = clickT + 90000;
     let lastProbe = null;
     while (Date.now() < deadline) {
         const s = await detectShieldState(page);
         if (s.visible && !sawUp) { shieldUpT = Date.now(); sawUp = true; }
+        if (sawUp && !s.visible) { sawDown = true; }
         const probe = await probeIframeContent(page);
         lastProbe = probe;
-        // Doc considered "loaded with content" when status has a NON-ZERO
-        // count for the doc-type's expected field. "0 words, 0 characters"
-        // is the prewarm blank's content showing through during a still-
-        // pending hot-switch — wait for the actual file's word count.
-        const wcMatch = (probe.wc || '').match(/([\d,]+)\s+words?,\s+([\d,]+)\s+characters?/);
-        const wcNonZero = wcMatch && parseInt(wcMatch[1].replace(/,/g, '')) > 0;
-        const sdMatch = /Sheet\s+\d+\s+of\s+\d+/.test(probe.sd || '');
-        const ssMatch = /Slide\s+\d+\s+of\s+\d+/i.test(probe.ss || '');
-        const hasStatus = wcNonZero || sdMatch || ssMatch;
-        if (sawUp && hasStatus) {
+        const fieldText = expect ? (probe[expect.field] || '') : '';
+        const expectedStatusOk = expect ? expect.regex.test(fieldText) : false;
+        const pxBytes = (probe.canvasPx || '').split(',').map(Number);
+        // 2 pixels x RGBA = 8 bytes; alpha is byte 3 and byte 7
+        const canvasPainted = pxBytes.length >= 8 && (pxBytes[3] > 0 || pxBytes[7] > 0);
+        if (sawDown && expectedStatusOk && canvasPainted) {
             contentReadyT = Date.now();
             break;
         }
+        if (!sawDown) lastFailReason = 'shield-still-up';
+        else if (!expectedStatusOk) lastFailReason = `status-mismatch (want ${expect.field}~${expect.regex} got ${JSON.stringify(fieldText)})`;
+        else if (!canvasPainted) lastFailReason = `canvas-not-painted px=${probe.canvasPx}`;
         await sleep(250);
     }
 
@@ -148,9 +173,10 @@ async function clickFileAndMeasure(page, label, fileMatch) {
         mode,
         ok: !!contentReadyT,
         finalProbe: lastProbe,
+        failReason: contentReadyT ? null : lastFailReason,
     };
     switches.push(result);
-    log(`${label}: ${totalMs}ms total (mode=${mode}, shield-up=${result.shieldUpMs}ms, content-ready=${result.contentReadyMs || 'TIMEOUT'}ms, final=${JSON.stringify(lastProbe)})`, 'measure');
+    log(`${label}: ${totalMs}ms total (mode=${mode}, shield-up=${result.shieldUpMs}ms, content-ready=${result.contentReadyMs || 'TIMEOUT'}ms${result.failReason ? ', fail=' + result.failReason : ''}, final=${JSON.stringify(lastProbe)})`, 'measure');
     return result;
 }
 
@@ -284,7 +310,7 @@ function generateReport() {
         ];
         for (let i = 0; i < sequence.length; i++) {
             const fix = sequence[i];
-            const r = await clickFileAndMeasure(page, `step${i + 1}-${fix.label}`, fix.name);
+            const r = await clickFileAndMeasure(page, `step${i + 1}-${fix.label}`, fix.name, fix.expect);
             if (!r.ok) allPassed = false;
             await sleep(2500);
         }

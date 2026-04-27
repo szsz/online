@@ -527,6 +527,20 @@ window.addEventListener('message', function(event) {
             }
         }
 
+        // After a cold-reload finishes (WasmDocReady fires from the new
+        // iframe's docPoll), the iframe IS now ready to host a same-type
+        // hot-switch on the next open. Without flipping prewarmReady
+        // here, every subsequent open in the same session re-enters
+        // cold-reload (15-30s) when it could be a same-type
+        // switchdocument (sub-second). The cross-type half is gated by
+        // willHotSwitch's separate sameType check, so this is safe.
+        if (msg.MessageId === 'WasmDocReady') {
+            if (!prewarmReady) {
+                prewarmReady = true;
+                viewerLog('Iframe doc ready — same-type hot-switch path now armed');
+            }
+        }
+
         // Editor asking the viewer to save a v2-encrypted file. The
         // editor iframe never sees keys — it hands us plaintext, we
         // encrypt with the currently-open file's contentKey and PUT
@@ -885,15 +899,18 @@ async function openFile(name, opts) {
     // removeLayer and have their OWN map.on() handlers that fire into
     // a stale _docLayer. Audit + per-layer removeSection in onRemove
     // is tracked as #129.
-    // Plan B experimental: try hot-switch for cross-type too.
-    // wasm_reload_doc_in_place falls through to documentLoad for
-    // cross-type, which keeps the iframe alive and skips full WASM
-    // re-init. Known JS-side risk: sectionContainer leak (#129) where
-    // app.sectionContainer sections from prior layer aren't torn down,
-    // their map.on() handlers fire into stale _docLayer. If it
-    // crashes the iframe, fall back to cross-type cold-reload by
-    // restoring the old condition.
-    const willHotSwitch = wasPrewarmReady;
+    // Plan B for SAME-TYPE only. Cross-type via switchdocument was
+    // tried (allowed wasPrewarmReady alone) but the C++ side
+    // (wasm_reload_doc_in_place → loadComponentFromURL("_self"))
+    // succeeds while the COOL JS layer swap fails:
+    // "Cannot read properties of null (reading 'getPixelBoundsCore')"
+    // — the new doc's layer never paints. Test screenshots showed
+    // the loading shield remaining up while the test mistakenly
+    // declared success based on stale status text from the prior doc.
+    // Cross-type stays on cold-reload until #129 (sectionContainer
+    // leak in CanvasTileLayer.onRemove) is properly fixed.
+    const willHotSwitch = wasPrewarmReady
+        && (effectiveDocType === currentDocType);
 
     // Collapse the file sidebar so the editor gets the full viewport.
     // The user can re-open it by hovering the left edge or clicking the bar.
