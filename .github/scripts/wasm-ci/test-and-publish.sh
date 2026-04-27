@@ -39,6 +39,39 @@ export TEST_TARGET="azure-deploy"
 REPORT_DIR="$(mktemp -d)"
 trap "rm -rf '$REPORT_DIR'" EXIT
 
+# ── Install wasm/node_modules + puppeteer's Chromium (persistent cache) ──
+# The test scripts require puppeteer; without node_modules every test
+# crashes at `Cannot find module 'puppeteer'`. We keep node_modules,
+# the npm download cache, and puppeteer's Chromium binary in $CI_STATE_DIR
+# so the second-and-later runs reinstall in seconds.
+NODE_MODULES_HOST="${CI_STATE_DIR}/online-node-modules"
+NPM_CACHE_HOST="${CI_STATE_DIR}/npm-cache"
+PUPPETEER_CACHE_HOST="${CI_STATE_DIR}/puppeteer-cache"
+mkdir -p "$NODE_MODULES_HOST" "$NPM_CACHE_HOST" "$PUPPETEER_CACHE_HOST"
+export PUPPETEER_CACHE_DIR="$PUPPETEER_CACHE_HOST"
+
+# Replace whatever's at wasm/node_modules with a symlink to the host cache,
+# so npm writes into the persistent location and tests find the modules.
+rm -rf "$WORKSPACE/wasm/node_modules"
+ln -s "$NODE_MODULES_HOST" "$WORKSPACE/wasm/node_modules"
+
+# Reinstall when the lock file changes (or on the first run). The marker
+# file inside the persistent dir records the lock file we last installed
+# from; if it differs from the current one, do a fresh `npm ci`.
+LOCK="$WORKSPACE/wasm/package-lock.json"
+INSTALLED_FROM="$NODE_MODULES_HOST/.installed-from-lock"
+if [[ ! -f "$INSTALLED_FROM" ]] || ! cmp -s "$LOCK" "$INSTALLED_FROM"; then
+    echo "--- Installing wasm/node_modules (cache=$NPM_CACHE_HOST chromium=$PUPPETEER_CACHE_HOST) ---"
+    # Empty the persistent dir so npm ci sees a clean slate. The symlink
+    # we just made is preserved by removing dir contents, not the dir.
+    find "$NODE_MODULES_HOST" -mindepth 1 -delete 2>/dev/null || true
+    (cd "$WORKSPACE/wasm" && npm ci --cache "$NPM_CACHE_HOST" --prefer-offline --no-audit --no-fund 2>&1 | tail -8)
+    cp "$LOCK" "$INSTALLED_FROM"
+    echo "[OK] node_modules installed."
+else
+    echo "[OK] node_modules cache hit (lockfile unchanged)."
+fi
+
 # Direct run-all-tests.sh's per-test HTML reports + screenshots into a
 # per-build subtree so we can upload them all together at the end. The
 # layout (created by run-all-tests.sh + generate-report.js):
@@ -71,11 +104,22 @@ set -e
 END_TS="$(date -u +%s)"
 DUR=$((END_TS - START_TS))
 
-# Tests report rough pass/fail counts via "ok N tests" / "FAIL" markers in
-# the existing scripts; this is a pragmatic best-effort scrape — refine if
-# the suite gains a structured reporter.
-PASS_COUNT="$(grep -cE '^\[?[Pp][Aa][Ss][Ss]\]?|✓|^ok ' "$LOG" || true)"
-FAIL_COUNT="$(grep -cE '^\[?[Ff][Aa][Ii][Ll]\]?|✗|^not ok ' "$LOG" || true)"
+# Pass/fail counts: prefer the rich-report grid (run-all-tests.sh writes
+# badge-pass / badge-fail rows in $TEST_OUTPUT/reports/index.html). Fall
+# back to a log scrape if the rich report is missing (early failure).
+if [[ -f "$TEST_OUTPUT/reports/index.html" ]]; then
+    PASS_COUNT=$(grep -c 'badge-pass' "$TEST_OUTPUT/reports/index.html" || true)
+    FAIL_COUNT=$(grep -c 'badge-fail' "$TEST_OUTPUT/reports/index.html" || true)
+else
+    PASS_COUNT="$(grep -cE '^\[?[Pp][Aa][Ss][Ss]\]?|✓|^ok ' "$LOG" || true)"
+    FAIL_COUNT="$(grep -cE '^\[?[Ff][Aa][Ii][Ll]\]?|✗|^not ok ' "$LOG" || true)"
+fi
+# run-all-tests.sh exits 0 even if individual tests fail (it only uses
+# `set -uo pipefail`, no -e). Reflect actual test status in TEST_RC so
+# the GitHub job badge turns red on real failures.
+if [[ "$TEST_RC" == 0 && "${FAIL_COUNT:-0}" -gt 0 ]]; then
+    TEST_RC=1
+fi
 
 cat > "$SUMMARY_JSON" <<JSON
 {
