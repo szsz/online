@@ -15,6 +15,15 @@
 #   - flock guarantees only one CI build at a time on this host.
 set -euo pipefail
 
+# DEBUG: tee everything to a host-side log so post-mortem doesn't need GitHub
+# auth for the run logs. Remove once stable.
+exec > >(tee -a /tmp/build-online-debug.log) 2>&1
+echo "===== build-online.sh @ $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+echo "  pwd=$(pwd)  whoami=$(whoami)  bash=$BASH_VERSION"
+echo "  GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-?}  CI_STATE_DIR=${CI_STATE_DIR:-?}"
+echo "  LO_BUILD_ID=${LO_BUILD_ID:-?}  APP_BUILD_ID=${APP_BUILD_ID:-?}"
+set -x
+
 LO_BID="${LO_BUILD_ID:?}"
 STATE_DIR="${CI_STATE_DIR:?}"
 WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
