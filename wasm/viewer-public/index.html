@@ -524,20 +524,21 @@ window.addEventListener('message', function(event) {
                 console.log('[viewer] App_LoadingStatus=Initialized (cold reload) — treating as doc ready');
                 docReady = true;
                 tryDropShield('cold-reload-initialized');
-            }
-        }
-
-        // After a cold-reload finishes (WasmDocReady fires from the new
-        // iframe's docPoll), the iframe IS now ready to host a same-type
-        // hot-switch on the next open. Without flipping prewarmReady
-        // here, every subsequent open in the same session re-enters
-        // cold-reload (15-30s) when it could be a same-type
-        // switchdocument (sub-second). The cross-type half is gated by
-        // willHotSwitch's separate sameType check, so this is safe.
-        if (msg.MessageId === 'WasmDocReady') {
-            if (!prewarmReady) {
-                prewarmReady = true;
-                viewerLog('Iframe doc ready — same-type hot-switch path now armed');
+                // Also flip prewarmReady so the NEXT open in this session
+                // can take the same-type hot-switch path. Earlier we kept
+                // this on WasmPrewarmReady only, but that fires AFTER the
+                // shield-drop signal — by then the test/user already
+                // clicked the next file and the iframe was replaced
+                // before the postMessage landed. Using the same early
+                // signal that drops the shield ensures prewarmReady is
+                // visible for the click that immediately follows.
+                // Sending switchdocument too early is safe: the iframe's
+                // trySendSwitch retries on a 50 ms poll until
+                // __wasmInitialDocLoaded is set.
+                if (!prewarmReady) {
+                    prewarmReady = true;
+                    viewerLog('Cold-reload iframe ready — same-type hot-switch armed');
+                }
             }
         }
 
@@ -911,6 +912,10 @@ async function openFile(name, opts) {
     // leak in CanvasTileLayer.onRemove) is properly fixed.
     const willHotSwitch = wasPrewarmReady
         && (effectiveDocType === currentDocType);
+    console.log('[viewer] hot-switch decision: willHotSwitch=' + willHotSwitch +
+        ' wasPrewarmReady=' + wasPrewarmReady +
+        ' effectiveDocType=' + effectiveDocType +
+        ' currentDocType=' + currentDocType);
 
     // Collapse the file sidebar so the editor gets the full viewport.
     // The user can re-open it by hovering the left edge or clicking the bar.

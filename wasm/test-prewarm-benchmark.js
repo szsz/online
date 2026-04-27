@@ -229,6 +229,7 @@ img{max-width:48%;border:1px solid #d1d5db;border-radius:4px;margin:4px}
 .imgs{display:flex;flex-wrap:wrap;gap:8px}
 </style></head><body>
 <h1>Prewarm Benchmark — Document Open Timing</h1>
+<div style="color:#666;font-size:13px;margin-bottom:12px">Run @ ${new Date().toISOString()}</div>
 <div class="result">${allPassed ? 'ALL CHECKS PASSED' : 'SOME CHECKS FAILED'}</div>
 
 <h2>Summary</h2>

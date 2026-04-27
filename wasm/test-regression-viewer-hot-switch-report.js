@@ -8,7 +8,11 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const VIEWER = env.VIEWER_URL || 'https://viewer.szebeni.hu';
-const REPORT_DIR = '/tmp/hot-switch-report';
+// Write the report under the editor-static's public root so it's
+// reachable at https://wasm.atgpartners.info/reports/hot-switch/.
+// /tmp/hot-switch-report/ is left as a fallback symlink for older
+// pipelines that read from there.
+const REPORT_DIR = '/tmp/static-deploy/public/reports/hot-switch';
 const SHOTS_DIR = REPORT_DIR + '/shots';
 
 // puppeteer's fileInput.uploadFile(path) presents the file with the

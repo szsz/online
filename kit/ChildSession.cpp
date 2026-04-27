@@ -415,11 +415,22 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         // Cap consecutive in-place reloads. The 3rd in a row hangs
         // inside loadComponentFromURL("_self") — accumulated frame/view
         // state survives the simple xPrev->dispose() in
-        // wasm_reload_doc_in_place. Forcing a documentLoad fallback
-        // every 3rd switch lets the user keep clicking; the cost is one
-        // ~15s cold-style switch every other hot pair.
+        // wasm_reload_doc_in_place. Earlier cap was 2; same-type test
+        // showed click3 (the documentLoad fallback after 2 in-places)
+        // ALSO hangs at 90s. Reducing to 1 so the documentLoad fallback
+        // only has to recover after a single in-place — easier to keep
+        // healthy. Pattern becomes: hot, cold-style-fallback, hot,
+        // cold-style-fallback. Average 2 in-place / 2 fallback per 4
+        // clicks; in-place is sub-2s, fallback is ~10-15s.
         static int s_consecutiveInPlace = 0;
-        const int kInPlaceCap = 2;
+        // Cap=0 disables in-place reload entirely. Even a single in-place
+        // appears to corrupt enough state that the documentLoad fallback
+        // afterwards hangs (sttest5 click3 = 90s timeout with cap=1).
+        // Falling back to plain documentLoad keeps the iframe alive and
+        // skips full WASM re-init — still meaningfully faster than a
+        // cold-reload because factory + UI state are warm. Hot-switch
+        // numbers measured with cap=0: TBD by next test cycle.
+        const int kInPlaceCap = 0;
         std::shared_ptr<lok::Document> existing = _docManager->getLOKitDocument();
         if (existing && existing->get() && s_consecutiveInPlace < kInPlaceCap)
         {
