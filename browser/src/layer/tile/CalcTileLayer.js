@@ -98,6 +98,27 @@ window.L.CalcTileLayer = window.L.CanvasTileLayer.extend({
 			FocusCellSection.addFocusCellSection();
 	},
 
+	// Issue #129 — also tear down Calc-specific sections on cross-type swap.
+	_removeAddedSections: function () {
+		window.L.CanvasTileLayer.prototype._removeAddedSections.call(this);
+		if (!app.sectionContainer) return;
+		var names = [
+			app.CSections.CellFillMarker.name,
+			app.CSections.Splitter.name,
+			app.CSections.TableFillMarker.name,
+			app.CSections.FocusCell.name,
+			app.CSections.CornerGroup.name,
+			app.CSections.RowGroup.name,
+			app.CSections.ColumnGroup.name,
+			app.CSections.CornerHeader.name,
+			app.CSections.RowHeader.name,
+			app.CSections.ColumnHeader.name,
+		];
+		for (var i = 0; i < names.length; i++) {
+			try { app.sectionContainer.removeSection(names[i]); } catch (e) { /* not present */ }
+		}
+	},
+
 	_resetInternalState: function() {
 		this._cellSelections = Array(0);
 		app.calc.cellCursorVisible = false;

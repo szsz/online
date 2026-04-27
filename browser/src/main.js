@@ -202,12 +202,35 @@ if (window.ThisIsTheEmscriptenApp) {
 			} catch (e) {
 				console.warn('wasm_set_preload_disabled failed:', e);
 			}
+			// Pre-arm the firstDocPainted resume latch BEFORE the kit
+			// thread enters wait_for. firstDocPainted unconditionally
+			// queues a MAIN_THREAD_ASYNC_EM_ASM and then waits 120 s on
+			// g_phase2CV with predicate g_phase2ResumeRequested. With the
+			// killswitch on, the JS handler would just call
+			// wasm_snapshot_failed → resume — but the EM_ASM hop sits in
+			// the proxy queue while the main thread is busy (observed
+			// ~33 s on cold-reload), so the next switchdocument blocks
+			// behind the kit thread for that long. Setting the latch now
+			// makes the kit thread's wait_for return immediately.
+			try {
+				globalThis.Module.ccall('wasm_snapshot_failed',
+					null, ['number'], [5 /* KILLED */]);
+			} catch (e) {
+				console.warn('wasm_snapshot_failed (pre-arm) failed:', e);
+			}
 		}
 		map.loadDocument(global.socket);
+		// Mark that the first 'load <docKey>' was queued on the fakesocket.
+		// wasm-loader.js's trySendSwitch uses this as the gate for sending
+		// 'switchdocument', avoiding the 10-15 s wait for __wasmInitialDocLoaded
+		// (which is set via the pthread proxy queue and gets serialized
+		// behind the synchronous post-load main-thread work).
+		window.__wasmFirstLoadDispatched = true;
 	};
 	createOnlineModule(globalThis.Module);
 } else {
 	map.loadDocument(global.socket);
+	window.__wasmFirstLoadDispatched = true;
 }
 
 window.addEventListener('beforeunload', function () {

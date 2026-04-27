@@ -3558,6 +3558,9 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 	},
 
 	_syncTilePanePos: function () {
+		// #129 cross-type swap: this handler may fire after onRemove nulled
+		// this._map (the old layer is still subscribed until _offMapHandlers).
+		if (!this._map || this._isDisposed) return;
 		if (this._container) {
 			var mapPanePos = this._map._getMapPanePos();
 			window.L.DomUtil.setPosition(this._container, new cool.Point(-mapPanePos.x , -mapPanePos.y));
@@ -3878,7 +3881,43 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 		try { TextSelections.dispose(); } catch(e) { /* ok during cross-type tear-down */ }
 
 		try { this._removeSplitters(); } catch(e) { /* ok during cross-type tear-down */ }
+		try { this._removeAddedSections(); } catch(e) { /* ok during cross-type tear-down */ }
+		try { this._offMapHandlers(map); } catch(e) { /* ok during cross-type tear-down */ }
 		if (this._canvasContainer) window.L.DomUtil.remove(this._canvasContainer);
+	},
+
+	// Issue #129 — onAdd registers map listeners directly via this._map.on(...).
+	// L.Layer.removeLayer auto-offs only the handlers from getEvents() (context=layer),
+	// not the ones with context=this._painter, etc. After removeLayer nulls this._map,
+	// any leftover handler that dereferences this._map crashes.
+	_offMapHandlers: function (map) {
+		if (!map) return;
+		try { map.off('zoomend', this._painter && this._painter.update, this._painter); } catch (e) { /* noop */ }
+		try { map.off('sheetgeometrychanged', this._painter && this._painter.update, this._painter); } catch (e) { /* noop */ }
+		try { map.off('move', this._syncTilePanePos, this); } catch (e) { /* noop */ }
+		try { map.off('viewrowcolumnheaders', this._painter && this._painter.update, this._painter); } catch (e) { /* noop */ }
+		try { map.off('messagesdone', TileManager.sendProcessedResponse, TileManager); } catch (e) { /* noop */ }
+		if (window.mode.isMobile() || window.mode.isTablet()) {
+			try { map.off('move', this._painter && this._painter.update, this._painter); } catch (e) { /* noop */ }
+		}
+	},
+
+	// Issue #129 — sectionContainer leak across cross-type swaps.
+	// Mirror every addSection() in onAdd so the section list is empty after tear-down.
+	// Subclasses (CalcTileLayer) extend this for sheet-specific sections.
+	_removeAddedSections: function () {
+		if (!app.sectionContainer) return;
+		var names = [
+			app.CSections.Tiles.name,
+			app.CSections.CompareChangesLabel.name,
+			app.CSections.Overlays.name,
+			app.CSections.Scroll.name,
+			app.CSections.CalcGrid.name,
+			app.CSections.CommentList.name,
+		];
+		for (var i = 0; i < names.length; i++) {
+			try { app.sectionContainer.removeSection(names[i]); } catch (e) { /* not present */ }
+		}
 	},
 
 	getEvents: function () {

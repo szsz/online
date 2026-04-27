@@ -657,11 +657,21 @@ async function startPrewarm() {
     // handshake and keeps a ghost room alive for cleanup. The real
     // relay room is set by openFile() via RelaySwitchRoom or the cold
     // reload coolUrl.
+    // Propagate Plan C opt-in: if the viewer page URL has ?planc=1, pass
+    // it through to the editor iframe so wasm-loader.js flips
+    // SNAPSHOT_DISABLED=false for that tab. Lets us test warm-restore via
+    // the same E2E test harness without flipping the global killswitch.
+    var __viewerPlanC = '';
+    try {
+        if (new URLSearchParams(window.location.search).get('planc') === '1')
+            __viewerPlanC = '&planc=1';
+    } catch (e) { /* ignore */ }
     iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                + '&access_token=test'
                + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                + '&UserName=' + encodeURIComponent(MY_USER_NAME)
-               + '&viewerT0=' + window.__viewerT0;
+               + '&viewerT0=' + window.__viewerT0
+               + __viewerPlanC;
 
     // Upload blank doc in parallel — arrives before Kit needs it
     try {
@@ -987,12 +997,18 @@ async function openFile(name, opts) {
         // The file just needs to arrive at /wasm/ before Kit opens it
         // (~3-6s into WASM init). This saves the entire download+upload
         // latency from the critical path.
+        var __coldPlanC = '';
+        try {
+            if (new URLSearchParams(window.location.search).get('planc') === '1')
+                __coldPlanC = '&planc=1';
+        } catch (e) { /* ignore */ }
         const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
                       + '&access_token=test'
                       + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
                       + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                       + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                       + '&viewerT0=' + window.__viewerT0
+                      + __coldPlanC
                       + (opts.displayName
                           ? '&displayName=' + encodeURIComponent(opts.displayName) : '');
         try {

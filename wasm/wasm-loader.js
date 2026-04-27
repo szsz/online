@@ -186,7 +186,19 @@
     // (vs ~8.6 s cold). BUT the user-facing doc-load on warm still hangs:
     // WasmDocReady postMessage never fires through the cold-protocol load.
     // Until that final piece is in: keep cold-only.
+    // SNAPSHOT_DISABLED: hard-coded killswitch. Default true (cold-only).
+    // For Plan C bring-up testing, the test harness can opt-in per-tab by
+    // appending ?planc=1 to the editor iframe URL, which flips it to false
+    // for that tab only. This avoids touching the source/redeploying for
+    // every iteration. Production rollout will set the constant directly.
     var SNAPSHOT_DISABLED = true;
+    try {
+        var __plancParam = new URLSearchParams(window.location.search).get('planc');
+        if (__plancParam === '1' || __plancParam === 'on') {
+            SNAPSHOT_DISABLED = false;
+            window.__plancOptIn = true;
+        }
+    } catch (e) { /* ignore */ }
     // When the snapshot is killed there's no value in preloading
     // Writer/Calc/Impress in Desktop::Main — and worse, doing so
     // emits notebookbar/sidebar JSDialog payloads for all three over
@@ -1079,31 +1091,43 @@
                         resumeLO();
                         console.log('PLAN_C_DBG: resumeLO returned');
 
-                        // Async write — even if the tab closes mid-write the
-                        // user's session is unaffected (next visit just runs
-                        // cold). Failure here is non-fatal; we already resumed.
-                        var meta = JSON.stringify({
-                            heapBase: heapBase,
-                            size: heapSize,
-                            ts: Date.now(),
-                            fingerprint: BUILD_FINGERPRINT,
-                            docType: window.__wasmFirstDocType,
-                        });
-                        caches.open('wasm-snapshot').then(function(cache) {
-                            return cache.put('/snapshot/meta', new Response(meta, {
-                                headers: { 'Content-Type': 'application/json' }
-                            })).then(function() {
-                                var blob = new Blob([memCopy], { type: 'application/octet-stream' });
-                                return cache.put('/snapshot/heap-v2', new Response(blob));
+                        // PLAN C BRING-UP: skip the persistent Cache.put while
+                        // warm-restore is still being stabilized. We've proven
+                        // the cold-side dance (kit park, COOLWSD park, JS
+                        // capture, resume) here. Persisting the snapshot would
+                        // make the *next* iframe in the same browser session
+                        // try to warm-restore — which is currently broken and
+                        // hangs the test. Once warm-restore is stable, replace
+                        // this block with the original cache.put.
+                        var BRINGUP_PERSIST = false;
+                        if (BRINGUP_PERSIST) {
+                            var meta = JSON.stringify({
+                                heapBase: heapBase,
+                                size: heapSize,
+                                ts: Date.now(),
+                                fingerprint: BUILD_FINGERPRINT,
+                                docType: window.__wasmFirstDocType,
                             });
-                        }).then(function() {
-                            mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB');
-                        }).catch(function(err) {
-                            // Cache failure — log but don't disturb user.
-                            // wasm_snapshot_failed is informational only at
-                            // this point; resume already happened.
-                            mark('snapshot:cache_put_failed', err.message);
-                        });
+                            caches.open('wasm-snapshot').then(function(cache) {
+                                return cache.put('/snapshot/meta', new Response(meta, {
+                                    headers: { 'Content-Type': 'application/json' }
+                                })).then(function() {
+                                    var blob = new Blob([memCopy], { type: 'application/octet-stream' });
+                                    return cache.put('/snapshot/heap-v2', new Response(blob));
+                                });
+                            }).then(function() {
+                                mark('snapshot:saved', (heapSize / 1048576).toFixed(0) + 'MB');
+                            }).catch(function(err) {
+                                mark('snapshot:cache_put_failed', err.message);
+                            });
+                        } else {
+                            mark('snapshot:bringup_skipped_persist', (heapSize / 1048576).toFixed(0) + 'MB');
+                            // Also wipe any stale cache so subsequent iframes
+                            // in this session see "no snapshot" and run cold.
+                            try { caches.open('wasm-snapshot').then(function(c) {
+                                c.delete('/snapshot/meta'); c.delete('/snapshot/heap-v2');
+                            }); } catch (e) { /* ok */ }
+                        }
                     };
                 }
             })();

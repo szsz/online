@@ -53,6 +53,7 @@ extern "C" void wasm_set_quiesce(int);
 extern "C" void wasm_wait_coolwsd_parked();
 extern "C" void wasm_coolwsd_resume();
 extern "C" void wasm_quiesce_wake_main();
+extern "C" int wasm_is_plan_c_enabled();
 #endif
 
 #include <Poco/StreamCopier.h>
@@ -567,13 +568,46 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 default:                       docTypeHint = "other"; break;
             }
 
-            // Plan C kit-side disabled while we focus on Plan B
-            // cross-type via the viewer's always-hot-switch path. The
-            // existing firstDocPainted call still fires the snapshot
-            // protocol; with SNAPSHOT_DISABLED=true (killswitch),
-            // Module.__firstDocLoaded resolves immediately so kit
-            // doesn't block.
+            // Plan C — quiesce-and-rebuild for warm-restore.
+            //
+            // Sequence (cold visit):
+            //   1. set quiesce flag    -> COOLWSD's main loop sees it on next iteration
+            //   2. wake mainWait->poll -> break COOLWSD out of its 256 s poll early
+            //   3. wait until COOLWSD reports parked (joined PrisonerPoll/AcceptPoll/WebServerPoll)
+            //   4. firstDocPainted     -> queue Module.__firstDocLoaded, block on g_phase2CV
+            //   5. (JS captures HEAPU8 with kit blocked + COOLWSD parked, then resumes us)
+            //   6. clear quiesce flag  -> COOLWSD won't re-park on its next loop iteration
+            //   7. resume COOLWSD      -> COOLWSD respawns its polls and re-enters main loop
+            //
+            // Why both kit and COOLWSD must be parked: the snapshot is the
+            // process heap. Any thread mutating heap state mid-capture
+            // gives a torn snapshot. kit thread is parked by firstDocPainted
+            // (CV wait); COOLWSD by the self-park branch in COOLWSD::innerMain.
+            // Other emscripten worker threads (proxy worker, audio worker)
+            // are short-lived per-message workers — they're idle by the
+            // time we get here because of InputProcessingManager(false).
+            //
+            // Skip the dance entirely when the snapshot subsystem is
+            // disabled — JS will just call wasm_snapshot_failed and
+            // there's no value in parking COOLWSD for nothing.
+#ifdef __EMSCRIPTEN__
+            const bool planC = !wasm_is_warm_restored() &&
+                               (wasm_is_plan_c_enabled() == 1);
+            if (planC)
+            {
+                wasm_set_quiesce(1);
+                wasm_quiesce_wake_main();
+                wasm_wait_coolwsd_parked();
+            }
+#endif
             wasmshim::firstDocPainted(docTypeHint);
+#ifdef __EMSCRIPTEN__
+            if (planC)
+            {
+                wasm_set_quiesce(0);
+                wasm_coolwsd_resume();
+            }
+#endif
         }
 #endif
 

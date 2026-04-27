@@ -264,8 +264,10 @@ function generateReport() {
                 t.includes('SWITCHDOC') ||
                 t.includes('Editor iframe') || t.includes('Document ready') ||
                 t.includes('jserror') || t.includes('Error') ||
-                t.includes('lastOpenMode') || t.includes('Cross-type')) {
-                log('viewer: ' + t.substring(0, 200), 'viewer');
+                t.includes('lastOpenMode') || t.includes('Cross-type') ||
+                t.includes('PLAN_C') || t.includes('phase2') ||
+                t.includes('snapshot:') || t.includes('Plan C')) {
+                log('viewer: ' + t.substring(0, 240), 'viewer');
             }
         });
         page.on('pageerror', e => log('PAGE ERROR: ' + e.message.substring(0, 200), 'viewer'));

@@ -14,7 +14,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILD_DIR="$REPO_DIR/wasm/online-build"
+BUILD_DIR="${BUILD_DIR:-$REPO_DIR/wasm/online-build}"
 PUB="${PUB:-/tmp/static-deploy/public}"
 BROWSER_DIR="$PUB/browser"
 
