@@ -1,0 +1,168 @@
+name: WASM build, deploy, test
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'wasm/**'
+      - '.github/workflows/wasm-ci.yml'
+      - '.github/scripts/wasm-ci/**'
+  pull_request:
+    paths:
+      - 'wasm/LO_BUILD_ID'
+      - 'wasm/**'
+      - '.github/workflows/wasm-ci.yml'
+      - '.github/scripts/wasm-ci/**'
+  workflow_dispatch:
+    inputs:
+      lo_build_id:
+        description: 'Override LO_BUILD_ID (default: read from wasm/LO_BUILD_ID)'
+        required: false
+        default: ''
+      skip_tests:
+        description: 'Skip the test job (deploy only)'
+        required: false
+        default: 'false'
+
+env:
+  AZURE_STORAGE_ACCOUNT: coolwasmfiles
+  CI_STATE_DIR: /home/localadmin/lo-wasm-ci-state
+  STATIC_SITE_BASE: https://coolwasmfiles.z6.web.core.windows.net
+
+# Both runners on this box share the docker daemon. flock in the scripts
+# guarantees only one CI build at a time on the host; this group prevents
+# two pushes on this same repo from racing each other.
+concurrency:
+  group: wasm-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Fail-fast LO_BUILD_ID validation. Runs on github-hosted ubuntu-latest
+  # (no secrets, no docker, no self-hosted runner) so it is safe for fork
+  # PRs and free for public repos. Hits ONLY the public static-website
+  # endpoint of coolwasmfiles, no auth required.
+  # Make this job a "Required status check" in the branch protection rule
+  # for `dev` to harden-block PRs that pin a non-existent LO build.
+  # ─────────────────────────────────────────────────────────────────────
+  validate-lo-build:
+    runs-on: ubuntu-latest
+    outputs:
+      lo_build_id: ${{ steps.lo.outputs.lo_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve LO_BUILD_ID
+        id: lo
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          LO_BID="${LO_BUILD_ID_OVERRIDE:-}"
+          if [[ -z "$LO_BID" ]]; then
+              if [[ ! -f wasm/LO_BUILD_ID ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::wasm/LO_BUILD_ID is missing"
+                  exit 1
+              fi
+              LO_BID="$(grep -v '^[[:space:]]*#' wasm/LO_BUILD_ID | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]')"
+          fi
+          if [[ "$LO_BID" == "__LATEST__" ]]; then
+              LO_BID="$(curl -fsSL "$STATIC_SITE_BASE/lo-builds/latest.txt" 2>/dev/null | tr -d '[:space:]' || true)"
+              if [[ -z "$LO_BID" ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::__LATEST__ requested but lo-builds/latest.txt is empty/missing — pin a literal ID or wait for a successful libreoffice-core-wasm CI build"
+                  exit 1
+              fi
+          fi
+          echo "Resolved LO_BUILD_ID: $LO_BID"
+          echo "lo_build_id=$LO_BID" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build artefacts exist on coolwasmfiles
+        env:
+          LO_BUILD_ID: ${{ steps.lo.outputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          MANIFEST_URL="$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/MANIFEST.json"
+          TARBALL_URL="$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/lo-core.tar.zst"
+          ok=true
+          for url in "$MANIFEST_URL" "$TARBALL_URL"; do
+              code="$(curl -fsSL -o /dev/null -w '%{http_code}' --head --max-time 30 "$url" || echo 000)"
+              if [[ "$code" != "200" ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::Missing artefact: $url (HTTP $code)"
+                  ok=false
+              else
+                  echo "  OK ($code) $url"
+              fi
+          done
+          $ok || { echo "::error file=wasm/LO_BUILD_ID::Pinned LO_BUILD_ID '$LO_BUILD_ID' has no valid build at coolwasmfiles. Update wasm/LO_BUILD_ID to a build listed at $STATIC_SITE_BASE/lo-builds/."; exit 1; }
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Heavy jobs only run on push/dispatch — never on PRs. PRs only get the
+  # validate-lo-build gate above.
+  # ─────────────────────────────────────────────────────────────────────
+  build-deploy:
+    needs: validate-lo-build
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, wasm-build]
+    outputs:
+      app_build_id: ${{ steps.ids.outputs.app_build_id }}
+      lo_build_id:  ${{ steps.ids.outputs.lo_build_id }}
+    steps:
+      # Reclaim workspace ownership before checkout. build-online.sh runs
+      # inside docker as root and writes to bind-mounted paths (autom4te.cache,
+      # m4/, storage/). A trap chowns back on EXIT, but if the script is
+      # cancelled mid-flight or the runner reboots, root-owned remnants are
+      # left behind — actions/checkout's `git clean -ffdx` then exits 1.
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve build IDs
+        id: ids
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+        run: bash .github/scripts/wasm-ci/resolve-ids.sh
+
+      - name: Fetch LibreOffice artefacts
+        env:
+          LO_BUILD_ID: ${{ steps.ids.outputs.lo_build_id }}
+        run: bash .github/scripts/wasm-ci/fetch-lo.sh
+
+      - name: Build Online (WASM)
+        env:
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/build-online.sh
+
+      - name: Deploy to Azure App Services
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/deploy.sh
+
+      - name: Publish build artefacts + index
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF: ${{ github.ref }}
+        run: bash .github/scripts/wasm-ci/publish-app-build.sh
+
+  test:
+    needs: build-deploy
+    if: ${{ github.event.inputs.skip_tests != 'true' }}
+    runs-on: [self-hosted, wasm-build]
+    steps:
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run test suite + publish report
+        env:
+          APP_BUILD_ID: ${{ needs.build-deploy.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ needs.build-deploy.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.sha }}
+        run: bash .github/scripts/wasm-ci/test-and-publish.sh
