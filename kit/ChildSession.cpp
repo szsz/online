@@ -1307,10 +1307,13 @@ bool ChildSession::loadDocument(const StringVector& tokens)
 #endif
     const bool loaded = _docManager->onLoad(getId(), getJailedFilePathAnonym(), renderOpts);
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad done'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad done loaded=' + $0 + ' viewId=' + $1); }, loaded ? 1 : 0, _viewId);
 #endif
     if (!loaded || _viewId < 0)
     {
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: loadDocument returning false (loaded=' + $0 + ' viewId=' + $1 + ')'); }, loaded ? 1 : 0, _viewId);
+#endif
         // Failed and communicated with the reason; do not send errors to the client.
         LOG_ERR("Failed to get LoKitDocument instance for [" << getJailedFilePathAnonym() << ']');
         return false;
@@ -1321,6 +1324,9 @@ bool ChildSession::loadDocument(const StringVector& tokens)
                                               << getUserNameAnonym() << "] in session: [" << getId()
                                               << "], template: [" << getDocTemplate() << ']');
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post-onLoad checks done, viewid=' + $0); }, _viewId);
+#endif
     if (!getDocTemplate().empty())
     {
         // If we aren't chroot-ed, we need to use the absolute path.
@@ -1356,9 +1362,18 @@ bool ChildSession::loadDocument(const StringVector& tokens)
             copyForUpload(url);
     }
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre setView'); });
+#endif
     getLOKitDocument()->setView(_viewId);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post setView'); });
+#endif
 
     _docType = LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get());
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post getDocumentTypeAsString docType_len=' + $0); }, (int)_docType.size());
+#endif
     if (_docType != "text" && part != -1)
     {
         getLOKitDocument()->setPart(part);
@@ -1366,10 +1381,19 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     }
     else
         _currentPart = getLOKitDocument()->getPart();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post setPart/getPart'); });
+#endif
 
     // Respond by the document status
     LOG_DBG("Sending status after loading view " << _viewId);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre documentStatus'); });
+#endif
     const std::string status = LOKitHelper::documentStatus(getLOKitDocument()->get());
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post documentStatus len=' + $0); }, (int)status.size());
+#endif
     if (status.empty() || !sendTextFrame("status: " + status))
     {
         LOG_ERR("Failed to get/forward document status [" << status << ']');
@@ -1377,11 +1401,23 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     }
 
     // Inform everyone (including this one) about updated view info
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre notifyViewInfo'); });
+#endif
     _docManager->notifyViewInfo();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post notifyViewInfo'); });
+#endif
     sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
 
     // now we have the doc options parsed and set.
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre updateActivityHeader'); });
+#endif
     _docManager->updateActivityHeader();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post updateActivityHeader'); });
+#endif
 
     // Notify that we've loaded this view.
     std::ostringstream oss;

@@ -197,6 +197,25 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
           } catch(e) {
               console.warn('SolarMutex reset failed:', e);
           }
+          // SvpSalYieldMutex (the actual VCL yield mutex used on every
+          // lo_runLoop iteration) holds 7 internal mutex/CV/state members
+          // whose pthread waiter lists in the captured snapshot reference
+          // the dead cold thread. Plus SvpSalInstance::m_MainThread holds
+          // the cold lokit_main thread id, so IsMainThread() returns false
+          // on every warm thread. Placement-new the members and refresh
+          // m_MainThread so the warm path is deterministic.
+          try { Module.ccall('wasm_warm_restore_yield_mutex_reset', null, [], []);
+              console.log('WARM_DBG: YieldMutex reset OK');
+          } catch(e) {
+              console.warn('YieldMutex reset failed:', e);
+          }
+          // FakeSocket's global theMutex/theCV are touched by every kit↔COOLWSD
+          // message. Captured waiter list points at dead cold threads.
+          try { Module.ccall('wasm_warm_restore_fakesocket_reset', null, [], []);
+              console.log('WARM_DBG: FakeSocket reset OK');
+          } catch(e) {
+              console.warn('FakeSocket reset failed:', e);
+          }
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
           // Recreate VFS directories that the restored LO Core expects.

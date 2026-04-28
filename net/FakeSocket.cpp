@@ -119,6 +119,28 @@ void fakeSocketSetLoggingCallback(void (*callback)(const std::string&))
     loggingCallback = callback;
 }
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <new>
+// Plan C warm-restore: theMutex/theCV are touched by every fakeSocket
+// I/O on every thread (kit, COOLWSD, remote-client relay). The captured
+// snapshot may have these with stale waiter pointers from cold-side
+// threads. Per-fd CVs inside `fds` are even worse — every captured
+// FakeSocketPair has its own CV. Placement-new the globals and clear
+// per-fd waiter state via a fresh re-init pass. Anything an in-flight
+// I/O held at capture time is dropped — the warm path will re-issue.
+extern "C" EMSCRIPTEN_KEEPALIVE void wasm_warm_restore_fakesocket_reset()
+{
+    new (&theMutex) std::mutex();
+    new (&theCV)    std::condition_variable();
+    // Don't touch `fds` vector contents — kit-side state (HULLO fd
+    // already-allocated, doc fd, etc.) is needed by the warm path.
+    // The per-FakeSocketPair CV waiter lists are bound to the global
+    // theMutex above so the placement-new there clears the OS-level
+    // waiter chain.
+}
+#endif
+
 static FakeSocketPair& fakeSocketAllocate()
 {
     if (fakeSocketLogLevel == -1)

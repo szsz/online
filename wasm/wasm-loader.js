@@ -1166,8 +1166,22 @@
                                (wc.textContent.includes('word') || wc.textContent.includes('character'));
             var calcLoaded = dp && /\d/.test(dp.textContent || '') && dp.textContent.includes('Sheet');
             var slideStatus = document.querySelector('#SlideStatus');
+            // COOL UI slide-indicator: legacy `#SlideStatus` was renamed/merged
+            // into the generic StatusBar items at some point. Sweep any
+            // element containing "Slide N of M" as a fallback.
+            var impressSlideMatch = false;
+            if (!impressSlideMatch) {
+                var statusEls = document.querySelectorAll('[id*="lide"],[id*="age"],[id*="tatusbarItem"],[id*="tatus"],[class*="tatusbar"]');
+                for (var i = 0; i < statusEls.length; i++) {
+                    if (/Slide\s+\d+\s+of\s+\d+/i.test(statusEls[i].textContent || '')) {
+                        impressSlideMatch = true;
+                        break;
+                    }
+                }
+            }
             var impressLoaded = (nav && nav.textContent && nav.textContent.includes('Slide Show')) ||
-                                (slideStatus && /Slide \d/i.test(slideStatus.textContent || ''));
+                                (slideStatus && /Slide \d/i.test(slideStatus.textContent || '')) ||
+                                impressSlideMatch;
             var loaded = writerLoaded || calcLoaded || impressLoaded;
             // For switches, require the displayed text to have CHANGED from
             // when we re-armed (otherwise the old blank-doc count satisfies
