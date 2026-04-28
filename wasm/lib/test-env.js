@@ -49,4 +49,5 @@ module.exports = {
     FILE_STORAGE_URL: process.env.FILE_STORAGE_URL,
     RELAY_URL: process.env.RELAY_URL,
     RELAY_HTTP_URL: RELAY_HTTP,
+    VIEWER_URL: process.env.VIEWER_URL,
 };

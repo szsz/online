@@ -53,6 +53,7 @@ extern "C" void wasm_set_quiesce(int);
 extern "C" void wasm_wait_coolwsd_parked();
 extern "C" void wasm_coolwsd_resume();
 extern "C" void wasm_quiesce_wake_main();
+extern "C" int wasm_is_plan_c_enabled();
 #endif
 
 #include <Poco/StreamCopier.h>
@@ -531,6 +532,27 @@ bool ChildSession::_handleInput(const char *buffer, int length)
     {
         if (_isDocLoaded)
         {
+#ifdef __EMSCRIPTEN__
+            // Plan C warm-restore: the captured snapshot already has
+            // _isDocLoaded=true with the (cold-visit) doc fully loaded.
+            // Treat the new "load" command as a re-attach: re-send the
+            // status+loaded frames so COOL JS can render the existing
+            // model instead of the stock "docalreadyloaded" error.
+            if (wasm_is_warm_restored() && getLOKitDocument())
+            {
+                LOG_INF("LOAD: warm-restore re-attach — re-sending status/loaded for existing doc");
+                const std::string status = LOKitHelper::documentStatus(getLOKitDocument()->get());
+                sendTextFrame("status: " + status);
+                _docManager->notifyViewInfo();
+                sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
+                std::ostringstream loadedMsg;
+                loadedMsg << "loaded: viewid=" << _viewId
+                          << " views=" << _docManager->getViewsCount()
+                          << " isfirst=true";
+                sendTextFrame(loadedMsg.str());
+                return true;
+            }
+#endif
             sendTextFrameAndLogError("error: cmd=load kind=docalreadyloaded");
             return false;
         }
@@ -567,13 +589,53 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 default:                       docTypeHint = "other"; break;
             }
 
-            // Plan C kit-side disabled while we focus on Plan B
-            // cross-type via the viewer's always-hot-switch path. The
-            // existing firstDocPainted call still fires the snapshot
-            // protocol; with SNAPSHOT_DISABLED=true (killswitch),
-            // Module.__firstDocLoaded resolves immediately so kit
-            // doesn't block.
+            // Plan C — quiesce-and-rebuild for warm-restore.
+            //
+            // Sequence (cold visit):
+            //   1. set quiesce flag    -> COOLWSD's main loop sees it on next iteration
+            //   2. wake mainWait->poll -> break COOLWSD out of its 256 s poll early
+            //   3. wait until COOLWSD reports parked (joined PrisonerPoll/AcceptPoll/WebServerPoll)
+            //   4. firstDocPainted     -> queue Module.__firstDocLoaded, block on g_phase2CV
+            //   5. (JS captures HEAPU8 with kit blocked + COOLWSD parked, then resumes us)
+            //   6. clear quiesce flag  -> COOLWSD won't re-park on its next loop iteration
+            //   7. resume COOLWSD      -> COOLWSD respawns its polls and re-enters main loop
+            //
+            // Why both kit and COOLWSD must be parked: the snapshot is the
+            // process heap. Any thread mutating heap state mid-capture
+            // gives a torn snapshot. kit thread is parked by firstDocPainted
+            // (CV wait); COOLWSD by the self-park branch in COOLWSD::innerMain.
+            // Other emscripten worker threads (proxy worker, audio worker)
+            // are short-lived per-message workers — they're idle by the
+            // time we get here because of InputProcessingManager(false).
+            //
+            // Skip the dance entirely when the snapshot subsystem is
+            // disabled — JS will just call wasm_snapshot_failed and
+            // there's no value in parking COOLWSD for nothing.
+#ifdef __EMSCRIPTEN__
+            const bool planC = !wasm_is_warm_restored() &&
+                               (wasm_is_plan_c_enabled() == 1);
+            if (planC)
+            {
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC begin — set_quiesce(1)'); });
+                wasm_set_quiesce(1);
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: quiesce_wake_main'); });
+                wasm_quiesce_wake_main();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: wait_coolwsd_parked'); });
+                wasm_wait_coolwsd_parked();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd parked, calling firstDocPainted'); });
+            }
+#endif
             wasmshim::firstDocPainted(docTypeHint);
+#ifdef __EMSCRIPTEN__
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: firstDocPainted returned'); });
+            if (planC)
+            {
+                wasm_set_quiesce(0);
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC resume — coolwsd_resume'); });
+                wasm_coolwsd_resume();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd_resume returned'); });
+            }
+#endif
         }
 #endif
 
@@ -1245,10 +1307,13 @@ bool ChildSession::loadDocument(const StringVector& tokens)
 #endif
     const bool loaded = _docManager->onLoad(getId(), getJailedFilePathAnonym(), renderOpts);
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad done'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad done loaded=' + $0 + ' viewId=' + $1); }, loaded ? 1 : 0, _viewId);
 #endif
     if (!loaded || _viewId < 0)
     {
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: loadDocument returning false (loaded=' + $0 + ' viewId=' + $1 + ')'); }, loaded ? 1 : 0, _viewId);
+#endif
         // Failed and communicated with the reason; do not send errors to the client.
         LOG_ERR("Failed to get LoKitDocument instance for [" << getJailedFilePathAnonym() << ']');
         return false;
@@ -1259,6 +1324,9 @@ bool ChildSession::loadDocument(const StringVector& tokens)
                                               << getUserNameAnonym() << "] in session: [" << getId()
                                               << "], template: [" << getDocTemplate() << ']');
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post-onLoad checks done, viewid=' + $0); }, _viewId);
+#endif
     if (!getDocTemplate().empty())
     {
         // If we aren't chroot-ed, we need to use the absolute path.
@@ -1294,9 +1362,18 @@ bool ChildSession::loadDocument(const StringVector& tokens)
             copyForUpload(url);
     }
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre setView'); });
+#endif
     getLOKitDocument()->setView(_viewId);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post setView'); });
+#endif
 
     _docType = LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get());
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post getDocumentTypeAsString docType_len=' + $0); }, (int)_docType.size());
+#endif
     if (_docType != "text" && part != -1)
     {
         getLOKitDocument()->setPart(part);
@@ -1304,10 +1381,19 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     }
     else
         _currentPart = getLOKitDocument()->getPart();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post setPart/getPart'); });
+#endif
 
     // Respond by the document status
     LOG_DBG("Sending status after loading view " << _viewId);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre documentStatus'); });
+#endif
     const std::string status = LOKitHelper::documentStatus(getLOKitDocument()->get());
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post documentStatus len=' + $0); }, (int)status.size());
+#endif
     if (status.empty() || !sendTextFrame("status: " + status))
     {
         LOG_ERR("Failed to get/forward document status [" << status << ']');
@@ -1315,11 +1401,23 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     }
 
     // Inform everyone (including this one) about updated view info
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre notifyViewInfo'); });
+#endif
     _docManager->notifyViewInfo();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post notifyViewInfo'); });
+#endif
     sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
 
     // now we have the doc options parsed and set.
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre updateActivityHeader'); });
+#endif
     _docManager->updateActivityHeader();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post updateActivityHeader'); });
+#endif
 
     // Notify that we've loaded this view.
     std::ostringstream oss;

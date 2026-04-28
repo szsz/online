@@ -31,6 +31,7 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #include <emscripten/threading.h>
+extern "C" int wasm_is_warm_restored();
 #endif
 
 #ifdef __linux__
@@ -2062,6 +2063,23 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
     }
 
     std::string spellOnline = session->getSpellOnline();
+#ifdef __EMSCRIPTEN__
+    // Plan C warm-restore: if the captured snapshot left a stale
+    // _loKitDocument from the cold visit, the createView() branch below
+    // hits view-state inconsistencies for SAME-URL re-opens (the most
+    // common second-visit case) and getView() returns -1 → onLoad
+    // returns false → JS sees no status frames → iframe stuck on
+    // "Opening document…". Force a fresh documentLoad on warm-restore
+    // so the kit goes through the well-trodden first-load code path.
+    // The HEAPU8 snapshot already gave us a hot LO Core (factories,
+    // VCL, configmgr) — actual document parse is sub-second on warm.
+    if (_loKitDocument && wasm_is_warm_restored())
+    {
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: warm-restore: dropping captured _loKitDocument for fresh load'); });
+        _loKitDocument.reset();
+        _sessionUserInfo.clear();
+    }
+#endif
     if (!_loKitDocument)
     {
         // This is the first time we are loading the document
