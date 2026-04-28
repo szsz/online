@@ -204,9 +204,16 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
     await page.setCacheEnabled(true);
     await page.setViewport({ width: 1280, height: 900 });
 
-    // navigation
+    // navigation. The warm-restore watchdog (wasm-loader.js) reloads the
+    // iframe when warm hangs, which can race puppeteer's navigation
+    // tracking and surface as a TimeoutError on goto. Catch that — the
+    // polling loop below recovers regardless.
     const navStart = Date.now();
-    await page.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    try {
+        await page.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch (e) {
+        consoleLines.push({ t: Date.now(), line: 'NAV_GOTO_ERR: ' + (e.message || '') });
+    }
 
     // milestone state
     const hits = {};         // id → ms-from-navStart
@@ -399,24 +406,42 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
 }
 
 (async () => {
-    // Rotate previous run to -prev/ so the user always has a stable
-    // last-completed report even while the next run is in progress.
-    // /report/snapshot-milestones/        → latest (may be partial mid-run)
-    // /report/snapshot-milestones-prev/   → previous completed run
-    const PREV_DIR = OUT_DIR + '-prev';
-    if (fs.existsSync(OUT_DIR)) {
-        try { fs.rmSync(PREV_DIR, { recursive: true, force: true }); } catch (e) {}
-        try { fs.renameSync(OUT_DIR, PREV_DIR); } catch (e) {
-            // Cross-fs rename can fail; fall back to wipe-and-continue.
-            fs.rmSync(OUT_DIR, { recursive: true, force: true });
+    // Don't wipe at start — keep the previous run's index.html and
+    // session subdirs in place so /report/snapshot-milestones/ never
+    // 404s mid-run. Each session captureSession writes to its own
+    // subdir (writer-cold/, calc-warm-1/, etc.) which gets overwritten
+    // when that session runs. index.html itself only gets rewritten at
+    // the end of the run, so the URL keeps serving the previous
+    // completed report's index.html until the new one is ready.
+    //
+    // Trade-off: during a run, the live index.html links to subdirs
+    // that may have stale data (overwritten partway). But the link is
+    // back up the moment the run finishes, which is the important
+    // thing — no 404 windows.
+    //
+    // Old session subdirs from a longer prior run (e.g. impress-warm
+    // when the new run only does writer) WOULD linger. Sweep any
+    // session subdir from previous runs that's not in this run's plan,
+    // so the report stays consistent.
+    const knownTags = new Set();
+    for (const d of DOCS) {
+        knownTags.add(`${d.tag}-cold`);
+        for (let i = 1; i <= WARM_TRIALS; i++) {
+            knownTags.add(WARM_TRIALS === 1 ? `${d.tag}-warm` : `${d.tag}-warm-${i}`);
         }
     }
-    ensureDir(OUT_DIR);
-    log(`=== Snapshot milestone report ===`);
-    log(`Output dir: ${OUT_DIR}`);
-    if (fs.existsSync(PREV_DIR + '/index.html')) {
-        log(`Previous run preserved at: ${PREV_DIR} (URL: …-prev/)`);
+    if (fs.existsSync(OUT_DIR)) {
+        for (const entry of fs.readdirSync(OUT_DIR)) {
+            const full = path.join(OUT_DIR, entry);
+            if (fs.statSync(full).isDirectory() && !knownTags.has(entry)) {
+                try { fs.rmSync(full, { recursive: true, force: true }); } catch (e) {}
+            }
+        }
+    } else {
+        ensureDir(OUT_DIR);
     }
+    log(`=== Snapshot milestone report ===`);
+    log(`Output dir: ${OUT_DIR} (preserving prior index.html until end of run)`);
 
     const uploads = {};
     for (const d of DOCS) {

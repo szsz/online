@@ -1018,6 +1018,47 @@
                 // of what the previous code did and why we removed it.
                 if (wasRestored) {
                     mark('snapshot:warm_restore_using_cold_protocol');
+                    // ───── WARM-RESTORE WATCHDOG ─────
+                    // Hot-switch capture race (~30 % of calc/impress cold
+                    // sessions) produces a snapshot that hangs on warm:
+                    // worker reports cmd=loaded, COOLWSD pthread never
+                    // dispatches its start_routine, doc:loaded never fires.
+                    // Without this, the user stares at a spinner forever.
+                    // Detect the hang at 20 s, drop the bad snapshot from
+                    // Cache Storage, reload the iframe — the reload finds
+                    // no snapshot and runs the cold path. Net UX: ~27 s
+                    // worst-case warm vs. infinite hang. Watchdog cleared
+                    // by the doc:loaded mark below, so successful warms
+                    // pay nothing. window.__wasmWarmWatchdogTriggered is
+                    // set so the cold reload doesn't immediately re-arm.
+                    if (!window.__wasmWarmWatchdogTriggered) {
+                        window.__wasmWarmWatchdogTimer = setTimeout(function() {
+                            try {
+                                console.warn('[snapshot] Warm-restore watchdog: '
+                                    + 'doc:loaded missing 20s after restore — '
+                                    + 'dropping snapshot and reloading as cold');
+                                window.__wasmWarmWatchdogTriggered = true;
+                                if (typeof caches !== 'undefined') {
+                                    caches.open('wasm-snapshot').then(function(c) {
+                                        return c.keys().then(function(keys) {
+                                            return Promise.all(keys.map(function(k) {
+                                                return c.delete(k);
+                                            }));
+                                        });
+                                    }).then(function() {
+                                        location.reload();
+                                    }).catch(function(e) {
+                                        console.error('[snapshot] Cache clear failed:', e);
+                                        location.reload();
+                                    });
+                                } else {
+                                    location.reload();
+                                }
+                            } catch (e) {
+                                console.error('[snapshot] Watchdog handler threw:', e);
+                            }
+                        }, 20000);
+                    }
                 }
 
                 if (!wasRestored) {
@@ -1213,6 +1254,11 @@
             if (loaded && changed && !seenContent) {
                 seenContent = true;
                 mark('doc:loaded', wc ? wc.textContent.trim() : (dp ? dp.textContent.trim() : ''));
+                // Clear warm-restore watchdog — doc loaded successfully.
+                if (window.__wasmWarmWatchdogTimer) {
+                    clearTimeout(window.__wasmWarmWatchdogTimer);
+                    window.__wasmWarmWatchdogTimer = null;
+                }
             }
             var runtimeReady = (typeof Module !== 'undefined') &&
                                (window.__wasmExports || (Module && Module.calledRun));
