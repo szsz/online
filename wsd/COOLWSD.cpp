@@ -1480,7 +1480,7 @@ void COOLWSD::setupChildRoot(const bool UseMountNamespaces)
 void COOLWSD::innerInitialize(Poco::Util::Application& self)
 {
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: innerInitialize START'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: innerInitialize START'); });
 #endif
 #if !MOBILEAPP
     if (geteuid() == 0 && CheckCoolUser)
@@ -1490,13 +1490,13 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
 #endif
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: innerInit: setApplicationPath...'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: innerInit: setApplicationPath...'); });
 #endif
     Util::setApplicationPath(
         Poco::Path(Poco::Util::Application::instance().commandPath()).parent().toString());
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: innerInit: config()...'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: innerInit: config()...'); });
 #endif
     StartTime = std::chrono::steady_clock::now();
 
@@ -1511,7 +1511,7 @@ void COOLWSD::innerInitialize(Poco::Util::Application& self)
     conf.addWriteable(defConfig, PRIO_SYSTEM); // Lowest priority
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: innerInit: config done, continuing...'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: innerInit: config done, continuing...'); });
 #endif
 
 #if !MOBILEAPP
@@ -3505,11 +3505,11 @@ std::shared_ptr<ServerSocket> COOLWSDServer::findClientPort()
 void COOLWSDServer::startPrisoners()
 {
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: startPrisoners...'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: startPrisoners...'); });
 #endif
     PrisonerPoll->startThread();
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: prisoner thread started'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: prisoner thread started'); });
 #endif
     PrisonerPoll->insertNewSocket(findPrisonerServerPort());
 }
@@ -3534,16 +3534,16 @@ void COOLWSDServer::start(std::shared_ptr<ServerSocket>&& serverSocket)
 #endif
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: accept_poll startThread...'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: accept_poll startThread...'); });
 #endif
     _acceptPoll.startThread();
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: accept_poll started, inserting socket...'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: accept_poll started, inserting socket...'); });
 #endif
     _acceptPoll.insertNewSocket(std::move(serverSocket));
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: websrv_poll startThread...'); });
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: websrv_poll startThread...'); });
 #endif
     WebServerPoll->startThread();
 

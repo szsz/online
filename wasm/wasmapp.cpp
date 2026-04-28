@@ -402,7 +402,7 @@ void handle_cool_message(const char *string_value)
 
     if (strcmp(string_value, "HULLO") == 0)
     {
-        MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: HULLO received from JS'); });
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: HULLO received from JS'); });
 
         // Cold-start race: JS may send HULLO before COOLWSD's accept
         // loop has finished spinning up. Wait on the condvar that
@@ -431,10 +431,10 @@ void handle_cool_message(const char *string_value)
             return;
         }
 
-        MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: HULLO fakeSocketConnect...'); });
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: HULLO fakeSocketConnect...'); });
         int rc = fakeSocketConnect(fakeClientFd, coolwsd_server_socket_fd);
         assert(rc != -1);
-        MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: HULLO connected, sending fileURL'); });
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: HULLO connected, sending fileURL'); });
 
         // Create a socket pair to notify the below thread when the document has been closed
         fakeSocketPipe2(closeNotificationPipeForForwardingThread);
@@ -662,7 +662,7 @@ int main(int argc, char* argv_main[])
             }
 
             auto t_start = std::chrono::steady_clock::now();
-            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD::run() starting'); });
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: COOLWSD::run() starting'); });
 #ifdef __EMSCRIPTEN__
             {
                 int isRestore = MAIN_THREAD_EM_ASM_INT({
@@ -685,7 +685,7 @@ int main(int argc, char* argv_main[])
             coolwsd->run(1, argv);
             auto t_end = std::chrono::steady_clock::now();
             { auto ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
-            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: COOLWSD::run() took ' + $0 + 'ms'); }, ms); }
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: COOLWSD::run() took ' + $0 + 'ms'); }, ms); }
             delete coolwsd;
         })
         .detach();
