@@ -216,6 +216,17 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
           } catch(e) {
               console.warn('FakeSocket reset failed:', e);
           }
+          // comphelper::ThreadPool static singleton's worker threads are
+          // dead cold pthreads on warm. Calling getSharedOptimalPool()
+          // would dispatch to dead workers (Calc multi-thread recalc, image
+          // decode). Replace the singleton with a fresh pool — old pool is
+          // intentionally leaked to avoid invoking ~ThreadPool() which would
+          // try to join the dead pthreads.
+          try { Module.ccall('wasm_warm_restore_threadpool_reset', null, [], []);
+              console.log('WARM_DBG: ThreadPool reset OK');
+          } catch(e) {
+              console.warn('ThreadPool reset failed:', e);
+          }
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
           // Recreate VFS directories that the restored LO Core expects.
@@ -277,6 +288,15 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
                     console.log('WARM_DBG: worker->main msg cmd=' + e.data.cmd + ' workerID=' + w.workerID);
                   }
                   return _wrappedOnMsg.call(w, e);
+                };
+                // Also wrap postMessage so we can see main->worker dispatches
+                // (especially the "run" message that should follow "loaded").
+                var _origPM = w.postMessage.bind(w);
+                w.postMessage = function(msg, transfer) {
+                  if (msg && msg.cmd) {
+                    console.log('WARM_DBG: main->worker postMessage cmd=' + msg.cmd + ' workerID=' + w.workerID);
+                  }
+                  return _origPM(msg, transfer);
                 };
                 return _p;
               };

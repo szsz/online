@@ -559,7 +559,15 @@
                 // (the parent visiblePoll already confirms the canvas
                 // differs from the pre-switch baseline, so we know
                 // SOME paint happened before we entered this block).
-                var STABILITY_MS = 1200;
+                // 400 ms (was 1200 ms). Recommendation 6.6 from
+                // /tmp/snapshot-design-review.md — the original 1200 ms
+                // was a conservative guard against firing too early on
+                // partial paints. With the warm-restore canvas-baseline
+                // check upstream (visiblePoll already confirmed the
+                // canvas changed from pre-switch baseline) plus the
+                // statusReady gate, 400 ms of stability is sufficient.
+                // Saves ~800 ms on every warm visit.
+                var STABILITY_MS = 400;
                 var readyStart = performance.now();
                 var lastSample = null;
                 var lastChangeAt = performance.now();
