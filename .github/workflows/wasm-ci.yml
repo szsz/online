@@ -107,6 +107,14 @@ jobs:
       app_build_id: ${{ steps.ids.outputs.app_build_id }}
       lo_build_id:  ${{ steps.ids.outputs.lo_build_id }}
     steps:
+      # Reclaim workspace ownership before checkout. build-online.sh runs
+      # inside docker as root and writes to bind-mounted paths (autom4te.cache,
+      # m4/, storage/). A trap chowns back on EXIT, but if the script is
+      # cancelled mid-flight or the runner reboots, root-owned remnants are
+      # left behind — actions/checkout's `git clean -ffdx` then exits 1.
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -146,6 +154,9 @@ jobs:
     if: ${{ github.event.inputs.skip_tests != 'true' }}
     runs-on: [self-hosted, wasm-build]
     steps:
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
       - name: Checkout
         uses: actions/checkout@v4
 
