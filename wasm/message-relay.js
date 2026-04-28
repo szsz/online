@@ -737,6 +737,23 @@ const server = useSSL
 // --- WebSocket server ---
 const wss = new WebSocket.Server({ noServer: true });
 
+// Heartbeat: detect dead connections (browser crash, abrupt close, network drop)
+// before TCP keepalive (which defaults to ~2hr on Linux). Without this, the
+// 'close' handler never fires and rooms appear to have phantom clients.
+// Interval=15s × 2 misses = ~30s detection window.
+const HEARTBEAT_MS = 15000;
+const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+            console.log(`[${ws._roomId || '?'}] heartbeat: terminating unresponsive client viewId=${ws._viewId || 0}`);
+            return ws.terminate();
+        }
+        ws.isAlive = false;
+        try { ws.ping(); } catch (e) { /* ignore */ }
+    });
+}, HEARTBEAT_MS);
+wss.on('close', () => clearInterval(heartbeatInterval));
+
 server.on('upgrade', (req, socket, head) => {
     const match = req.url.match(/^\/room\/(.+)/);
     const roomId = match ? match[1] : 'default';
@@ -750,6 +767,8 @@ server.on('upgrade', (req, socket, head) => {
         ws._joinBuffering = false;
         ws._joinBuffer = [];
         ws._expectedHash = null;
+        ws.isAlive = true;
+        ws.on('pong', () => { ws.isAlive = true; });
 
         console.log(`[${roomId}] Connected (${room.clients.size} total, ${room.activeClients.size} active)`);
         room.debugAppend('event', {
@@ -936,20 +955,18 @@ server.on('upgrade', (req, socket, head) => {
                 activeCount: room.activeClients.size,
             });
             if (room.clients.size === 0) {
-                // If there are unsaved messages since the last checkpoint,
-                // keep the room alive so a reconnecting client can replay
-                // them. This prevents data loss on hard-refresh when WASM
-                // boot takes >60s.
-                if (room.messageLog.length > 0) {
-                    console.log(`[${roomId}] Room empty but ${room.messageLog.length} unsaved messages — keeping alive`);
-                } else {
-                    setTimeout(() => {
-                        if (room.clients.size === 0 && room.messageLog.length === 0) {
-                            rooms.delete(roomId);
-                            console.log(`[${roomId}] Room cleaned up (no unsaved messages)`);
-                        }
-                    }, 60000);
-                }
+                // 60s grace covers slow WASM-boot reconnects (hard-refresh
+                // when init takes >30s). After that, drop the room even if
+                // there's an unsaved tail — the originator is gone, and a
+                // fresh open should start from the last saved checkpoint
+                // rather than replaying ghost edits from a dead session.
+                setTimeout(() => {
+                    if (room.clients.size === 0) {
+                        const tail = room.messageLog.length;
+                        rooms.delete(roomId);
+                        console.log(`[${roomId}] Room cleaned up (tail=${tail} unsaved msgs dropped)`);
+                    }
+                }, 60000);
             }
         });
     });
