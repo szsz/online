@@ -186,16 +186,18 @@
     // (vs ~8.6 s cold). BUT the user-facing doc-load on warm still hangs:
     // WasmDocReady postMessage never fires through the cold-protocol load.
     // Until that final piece is in: keep cold-only.
-    // SNAPSHOT_DISABLED: hard-coded killswitch. Default true (cold-only).
-    // For Plan C bring-up testing, the test harness can opt-in per-tab by
-    // appending ?planc=1 to the editor iframe URL, which flips it to false
-    // for that tab only. This avoids touching the source/redeploying for
-    // every iteration. Production rollout will set the constant directly.
-    var SNAPSHOT_DISABLED = true;
+    // SNAPSHOT_DISABLED: hard-coded killswitch. Default FALSE (snapshot
+    // enabled — warm path is the production behaviour). Opt-out via
+    // ?planc=0 on the editor iframe URL for one-off cold-only testing.
+    // Pre-2026-04-28-evening this was the other way around (default
+    // true, opt-in via ?planc=1) while warm path was being stabilised.
+    var SNAPSHOT_DISABLED = false;
     try {
         var __plancParam = new URLSearchParams(window.location.search).get('planc');
-        if (__plancParam === '1' || __plancParam === 'on') {
-            SNAPSHOT_DISABLED = false;
+        if (__plancParam === '0' || __plancParam === 'off') {
+            SNAPSHOT_DISABLED = true;
+            window.__plancOptOut = true;
+        } else {
             window.__plancOptIn = true;
         }
     } catch (e) { /* ignore */ }

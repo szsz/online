@@ -657,14 +657,13 @@ async function startPrewarm() {
     // handshake and keeps a ghost room alive for cleanup. The real
     // relay room is set by openFile() via RelaySwitchRoom or the cold
     // reload coolUrl.
-    // Propagate Plan C opt-in: if the viewer page URL has ?planc=1, pass
-    // it through to the editor iframe so wasm-loader.js flips
-    // SNAPSHOT_DISABLED=false for that tab. Lets us test warm-restore via
-    // the same E2E test harness without flipping the global killswitch.
+    // Propagate Plan C state: snapshot is now ON by default. Pass
+    // ?planc=0 through to the iframe to opt OUT (cold-only).
     var __viewerPlanC = '';
     try {
-        if (new URLSearchParams(window.location.search).get('planc') === '1')
-            __viewerPlanC = '&planc=1';
+        var __vp = new URLSearchParams(window.location.search).get('planc');
+        if (__vp === '0' || __vp === 'off') __viewerPlanC = '&planc=0';
+        else if (__vp === '1' || __vp === 'on') __viewerPlanC = '&planc=1';
     } catch (e) { /* ignore */ }
     iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                + '&access_token=test'
@@ -999,8 +998,9 @@ async function openFile(name, opts) {
         // latency from the critical path.
         var __coldPlanC = '';
         try {
-            if (new URLSearchParams(window.location.search).get('planc') === '1')
-                __coldPlanC = '&planc=1';
+            var __cp = new URLSearchParams(window.location.search).get('planc');
+            if (__cp === '0' || __cp === 'off') __coldPlanC = '&planc=0';
+            else if (__cp === '1' || __cp === 'on') __coldPlanC = '&planc=1';
         } catch (e) { /* ignore */ }
         const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
                       + '&access_token=test'
