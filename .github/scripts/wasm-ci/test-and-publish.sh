@@ -57,10 +57,13 @@ ln -s "$NODE_MODULES_HOST" "$WORKSPACE/wasm/node_modules"
 
 # Reinstall when the lock file changes (or on the first run). The marker
 # file inside the persistent dir records the lock file we last installed
-# from; if it differs from the current one, do a fresh `npm ci`.
+# from; if it differs from the current one, do a fresh `npm ci`. Also
+# verify a known package is actually present — the marker can survive an
+# external rm of the cache contents, which then sends every test into
+# `Cannot find module 'puppeteer'`.
 LOCK="$WORKSPACE/wasm/package-lock.json"
 INSTALLED_FROM="$NODE_MODULES_HOST/.installed-from-lock"
-if [[ ! -f "$INSTALLED_FROM" ]] || ! cmp -s "$LOCK" "$INSTALLED_FROM"; then
+if [[ ! -f "$INSTALLED_FROM" ]] || ! cmp -s "$LOCK" "$INSTALLED_FROM" || [[ ! -d "$NODE_MODULES_HOST/puppeteer" ]]; then
     echo "--- Installing wasm/node_modules (cache=$NPM_CACHE_HOST chromium=$PUPPETEER_CACHE_HOST) ---"
     # Empty the persistent dir so npm ci sees a clean slate. The symlink
     # we just made is preserved by removing dir contents, not the dir.
