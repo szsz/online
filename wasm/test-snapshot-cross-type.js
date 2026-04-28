@@ -279,6 +279,12 @@ async function waitForContentLoaded(browser, page, navStart, c) {
     log('all-warm-pass: ' + allWarmPass + '   max-warm-content_ok: ' + (maxWarm/1000).toFixed(2) + 's');
     log('goal: max-warm-content_ok ≤ 5.00s');
 
+    // Clean up the persistent userDataDir so we don't leak ~700 MB / run
+    // into /tmp. Multi-run iteration loops were filling the disk and
+    // degrading subsequent runs. Disk-only cleanup; results were already
+    // recorded above.
+    try { fs.rmSync(USER_DATA_DIR, { recursive: true, force: true }); } catch (e) {}
+
     process.exit(allWarmPass && maxWarm <= 5000 ? 0 : 1);
 })().catch(e => {
     log('FATAL: ' + (e.stack || e.message || e));

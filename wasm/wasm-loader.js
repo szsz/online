@@ -186,16 +186,18 @@
     // (vs ~8.6 s cold). BUT the user-facing doc-load on warm still hangs:
     // WasmDocReady postMessage never fires through the cold-protocol load.
     // Until that final piece is in: keep cold-only.
-    // SNAPSHOT_DISABLED: hard-coded killswitch. Default true (cold-only).
-    // For Plan C bring-up testing, the test harness can opt-in per-tab by
-    // appending ?planc=1 to the editor iframe URL, which flips it to false
-    // for that tab only. This avoids touching the source/redeploying for
-    // every iteration. Production rollout will set the constant directly.
-    var SNAPSHOT_DISABLED = true;
+    // SNAPSHOT_DISABLED: hard-coded killswitch. Default FALSE (snapshot
+    // enabled — warm path is the production behaviour). Opt-out via
+    // ?planc=0 on the editor iframe URL for one-off cold-only testing.
+    // Pre-2026-04-28-evening this was the other way around (default
+    // true, opt-in via ?planc=1) while warm path was being stabilised.
+    var SNAPSHOT_DISABLED = false;
     try {
         var __plancParam = new URLSearchParams(window.location.search).get('planc');
-        if (__plancParam === '1' || __plancParam === 'on') {
-            SNAPSHOT_DISABLED = false;
+        if (__plancParam === '0' || __plancParam === 'off') {
+            SNAPSHOT_DISABLED = true;
+            window.__plancOptOut = true;
+        } else {
             window.__plancOptIn = true;
         }
     } catch (e) { /* ignore */ }
@@ -559,7 +561,13 @@
                 // (the parent visiblePoll already confirms the canvas
                 // differs from the pre-switch baseline, so we know
                 // SOME paint happened before we entered this block).
-                var STABILITY_MS = 1200;
+                // 400 ms after Rec 6.5 (capture-point shift) made the
+                // warm path reliable. Iter9–13 saw apparent regressions
+                // at 400 ms but those were the lockstep capture race,
+                // not STABILITY_MS related. Now that warm is solid,
+                // dropping the gate from 1200 to 400 saves ~800 ms on
+                // every warm visit's visible-at moment.
+                var STABILITY_MS = 400;
                 var readyStart = performance.now();
                 var lastSample = null;
                 var lastChangeAt = performance.now();
@@ -1010,6 +1018,51 @@
                 // of what the previous code did and why we removed it.
                 if (wasRestored) {
                     mark('snapshot:warm_restore_using_cold_protocol');
+                    // ───── WARM-RESTORE WATCHDOG ─────
+                    // Hot-switch capture race (~30 % of calc/impress cold
+                    // sessions) produces a snapshot that hangs on warm:
+                    // worker reports cmd=loaded, COOLWSD pthread never
+                    // dispatches its start_routine, doc:loaded never fires.
+                    // Without this, the user stares at a spinner forever.
+                    // Detect the hang at 20 s, drop the bad snapshot from
+                    // Cache Storage, reload the iframe — the reload finds
+                    // no snapshot and runs the cold path. Net UX: ~27 s
+                    // worst-case warm vs. infinite hang. Watchdog cleared
+                    // by the doc:loaded mark below, so successful warms
+                    // pay nothing. window.__wasmWarmWatchdogTriggered is
+                    // set so the cold reload doesn't immediately re-arm.
+                    if (!window.__wasmWarmWatchdogTriggered) {
+                        window.__wasmWarmWatchdogTimer = setTimeout(function() {
+                            try {
+                                console.warn('[snapshot] Warm-restore watchdog: '
+                                    + 'doc:loaded missing 20s after restore — '
+                                    + 'dropping snapshot and reloading as cold');
+                                window.__wasmWarmWatchdogTriggered = true;
+                                if (typeof caches !== 'undefined') {
+                                    caches.open('wasm-snapshot').then(function(c) {
+                                        return c.keys().then(function(keys) {
+                                            return Promise.all(keys.map(function(k) {
+                                                return c.delete(k);
+                                            }));
+                                        });
+                                    }).then(function() {
+                                        location.reload();
+                                    }).catch(function(e) {
+                                        console.error('[snapshot] Cache clear failed:', e);
+                                        location.reload();
+                                    });
+                                } else {
+                                    location.reload();
+                                }
+                            } catch (e) {
+                                console.error('[snapshot] Watchdog handler threw:', e);
+                            }
+                        }, 12000);  // was 20000 — tightened after iter17
+                                    // measured happy warms at 6–8s (3–5s
+                                    // margin). False-fires would manifest
+                                    // as needless cold reloads on slow
+                                    // networks; revisit if observed.
+                    }
                 }
 
                 if (!wasRestored) {
@@ -1205,6 +1258,11 @@
             if (loaded && changed && !seenContent) {
                 seenContent = true;
                 mark('doc:loaded', wc ? wc.textContent.trim() : (dp ? dp.textContent.trim() : ''));
+                // Clear warm-restore watchdog — doc loaded successfully.
+                if (window.__wasmWarmWatchdogTimer) {
+                    clearTimeout(window.__wasmWarmWatchdogTimer);
+                    window.__wasmWarmWatchdogTimer = null;
+                }
             }
             var runtimeReady = (typeof Module !== 'undefined') &&
                                (window.__wasmExports || (Module && Module.calledRun));

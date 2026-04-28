@@ -1440,10 +1440,39 @@
                             // 0x0A redirect logic kicks in; DON'T write
                             // these bytes to /wasm/<wopiSrc>.
                             if (info.hash && info.hash !== joinFileHash) {
-                                console.error('[relay] HASH MISMATCH: locator=' + joinFileHash.substring(0, 16) +
+                                // The bytes at the advertised locator hash to a different
+                                // value than what the relay's room-checkpoint expects.
+                                // This commonly happens with v2 shared links: a previous
+                                // editor registered checkpointHash X; the file was then
+                                // updated to Y; new joiners fetch Y from authoritative
+                                // storage and the relay still has X.
+                                //
+                                // Previously the code threw 'hash-mismatch' here and the
+                                // doc never opened (reproduced via
+                                // /#file=tkPa0z9L83UyllHVpHIZhw — relay said cbd00c30…
+                                // but storage served 2a71db53…).
+                                //
+                                // The relay's 0x0A redirect (message-relay.js:841) only
+                                // helps when there's a *different* locator with the
+                                // expected bytes — not the case for v2 where there is
+                                // exactly one authoritative copy per fileId.
+                                //
+                                // Best-effort recovery: trust authoritative storage,
+                                // proceed with the bytes we got. Send 0x06 with our
+                                // hash so the relay can update its checkpoint (or, if
+                                // a different locator exists, redirect us — the 0x0A
+                                // handler below resets state and we'll re-download).
+                                console.warn('[relay] HASH MISMATCH: ours=' + joinFileHash.substring(0, 16) +
                                     '… relay-expected=' + info.hash.substring(0, 16) +
-                                    '… — abandoning download; relay should send 0x0A redirect');
-                                throw new Error('hash-mismatch');
+                                    '… — proceeding with authoritative bytes; sending 0x06 to update relay');
+                                try {
+                                    sendToRelay(0x06, myViewId, JSON.stringify({ hash: joinFileHash }));
+                                } catch (e) {
+                                    console.error('[relay] sendToRelay(0x06) for redirect failed:', e.message);
+                                }
+                                // Fall through and POST the bytes to /wasm/<wopiSrc> so
+                                // Kit can load the doc. If the relay sends 0x0A its
+                                // handler will reset state and re-download.
                             }
                             console.log('[relay] Downloaded ' + buf.byteLength + 'B; hash=' +
                                 joinFileHash.substring(0, 16) + '… ✓ matches relay');

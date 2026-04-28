@@ -70,11 +70,27 @@ window.L.Control.Notebookbar = window.L.Control.extend({
 
 		this.container = container;
 
-		this.loadTab();
-
+		// Listener-after-fire race fix: register the updatepermission
+		// listener and seed _showNotebookbar BEFORE loadTab() runs.
+		// On the WASM warm path Permission._enterEditMode triggers
+		// updatepermission ~157 ms before this method's listener
+		// would have attached at the previous line order, leaving
+		// _showNotebookbar=false → loadTab() hides the tab strip and
+		// nothing un-hides it. Seeding from app.isReadOnly() catches
+		// the case where the perm message has already been processed,
+		// and the listener catches future events.
 		this.onContextChange = this.onContextChange.bind(this);
 		app.events.on('contextchange', this.onContextChange);
 		app.events.on('updatepermission', this.onUpdatePermission.bind(this));
+		try {
+			if (typeof app !== 'undefined' && typeof app.isReadOnly === 'function') {
+				this._showNotebookbar = !app.isReadOnly();
+			}
+		} catch (e) { /* keep default false */ }
+
+		this.loadTab();
+
+
 		this.map.on('darkmodechanged', this.onDarkModeToggleChange, this);
 		this.map.on('showannotationschanged', this.onShowAnnotationsChange, this);
 		this.map.on('a11ystatechanged', this.onAccessibilityToggleChange, this);

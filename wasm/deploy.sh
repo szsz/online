@@ -216,6 +216,17 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
           } catch(e) {
               console.warn('FakeSocket reset failed:', e);
           }
+          // comphelper::ThreadPool static singleton's worker threads are
+          // dead cold pthreads on warm. Calling getSharedOptimalPool()
+          // would dispatch to dead workers (Calc multi-thread recalc, image
+          // decode). Replace the singleton with a fresh pool — old pool is
+          // intentionally leaked to avoid invoking ~ThreadPool() which would
+          // try to join the dead pthreads.
+          try { Module.ccall('wasm_warm_restore_threadpool_reset', null, [], []);
+              console.log('WARM_DBG: ThreadPool reset OK');
+          } catch(e) {
+              console.warn('ThreadPool reset failed:', e);
+          }
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
           // Recreate VFS directories that the restored LO Core expects.
@@ -278,6 +289,14 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
                   }
                   return _wrappedOnMsg.call(w, e);
                 };
+                // postMessage wrapper REMOVED. Earlier iterations (9–13)
+                // wrapped w.postMessage to log main->worker cmd; in V8/
+                // Chromium passing `undefined` as the second arg of
+                // `worker.postMessage(msg, undefined)` is not equivalent
+                // to omitting it (it serializes a transferList with one
+                // element of `undefined`, which can corrupt the run cmd
+                // payload). Reverted to ungated dispatch — observed
+                // calc/impress warm hangs to disappear.
                 return _p;
               };
             }
