@@ -61,8 +61,11 @@
   <div class="sub">
     Collabora Online running entirely in the browser over WebAssembly.
     No LibreOffice server, no WOPI host — the viewer sideloads a ~265 MB
-    WASM editor into an iframe, then keeps it warm for instant document
-    switches. This page explains the moving parts and how to embed them.
+    WASM editor into an iframe, snapshots its initialised heap to Cache
+    Storage, and warm-restores it on return visits for fast second opens.
+    Documents are end-to-end encrypted (the secret lives in the URL
+    fragment; the server only ever sees opaque ciphertext). This page
+    explains the moving parts and how to embed them.
   </div>
 </header>
 
@@ -75,8 +78,11 @@
 <p class="note">
   <strong>First load is slow.</strong> The first time you open a document
   the browser downloads ~57 MB brotli (≈265 MB raw) of WASM plus ~16 MB
-  brotli (≈94 MB raw) of LibreOffice resources. A Service Worker caches
-  these, so subsequent loads are near-instant.
+  brotli (≈94 MB raw) of LibreOffice resources. A Service Worker
+  (<code>/browser/sw.js</code>) puts these in Cache Storage, and a
+  snapshot of the initialised WASM heap is stashed under the
+  <code>wasm-snapshot</code> cache, so the second visit warm-restores
+  in well under 5 s instead of paying the full cold init.
 </p>
 
 <h2>The three services</h2>
@@ -87,10 +93,10 @@
                    │  Browser                        │
                    │                                 │
   user types ────▶ │  [viewer page]   [editor iframe]│
-                   │   files.html       cool.html    │
+                   │   index.html       cool.html    │
                    │       │               │ ▲       │
                    └───────┼───────────────┼─┼───────┘
-                           │ files.* URLs  │ │ relay WS (binary msgs)
+                           │ /api/v2/file  │ │ relay WS (binary msgs)
                            ▼               ▼ │
                     ┌───────────┐    ┌───────┴────┐    ┌──────────┐
                     │  VIEWER   │    │  EDITOR    │    │  RELAY   │
@@ -99,8 +105,8 @@
                     └─────┬─────┘    └─────┬──────┘    └────┬─────┘
                           │                │                │
                           ▼                ▼                │
-                   Azure Blob         /wasm/&lt;name&gt;           │
-                   (documents)        in-memory upload      messages
+                   Azure Blob         /wasm/&lt;fileId&gt;        │
+                   (ciphertext)       plaintext staging    messages
                                                               │
                                                               ▼
                                                        fan-out to all
@@ -115,11 +121,17 @@
     <tr>
       <td><strong>Viewer</strong> <span class="chip chip-local">local</span><span class="chip chip-azure">azure</span></td>
       <td>
-        Sidebar UI with file list, drag-drop upload, folder tree.
-        Embeds the editor in an iframe, orchestrates hot-switches,
-        serves <code>/api/files/</code>, <code>/api/blobs/</code>,
-        <code>/api/keys/</code>, <code>/api/folders/</code>. Also serves
-        this page.
+        Sidebar UI with file list (encrypted-files panel + folder tree),
+        drag-drop upload, recent-files history. Embeds the editor in an
+        iframe, performs client-side AES-GCM encrypt/decrypt for v2
+        files, orchestrates hot-switches between docs of the same type,
+        and serves <code>/api/v2/file/&lt;fileId&gt;</code> (encrypted
+        per-file storage), <code>/api/v2/index</code>,
+        <code>/api/blobs/&lt;hash&gt;</code> (immutable
+        content-addressable bytes), <code>/api/keys/</code> (relay
+        message-encryption keys), <code>/api/folders/</code> and the
+        legacy <code>/api/files/</code> path. Also serves this page,
+        <code>/index.html</code>, and <code>/singleuser.html</code>.
       </td>
       <td><a href="https://viewer.szebeni.hu/">viewer.szebeni.hu</a></td>
       <td>
@@ -160,13 +172,40 @@
   On Azure they are three App Services, fronted by Azure's own TLS.
 </p>
 
-<h2>Document storage</h2>
+<h2>Document storage and v2 encryption</h2>
 <p>
-  Files are content-addressed (SHA-256). The viewer maintains two
-  indexes: <code>_meta/&lt;url-encoded-name&gt;.json</code> maps a display
-  name to its current <code>{hash, size, updatedAt}</code>, and
-  <code>_blobs/&lt;hash&gt;</code> stores the immutable bytes. Two storage
-  backends ship:
+  Every uploaded document is encrypted client-side under a fresh
+  128-bit secret. The secret never leaves the browser — it lives in
+  the URL fragment (<code>#file=&lt;22-char-base64url&gt;</code>) and
+  is cached in <code>localStorage.rf_v1</code> so the sidebar can
+  render plaintext display names. The server only ever sees opaque
+  bytes addressed by an <strong>opaque <code>fileId</code></strong>
+  (HKDF derivation of the secret).
+</p>
+<ul>
+  <li><strong>Key derivation:</strong> HKDF-SHA256 on the 16-byte secret
+      → <code>contentKey</code> (32 B AES), <code>nameKey</code> (32 B
+      AES), <code>fileIdBytes</code> (32 B → 64-char hex
+      <code>fileId</code>).</li>
+  <li><strong>Ciphertext layout:</strong> 12 B random IV + AES-256-GCM
+      ciphertext + 16 B tag. The filename is separately encrypted under
+      <code>nameKey</code> and stored as <code>encName</code>.</li>
+  <li><strong>Storage:</strong> ciphertext + <code>encName</code> are
+      written to <code>/api/v2/file/&lt;fileId&gt;</code>. The file
+      manager performs all encryption — neither the editor nor the
+      relay ever sees the key.</li>
+  <li><strong>Open flow:</strong> the viewer fetches the ciphertext,
+      decrypts client-side, POSTs the plaintext to
+      <code>/wasm/&lt;fileId&gt;</code> on the editor, then spawns the
+      iframe with <code>WOPISrc=&lt;fileId&gt;</code>.</li>
+  <li><strong>Save-back:</strong> Ctrl+S has the editor postMessage the
+      plaintext bytes to the viewer (<code>WasmFileSave</code>); the
+      viewer encrypts and PUTs to
+      <code>/api/v2/file/&lt;fileId&gt;</code>, then reports a hash +
+      locator back to the editor for the relay's next checkpoint.</li>
+</ul>
+<p>
+  Two storage backends ship:
 </p>
 <ul>
   <li><strong>Local filesystem</strong> (<code>STORAGE_BACKEND=local</code>)
@@ -176,11 +215,19 @@
       (<code>DOC_STORAGE_SAS_URL</code>). Used for the Azure deploy.</li>
 </ul>
 <p>
-  Late joiners download the checkpoint directly from the viewer's
-  <code>/api/blobs/&lt;hash&gt;</code> endpoint, which never lies about
-  bytes (the hash <em>is</em> the URL), so there is no risk of
-  desync between what the relay promised and what the blob endpoint
-  delivers.
+  Bytes are also exposed at
+  <code>/api/blobs/&lt;hash&gt;</code> for the late-join checkpoint
+  flow: the hash <em>is</em> the URL, so a content-addressed download
+  cannot disagree with the relay's recorded checkpoint hash. Plaintext
+  v2 files use <code>/api/v2/file/&lt;fileId&gt;</code> as the locator
+  instead — every late joiner re-decrypts client-side.
+</p>
+<p class="note">
+  <strong>Sharing a doc.</strong> Send the URL <em>including the
+  fragment</em> (the <code>#file=…</code> part). Without the fragment,
+  the recipient lands on an empty sidebar — the server cannot supply
+  the secret. Bookmarking the page works because the browser keeps the
+  fragment.
 </p>
 
 <h2>Modes: single-user vs co-editing</h2>
@@ -192,25 +239,72 @@
 <h3>Co-editing mode <span class="chip chip-local">default</span></h3>
 <p>
   The page at <code>/</code> loads the editor with
-  <code>?relay=wss://&lt;relay-host&gt;/</code>. The embedded
-  <code>relay-adapter.js</code> intercepts every
-  user-input message, routes it through the relay (which assigns a
-  sequence number), and applies only the relay-ordered stream to the
-  local editor. All peers apply the same sequence, so all replicas
-  stay byte-identical. <strong>Use this for any document you want
-  to share.</strong>
+  <code>?relay=wss://&lt;relay-host&gt;/room/&lt;encoded-room-key&gt;</code>.
+  The embedded <code>relay-adapter.js</code> intercepts every
+  user-input message (keys, mouse-button events, UNO commands), routes
+  it through the relay (which assigns a monotonic sequence number and
+  fans out to every peer in the room, sender included), and only then
+  applies the broadcast to the local Kit. All peers apply the same
+  sequence, so all replicas stay byte-identical. Mouse-move is the one
+  exception — it goes straight to the local Kit and is buffered, with
+  the last buffered move flushed to the relay just before the next
+  click so remote cursors land at the right spot without flooding the
+  WebSocket. <strong>Use this for any document you want to share.</strong>
 </p>
 
 <h3>Single-user mode</h3>
 <p>
-  The page at <code>/singleuser.html</code> loads the editor without
-  the <code>relay=…</code> parameter. <code>relay-adapter.js</code>
-  detects this and short-circuits to local mode: no WebSocket, no
-  sequence numbers, but the save/hash-tracking bits still run so
-  conflict detection works if someone else edits the file via a
-  different client. <strong>Use this when you're the only editor
-  and want to skip the relay round-trip.</strong>
+  <code>/singleuser.html</code> redirects to
+  <code>/index.html?singleuser</code>. The viewer detects the flag and
+  builds the iframe URL <em>without</em> the <code>relay=…</code>
+  parameter, so <code>relay-adapter.js</code> short-circuits to local
+  mode: no WebSocket, no sequence numbers, but Ctrl+S still encrypts
+  and stores the plaintext to <code>/api/v2/file/&lt;fileId&gt;</code>.
+  Conflict detection (hash mismatch on save) still runs.
+  <strong>Use this when you're the only editor and want to skip the
+  relay round-trip.</strong>
 </p>
+
+<h2>Warm restore (snapshot)</h2>
+<p>
+  After the first document successfully paints, the editor serialises
+  its WASM <code>HEAPU8</code> + a small metadata blob into the
+  <code>wasm-snapshot</code> Cache Storage. Subsequent visits skip the
+  cold init: the heap is restored before <code>callMain()</code>, the
+  C++ side resumes from a self-parked safe point, and a fresh
+  <code>switchdocument</code> opens the target file. Real-world warm
+  opens land at ~5–11 s (cold can be 25–40 s on a fresh browser).
+</p>
+<ul>
+  <li>Default: <strong>ON</strong>.</li>
+  <li>Opt out for a session: append <code>?planc=0</code> to the
+      viewer URL. The flag is propagated to the iframe and the cached
+      snapshot is purged.</li>
+  <li>Snapshots carry a build fingerprint injected by
+      <code>deploy.sh</code>; a stale snapshot from a prior deploy is
+      silently discarded and the visit falls back to cold.</li>
+</ul>
+
+<h2>Hot-switching between documents</h2>
+<p>
+  When the user clicks a different file in the sidebar, the viewer
+  decides between two paths:
+</p>
+<ul>
+  <li><strong>Same doc-type</strong> (writer→writer, calc→calc,
+      impress→impress) — the iframe stays mounted. The viewer posts
+      <code>RelaySwitchRoom</code> to detach the old room, rewrites
+      the iframe's hash to <code>#switchdoc=&lt;fileId&gt;</code>, and
+      the editor calls <code>switchdocument</code> against the new
+      bytes already staged at <code>/wasm/&lt;fileId&gt;</code>. End
+      to end ≈ 1 s.</li>
+  <li><strong>Cross doc-type</strong> (writer↔calc, calc↔impress,
+      etc.) — cold reload. The iframe's <code>src</code> is replaced;
+      the warm snapshot still gets us to a running runtime in &lt; 5 s,
+      then the new document loads on top. (A pure same-process
+      cross-type hot-switch is tracked but not enabled — sectionContainer
+      tear-down is incomplete.)</li>
+</ul>
 
 <h2>Integration guide — embedding the editor in your own page</h2>
 <p>
@@ -241,39 +335,57 @@ Permissions-Policy:           cross-origin-isolated=(self "&lt;editor-origin&gt;
 <pre><code>&lt;iframe
   id="editor-frame"
   src="&lt;editor-origin&gt;/browser/cool.html
-        ?WOPISrc=&lt;url-encoded-doc-name&gt;
+        ?WOPISrc=&lt;fileId-or-name&gt;
         &amp;access_token=test
-        &amp;relay=wss%3A%2F%2F&lt;relay-host&gt;"
-  allow="cross-origin-isolated; clipboard-read; clipboard-write"&gt;
+        &amp;relay=wss%3A%2F%2F&lt;relay-host&gt;%2Froom%2F&lt;encoded-room-key&gt;
+        &amp;fileStorageUrl=https%3A%2F%2F&lt;viewer-origin&gt;
+        &amp;UserName=&lt;display-name&gt;
+        &amp;displayName=&lt;plaintext-title&gt;"
+  allow="cross-origin-isolated; clipboard-read; clipboard-write"
+  referrerpolicy="no-referrer"&gt;
 &lt;/iframe&gt;</code></pre>
 <ul>
-  <li><code>WOPISrc</code> — document identifier. For our viewer this is
-      just the file name (<code>report.docx</code>). The editor uses it
-      as the room id and as the key for <code>/api/files/&lt;name&gt;</code>.</li>
+  <li><code>WOPISrc</code> — document identifier. For v2 this is the
+      64-char hex <code>fileId</code>; for legacy plaintext use the
+      file name. The editor uses it as the room id and as the path
+      under <code>/wasm/</code>.</li>
   <li><code>access_token</code> — any non-empty string works for our
       viewer (no auth beyond the SAS/secret on the backend). A real WOPI
       host would put a signed bearer token here.</li>
-  <li><code>relay</code> — WebSocket URL to the relay. <em>Omit</em>
-      to enable single-user mode.</li>
+  <li><code>relay</code> — WebSocket URL including
+      <code>/room/&lt;encoded-key&gt;</code>. <em>Omit</em> to enable
+      single-user mode.</li>
+  <li><code>fileStorageUrl</code> — the viewer origin. The editor
+      cannot infer it (referrer is suppressed and the parent origin is
+      cross-origin); it is needed so save-back posts hit the right
+      <code>/api/v2/file/&lt;fileId&gt;</code>.</li>
+  <li><code>UserName</code> — short pronounceable nickname shown on
+      remote cursors.</li>
+  <li><code>displayName</code> — optional plaintext title shown in the
+      editor chrome (the opaque <code>fileId</code> is otherwise what
+      the editor would render).</li>
+  <li><code>planc=0</code> — opt out of the warm-restore snapshot for
+      this session (cold-only). <em>Omit</em> to keep warm restore on.</li>
 </ul>
 
-<h3>3. Upload the doc to <code>/wasm/&lt;name&gt;</code></h3>
+<h3>3. Stage the doc bytes at <code>/wasm/&lt;fileId&gt;</code></h3>
 <p>
   Before the iframe's WASM calls <code>fopen("/tempdoc")</code> (≈3–6 s into
-  init), the doc bytes must be reachable at
-  <code>&lt;editor-origin&gt;/wasm/&lt;name&gt;</code>. Your wrapper
-  can either push them up with <code>fetch(POST)</code> or rely on the
-  viewer's built-in click handler if you're just embedding the viewer UI.
-  Example:
+  init), the <strong>plaintext</strong> doc bytes must be reachable at
+  <code>&lt;editor-origin&gt;/wasm/&lt;fileId&gt;</code>. The viewer
+  decrypts a v2 file client-side and POSTs the plaintext there before
+  swapping the iframe <code>src</code>. If you're embedding the editor
+  yourself, do the same:
 </p>
-<pre><code>await fetch(editorOrigin + '/wasm/' + encodeURIComponent(name), {
+<pre><code>await fetch(editorOrigin + '/wasm/' + encodeURIComponent(fileId), {
   method: 'POST',
-  body: docBytes,   // Blob, ArrayBuffer, or Uint8Array
+  body: plaintextBytes,   // Blob, ArrayBuffer, or Uint8Array
+  mode: 'cors',
 });</code></pre>
 <p>
-  The editor serves <code>GET /wasm/&lt;name&gt;</code> back to the WASM
-  later; it's a short-lived transient store, not a canonical place to
-  keep files.
+  The editor serves <code>GET /wasm/&lt;fileId&gt;</code> back to the
+  WASM later; it's a short-lived transient store, not a canonical place
+  to keep files. <strong>The editor never sees the encryption key.</strong>
 </p>
 
 <h3>4. postMessage protocol</h3>
@@ -284,28 +396,21 @@ Permissions-Policy:           cross-origin-isolated=(self "&lt;editor-origin&gt;
 <table>
   <thead><tr><th>Direction</th><th>MessageId</th><th>Purpose</th></tr></thead>
   <tbody>
-    <tr><td>iframe → parent</td><td><code>App_LoadingStatus</code></td><td>Fires <code>Document_Loaded</code> / <code>Initialized</code> — drop your loading shield here.</td></tr>
-    <tr><td>iframe → parent</td><td><code>RelayActivated</code></td><td>Relay joined + replay done. User can now type.</td></tr>
-    <tr><td>iframe → parent</td><td><code>WasmDocReady</code>, <code>WasmSwitchVisible</code></td><td>First-paint / hot-switch visible. Wrapper drops any switch overlay.</td></tr>
-    <tr><td>iframe → parent</td><td><code>KeyRequest</code></td><td>Client asks for an encryption key for a (fileId, keyVersion). Wrapper fetches from <code>/api/keys/&lt;fileId&gt;/&lt;keyVer&gt;</code> and posts <code>KeyResponse</code> back.</td></tr>
-    <tr><td>parent → iframe</td><td><code>RelaySwitchRoom</code></td><td>Ask an already-warm editor to hot-switch to a different doc (same or compatible type). Bypasses the cold reload.</td></tr>
-    <tr><td>parent → iframe</td><td><code>RelayDisconnect</code> / <code>ForceSave</code></td><td>Clean teardown, or override a save conflict.</td></tr>
+    <tr><td>iframe → parent</td><td><code>App_LoadingStatus</code></td><td>Fires <code>Document_Loaded</code> / <code>Initialized</code> — early hint, but don't drop the shield on it alone.</td></tr>
+    <tr><td>iframe → parent</td><td><code>WasmProgress</code></td><td>Live percentage / label / detail from <code>wasm-loader.js</code>. Drives the shield's progress bar.</td></tr>
+    <tr><td>iframe → parent</td><td><code>WasmPrewarmReady</code></td><td>Editor finished prewarm with a blank doc and is ready for a same-type hot-switch.</td></tr>
+    <tr><td>iframe → parent</td><td><code>WasmDocReady</code>, <code>WasmSwitchVisible</code></td><td>First canvas paint / hot-switch visible. Combined with <code>RelayActivated</code> the wrapper can drop the shield.</td></tr>
+    <tr><td>iframe → parent</td><td><code>RelayActivating</code> / <code>RelayActivated</code></td><td>Late-join replay started / completed. Until <code>RelayActivated</code>, user keystrokes are dropped on the floor.</td></tr>
+    <tr><td>iframe → parent</td><td><code>RelayLateJoinPhase</code></td><td>Coarse-grained progress for the late-join checkpoint download + replay.</td></tr>
+    <tr><td>iframe → parent</td><td><code>WasmFileSave</code></td><td>Editor hands plaintext bytes to the wrapper for v2 encryption + PUT to <code>/api/v2/file/&lt;fileId&gt;</code>. Wrapper replies with <code>WasmFileSaveResult</code> carrying <code>{ok, hash, locator}</code>.</td></tr>
+    <tr><td>iframe → parent</td><td><code>SaveComplete</code> / <code>SaveConflict</code></td><td>Outcome of a Ctrl+S round-trip. Conflict means another client wrote since the last open; the wrapper can offer a <code>ForceSave</code>.</td></tr>
+    <tr><td>iframe → parent</td><td><code>KeyRequest</code></td><td>Client asks for a relay-message-encryption key for a (fileId, keyVersion). Wrapper fetches from <code>/api/keys/&lt;fileId&gt;/&lt;keyVer&gt;</code> and posts <code>KeyResponse</code> back.</td></tr>
+    <tr><td>parent → iframe</td><td><code>RelaySwitchRoom</code></td><td>Ask an already-warm editor to hot-switch to a different doc <em>of the same type</em>. The wrapper then sets <code>iframe.src</code>'s hash to <code>#switchdoc=&lt;fileId&gt;</code>.</td></tr>
+    <tr><td>parent → iframe</td><td><code>RelayDisconnect</code> / <code>ForceSave</code></td><td>Clean teardown of the relay socket, or override a save conflict.</td></tr>
   </tbody>
 </table>
 
-<h3>5. Hot-switch vs cold-reload</h3>
-<p>
-  Opening a document of the <strong>same type</strong> as the current
-  one (writer→writer, calc→calc, impress→impress) can be done with
-  <code>RelaySwitchRoom</code> — the WASM runtime stays mounted,
-  a new doc is pushed in, and the user sees the swap in well under a
-  second. Opening a document of a <strong>different type</strong>
-  (writer→calc) is a cold reload: the iframe's <code>src</code> is
-  replaced and the WASM re-instantiates (~5–10 s thanks to HTTP cache
-  + Service Worker).
-</p>
-
-<h3>6. Style boundaries</h3>
+<h3>5. Style boundaries</h3>
 <p>
   The editor iframe carries its own CSS. Don't try to reach into it
   — COOL's style is not a public API. What <em>is</em> stable is the
@@ -313,19 +418,40 @@ Permissions-Policy:           cross-origin-isolated=(self "&lt;editor-origin&gt;
   documented above.
 </p>
 
+<h2>Relay protocol — pointer</h2>
+<p>
+  The relay speaks a small binary protocol over a single WebSocket per
+  client. Frames are <code>[type(1)] [viewId(4 BE)] [payload…]</code>;
+  broadcast frames carry an extra <code>[seq(4 BE)]</code> assigned by
+  the server. Implemented frame types: <code>0x00</code> user message,
+  <code>0x02</code> announce join, <code>0x03</code> announce leave,
+  <code>0x04</code> join request, <code>0x05</code> join response (with
+  optional checkpoint + cursor map for late joiners), <code>0x06</code>
+  join-ready / register, <code>0x07</code> save-rotation,
+  <code>0x0A</code> mismatch redirect. Reserved-but-ignored:
+  <code>0x01</code>, <code>0x09</code>. The full lifecycle (empty room,
+  late join, parked joiner, checkpoint rotation on Ctrl+S) is spelled
+  out in <code>wasm/CO-EDITING-ARCHITECTURE.md</code>.
+</p>
+
 <h2>Running the stack locally</h2>
 <pre><code># Deploy the editor bundle into /tmp/static-deploy/public/
 bash wasm/deploy.sh
 
-# Start the four services (all read wasm/.env)
-node wasm/message-relay.js &amp;
-bash wasm/launch-viewer.sh &amp;
+# Start the four services (each reads wasm/.env via its launch wrapper)
+bash      wasm/launch-relay.sh         &amp;
+bash      wasm/launch-viewer.sh        &amp;
 sudo bash wasm/launch-editor-static.sh &amp;
-sudo bash wasm/launch-sni-router.sh &amp;</code></pre>
+sudo bash wasm/launch-sni-router.sh    &amp;</code></pre>
 <p>
-  The SNI router needs <code>:443</code> (hence sudo). Relay + viewer +
-  editor-static each have their own HTTPS cert under
-  <code>/etc/letsencrypt/live/</code>.
+  The SNI router needs <code>:443</code> (hence sudo). Relay, viewer,
+  and editor-static each have their own HTTPS cert under
+  <code>/etc/letsencrypt/live/</code>, configured in
+  <code>wasm/.env</code> via namespaced keys
+  (<code>RELAY_SSL_CERT</code>, <code>EDITOR_SSL_CERT</code>; the
+  viewer uses bare <code>SSL_CERT</code>/<code>PORT</code>).
+  <code>deploy.sh</code> always restarts the relay last so no client
+  stays on a mismatched WS protocol.
 </p>
 
 <h2>Running on Azure</h2>
