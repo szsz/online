@@ -559,15 +559,13 @@
                 // (the parent visiblePoll already confirms the canvas
                 // differs from the pre-switch baseline, so we know
                 // SOME paint happened before we entered this block).
-                // Reverted from 400 → 1200 ms after iter9–12 measured
-                // back-to-back warm-path lockstep failures (one doc per
-                // run, all 3 trials hung post `cmd=loaded`). 1200 ms
-                // happens to correlate with 9/9 warm pass-rate; suspect
-                // the shorter gate cuts the cold session's settle window
-                // and Cache Storage flushes a partial blob. Re-attempt
-                // Recommendation 6.6 (STABILITY_MS reduction) AFTER the
-                // warm-hang root cause is fixed structurally.
-                var STABILITY_MS = 1200;
+                // 400 ms after Rec 6.5 (capture-point shift) made the
+                // warm path reliable. Iter9–13 saw apparent regressions
+                // at 400 ms but those were the lockstep capture race,
+                // not STABILITY_MS related. Now that warm is solid,
+                // dropping the gate from 1200 to 400 saves ~800 ms on
+                // every warm visit's visible-at moment.
+                var STABILITY_MS = 400;
                 var readyStart = performance.now();
                 var lastSample = null;
                 var lastChangeAt = performance.now();
@@ -1057,7 +1055,11 @@
                             } catch (e) {
                                 console.error('[snapshot] Watchdog handler threw:', e);
                             }
-                        }, 20000);
+                        }, 12000);  // was 20000 — tightened after iter17
+                                    // measured happy warms at 6–8s (3–5s
+                                    // margin). False-fires would manifest
+                                    // as needless cold reloads on slow
+                                    // networks; revisit if observed.
                     }
                 }
 
