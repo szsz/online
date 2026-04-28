@@ -616,24 +616,24 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                                (wasm_is_plan_c_enabled() == 1);
             if (planC)
             {
-                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC begin — set_quiesce(1)'); });
+                MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: kit: planC begin — set_quiesce(1)'); });
                 wasm_set_quiesce(1);
-                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: quiesce_wake_main'); });
+                MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: kit: quiesce_wake_main'); });
                 wasm_quiesce_wake_main();
-                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: wait_coolwsd_parked'); });
+                MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: kit: wait_coolwsd_parked'); });
                 wasm_wait_coolwsd_parked();
-                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd parked, calling firstDocPainted'); });
+                MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: kit: coolwsd parked, calling firstDocPainted'); });
             }
 #endif
             wasmshim::firstDocPainted(docTypeHint);
 #ifdef __EMSCRIPTEN__
-            MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: firstDocPainted returned'); });
+            MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: kit: firstDocPainted returned'); });
             if (planC)
             {
                 wasm_set_quiesce(0);
-                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC resume — coolwsd_resume'); });
+                MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: kit: planC resume — coolwsd_resume'); });
                 wasm_coolwsd_resume();
-                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd_resume returned'); });
+                MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: kit: coolwsd_resume returned'); });
             }
 #endif
         }
@@ -1303,16 +1303,16 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     const bool isFirstView = !_docManager->isLoaded();
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad (loadComponentFromURL) starting...'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: onLoad (loadComponentFromURL) starting...'); });
 #endif
     const bool loaded = _docManager->onLoad(getId(), getJailedFilePathAnonym(), renderOpts);
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad done loaded=' + $0 + ' viewId=' + $1); }, loaded ? 1 : 0, _viewId);
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: onLoad done loaded=' + $0 + ' viewId=' + $1); }, loaded ? 1 : 0, _viewId);
 #endif
     if (!loaded || _viewId < 0)
     {
 #ifdef __EMSCRIPTEN__
-        MAIN_THREAD_EM_ASM({ console.log('TIMING: loadDocument returning false (loaded=' + $0 + ' viewId=' + $1 + ')'); }, loaded ? 1 : 0, _viewId);
+        MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: loadDocument returning false (loaded=' + $0 + ' viewId=' + $1 + ')'); }, loaded ? 1 : 0, _viewId);
 #endif
         // Failed and communicated with the reason; do not send errors to the client.
         LOG_ERR("Failed to get LoKitDocument instance for [" << getJailedFilePathAnonym() << ']');
@@ -1325,7 +1325,7 @@ bool ChildSession::loadDocument(const StringVector& tokens)
                                               << "], template: [" << getDocTemplate() << ']');
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: post-onLoad checks done, viewid=' + $0); }, _viewId);
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: post-onLoad checks done, viewid=' + $0); }, _viewId);
 #endif
     if (!getDocTemplate().empty())
     {
@@ -1363,16 +1363,16 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     }
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre setView'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: pre setView'); });
 #endif
     getLOKitDocument()->setView(_viewId);
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: post setView'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: post setView'); });
 #endif
 
     _docType = LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get());
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: post getDocumentTypeAsString docType_len=' + $0); }, (int)_docType.size());
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: post getDocumentTypeAsString docType_len=' + $0); }, (int)_docType.size());
 #endif
     if (_docType != "text" && part != -1)
     {
@@ -1382,17 +1382,17 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     else
         _currentPart = getLOKitDocument()->getPart();
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: post setPart/getPart'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: post setPart/getPart'); });
 #endif
 
     // Respond by the document status
     LOG_DBG("Sending status after loading view " << _viewId);
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre documentStatus'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: pre documentStatus'); });
 #endif
     const std::string status = LOKitHelper::documentStatus(getLOKitDocument()->get());
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: post documentStatus len=' + $0); }, (int)status.size());
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: post documentStatus len=' + $0); }, (int)status.size());
 #endif
     if (status.empty() || !sendTextFrame("status: " + status))
     {
@@ -1402,21 +1402,21 @@ bool ChildSession::loadDocument(const StringVector& tokens)
 
     // Inform everyone (including this one) about updated view info
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre notifyViewInfo'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: pre notifyViewInfo'); });
 #endif
     _docManager->notifyViewInfo();
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: post notifyViewInfo'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: post notifyViewInfo'); });
 #endif
     sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
 
     // now we have the doc options parsed and set.
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre updateActivityHeader'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: pre updateActivityHeader'); });
 #endif
     _docManager->updateActivityHeader();
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: post updateActivityHeader'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: post updateActivityHeader'); });
 #endif
 
     // Notify that we've loaded this view.
@@ -1426,7 +1426,7 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     sendTextFrame(oss.str());
 
 #ifdef __EMSCRIPTEN__
-    MAIN_THREAD_EM_ASM({ console.log('TIMING: Loaded session (status+tiles sent to JS)'); });
+    MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: Loaded session (status+tiles sent to JS)'); });
 #endif
     LOG_INF("Loaded session " << getId());
     return true;

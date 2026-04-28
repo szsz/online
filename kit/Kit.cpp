@@ -2075,7 +2075,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
     // VCL, configmgr) — actual document parse is sub-second on warm.
     if (_loKitDocument && wasm_is_warm_restored())
     {
-        MAIN_THREAD_EM_ASM({ console.log('TIMING: warm-restore: dropping captured _loKitDocument for fresh load'); });
+        MAIN_THREAD_ASYNC_EM_ASM({ console.log('TIMING: warm-restore: dropping captured _loKitDocument for fresh load'); });
         _loKitDocument.reset();
         _sessionUserInfo.clear();
     }
