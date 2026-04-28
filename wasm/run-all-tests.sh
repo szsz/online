@@ -99,6 +99,7 @@ TESTS=(
     "timing-report|test-timing-report.js|Timing Report|Cold vs warm visit timing with screenshots, generates HTML report at /timing-report/|timing-report"
     "snapshot-milestones|test-snapshot-milestones.js|Snapshot Milestones|Per-doc-type cold/warm × N=3 trial milestone report; iframe DOM verifies content rendered; screenshots at every milestone|none"
     "snapshot-cross-type|test-snapshot-cross-type.js|Snapshot Cross-Type|Warm-restore across writer/calc/impress hot-switch combinations|none"
+    "regression-font-change-ui|test-regression-font-change-ui.js|Regression: Font Change via UI|Single-user, double-click word + change font via notebookbar dropdown — UNO command dispatched and font value updates|shots-regression-font-change-ui"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
