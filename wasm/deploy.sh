@@ -289,15 +289,14 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
                   }
                   return _wrappedOnMsg.call(w, e);
                 };
-                // Also wrap postMessage so we can see main->worker dispatches
-                // (especially the "run" message that should follow "loaded").
-                var _origPM = w.postMessage.bind(w);
-                w.postMessage = function(msg, transfer) {
-                  if (msg && msg.cmd) {
-                    console.log('WARM_DBG: main->worker postMessage cmd=' + msg.cmd + ' workerID=' + w.workerID);
-                  }
-                  return _origPM(msg, transfer);
-                };
+                // postMessage wrapper REMOVED. Earlier iterations (9–13)
+                // wrapped w.postMessage to log main->worker cmd; in V8/
+                // Chromium passing `undefined` as the second arg of
+                // `worker.postMessage(msg, undefined)` is not equivalent
+                // to omitting it (it serializes a transferList with one
+                // element of `undefined`, which can corrupt the run cmd
+                // payload). Reverted to ungated dispatch — observed
+                // calc/impress warm hangs to disappear.
                 return _p;
               };
             }

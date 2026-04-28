@@ -51,7 +51,7 @@ const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
 
 // Per doc type: what status text and what selector prove the document
 // is actually rendered (not just a loading spinner).
-const DOCS = [
+const ALL_DOCS = [
     { tag: 'writer',  doc: 'new.docx',         label: 'Writer (.docx)',
       expectStatus: /\d+\s*words?/i,
       expectAssert: '#StateWordCount' },
@@ -62,6 +62,12 @@ const DOCS = [
       expectStatus: /(Slide\s*\d+|page\s*\d+\s*of)/i,
       expectAssert: 'canvas' },
 ];
+// ONLY_DOC=writer|calc|impress to run a single doc type — used for
+// isolation testing when one doc type appears to be the bad apple, so
+// we can rule out state leaking from prior docs in the loop.
+const DOCS = process.env.ONLY_DOC
+    ? ALL_DOCS.filter(d => d.tag === process.env.ONLY_DOC)
+    : ALL_DOCS;
 
 // Console-derived milestones: regex matched against each console line.
 const CONSOLE_MILESTONES = [

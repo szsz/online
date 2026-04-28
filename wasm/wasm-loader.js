@@ -559,15 +559,15 @@
                 // (the parent visiblePoll already confirms the canvas
                 // differs from the pre-switch baseline, so we know
                 // SOME paint happened before we entered this block).
-                // 400 ms (was 1200 ms). Recommendation 6.6 from
-                // /tmp/snapshot-design-review.md — the original 1200 ms
-                // was a conservative guard against firing too early on
-                // partial paints. With the warm-restore canvas-baseline
-                // check upstream (visiblePoll already confirmed the
-                // canvas changed from pre-switch baseline) plus the
-                // statusReady gate, 400 ms of stability is sufficient.
-                // Saves ~800 ms on every warm visit.
-                var STABILITY_MS = 400;
+                // Reverted from 400 → 1200 ms after iter9–12 measured
+                // back-to-back warm-path lockstep failures (one doc per
+                // run, all 3 trials hung post `cmd=loaded`). 1200 ms
+                // happens to correlate with 9/9 warm pass-rate; suspect
+                // the shorter gate cuts the cold session's settle window
+                // and Cache Storage flushes a partial blob. Re-attempt
+                // Recommendation 6.6 (STABILITY_MS reduction) AFTER the
+                // warm-hang root cause is fixed structurally.
+                var STABILITY_MS = 1200;
                 var readyStart = performance.now();
                 var lastSample = null;
                 var lastChangeAt = performance.now();
