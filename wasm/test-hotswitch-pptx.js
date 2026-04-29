@@ -1,16 +1,15 @@
 const __cl = require('./lib/inject-checklist');
-// test-hotswitch-xlsx.js — same-type Calc hot-switch.
+// test-hotswitch-pptx.js — same-type Impress hot-switch.
 //
-// Open xlsx-1, then switch to xlsx-2 via the viewer's file list (the
-// RelaySwitchRoom path). Times:
+// Open pptx-1, then switch to pptx-2 via location.hash change. Times:
 //   tFirstCanvas: canvas pixels change after switch
-//   tStatusReady: #StatusDocPos shows "Sheet N of M" for the new doc
+//   tStatusReady: #StatusDocPos shows "Slide N of M" for the new doc
 //   tDomVerified: status text matches AND canvas painted
 // Pass condition: tDomVerified after switch ≤ 5 s.
 //
-// Iter10 fix (kit/ChildSession.cpp:434): re-enabled wasm_reload_doc_in_place
-// for xlsx (cap=1). Before fix, every same-type switch fell through to
-// loKit->documentLoad (full filter+model+view rebuild, ~12-16 s).
+// Iter11: per-doctype kInPlaceCap (kit/ChildSession.cpp:434) — pptx cap=1
+// re-enables wasm_reload_doc_in_place, avoiding the full
+// loKit->documentLoad fall-through (~12-16 s).
 
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
@@ -20,11 +19,11 @@ const { uploadV2 } = require('./lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 
-const SHOT_DIR = '/tmp/static-deploy/public/shots-hotswitch-xlsx';
-const FIXTURE_1 = path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx');
-const FIXTURE_2 = path.join(__dirname, '..', 'test', 'data', 'convert-to.xlsx');
-const NAME_1 = 'hotswitch-xlsx-1-' + Date.now() + '.xlsx';
-const NAME_2 = 'hotswitch-xlsx-2-' + Date.now() + '.xlsx';
+const SHOT_DIR = '/tmp/static-deploy/public/shots-hotswitch-pptx';
+const FIXTURE_1 = path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx');
+const FIXTURE_2 = path.join(__dirname, '..', 'test', 'data', 'rare-fonts.pptx');
+const NAME_1 = 'hotswitch-pptx-1-' + Date.now() + '.pptx';
+const NAME_2 = 'hotswitch-pptx-2-' + Date.now() + '.pptx';
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }
@@ -50,9 +49,10 @@ async function probeIframeStatus(page) {
         if (!fr) return { hasCanvas: false, statusText: '', statusOk: false, canvasHash: null };
         return await fr.evaluate(() => {
             const c = document.querySelector('canvas');
+            // Impress puts slide count in #SlideStatus, NOT #StatusDocPos.
+            const ss = document.querySelector('#SlideStatus');
             const sd = document.querySelector('#StatusDocPos');
-            const txt = (sd && sd.textContent || '').trim();
-            // Pixel-hash a small region to detect content change.
+            const txt = ((ss && ss.textContent || '') + ' ' + (sd && sd.textContent || '')).trim();
             let canvasHash = null;
             if (c) {
                 try {
@@ -72,7 +72,7 @@ async function probeIframeStatus(page) {
             return {
                 hasCanvas: !!c,
                 statusText: txt,
-                statusOk: /Sheet\s+\d+\s+of\s+\d+/i.test(txt),
+                statusOk: /Slide\s+\d+\s+of\s+\d+/i.test(txt),
                 canvasHash,
             };
         }).catch(() => ({ hasCanvas: false, statusText: '', statusOk: false, canvasHash: null }));
@@ -82,7 +82,7 @@ async function probeIframeStatus(page) {
 async function waitForVerified(page, label, opts) {
     opts = opts || {};
     const timeoutMs = opts.timeoutMs || 60000;
-    const baselineHash = opts.baselineHash || null; // require hash != baseline
+    const baselineHash = opts.baselineHash || null;
     const t0 = Date.now();
     let tFirstCanvas = null, tStatusReady = null, tHashChanged = null;
     let lastHash = null;
@@ -115,7 +115,6 @@ async function waitForVerified(page, label, opts) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    // Upload both fixtures.
     log(`[setup] Uploading ${NAME_1}`);
     const up1 = await uploadV2(VIEWER, NAME_1, fs.readFileSync(FIXTURE_1));
     log(`[setup] Uploading ${NAME_2}`);
@@ -136,32 +135,27 @@ async function waitForVerified(page, label, opts) {
                 log(`[page] ${t.slice(0, 240)}`);
         });
 
-        // Open xlsx-1 cold.
-        log('[step1] Opening xlsx-1 cold');
+        log('[step1] Opening pptx-1 cold');
         await page.goto(VIEWER + '/?planc=1#file=' + up1.b64urlSecret,
             { waitUntil: 'domcontentloaded' });
-        const r1 = await waitForVerified(page, 'cold-xlsx1', { timeoutMs: 120000 });
-        check('xlsx-1 verified after cold open',
+        const r1 = await waitForVerified(page, 'cold-pptx1', { timeoutMs: 180000 });
+        check('pptx-1 verified after cold open',
               r1.tDomVerified !== null,
               r1.tDomVerified !== null
                 ? 'visible at ' + (r1.tDomVerified/1000).toFixed(2) + 's'
                 : 'TIMEOUT');
-        await snap(page, 'after_cold_xlsx1');
+        await snap(page, 'after_cold_pptx1');
 
-        // Hot-switch to xlsx-2 via fragment hash change.
-        // The viewer's index.html listens for `hashchange` and calls
-        // openFileBySecret → RelaySwitchRoom path. This is the same code
-        // path that file-list clicks take.
-        log('[step2] Hot-switch to xlsx-2');
+        log('[step2] Hot-switch to pptx-2');
         const baselineHash = r1.canvasHash;
         log('[step2] baseline canvas hash = ' + baselineHash);
         const tSwitchStart = Date.now();
         await page.evaluate((secret) => {
             location.hash = '#file=' + secret;
         }, up2.b64urlSecret);
-        const r2 = await waitForVerified(page, 'switch-xlsx2', { timeoutMs: 60000, baselineHash });
+        const r2 = await waitForVerified(page, 'switch-pptx2', { timeoutMs: 60000, baselineHash });
         const switchWall = Date.now() - tSwitchStart;
-        check('xlsx-2 verified after hot-switch',
+        check('pptx-2 verified after hot-switch',
               r2.tDomVerified !== null,
               r2.tDomVerified !== null
                 ? 'visible at ' + (r2.tDomVerified/1000).toFixed(2)
@@ -172,12 +166,11 @@ async function waitForVerified(page, label, opts) {
               r2.tDomVerified !== null
                 ? (r2.tDomVerified/1000).toFixed(2) + 's'
                 : 'no measurement');
-        await snap(page, 'after_switch_xlsx2');
+        await snap(page, 'after_switch_pptx2');
 
-        // Sanity: status text differs from xlsx-1 (different content).
         const finalStatus = r2.statusText || '';
-        check('Status text reports a sheet count',
-              /Sheet\s+\d+\s+of\s+\d+/i.test(finalStatus),
+        check('Status text reports a slide count',
+              /Slide\s+\d+\s+of\s+\d+/i.test(finalStatus),
               finalStatus);
 
     } finally {
