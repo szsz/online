@@ -70,20 +70,27 @@ const TEST_DOCS = [
                 console.log('  (warming cache...)');
                 await page.goto(VIEWER + '/#file=' + doc.b64urlSecret, {
                     waitUntil: 'domcontentloaded' });
-                // Wait for editor to be fully ready
-                for (let i = 0; i < 900; i++) {
-                    await sleep(500);
-                    const fr = page.frames().find(f => f.url().includes('cool.html'));
-                    if (fr) {
-                        const status = await fr.evaluate(() => {
-                            var wc = document.querySelector('#StateWordCount')?.textContent || '';
-                            var dp = document.querySelector('#StatusDocPos')?.textContent || '';
-                            return wc + '|' + dp;
-                        }).catch(() => '');
-                        if (/character|Sheet \d|Slide \d/i.test(status)) {
-                            const ws = await fr.evaluate(() =>
-                                typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                            if (ws) break;
+                // Wait for editor to be fully ready, with a hard 240s
+                // wall deadline. Abort early on __wasmInitialDocLoaded
+                // — a transient miss on the heuristic regex would
+                // otherwise burn the full 7.5min loop.
+                {
+                    const warmDeadline = Date.now() + 240000;
+                    while (Date.now() < warmDeadline) {
+                        await sleep(500);
+                        const fr = page.frames().find(f => f.url().includes('cool.html'));
+                        if (fr) {
+                            const probe = await fr.evaluate(() => {
+                                var wc = document.querySelector('#StateWordCount')?.textContent || '';
+                                var dp = document.querySelector('#StatusDocPos')?.textContent || '';
+                                return {
+                                    status: wc + '|' + dp,
+                                    docLoaded: !!window.__wasmInitialDocLoaded,
+                                    hasWs: typeof globalThis.TheFakeWebSocket !== 'undefined',
+                                };
+                            }).catch(() => ({ status: '', docLoaded: false, hasWs: false }));
+                            const statusOk = /character|Sheet \d|Slide \d/i.test(probe.status);
+                            if ((statusOk || probe.docLoaded) && probe.hasWs) break;
                         }
                     }
                 }
@@ -99,22 +106,27 @@ const TEST_DOCS = [
             const tDom = Date.now() - t0;
 
             let editorFrame;
-            for (let i = 0; i < 900; i++) {
-                await sleep(500);
-                editorFrame = page.frames().find(f => f.url().includes('cool.html'));
-                if (editorFrame) {
-                    // Writer: #StateWordCount has "X words, Y characters"
-                    // Calc: #StatusDocPos has "Sheet 1 of N"
-                    // Impress: #StatusDocPos has "Slide X of N" or nav has "Slide Show"
-                    const status = await editorFrame.evaluate(() => {
-                        var wc = document.querySelector('#StateWordCount')?.textContent || '';
-                        var dp = document.querySelector('#StatusDocPos')?.textContent || '';
-                        return wc + '|' + dp;
-                    }).catch(() => '');
-                    if (/character|Sheet \d|Slide \d/i.test(status)) {
-                        const ws = await editorFrame.evaluate(() =>
-                            typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                        if (ws) break;
+            {
+                // Hard 450 s deadline — matches the assert at line ~195
+                // (`tTotal < 450000`). Aborts early on
+                // __wasmInitialDocLoaded so a heuristic-regex miss
+                // doesn't burn the full budget.
+                const visitDeadline = Date.now() + 450000;
+                while (Date.now() < visitDeadline) {
+                    await sleep(500);
+                    editorFrame = page.frames().find(f => f.url().includes('cool.html'));
+                    if (editorFrame) {
+                        const probe = await editorFrame.evaluate(() => {
+                            var wc = document.querySelector('#StateWordCount')?.textContent || '';
+                            var dp = document.querySelector('#StatusDocPos')?.textContent || '';
+                            return {
+                                status: wc + '|' + dp,
+                                docLoaded: !!window.__wasmInitialDocLoaded,
+                                hasWs: typeof globalThis.TheFakeWebSocket !== 'undefined',
+                            };
+                        }).catch(() => ({ status: '', docLoaded: false, hasWs: false }));
+                        const statusOk = /character|Sheet \d|Slide \d/i.test(probe.status);
+                        if ((statusOk || probe.docLoaded) && probe.hasWs) break;
                     }
                 }
             }
