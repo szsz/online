@@ -506,6 +506,22 @@ bool ChildSession::_handleInput(const char *buffer, int length)
 
         if (!inPlaceOk)
         {
+            // Iter A3: drop the previous doc BEFORE documentLoad. The
+            // in-place path explicitly disposes its old XComponent
+            // (init.cxx wasm_reload_doc_in_place) "because the old
+            // XComponent stayed alive through frame/view back-refs and
+            // accumulated state across multiple hot-switches". Cross-
+            // type documentLoad has the same issue — old refs persist
+            // through `existing` AND _docManager's _loKitDocument, and
+            // every documentLoad has to navigate the live registry.
+            // Dropping both refs here triggers ~LibLODocument_Impl
+            // → mxComponent->dispose(), breaking the back-refs that
+            // make warm cross-type 18-44s vs cold 10-15s.
+            SW_MARK("disposeOld:start");
+            _docManager->setLOKitDocument(nullptr);
+            existing.reset();
+            SW_MARK("disposeOld:done");
+
             LOG_INF("SWITCHDOC: calling documentLoad(" << fileUrl << ")");
             SW_MARK("documentLoad:start");
             auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), "Language=en-US,Batch=true");

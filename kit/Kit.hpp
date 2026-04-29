@@ -428,12 +428,17 @@ public:
     bool isLoaded() const { return !!_loKitDocument; }
 
     /// Replace the current document with a new one (hot switch).
-    /// We intentionally stash the old pointer in _retiredDocuments instead of
-    /// letting it destruct — LO's document destructor blocks for a long time
-    /// (synchronous flush/close of the old document). Leaking a small amount
-    /// of memory is fine for a short-lived WASM session.
+    /// Iter A3: don't stash the previous shared_ptr — drop it so
+    /// ~LibLODocument_Impl runs mxComponent->dispose() and breaks
+    /// frame/view back-refs in LO Core's desktop registry. Without
+    /// this, retired docs accumulated across cross-type switches
+    /// and the warm second/third visit regressed to 18-44s
+    /// (vs. cold 10-15s) because every documentLoad has to navigate
+    /// the larger live registry. The "long flush" the prior comment
+    /// warned about applies to MODIFIED docs; switchdocument is
+    /// only invoked after the doc has been saved, so the destructor
+    /// is fast.
     void setLOKitDocument(std::shared_ptr<lok::Document> newDoc) {
-        if (_loKitDocument) _retiredDocuments.push_back(_loKitDocument);
         _loKitDocument = newDoc;
     }
 
