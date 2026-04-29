@@ -28,6 +28,36 @@ window.L.Control.NotebookbarBuilder = window.L.Control.JSDialogBuilder.extend({
 		const comboboxesFocusingDocument = ['fontnamecombobox', 'fontsizecombobox', 'styles'];
 		const originalCallback = builder.callback;
 		this.callback = function(objectType, eventType, object, data, builderArg) {
+			// Font name + size: invoke the UNO command directly (mirroring
+			// Control.TopToolbar.callback for compact mode). The default
+			// dialogevent path does NOT dispatch .uno:CharFontName /
+			// .uno:FontHeight to LO — only the toolbar's applyFont /
+			// applyFontSize do. Without this, typing "Arial" in the
+			// notebookbar combobox + Enter does nothing visible: the
+			// dropdown text changes but the selected text in the doc
+			// keeps the old font.
+			if (object.id === 'fontnamecombobox') {
+				if (eventType === 'selected') {
+					builder.map.applyFont(data.substr(data.indexOf(';') + 1));
+				} else if (eventType === 'change') {
+					builder.map.applyFont(data);
+				} else {
+					return originalCallback(objectType, eventType, object, data, builderArg);
+				}
+				builder.map.focus();
+				return 'focusHandled';
+			}
+			if (object.id === 'fontsizecombobox') {
+				if (eventType === 'selected') {
+					builder.map.applyFontSize(data.substr(data.indexOf(';') + 1));
+				} else if (eventType === 'change') {
+					builder.map.applyFontSize(data);
+				} else {
+					return originalCallback(objectType, eventType, object, data, builderArg);
+				}
+				builder.map.focus();
+				return 'focusHandled';
+			}
 			if (eventType === 'selected'
 				&& comboboxesFocusingDocument.indexOf(object.id) >= 0) {
 				builder._defaultCallbackHandler(objectType, eventType, object, data, builderArg);

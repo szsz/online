@@ -309,7 +309,13 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
                 break;
             }
         }
-        await sleep(200);
+        // Tight polling for sharper milestone resolution. The 200 ms tick
+        // used to be enough; with warm visible-at now in the 6-9 s range
+        // a 200 ms uncertainty is ~3 % of the metric, big enough to mask
+        // sub-second deltas between iterations. 50 ms keeps protocol
+        // pressure low (CDP RPC cost is microseconds) but shrinks the
+        // recorded-vs-actual gap to <1 %.
+        await sleep(50);
     }
 
     // Final screenshot. Prefer the content_verified shot if present —

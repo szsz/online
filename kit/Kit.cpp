@@ -32,6 +32,7 @@
 #include <emscripten.h>
 #include <emscripten/threading.h>
 extern "C" int wasm_is_warm_restored();
+extern "C" void wasm_set_warm_restored(int);
 #endif
 
 #ifdef __linux__
@@ -2078,6 +2079,13 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         MAIN_THREAD_EM_ASM({ console.log('TIMING: warm-restore: dropping captured _loKitDocument for fresh load'); });
         _loKitDocument.reset();
         _sessionUserInfo.clear();
+        // Consume the warm-restore one-shot. After this fresh load
+        // completes the kit is in a normal hot state — subsequent
+        // doc-switches in the same session must NOT drop & reload
+        // again, or every hot-switch loops the load path until the
+        // tab is closed (observed on impress cross-type, infinite
+        // "onLoad starting → drop captured → onLoad done" cycles).
+        wasm_set_warm_restored(0);
     }
 #endif
     if (!_loKitDocument)

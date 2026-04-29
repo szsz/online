@@ -27,11 +27,18 @@ async function snap(page, name) {
 
 async function getStatus(page) {
     return page.evaluate(() => {
-        const el = document.querySelector('#StateWordCount');
-        if (el && el.textContent) return el.textContent.trim();
-        // Calc/Impress may not have StateWordCount
-        const el2 = document.querySelector('.jsdialog.ui-statusbar');
-        return el2 ? el2.textContent.trim().substring(0, 50) : 'NOT FOUND';
+        // Writer
+        const wc = document.querySelector('#StateWordCount');
+        if (wc && wc.textContent) return wc.textContent.trim();
+        // Calc
+        const sd = document.querySelector('#StatusDocPos');
+        if (sd && sd.textContent) return sd.textContent.trim();
+        // Impress
+        const ss = document.querySelector('#SlideStatus');
+        if (ss && ss.textContent) return ss.textContent.trim();
+        // Last-resort generic statusbar text
+        const sb = document.querySelector('.jsdialog.ui-statusbar');
+        return sb ? sb.textContent.trim().substring(0, 80) : 'NOT FOUND';
     });
 }
 
