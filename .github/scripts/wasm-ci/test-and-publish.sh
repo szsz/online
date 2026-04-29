@@ -130,13 +130,17 @@ set -e
 END_TS="$(date -u +%s)"
 DUR=$((END_TS - START_TS))
 
-# Pass/fail counts: prefer the rich-report grid (run-all-tests.sh writes
-# badge-pass / badge-fail rows in $TEST_OUTPUT/reports/index.html). Fall
-# back to a log scrape if the rich report is missing (early failure).
+# Pass/fail counts: prefer the rich-report grid in $TEST_OUTPUT/reports/index.html.
+# Two formats live in the wild: the serial runner emits `badge-pass`/`badge-fail`
+# spans, the parallel runner emits `<tr class="pass">`/`<tr class="fail">`. Try
+# both. Fall back to a log scrape if the rich report is missing.
+PASS_COUNT=0; FAIL_COUNT=0
 if [[ -f "$TEST_OUTPUT/reports/index.html" ]]; then
-    PASS_COUNT=$(grep -c 'badge-pass' "$TEST_OUTPUT/reports/index.html" || true)
-    FAIL_COUNT=$(grep -c 'badge-fail' "$TEST_OUTPUT/reports/index.html" || true)
-else
+    p=$(grep -cE 'badge-pass|<tr class="pass"' "$TEST_OUTPUT/reports/index.html" || true)
+    f=$(grep -cE 'badge-fail|<tr class="fail"' "$TEST_OUTPUT/reports/index.html" || true)
+    PASS_COUNT="$p"; FAIL_COUNT="$f"
+fi
+if (( PASS_COUNT == 0 && FAIL_COUNT == 0 )); then
     PASS_COUNT="$(grep -cE '^\[?[Pp][Aa][Ss][Ss]\]?|✓|^ok ' "$LOG" || true)"
     FAIL_COUNT="$(grep -cE '^\[?[Ff][Aa][Ii][Ll]\]?|✗|^not ok ' "$LOG" || true)"
 fi
@@ -341,14 +345,17 @@ MANIFEST="$(mktemp)"
 az storage blob download --account-name "$ACCT" \
     --container-name '$web' --name "app-builds/$APP_BID/manifest.json" \
     --file "$MANIFEST" --no-progress >/dev/null
-python3 - "$MANIFEST" "$APP_BID" "$TEST_RC" "$DUR" <<'PYEOF'
+python3 - "$MANIFEST" "$APP_BID" "$TEST_RC" "$DUR" "$PASS_COUNT" "$FAIL_COUNT" <<'PYEOF'
 import json, sys
-p, app_bid, rc, dur = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+p, app_bid, rc, dur, p_pass, p_fail = sys.argv[1:7]
+rc, dur, p_pass, p_fail = int(rc), int(dur), int(p_pass), int(p_fail)
 m = json.load(open(p))
 m["test_report"] = {
     "url": f"app-builds/{app_bid}/tests/",
     "exit_code": rc,
     "duration_seconds": dur,
+    "pass_count": p_pass,
+    "fail_count": p_fail,
 }
 json.dump(m, open(p,'w'), indent=2)
 PYEOF

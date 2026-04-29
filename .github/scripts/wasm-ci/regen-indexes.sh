@@ -56,12 +56,21 @@ HTML
                     --container-name '$web' --name "$mfp" --file "$tmp" --no-progress >/dev/null 2>&1 || continue
                 when="$(jq -r '.completed_utc // ""' "$tmp" 2>/dev/null)"
                 if [[ "$prefix" == "app-builds/" ]]; then
-                    local rc lo
+                    local rc lo p_pass p_fail
                     rc="$(jq -r '.test_report.exit_code // empty' "$tmp" 2>/dev/null)"
                     lo="$(jq -r '.lo_build_id // ""' "$tmp" 2>/dev/null)"
-                    if [[ -z "$rc" ]]; then notes="LO=$lo · <span class=\"muted\">no tests yet</span>"
-                    elif [[ "$rc" == "0" ]]; then notes="LO=$lo · <a class=\"ok\" href=\"$id/tests/\">tests passed</a>"
-                    else notes="LO=$lo · <a class=\"bad\" href=\"$id/tests/\">tests failed (rc=$rc)</a>"
+                    p_pass="$(jq -r '.test_report.pass_count // empty' "$tmp" 2>/dev/null)"
+                    p_fail="$(jq -r '.test_report.fail_count // empty' "$tmp" 2>/dev/null)"
+                    if [[ -z "$rc" ]]; then
+                        notes="LO=$lo · <span class=\"muted\">no tests yet</span>"
+                    elif [[ -n "$p_pass" && -n "$p_fail" ]]; then
+                        # Have counts: render as "X passed · Y failed" link.
+                        local pass_cls="ok" fail_cls="bad"
+                        notes="LO=$lo · <a href=\"$id/tests/\"><span class=\"$pass_cls\">$p_pass passed</span> · <span class=\"$fail_cls\">$p_fail failed</span></a>"
+                    elif [[ "$rc" == "0" ]]; then
+                        notes="LO=$lo · <a class=\"ok\" href=\"$id/tests/\">tests passed</a>"
+                    else
+                        notes="LO=$lo · <a class=\"bad\" href=\"$id/tests/\">tests failed (rc=$rc)</a>"
                     fi
                 else
                     notes="$(jq -r '.git_short_sha // ""' "$tmp" 2>/dev/null)"
