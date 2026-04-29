@@ -60,7 +60,20 @@ async function getCharCount(frame) {
     return m ? parseInt(m[1].replace(/,/g, '')) : -1;
 }
 
-async function getFileMeta(name) {
+async function getFileMeta(name, fileId) {
+    // v2 path: query /api/v2/file/<fileId>. Endpoint returns
+    // {ciphertext, encName, size, updatedAt} — no plaintext hash. Hash
+    // the ciphertext locally so we can detect the file changing.
+    if (fileId) {
+        const r = await fetch(VIEWER + '/api/v2/file/' + fileId).catch(() => null);
+        if (!r || !r.ok) return null;
+        const meta = await r.json();
+        const crypto = require('crypto');
+        const hash = crypto.createHash('sha256').update(meta.ciphertext || '').digest('hex');
+        return {
+            hash, size: meta.size || 0, updatedAt: meta.updatedAt,
+        };
+    }
     const r = await fetch(VIEWER + '/api/files').catch(() => null);
     if (!r || !r.ok) return null;
     const arr = await r.json();
@@ -79,7 +92,7 @@ async function getFileMeta(name) {
     const blankBytes = fs.readFileSync(BLANK_DOCX);
     const upV2 = await uploadV2(VIEWER, DOC_NAME, blankBytes);
     check('Upload accepted', !!upV2.fileId, 'fileId=' + (upV2.fileId || 'missing').substring(0,8));
-    const initialMeta = await getFileMeta(DOC_NAME);
+    const initialMeta = await getFileMeta(DOC_NAME, upV2.fileId);
     const initialSize = initialMeta ? initialMeta.size : -1;
     log(`[setup] stored size=${initialSize} hash=${(initialMeta?.hash || '').slice(0, 16)} fileId=${upV2.fileId.substring(0,8)}…`);
 
@@ -180,7 +193,7 @@ async function getFileMeta(name) {
         // /wasm/, encrypt if enabled, POST to /api/files, get response).
         // 10s is generous for a blank doc.
         await sleep(12000);
-        const afterMeta = await getFileMeta(DOC_NAME);
+        const afterMeta = await getFileMeta(DOC_NAME, upV2.fileId);
         const afterSize = afterMeta ? afterMeta.size : -1;
         log(`[save] stored size after save = ${afterSize} hash=${(afterMeta?.hash || '').slice(0, 16)}`);
         // We expect the hash to change (typed 5 chars) AND size > 0.
