@@ -479,26 +479,32 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         std::shared_ptr<lok::Document> existing = _docManager->getLOKitDocument();
         if (existing && existing->get() && s_consecutiveInPlace < kInPlaceCap)
         {
-            int existingType = existing->getDocumentType();
-            if (desiredType != LOK_DOCTYPE_OTHER && existingType == desiredType)
+            // Iter A6: try in-place even for cross-type (was gated to
+            // existingType == desiredType). The LO Core function
+            // wasm_reload_doc_in_place loads the new model into the
+            // existing frame via XComponentLoader::loadComponentFromURL
+            // with target=_self. If the frame can't host the new
+            // doctype, the call returns -1 and we fall back to
+            // documentLoad below. Cross-type cold currently spends
+            // 10-15s in documentLoad doing model+factory+filter init
+            // for the new doctype; reusing the existing frame avoids
+            // most of that.
+            inPlaceTried = true;
+            SW_MARK("inPlace:start");
+            int rc = wasm_reload_doc_in_place(existing->get(), fileUrl.c_str());
+            SW_MARK("inPlace:done");
+            if (rc == 0)
             {
-                inPlaceTried = true;
-                SW_MARK("inPlace:start");
-                int rc = wasm_reload_doc_in_place(existing->get(), fileUrl.c_str());
-                SW_MARK("inPlace:done");
-                if (rc == 0)
-                {
-                    LOG_INF("SWITCHDOC: in-place reload succeeded (consecutive=" << (s_consecutiveInPlace + 1) << ")");
-                    inPlaceOk = true;
-                    s_consecutiveInPlace++;
-                    newDoc = existing;  // same lok::Document wrapper, but
-                                        // its underlying mxComponent now
-                                        // points at the new file's model.
-                }
-                else
-                {
-                    LOG_INF("SWITCHDOC: in-place reload returned " << rc << ", falling back to documentLoad");
-                }
+                LOG_INF("SWITCHDOC: in-place reload succeeded (consecutive=" << (s_consecutiveInPlace + 1) << ")");
+                inPlaceOk = true;
+                s_consecutiveInPlace++;
+                newDoc = existing;  // same lok::Document wrapper, but
+                                    // its underlying mxComponent now
+                                    // points at the new file's model.
+            }
+            else
+            {
+                LOG_INF("SWITCHDOC: in-place reload returned " << rc << ", falling back to documentLoad");
             }
         }
         if (!inPlaceOk)
@@ -539,6 +545,12 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                           + ($1 - $2) + 'ms)');
             }, swMs(), __sw_dispose_end, __sw_dispose_start);
 #endif
+            // Iter A5 attempted to omit Language= on subsequent loads
+            // to skip init.cxx:2928-2949 (resetTheCurrencyTable +
+            // setLanguageAndLocale). Both warm cross-type transitions
+            // timed out (>48s). Reverted — apparently the per-load
+            // locale reset is load-bearing for calc/impress models
+            // even though the docs say it sets process-global state.
             auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), "Language=en-US,Batch=true");
             SW_MARK("documentLoad:done");
 #ifdef __EMSCRIPTEN__
