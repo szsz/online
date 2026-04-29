@@ -59,6 +59,14 @@ private:
     /// This thread & poll accepts incoming connections.
     AcceptPoll _acceptPoll;
 
+#ifdef __EMSCRIPTEN__
+    /// Plan-C: SocketPoll::joinThread → removeSockets() destroys every
+    /// shared_ptr in the poll, including the listener. On restart the
+    /// poll has nothing to accept on. Keep a separate ref here so the
+    /// listener fd survives the join, and re-insert in restartAcceptPoll.
+    std::shared_ptr<ServerSocket> _serverSocket;
+#endif
+
 #if !MOBILEAPP
     Admin& _admin;
 #endif

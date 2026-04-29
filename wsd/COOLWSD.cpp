@@ -3539,8 +3539,16 @@ void COOLWSDServer::start(std::shared_ptr<ServerSocket>&& serverSocket)
     _acceptPoll.startThread();
 #ifdef __EMSCRIPTEN__
     MAIN_THREAD_EM_ASM({ console.log('TIMING: accept_poll started, inserting socket...'); });
-#endif
+    // Plan-C survives by holding our own ref. Don't move the caller's
+    // shared_ptr away — copy first so _serverSocket has its own ref,
+    // then hand a copy to the poll. After Plan-C joinAcceptPoll runs
+    // removeSockets() the poll's ref is gone but our ref keeps the fd
+    // alive; restartAcceptPoll re-inserts using _serverSocket.
+    _serverSocket = serverSocket;
+    _acceptPoll.insertNewSocket(_serverSocket);
+#else
     _acceptPoll.insertNewSocket(std::move(serverSocket));
+#endif
 
 #ifdef __EMSCRIPTEN__
     MAIN_THREAD_EM_ASM({ console.log('TIMING: websrv_poll startThread...'); });
@@ -3575,6 +3583,20 @@ void COOLWSDServer::restartAcceptPoll()
     // becomes irrelevant on the next launch). The wakeup pipes survive
     // join — only ~SocketPoll closes them.
     _acceptPoll.startThread();
+
+    // joinThread → pollingThreadEntry → removeSockets() emptied the
+    // poll, dropping its ref to the listener. Without this re-insert
+    // the new poll thread accepts on nothing, and any second-or-later
+    // fakeSocketConnect (e.g. a peer's remote-client view via
+    // create_remote_client) blocks indefinitely. Symptom in tests:
+    // B→A propagation broken — A never services B's view connection,
+    // _poll_remote_client_ready returns 0 forever, foreign-vid
+    // messages queue in remoteClients[B].queue and never reach the
+    // shared document.
+    if (_serverSocket)
+    {
+        _acceptPoll.insertNewSocket(_serverSocket);
+    }
 }
 #endif
 
