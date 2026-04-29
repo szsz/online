@@ -52,6 +52,69 @@ function check(label, cond, ev) {
 // iframe when opening the user doc (prewarm blank → user file), so
 // caching a Frame ref leaves us with a detached frame that always
 // returns -1.
+// Read the actual text of the document (NOT just char count). Sends
+// .uno:SelectAll then 'gettextselection mimetype=text/plain;charset=utf-8'
+// and waits for the textselectioncontent: reply on the FakeWebSocket.
+//
+// Why: char count alone is fake-pass-prone — if LO's internal clipboard
+// happens to hold text of the right length, .uno:Paste from a synthetic
+// Ctrl+V will land that text and the count assertion passes even if the
+// OS clipboard's external bytes never reach the doc.
+async function getDocText(page, timeoutMs = 6000) {
+    const fr = page.frames().find(f => f.url().includes('cool.html'));
+    if (!fr) return '';
+    return await fr.evaluate(async (waitMs) => {
+        return await new Promise((resolve) => {
+            // Hook FakeWebSocket onmessage / globalThis.onCommandValuesReceived
+            // / app.socket._onMessage to capture the textselectioncontent reply.
+            // Simpler: read from app.layoutingService or use the app.map's API
+            // if available; fall back to socket-level capture.
+            let resolved = false;
+            const capture = (s) => {
+                if (resolved) return;
+                if (typeof s !== 'string') return;
+                const m = s.match(/textselectioncontent:\s*([\s\S]*)$/);
+                if (m) { resolved = true; resolve(m[1]); }
+            };
+            // Patch app.socket._onMessage briefly.
+            try {
+                const orig = window.app && window.app.socket
+                    && window.app.socket._onMessage;
+                if (orig) {
+                    window.app.socket._onMessage = function(e) {
+                        try {
+                            const t = (e && e.data) ? (typeof e.data === 'string'
+                                ? e.data : '') : '';
+                            capture(t);
+                        } catch (er) {}
+                        return orig.apply(this, arguments);
+                    };
+                    setTimeout(() => {
+                        if (!resolved) {
+                            window.app.socket._onMessage = orig;
+                            resolved = true;
+                            resolve('');
+                        }
+                    }, waitMs);
+                } else {
+                    setTimeout(() => resolve(''), waitMs);
+                }
+            } catch (e) { resolve(''); }
+            // Trigger select-all + query.
+            try {
+                if (window.app && window.app.socket) {
+                    window.app.socket.sendMessage('uno .uno:SelectAll');
+                    setTimeout(() => {
+                        try { window.app.socket.sendMessage(
+                            'gettextselection mimetype=text/plain;charset=utf-8'); }
+                        catch (e) {}
+                    }, 200);
+                }
+            } catch (e) {}
+        });
+    }, timeoutMs).catch(() => '');
+}
+
 async function getCharCountFromPage(page) {
     try {
         const fr = page.frames().find(f => f.url().includes('cool.html'));
@@ -337,14 +400,25 @@ async function openSingleUser(browser, secretB64) {
         await snap(page, 'case5_cut_paste');
 
         // ─── Case 6: external text via clipboard → Ctrl+V ────────────
+        // Unique sentinel — if char count happens to grow but the bytes
+        // aren't actually the OS clipboard's, the substring check fails.
+        // This catches the prior "fake pass" mode where LO's internal
+        // clipboard had old content of matching length and Map.Keyboard's
+        // synchronous .uno:Paste landed THAT instead of the OS clipboard.
         await ctrlEnd(page);
+        const SENTINEL_EXT = 'PASTED-EXTERNAL-12345';
         const before6 = await getCharCount(page);
-        await writeClipboardText(page, 'EXTERNAL');
+        await writeClipboardText(page, SENTINEL_EXT);
         await focusDocBody(page);
         await pressShortcut(page, 'v');
-        const grew6 = await waitForCharCountAtLeast(page, before6 + 8);
-        check('Case 6: external clipboard text pasted (+8)',
-              grew6, 'before=' + before6 + ' after=' + await getCharCount(page));
+        await waitForCharCountAtLeast(page, before6 + SENTINEL_EXT.length, 10000);
+        await sleep(800); // settle
+        const docText6 = await getDocText(page);
+        check('Case 6: external clipboard text appears in doc (sentinel match)',
+              docText6.includes(SENTINEL_EXT),
+              docText6.length > 200
+                ? 'docText[0..200]=' + docText6.slice(0, 200) + '…'
+                : 'docText=' + JSON.stringify(docText6));
         await snap(page, 'case6_external_text');
 
         // ─── Case 7: external image via clipboard → Ctrl+V ───────────
@@ -372,9 +446,10 @@ async function openSingleUser(browser, secretB64) {
               sawKitHandle ? 'present' : 'no KitWS handleMessage insertfile log');
         await snap(page, 'case7_external_image');
 
-        // ─── Case 8: plaintext-only paste ─────────────────────────────
+        // ─── Case 8: plaintext-only paste (unique sentinel) ──────────
         await ctrlEnd(page);
-        await writeClipboardText(page, 'PLAIN');
+        const SENTINEL_PLAIN = 'PASTED-PLAIN-67890';
+        await writeClipboardText(page, SENTINEL_PLAIN);
         await focusDocBody(page);
         await page.keyboard.down('Control');
         await page.keyboard.down('Shift');
@@ -382,11 +457,20 @@ async function openSingleUser(browser, secretB64) {
         await page.keyboard.up('Shift');
         await page.keyboard.up('Control');
         await sleep(800);
-        await page.keyboard.press('Escape').catch(() => {});
-        await sleep(400);
+        // Some builds open a Paste-Special dialog on Ctrl+Shift+V. Press
+        // Enter (or Escape) to dismiss; failure-mode probe doesn't depend
+        // on which key wins.
+        await page.keyboard.press('Enter').catch(() => {});
+        await sleep(800);
         const after8 = await getCharCount(page);
-        check('Case 8: plaintext paste keypress did not crash editor',
+        const docText8 = await getDocText(page);
+        check('Case 8a: plaintext paste did not crash editor',
               after8 >= 0, 'after=' + after8);
+        check('Case 8b: plaintext sentinel landed in doc',
+              docText8.includes(SENTINEL_PLAIN),
+              docText8.length > 200
+                ? 'docText[0..200]=' + docText8.slice(0, 200) + '…'
+                : 'docText=' + JSON.stringify(docText8));
         await snap(page, 'case8_plaintext');
 
         // ─── Case 9: save round-trip ─────────────────────────────────

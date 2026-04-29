@@ -855,7 +855,16 @@ window.L.Map.Keyboard = window.L.Handler.extend({
 		// Don't do this in CODA-W, there it is the sending of
 		// the PASTE message in document,onpaste() in
 		// Clipboard.js that does the paste.
-		if (e.type === 'keydown' && window.ThisIsAMobileApp && !window.ThisIsTheWindowsApp && !window.ThisIsTheQtApp) {
+		if (e.type === 'keydown' && window.ThisIsAMobileApp && !window.ThisIsTheWindowsApp && !window.ThisIsTheQtApp && !window.ThisIsTheEmscriptenApp) {
+			// Skip in Emscripten/WASM mode: the synchronous .uno:Paste
+			// here races the document-level `paste` event handler in
+			// wasm-loader.js / Clipboard.js. The .uno:Paste reads LO's
+			// INTERNAL clipboard (often empty or stale for an external
+			// copy) and lands first; the proper paste-event-driven path
+			// (which has the OS clipboardData) is then suppressed by
+			// relay-adapter's _suppressNextPaste flag. Net result: real
+			// users see no external paste working. Let the paste-event
+			// handler run unimpeded in WASM.
 			if (this.keyCodes.C.includes(e.keyCode)) {
 				app.socket.sendMessage('uno .uno:Copy');
 				return true;
