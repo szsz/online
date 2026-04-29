@@ -557,6 +557,20 @@
                     var payload = bytes.slice(nlIdx + 1);
                     console.log('[relay] Paste blob: mimetype=' + mime + ' payload=' + payload.length + 'B');
 
+                    // Helper: in single-user mode there is no relay echo,
+                    // so the local Kit must be driven directly. In co-edit
+                    // mode go through the relay; the echo (processUIMessage
+                    // → sendToKit) is what makes our own kit see the paste.
+                    // Mixing the two paths would double-apply on the
+                    // sender, so it's strictly one-or-the-other.
+                    var dispatchPaste = function(payloadStr) {
+                        if (singleUserMode) {
+                            sendToKit(payloadStr);
+                        } else if (activated) {
+                            sendToRelay(0x00, myViewId, payloadStr);
+                        }
+                    };
+
                     if (mime.startsWith('image/')) {
                         // Convert to insertfile (the path that works in WASM).
                         var b64 = '';
@@ -567,32 +581,28 @@
                         b64 = btoa(b64);
                         var ext = mime.split('/')[1] || 'png';
                         var msg = 'insertfile name=clipboard-paste.' + ext + ' type=graphic data=' + b64;
-                        console.log('[relay] Converting image paste → insertfile (' + msg.length + ' chars)');
-                        // RELAY ONLY — local Kit gets it via the echo
-                        // (processUIMessage → sendToKit). No direct delivery.
-                        if (activated) sendToRelay(0x00, myViewId, msg);
+                        console.log('[relay] Converting image paste → insertfile (' + msg.length + ' chars, mode=' +
+                                    (singleUserMode ? 'local' : 'relay') + ')');
+                        dispatchPaste(msg);
                     } else if (mime.startsWith('text/html') || mime.startsWith('text/plain')) {
-                        // Send the FULL paste command as a string through the
-                        // relay. Kit's paste handler (ChildSession::paste)
-                        // processes `paste mimetype=text/html\n<html>` and
-                        // preserves formatting (bold, italic, underline, etc.).
+                        // Send the FULL paste command as a string. Kit's
+                        // paste handler (ChildSession::paste) processes
+                        // `paste mimetype=text/html\n<html>` and preserves
+                        // formatting (bold, italic, underline, etc.).
                         // Stripping to textinput would lose all formatting.
                         var textPayload = new TextDecoder().decode(payload);
                         var pasteCmd = 'paste mimetype=' + mime + '\n' + textPayload;
-                        console.log('[relay] Relaying rich paste (' + mime + ', ' + textPayload.length + ' chars)');
-                        if (activated) {
-                            sendToRelay(0x00, myViewId, pasteCmd);
-                        }
+                        console.log('[relay] Rich paste (' + mime + ', ' + textPayload.length + ' chars, mode=' +
+                                    (singleUserMode ? 'local' : 'relay') + ')');
+                        dispatchPaste(pasteCmd);
                     } else {
-                        // Unknown mimetype — try the text extraction path
-                        // as a best-effort. If it has readable text, relay
-                        // it as textinput. Otherwise drop (we can't relay
-                        // raw binary via the text protocol).
+                        // Unknown mimetype — try text extraction. If it has
+                        // readable text, dispatch as textinput.
                         console.log('[relay] Unknown paste mimetype "' + mime + '" — attempting text extraction');
                         try {
                             var unknownText = new TextDecoder().decode(payload).trim();
-                            if (unknownText && activated) {
-                                sendToRelay(0x00, myViewId, 'textinput id=0 text=' + unknownText);
+                            if (unknownText) {
+                                dispatchPaste('textinput id=0 text=' + unknownText);
                             }
                         } catch(e) {
                             console.log('[relay] Could not extract text from unknown paste — dropping');
@@ -779,6 +789,16 @@
                     if (!activated) {
                         console.log('[relay] Dropping insertfile (not activated yet)');
                         return;
+                    }
+                    // Same dispatch rule as paste blobs: in single-user
+                    // mode go directly to the local Kit (there is no relay
+                    // echo to bring it back); in co-edit go through the
+                    // relay so all peers receive the same image bytes,
+                    // and the echo carries it to our own Kit.
+                    if (singleUserMode) {
+                        console.log('[relay] insertfile → local Kit (single-user, ' +
+                                    msg.length + ' chars)');
+                        return origPostMobile(msg);
                     }
                     console.log('[relay] Intercepted insertfile via postMobileMessage (' +
                                 msg.length + ' chars) — routing through relay');
