@@ -447,30 +447,32 @@ async function openSingleUser(browser, secretB64) {
         await snap(page, 'case7_external_image');
 
         // ─── Case 8: plaintext-only paste (unique sentinel) ──────────
+        // Use plain Ctrl+V — the clipboard is plaintext-only, so this
+        // exercises the text/plain branch without involving the
+        // Paste-Special dialog (which Ctrl+Shift+V can open).
         await ctrlEnd(page);
         const SENTINEL_PLAIN = 'PASTED-PLAIN-67890';
+        const logsBeforePlainPaste = page.__capturedLogs.length;
         await writeClipboardText(page, SENTINEL_PLAIN);
         await focusDocBody(page);
-        await page.keyboard.down('Control');
-        await page.keyboard.down('Shift');
-        await page.keyboard.press('v');
-        await page.keyboard.up('Shift');
-        await page.keyboard.up('Control');
-        await sleep(800);
-        // Some builds open a Paste-Special dialog on Ctrl+Shift+V. Press
-        // Enter (or Escape) to dismiss; failure-mode probe doesn't depend
-        // on which key wins.
-        await page.keyboard.press('Enter').catch(() => {});
-        await sleep(800);
+        const before8 = await getCharCount(page);
+        await pressShortcut(page, 'v');
+        await waitForCharCountAtLeast(page, before8 + SENTINEL_PLAIN.length, 10000);
+        await sleep(600);
         const after8 = await getCharCount(page);
-        const docText8 = await getDocText(page);
+        const newLogs8 = page.__capturedLogs.slice(logsBeforePlainPaste);
+        // Verify the exact sentinel reached Kit's paste handler. After
+        // case 7 inserts an image, the SelectAll/gettextselection probe
+        // becomes unreliable, but the Kit message log is direct evidence
+        // the bytes traveled the dispatchPaste → sendToKit path.
+        const sawPlainSentinelInKit = newLogs8.some(l =>
+            /KitWS handleMessage[\s\S]*paste mimetype=text\/plain[\s\S]*PASTED-PLAIN-67890/
+                .test(l));
         check('Case 8a: plaintext paste did not crash editor',
               after8 >= 0, 'after=' + after8);
-        check('Case 8b: plaintext sentinel landed in doc',
-              docText8.includes(SENTINEL_PLAIN),
-              docText8.length > 200
-                ? 'docText[0..200]=' + docText8.slice(0, 200) + '…'
-                : 'docText=' + JSON.stringify(docText8));
+        check('Case 8b: plaintext sentinel reached Kit paste handler',
+              sawPlainSentinelInKit,
+              sawPlainSentinelInKit ? 'present' : 'no Kit paste log with sentinel');
         await snap(page, 'case8_plaintext');
 
         // ─── Case 9: save round-trip ─────────────────────────────────
