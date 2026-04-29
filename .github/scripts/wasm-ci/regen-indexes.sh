@@ -14,10 +14,14 @@ SITE="${STATIC_SITE_BASE:?}"
 
 list_prefix() {
     local prefix="$1"
+    # --num-results: az defaults to 5000; we already have 6000+ blobs under
+    # app-builds/ (mostly per-test screenshots) so the default page cuts off
+    # the most recent manifests. Bump to a safe ceiling.
     az storage blob list \
         --account-name "$ACCT" \
         --container-name '$web' \
         --prefix "$prefix" \
+        --num-results 100000 \
         --query "[?ends_with(name, '/manifest.json')].name" \
         -o tsv 2>/dev/null | sort -r
 }
