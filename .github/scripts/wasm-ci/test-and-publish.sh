@@ -106,6 +106,18 @@ trap 'rm -rf "$REPORT_DIR" "$RUN_START_MARKER"' EXIT
     echo "==========================================="
 } > "$LOG"
 
+# Skip tests that aren't useful for every CI run. We patch the canonical
+# TESTS array (in run-all-tests.sh) — both serial and parallel runners
+# read from it. This only affects the actions/checkout workspace, not the
+# committed source.
+CI_SKIP_TESTS=( stress )
+for slug in "${CI_SKIP_TESTS[@]}"; do
+    if grep -q "^[[:space:]]*\"$slug|" "$WORKSPACE/wasm/run-all-tests.sh"; then
+        echo "[CI] Skipping test: $slug"
+        sed -i "/^[[:space:]]*\"$slug|/d" "$WORKSPACE/wasm/run-all-tests.sh"
+    fi
+done
+
 # Use the parallel runner. JOBS=8 is aggressive: 16 GB / 8 ≈ 2 GB/slot will
 # swap during heavy tests, and Azure App Service B-tier may throttle. The
 # floor is the longest single test (`formats` ~36 min). Override via
