@@ -135,7 +135,12 @@ async function clickCanvas(page) {
     try {
         // Upload via v2 (encrypted)
         const upF = await uploadV2(VIEWER, FILE, Buffer.from(INIT_CONTENT, 'utf8'));
-        const recentList = [{ b64urlSecret: upF.b64urlSecret, fileId: upF.fileId, cachedName: FILE }];
+        // recent-files.js writes the URL fragment to `r.secret` (lib/recent-files.js:33);
+        // index.html click handler reads `r.secret`. The seeded-property
+        // name MUST match — `b64urlSecret` here would land in a key the
+        // viewer never reads, opening the file with `secret=undefined`
+        // and silently failing decrypt.
+        const recentList = [{ secret: upF.b64urlSecret, fileId: upF.fileId, cachedName: FILE }];
         log(`Uploaded ${FILE} (${INIT_CONTENT.length} chars) → ${upF.fileId.substring(0,8)}…`);
 
         // ---- Phase 1: A opens, types ALPHA ----

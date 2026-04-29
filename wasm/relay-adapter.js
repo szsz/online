@@ -36,6 +36,15 @@
     var coolwsdReady = false;
     var activated = false;       // true after join-ready acknowledged
     var sendQueue = [];
+    // Buffer for user-input messages (key/mouse/uno/etc.) sent by COOL.js
+    // BEFORE the relay-adapter has finished activating in a new (or
+    // switched) room. Without this, keystrokes that arrive in the
+    // narrow window between RelaySwitchRoom and activateClient → 0x06
+    // get dropped silently with "Dropping input (not activated yet)".
+    // Capped to 200 entries so a never-activating session can't grow
+    // unbounded.
+    var _preActivateQueue = [];
+    var _preActivateQueueCap = 200;
     var recvQueue = [];          // messages received before COOLWSD ready
     var myViewId = Math.floor(Math.random() * 0x7FFFFF);
     var lastSeq = 0;             // last processed sequence number
@@ -202,6 +211,7 @@
             sendQueue = [];
             recvQueue = [];
             kitQueue = []; // drop any pending messages from old room
+            _preActivateQueue = []; // drop pre-activate input from old room
             lateJoinFileReady = false;
 
             // Reset encryption state — every doc has its own per-file
@@ -398,6 +408,24 @@
     function activateClient() {
         if (activated) return;
         activated = true;
+        // Flush any input that arrived before we finished activating
+        // (e.g. typing on the new room immediately after a hot-switch).
+        // Re-feed each item through the FakeWebSocket so it goes through
+        // the normal interceptedSend path now that `activated` is true.
+        if (_preActivateQueue.length > 0) {
+            var preQ = _preActivateQueue.splice(0);
+            console.log('[relay] Flushing ' + preQ.length + ' pre-activate input messages');
+            try {
+                var fws = globalThis.TheFakeWebSocket;
+                if (fws && fws.send) {
+                    for (var pi = 0; pi < preQ.length; pi++) {
+                        fws.send(preQ[pi]);
+                    }
+                }
+            } catch (e) {
+                console.warn('[relay] pre-activate flush error:', e.message);
+            }
+        }
         // Set the initial known hash from the file we loaded/joined with.
         // This is used for conflict detection when saving.
         lastKnownHash = joinFileHash;
@@ -710,7 +738,11 @@
                 text === 'resetselection';
             if (isUserInput) {
                 if (!activated) {
-                    console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
+                    if (_preActivateQueue.length >= _preActivateQueueCap) {
+                        console.log('[relay] Dropping input (queue full, not activated yet): ' + text.substring(0, 40));
+                        return;
+                    }
+                    _preActivateQueue.push(data);
                     return;
                 }
                 // Suppress Map.Keyboard's uno:Paste when our paste handler
