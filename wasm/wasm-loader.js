@@ -608,7 +608,7 @@
                             }), '*');
                         } catch(e) {}
                     }
-                }, 200);
+                }, 50);
             }
             if (performance.now() - watchStart > 30000) clearInterval(visiblePollInterval);
         }, 50);
