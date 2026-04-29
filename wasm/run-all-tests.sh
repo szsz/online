@@ -96,8 +96,7 @@ TESTS=(
     "folder-api|test-folder-api.js|Folder API|Create folders, upload nested files, download, path traversal rejection|none"
     "snapshot-stale|test-snapshot-stale.js|Snapshot Stale Rejection|Tampered fingerprint causes snapshot to be discarded on reload|none"
     "save-conflict|test-save-conflict.js|Save Conflict|External file modification during editing — conflict detection behavior|none"
-    "timing-report|test-timing-report.js|Timing Report|Cold vs warm visit timing with screenshots, generates HTML report at /timing-report/|timing-report"
-    "snapshot-milestones|test-snapshot-milestones.js|Snapshot Milestones|Per-doc-type cold/warm × N=3 trial milestone report; iframe DOM verifies content rendered; screenshots at every milestone|none"
+    "snapshot-milestones|test-snapshot-milestones.js|Snapshot Milestones|Per-doc-type cold/warm × N=3 trial milestone report; iframe DOM verifies content rendered; screenshots at every milestone. Replaces the old timing-report — same cold-vs-warm signal plus per-doc-type breakdown and a warm-time budget that fails the run when warm regresses.|none"
     "snapshot-cross-type|test-snapshot-cross-type.js|Snapshot Cross-Type|Warm-restore across writer/calc/impress hot-switch combinations|none"
     "regression-font-change-ui|test-regression-font-change-ui.js|Regression: Font Change via UI|Single-user, double-click word + change font via notebookbar dropdown — UNO command dispatched and font value updates|shots-regression-font-change-ui"
 )

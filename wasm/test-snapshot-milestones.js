@@ -41,6 +41,26 @@ const T0 = Date.now();
 // wait the full 180s.
 const TIMEOUT_MS = 180000;
 const WARM_TIMEOUT_MS = 60000;
+// Wall-time budget for a warm trial. Typical good runs verify in 7-11 s
+// (writer/calc) and 9-12 s (impress). Under CPU contention from
+// concurrent puppeteer Chromes (parallel test runner JOBS≥2, or the
+// GitHub actions-runner running tests on the same host) we've seen
+// impress warm at 17 s. The threshold below catches "warm is very
+// slow" — either an intrinsic regression or environmental contention
+// — and fails the run rather than silently passing on the
+// "any-trial-verified" gate.
+//
+// Sources of slow warm we know of:
+//   1. Concurrent puppeteer Chrome processes pegging CPU (parallel
+//      runner with JOBS=2/4, or actions-runner running tests against
+//      Azure on the same host)
+//   2. /tmp filling up (Cache Storage flush stalls) — `df /tmp`
+//   3. Plan-C parking interactions on impress (4× onLoad chain
+//      observed in test-snapshot-cross-type warm-impress)
+//
+// Override with WARM_BUDGET_MS env if you're investigating something
+// specific.
+const WARM_BUDGET_MS = parseInt(process.env.WARM_BUDGET_MS || '20000', 10);
 // Number of warm trials per cold session. Warm-restore is currently flaky
 // (~33% pass rate, see project_warm_pthread_flake.md). One trial per
 // iteration produces noisy data; N=3 lets us track pass-rate trends as
@@ -642,10 +662,42 @@ ${body}
     });
     log(`Warm pass-rate: ${passRates.join(' ')}`);
 
-    // Exit 0 if every doc type had ≥1 cold pass AND ≥1 warm pass.
+    // Compute best warm wall time per doc type. The "best" (fastest
+    // verified trial) is the meaningful metric — single-trial flakes
+    // shouldn't fail the run, but persistent slow warm should.
+    const warmBudgets = Object.entries(results).map(([tag, r]) => {
+        const verifiedTimes = r.warmTrials
+            .map(t => t.result.hits.content_verified)
+            .filter(v => v !== undefined);
+        const best = verifiedTimes.length ? Math.min(...verifiedTimes) : null;
+        const ok = best !== null && best <= WARM_BUDGET_MS;
+        return { tag, best, ok, all: verifiedTimes };
+    });
+    log(`Warm budget (≤ ${(WARM_BUDGET_MS/1000).toFixed(0)} s):`);
+    for (const w of warmBudgets) {
+        const bestStr = w.best !== null ? (w.best/1000).toFixed(2) + 's' : '— (no verified trial)';
+        const allStr = w.all.length ? '[' + w.all.map(v => (v/1000).toFixed(2)+'s').join(', ') + ']' : '[]';
+        log(`  ${w.tag}: best=${bestStr} ${w.ok ? 'PASS' : 'FAIL'} ${allStr}`);
+    }
+    const allWarmInBudget = warmBudgets.every(w => w.ok);
+    if (!allWarmInBudget) {
+        log('');
+        log('!!! WARM IS SLOW. Likely causes:');
+        log('  1. Concurrent puppeteer Chromes on the same host (parallel');
+        log('     runner with JOBS≥2, OR the GitHub actions-runner running');
+        log('     tests against Azure simultaneously). Check `pgrep -af chrome`.');
+        log('  2. /tmp full — Cache Storage flushes stall. Check `df /tmp`.');
+        log('  3. A real LO Core / Online warm-restore regression.');
+        log('  Override the budget for one-off investigation:');
+        log(`     WARM_BUDGET_MS=30000 node wasm/test-snapshot-milestones.js`);
+    }
+
+    // Exit 0 only if EVERY doc type had ≥1 cold pass AND ≥1 verified
+    // warm trial AND the best verified warm trial is within budget.
     const allOk = Object.values(results).every(r =>
         r.cold.hits.content_verified !== undefined &&
-        r.warmTrials.some(t => t.result.hits.content_verified !== undefined));
+        r.warmTrials.some(t => t.result.hits.content_verified !== undefined))
+        && allWarmInBudget;
     process.exit(allOk ? 0 : 1);
 })().catch(e => {
     log('FATAL: ' + (e.stack || e.message || e));

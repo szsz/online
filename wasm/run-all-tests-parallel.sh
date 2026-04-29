@@ -129,12 +129,6 @@ Failed: <span class="fail-count">${FAILED}</span></p>
 <iframe src="/report/snapshot-milestones/"></iframe>
 </div>
 
-<div class="embed-section">
-<h2>Timing Report</h2>
-<p><a href="../timing-report/">Open in new tab →</a></p>
-<iframe src="../timing-report/"></iframe>
-</div>
-
 </body></html>
 HTMLEOF
 

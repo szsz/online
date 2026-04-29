@@ -299,8 +299,10 @@ function handler(req, res) {
         }
     }
 
-    // /timing-report/ and /reports/ — serve test reports from PUB.
-    if (pathname.startsWith('/timing-report/') || pathname.startsWith('/reports/')) {
+    // /reports/ — serve test reports from PUB.
+    // (/timing-report/ removed with test-timing-report.js — superseded by
+    // test-snapshot-milestones.js, served via the viewer at /report/.)
+    if (pathname.startsWith('/reports/')) {
         let filepath = path.join(PUB, pathname);
         // Resolve directory to index.html
         try { if (fs.statSync(filepath).isDirectory()) filepath = path.join(filepath, 'index.html'); } catch(e) {}
