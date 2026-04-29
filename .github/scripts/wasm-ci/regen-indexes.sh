@@ -60,8 +60,8 @@ HTML
                     rc="$(jq -r '.test_report.exit_code // empty' "$tmp" 2>/dev/null)"
                     lo="$(jq -r '.lo_build_id // ""' "$tmp" 2>/dev/null)"
                     if [[ -z "$rc" ]]; then notes="LO=$lo · <span class=\"muted\">no tests yet</span>"
-                    elif [[ "$rc" == "0" ]]; then notes="LO=$lo · <span class=\"ok\">tests passed</span>"
-                    else notes="LO=$lo · <span class=\"bad\">tests failed (rc=$rc)</span>"
+                    elif [[ "$rc" == "0" ]]; then notes="LO=$lo · <a class=\"ok\" href=\"$id/tests/\">tests passed</a>"
+                    else notes="LO=$lo · <a class=\"bad\" href=\"$id/tests/\">tests failed (rc=$rc)</a>"
                     fi
                 else
                     notes="$(jq -r '.git_short_sha // ""' "$tmp" 2>/dev/null)"
