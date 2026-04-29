@@ -564,10 +564,14 @@
                 // 400 ms after Rec 6.5 (capture-point shift) made the
                 // warm path reliable. Iter9–13 saw apparent regressions
                 // at 400 ms but those were the lockstep capture race,
-                // not STABILITY_MS related. Now that warm is solid,
-                // dropping the gate from 1200 to 400 saves ~800 ms on
-                // every warm visit's visible-at moment.
-                var STABILITY_MS = 400;
+                // not STABILITY_MS related.
+                // Iter7 (post-warm-restore-flag-clear): with the doc-
+                // switch loop fixed, the canvas paints ONCE and stays.
+                // Combined with statusReady (which only fires when LO
+                // emitted a real word/cell/slide count, i.e. layout is
+                // done), the stability buffer is just paranoia. 100 ms
+                // is enough to ride out a single jittery frame.
+                var STABILITY_MS = 100;
                 var readyStart = performance.now();
                 var lastSample = null;
                 var lastChangeAt = performance.now();
