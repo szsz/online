@@ -55,10 +55,12 @@
     function fetchKey(keyVersion) {
         if (_keyCache[keyVersion]) return Promise.resolve(_keyCache[keyVersion]);
         if (_pendingKeyReqs[keyVersion]) {
-            return new Promise(function(resolve) { _pendingKeyReqs[keyVersion].push(resolve); });
+            return new Promise(function(resolve, reject) {
+                _pendingKeyReqs[keyVersion].push(resolve);
+            });
         }
         _pendingKeyReqs[keyVersion] = [];
-        return new Promise(function(resolve) {
+        return new Promise(function(resolve, reject) {
             _pendingKeyReqs[keyVersion].push(resolve);
             try {
                 parent.postMessage(JSON.stringify({
@@ -66,6 +68,16 @@
                     Values: { fileId: wopiSrc, keyVersion: keyVersion }
                 }), '*');
             } catch(e) { console.error('[relay] KeyRequest postMessage failed:', e); }
+            // Timeout: if no parent responds in 5s (e.g., cool.html loaded
+            // standalone without the viewer parent, or the parent has no
+            // KeyResponse handler), reject so callers can fall through to
+            // unencrypted mode instead of hanging activation forever.
+            setTimeout(function() {
+                if (_pendingKeyReqs[keyVersion]) {
+                    delete _pendingKeyReqs[keyVersion];
+                    reject(new Error('KeyRequest timeout (no parent KeyResponse in 5s)'));
+                }
+            }, 5000);
         });
     }
 
