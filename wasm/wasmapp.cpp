@@ -123,6 +123,9 @@ int g_wasmDesktopPhase = 0;
 
 static char const * tempFile; // null when operating on a local file in the Emscripten file system
 static std::string remoteUrl;
+// Backing storage for tempFile after a hot-switch — wasmAppRebindSaveTarget
+// takes ownership of the new path and points tempFile at it.
+static std::string tempFileStorage;
 static std::string fileURL;
 static int fakeClientFd;
 static int closeNotificationPipeForForwardingThread[2] = {-1, -1};
@@ -549,6 +552,19 @@ void saveToServer() {
     emscripten_fetch_close(fetch);
     LOG_TRC("Saved " << tempFile << " back to <" << remoteUrl << ">: " << fetch->status);
     //TODO: handle fetch->status != 200
+}
+
+void wasmAppRebindSaveTarget(const std::string& tempPath, const std::string& docRemoteUrl)
+{
+    // Called from ChildSession::switchdocument after a successful in-place
+    // reload OR full documentLoad of a new doc. Without this, kit's save
+    // (saveToServer) keeps writing the prewarm tempfile to the prewarm
+    // URL, so every save in the user-doc room is a no-op vs the user's
+    // actual content — late joiners see stale state forever.
+    tempFileStorage = tempPath;
+    tempFile = tempFileStorage.c_str();
+    remoteUrl = docRemoteUrl;
+    LOG_INF("wasmAppRebindSaveTarget: tempFile=" << tempFile << " remoteUrl=" << remoteUrl);
 }
 
 // Snapshot wake is now handled by wasm_snapshot_complete() defined in

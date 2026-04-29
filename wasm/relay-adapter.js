@@ -243,6 +243,13 @@
 
             // Connect to new room
             relayUrl = newRoom;
+            // We started in single-user mode (no relay= URL param on the
+            // initial cool.html load — viewer prewarm path). Now that a
+            // RelaySwitchRoom hands us a real room URL, we're in co-edit
+            // mode. Without this, the save/0x07 path silently treats the
+            // user's Ctrl+S as a single-user save and never rotates the
+            // broker checkpoint, so late joiners see stale content.
+            singleUserMode = false;
             ws = new WebSocket(newRoom);
             ws.binaryType = 'arraybuffer';
             ws.onopen = onWsOpen;
@@ -1058,8 +1065,15 @@
         // will reject the POST with 403 anyway). If the user wants to
         // persist, they need to Save As under a new filename — that
         // flow re-instantiates with a fresh WOPISrc.
-        var curWopiSrc = params.get('WOPISrc') || '';
-        if (curWopiSrc === '__prewarm_blank.docx') {
+        //
+        // Use the MODULE-SCOPE `wopiSrc` (updated by RelaySwitchRoom on
+        // hot-switch from prewarm to user doc), NOT params.get(). The
+        // URL param is the cool.html-load-time WOPISrc, which is
+        // __prewarm_blank.docx for the prewarm path; if we read that
+        // here, every save in the user-doc room takes the early return
+        // and 0x07 is never sent — late joiners see the pre-save
+        // checkpoint forever.
+        if (wopiSrc === '__prewarm_blank.docx') {
             console.log('[relay] Save suppressed on prewarm blank — use Save As');
             return;
         }
@@ -1069,10 +1083,13 @@
         // checkpoints when they connected during the delay window.
         setTimeout(function() {
             var saveAtSeq = lastSeq;
-            var wopiSrc = params.get('WOPISrc') || '';
+            // Module-scope wopiSrc — see prewarm-blank guard above for
+            // why we DON'T re-read params.get('WOPISrc') here.
             // 1. Download saved file from editor's temp storage
             var editorFileUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-            origFetch(editorFileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+            origFetch(editorFileUrl).then(function(r) {
+                return r.arrayBuffer();
+            }).then(function(buf) {
                 var bytes = new Uint8Array(buf);
 
                 // Guard: if the saved file is a tiny blank doc (<15KB) but

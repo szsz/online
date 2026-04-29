@@ -27,4 +27,13 @@ extern "C" void close_remote_client(int clientId);
 
 void saveToServer();
 
+#include <string>
+// Re-target the file-save path after a hot-doc switch. ChildSession's
+// switchdocument writes the new doc to /tempdoc_switchN and fetches
+// its bytes from a new URL; without rebinding wasmapp's tempFile +
+// remoteUrl, kit's saveToServer keeps writing the prewarm-blank's
+// tempfile and POSTing back to the prewarm-blank URL — every save
+// after the first hot-switch is a no-op vs the user's actual doc.
+void wasmAppRebindSaveTarget(const std::string& tempPath, const std::string& docRemoteUrl);
+
 /* vim:set shiftwidth=4 softtabstop=4 expandtab cinoptions=b1,g0,N-s cinkeys+=0=break: */

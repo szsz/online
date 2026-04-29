@@ -363,6 +363,12 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         SW_MARK("entered handler");
 
         std::string fileUrl;
+        // Hoisted out of the url= branch so we can pass them to
+        // wasmAppRebindSaveTarget at the end of a successful switch.
+        // Empty docRemoteUrl signals "this was a local-file switch — no
+        // server-side save target to rebind".
+        std::string switchTempPath;
+        std::string switchDocRemoteUrl;
         if (arg.substr(0, 4) == "url=")
         {
             const std::string remoteUrl = arg.substr(4);
@@ -396,6 +402,8 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             fileUrl = "file://" + tempPath;
             LOG_INF("SWITCHDOC: wrote to " << tempPath);
             SW_MARK("file:written");
+            switchTempPath = tempPath;
+            switchDocRemoteUrl = remoteUrl;
         }
         else
         {
@@ -529,6 +537,15 @@ bool ChildSession::_handleInput(const char *buffer, int length)
 
         _isDocLoaded = true;
         LOG_INF("SWITCHDOC: complete, viewId=" << _viewId);
+        // Re-target the wasm-side save path. Without this, every save
+        // post-switch (Ctrl+S) reads the prewarm tempfile and POSTs to
+        // the prewarm URL, so the user-doc room's checkpoint never
+        // rotates to the actual saved content (broker logs CHECKPOINT
+        // ROTATED with the OLD hash, late joiners see stale state).
+        if (!switchTempPath.empty() && !switchDocRemoteUrl.empty())
+        {
+            wasmAppRebindSaveTarget(switchTempPath, switchDocRemoteUrl);
+        }
         SW_MARK("complete");
 #undef SW_MARK
         return true;
