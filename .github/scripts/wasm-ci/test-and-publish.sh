@@ -135,9 +135,11 @@ DUR=$((END_TS - START_TS))
 # spans, the parallel runner emits `<tr class="pass">`/`<tr class="fail">`. Try
 # both. Fall back to a log scrape if the rich report is missing.
 PASS_COUNT=0; FAIL_COUNT=0
+# Count *occurrences*, not matching lines — the parallel runner writes the
+# whole <tbody> on a single line, so `grep -c` returns 1.
 if [[ -f "$TEST_OUTPUT/reports/index.html" ]]; then
-    p=$(grep -cE 'badge-pass|<tr class="pass"' "$TEST_OUTPUT/reports/index.html" || true)
-    f=$(grep -cE 'badge-fail|<tr class="fail"' "$TEST_OUTPUT/reports/index.html" || true)
+    p=$(grep -oE 'badge-pass|<tr class="pass"' "$TEST_OUTPUT/reports/index.html" | wc -l)
+    f=$(grep -oE 'badge-fail|<tr class="fail"' "$TEST_OUTPUT/reports/index.html" | wc -l)
     PASS_COUNT="$p"; FAIL_COUNT="$f"
 fi
 if (( PASS_COUNT == 0 && FAIL_COUNT == 0 )); then
