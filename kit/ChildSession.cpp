@@ -518,14 +518,34 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             // → mxComponent->dispose(), breaking the back-refs that
             // make warm cross-type 18-44s vs cold 10-15s.
             SW_MARK("disposeOld:start");
+            const int __sw_dispose_start = swMs();
             _docManager->setLOKitDocument(nullptr);
             existing.reset();
             SW_MARK("disposeOld:done");
+            const int __sw_dispose_end = swMs();
 
             LOG_INF("SWITCHDOC: calling documentLoad(" << fileUrl << ")");
             SW_MARK("documentLoad:start");
+#ifdef __EMSCRIPTEN__
+            // Iter A4: sync mark around documentLoad. Async marks
+            // queued during the multi-second LO Core call get
+            // coalesced or dropped by puppeteer's CDP listener, so
+            // cross-type runs see ZERO marks. Synchronous fires
+            // immediately, blocks the kit thread for the JS round-
+            // trip (~1-3ms), and gives reliable book-end timestamps
+            // independent of the queue-flush timing at the end.
+            MAIN_THREAD_EM_ASM({
+                console.log('SWITCHDOC_SYNC[+' + $0 + 'ms] documentLoad:about-to-call (disposeOld='
+                          + ($1 - $2) + 'ms)');
+            }, swMs(), __sw_dispose_end, __sw_dispose_start);
+#endif
             auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), "Language=en-US,Batch=true");
             SW_MARK("documentLoad:done");
+#ifdef __EMSCRIPTEN__
+            MAIN_THREAD_EM_ASM({
+                console.log('SWITCHDOC_SYNC[+' + $0 + 'ms] documentLoad:returned');
+            }, swMs());
+#endif
             newDoc = std::shared_ptr<lok::Document>(rawDoc);
             if (!newDoc || !newDoc->get())
             {
@@ -579,12 +599,18 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         }
         SW_MARK("complete");
 #ifdef __EMSCRIPTEN__
-        // One batched dump that survives even if every per-phase
-        // ASYNC_EM_ASM was dropped by CDP during the documentLoad
-        // block. Tests grep for SWITCHDOC_TIMINGS_BEGIN/END.
+        // Iter A4: synchronous EM_ASM. The previous ASYNC variant
+        // queued the lambda for later execution, but $0 was
+        // blob.c_str() — by the time JS ran, blob had gone out of
+        // scope and the C-string pointed at freed memory, so cross-
+        // type runs (where the per-phase async marks are dropped
+        // during the long documentLoad block) saw NEITHER kind of
+        // mark. Synchronous blocks switchdocument briefly while JS
+        // copies the string, but blob stays valid through the call.
+        // Tests grep for SWITCHDOC_TIMINGS_BEGIN/END.
         {
             const std::string blob = swPhasesBuf.str();
-            MAIN_THREAD_ASYNC_EM_ASM({
+            MAIN_THREAD_EM_ASM({
                 console.log('SWITCHDOC_TIMINGS_BEGIN\n' + UTF8ToString($0)
                             + 'SWITCHDOC_TIMINGS_END');
             }, blob.c_str());

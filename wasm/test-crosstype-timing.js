@@ -76,10 +76,11 @@ async function getStatusOk(page, type) {
         page.on('console', m => {
             const t = m.text();
             // Per-phase async marks: "SWITCHDOC[+1234ms] label"
-            const sw = t.match(/SWITCHDOC\[\+(\d+)ms\]\s+(.+)/);
+            const sw = t.match(/SWITCHDOC(?:_SYNC)?\[\+(\d+)ms\]\s+(.+)/);
             if (sw && activeRecord) {
                 activeRecord.switchdocMarks.push({
-                    t: parseInt(sw[1], 10), label: sw[2].slice(0, 60),
+                    t: parseInt(sw[1], 10), label: sw[2].slice(0, 80),
+                    sync: t.includes('SWITCHDOC_SYNC'),
                 });
             }
             // Batched dump (Iter A1) — survives the documentLoad block:
