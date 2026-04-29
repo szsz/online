@@ -177,25 +177,31 @@ async function clickCanvas(page) {
         await A.page.keyboard.down('Control');
         await A.page.keyboard.press('s');
         await A.page.keyboard.up('Control');
-        // Wait for the storage GET to rotate its X-Content-Hash. Fetch
-        // twice with a gap; when the hash changes, we know A's save has
-        // landed. Budget ~30 s before giving up.
-        const hashDeadline = Date.now() + 30000;
-        let firstHash = null;
+        // Poll the v2 endpoint (legacy /api/files/<v2-fileId> always
+        // returns 404 → the previous version of this loop never saw a
+        // change, regardless of whether save actually rotated). Detect
+        // change by hashing the ciphertext locally — `updatedAt` would
+        // also work but is bucket-second granular. Budget ~60 s — Azure
+        // PUT on the v2 endpoint can stack with the relay 0x07 RTT.
+        const crypto = require('crypto');
+        const hashDeadline = Date.now() + 60000;
+        let firstCt = null;
         let sawRotation = false;
         while (Date.now() < hashDeadline) {
             try {
-                const r = await A.page.evaluate(async (n) => {
-                    const r = await fetch('/api/files/' + encodeURIComponent(n),
-                        { method: 'HEAD' });
-                    return r.headers.get('x-content-hash') || r.headers.get('etag') || '';
+                const r = await A.page.evaluate(async (id) => {
+                    const r = await fetch('/api/v2/file/' + id);
+                    if (!r.ok) return '';
+                    const j = await r.json();
+                    return j.ciphertext || '';
                 }, upF.fileId);
-                if (firstHash === null) firstHash = r;
-                else if (r && r !== firstHash) { sawRotation = true; break; }
+                const h = r ? crypto.createHash('sha256').update(r).digest('hex') : '';
+                if (firstCt === null) firstCt = h;
+                else if (h && h !== firstCt) { sawRotation = true; break; }
             } catch(e) {}
             await sleep(1000);
         }
-        log(`A explicit save: hash rotated=${sawRotation}`);
+        log(`A explicit save: ciphertext rotated=${sawRotation}`);
 
         // ---- Phase 2: B joins → relay triggers a fresh save on A ----
         // The 1.5s save delay (vs. old 5s) means B should see the new state
