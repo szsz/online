@@ -75,12 +75,26 @@ async function getStatusOk(page, type) {
         let activeRecord = null;
         page.on('console', m => {
             const t = m.text();
-            // The kit emits "SWITCHDOC[+1234ms] label"; capture all.
+            // Per-phase async marks: "SWITCHDOC[+1234ms] label"
             const sw = t.match(/SWITCHDOC\[\+(\d+)ms\]\s+(.+)/);
             if (sw && activeRecord) {
                 activeRecord.switchdocMarks.push({
                     t: parseInt(sw[1], 10), label: sw[2].slice(0, 60),
                 });
+            }
+            // Batched dump (Iter A1) — survives the documentLoad block:
+            //   SWITCHDOC_TIMINGS_BEGIN\n[+0ms] entered\n...SWITCHDOC_TIMINGS_END
+            if (t.includes('SWITCHDOC_TIMINGS_BEGIN') && activeRecord) {
+                const lines = t.split('\n');
+                for (const line of lines) {
+                    const m2 = line.match(/^\[\+(\d+)ms\]\s+(.+)$/);
+                    if (m2) {
+                        activeRecord.switchdocMarks.push({
+                            t: parseInt(m2[1], 10), label: m2[2].slice(0, 60),
+                            batched: true,
+                        });
+                    }
+                }
             }
             // Bridge-level "switchdoc_seen / _sent" — viewer-side trigger.
             const bridge = t.match(/bridge:(switchdoc_seen|switchdoc_sent)/);
@@ -145,11 +159,16 @@ async function getStatusOk(page, type) {
             if (!verified) {
                 activeRecord.error = `TIMEOUT after ${((Date.now()-verifyStart)/1000).toFixed(0)}s`;
             }
+            // Async SWITCHDOC marks queued during the documentLoad block
+            // flush AFTER verify returns. Wait an extra 4 s to let them
+            // arrive at the page.on('console') handler and accumulate
+            // into activeRecord.switchdocMarks before we snapshot.
+            await sleep(4000);
             log(`  verified in ${activeRecord.verifiedMs}ms`
               + (activeRecord.bridgeAt ? ` (bridge → verify = ${activeRecord.verifiedMs - (activeRecord.bridgeAt - activeRecord.startedAt)}ms)` : ''));
             log(`  switchdoc marks: ${activeRecord.switchdocMarks.length}`);
-            for (const m of activeRecord.switchdocMarks.slice(-12)) {
-                log(`    [+${m.t}ms] ${m.label}`);
+            for (const m of activeRecord.switchdocMarks) {
+                log(`    [+${m.t}ms] ${m.label}${m.batched ? ' (batch)' : ''}`);
             }
             records.push(activeRecord);
             activeRecord = null;

@@ -355,8 +355,23 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             return (int)std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - swT0).count();
         };
+        // Accumulate phase timings in a C++ buffer instead of firing
+        // MAIN_THREAD_ASYNC_EM_ASM per-phase. Reason: the kit's main
+        // thread blocks for ~10 s inside loKit->documentLoad on a
+        // cross-type switch, queueing many ASYNC_EM_ASM calls. When
+        // they all flush at once after documentLoad returns, puppeteer's
+        // CDP console listener appears to drop or coalesce them — the
+        // observed effect is "0 SWITCHDOC marks captured" for every
+        // cross-type transition (see test-crosstype-timing.js Iter 1
+        // baseline). One batched MAIN_THREAD_EM_ASM at completion is
+        // strictly more reliable.
+        std::ostringstream swPhasesBuf;
 #ifdef __EMSCRIPTEN__
-#define SW_MARK(label) MAIN_THREAD_ASYNC_EM_ASM({ console.log('SWITCHDOC[+' + $0 + 'ms] ' + UTF8ToString($1)); }, swMs(), label)
+#define SW_MARK(label) do { \
+        const int __sw_t = swMs(); \
+        swPhasesBuf << "[+" << __sw_t << "ms] " << (label) << "\n"; \
+        MAIN_THREAD_ASYNC_EM_ASM({ console.log('SWITCHDOC[+' + $0 + 'ms] ' + UTF8ToString($1)); }, __sw_t, (label)); \
+    } while (0)
 #else
 #define SW_MARK(label) ((void)0)
 #endif
@@ -547,6 +562,18 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             wasmAppRebindSaveTarget(switchTempPath, switchDocRemoteUrl);
         }
         SW_MARK("complete");
+#ifdef __EMSCRIPTEN__
+        // One batched dump that survives even if every per-phase
+        // ASYNC_EM_ASM was dropped by CDP during the documentLoad
+        // block. Tests grep for SWITCHDOC_TIMINGS_BEGIN/END.
+        {
+            const std::string blob = swPhasesBuf.str();
+            MAIN_THREAD_ASYNC_EM_ASM({
+                console.log('SWITCHDOC_TIMINGS_BEGIN\n' + UTF8ToString($0)
+                            + 'SWITCHDOC_TIMINGS_END');
+            }, blob.c_str());
+        }
+#endif
 #undef SW_MARK
         return true;
     }
