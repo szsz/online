@@ -106,8 +106,13 @@ trap 'rm -rf "$REPORT_DIR" "$RUN_START_MARKER"' EXIT
     echo "==========================================="
 } > "$LOG"
 
+# Use the parallel runner (JOBS=2 by default — conservative; runner has 16 GB
+# RAM, each test ~500 MB resident with Chrome+WASM, plus Azure backend has
+# connection caps. Bump JOBS_OVERRIDE in workflow_dispatch input if you want
+# to try higher concurrency).
+TEST_JOBS="${TEST_JOBS_OVERRIDE:-2}"
 set +e
-( cd "$WORKSPACE/wasm" && bash run-all-tests.sh ) >> "$LOG" 2>&1
+( cd "$WORKSPACE/wasm" && JOBS="$TEST_JOBS" bash run-all-tests-parallel.sh ) >> "$LOG" 2>&1
 TEST_RC=$?
 set -e
 END_TS="$(date -u +%s)"
