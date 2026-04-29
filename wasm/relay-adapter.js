@@ -936,6 +936,28 @@
             for (var j = 0; j < queued.length; j++) processUIMessage(queued[j].msg, queued[j].seq);
         }
         var readyId = Module._poll_remote_client_ready();
+        // Watchdog: if a remote client has been queued >10s without ready
+        // signal, force-mark it ready and flush. The underlying fakeSocket
+        // buffers writes so messages reach the kit even if the load
+        // commandresult never echoes (a known C++ issue — see
+        // project_coedit_b_to_a_blocked.md).
+        var now = Date.now();
+        for (var v in remoteClients) {
+            var rcw = remoteClients[v];
+            if (!rcw.ready) {
+                if (!rcw.createdAt) rcw.createdAt = now;
+                if (now - rcw.createdAt > 10000) {
+                    console.log('[relay] Watchdog: force-marking client ' + rcw.clientId +
+                                ' (viewId=' + v + ') ready after 10s — ' +
+                                rcw.queue.length + ' queued');
+                    rcw.ready = true;
+                    var wq = rcw.queue; rcw.queue = [];
+                    for (var wi = 0; wi < wq.length; wi++) {
+                        try { sendToRemoteClient(rcw.clientId, wq[wi]); } catch(e) {}
+                    }
+                }
+            }
+        }
         if (readyId > 0) {
             for (var vid in remoteClients) {
                 if (remoteClients[vid].clientId === readyId && !remoteClients[vid].ready) {
