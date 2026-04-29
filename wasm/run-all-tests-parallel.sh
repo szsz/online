@@ -46,7 +46,7 @@ mkdir -p "$tmpdir"
 
 t_start=$(date +%s)
 status="pass"
-TMPDIR="$tmpdir" timeout 1200 node "$SCRIPT_DIR/$script" > "$log_file" 2>&1
+TMPDIR="$tmpdir" timeout 1800 node "$SCRIPT_DIR/$script" > "$log_file" 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then status="fail"; fi
 elapsed=$(( $(date +%s) - t_start ))

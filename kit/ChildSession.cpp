@@ -413,44 +413,50 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         // existing doc's reported document type.
         bool inPlaceTried = false;
         bool inPlaceOk = false;
-        // Cap consecutive in-place reloads. The 3rd in a row hangs
-        // inside loadComponentFromURL("_self") — accumulated frame/view
-        // state survives the simple xPrev->dispose() in
-        // wasm_reload_doc_in_place. Earlier cap was 2; same-type test
-        // showed click3 (the documentLoad fallback after 2 in-places)
-        // ALSO hangs at 90s. Reducing to 1 so the documentLoad fallback
-        // only has to recover after a single in-place — easier to keep
-        // healthy. Pattern becomes: hot, cold-style-fallback, hot,
-        // cold-style-fallback. Average 2 in-place / 2 fallback per 4
-        // clicks; in-place is sub-2s, fallback is ~10-15s.
+        // Per-doctype in-place reload cap. Earlier blanket cap=0 was a
+        // workaround for a docx-specific 3rd-click hang inside
+        // loadComponentFromURL("_self"); xlsx/pptx are not affected and
+        // benefit measurably from the in-place path (~2 s vs the ~12 s
+        // documentLoad fallback). Stay at cap=0 for docx until the
+        // docx-specific frame/view ref accumulation is fixed. Skip the
+        // in-place branch on the very first switch after warm-restore —
+        // Kit.cpp's drop-and-reload path (which only fires once due to
+        // the warm-restored flag clear in iter5) is the right path
+        // there; running both back-to-back trips the same dispose
+        // ordering issue we're avoiding for docx.
         static int s_consecutiveInPlace = 0;
-        // Cap=0 disables in-place reload entirely. Even a single in-place
-        // appears to corrupt enough state that the documentLoad fallback
-        // afterwards hangs (sttest5 click3 = 90s timeout with cap=1).
-        // Falling back to plain documentLoad keeps the iframe alive and
-        // skips full WASM re-init — still meaningfully faster than a
-        // cold-reload because factory + UI state are warm. Hot-switch
-        // numbers measured with cap=0: TBD by next test cycle.
-        const int kInPlaceCap = 0;
+
+        // Map fileUrl extension → expected doc type FIRST so the cap
+        // decision can read it.
+        int desiredType = LOK_DOCTYPE_OTHER;
+        const auto dotPos = fileUrl.find_last_of('.');
+        if (dotPos != std::string::npos)
+        {
+            std::string ext = fileUrl.substr(dotPos + 1);
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (ext == "docx" || ext == "doc" || ext == "odt" || ext == "rtf" || ext == "txt")
+                desiredType = LOK_DOCTYPE_TEXT;
+            else if (ext == "xlsx" || ext == "xls" || ext == "ods" || ext == "csv" || ext == "tsv")
+                desiredType = LOK_DOCTYPE_SPREADSHEET;
+            else if (ext == "pptx" || ext == "ppt" || ext == "odp")
+                desiredType = LOK_DOCTYPE_PRESENTATION;
+        }
+
+        int kInPlaceCap = 0;
+        if (desiredType == LOK_DOCTYPE_SPREADSHEET ||
+            desiredType == LOK_DOCTYPE_PRESENTATION)
+        {
+            kInPlaceCap = 1;
+        }
+#ifdef __EMSCRIPTEN__
+        if (wasm_is_warm_restored()) kInPlaceCap = 0;
+#endif
+
         std::shared_ptr<lok::Document> existing = _docManager->getLOKitDocument();
         if (existing && existing->get() && s_consecutiveInPlace < kInPlaceCap)
         {
             int existingType = existing->getDocumentType();
-            // Map fileUrl extension → expected doc type.
-            int desiredType = LOK_DOCTYPE_OTHER;
-            const auto dotPos = fileUrl.find_last_of('.');
-            if (dotPos != std::string::npos)
-            {
-                std::string ext = fileUrl.substr(dotPos + 1);
-                std::transform(ext.begin(), ext.end(), ext.begin(),
-                               [](unsigned char c) { return std::tolower(c); });
-                if (ext == "docx" || ext == "doc" || ext == "odt" || ext == "rtf" || ext == "txt")
-                    desiredType = LOK_DOCTYPE_TEXT;
-                else if (ext == "xlsx" || ext == "xls" || ext == "ods" || ext == "csv" || ext == "tsv")
-                    desiredType = LOK_DOCTYPE_SPREADSHEET;
-                else if (ext == "pptx" || ext == "ppt" || ext == "odp")
-                    desiredType = LOK_DOCTYPE_PRESENTATION;
-            }
             if (desiredType != LOK_DOCTYPE_OTHER && existingType == desiredType)
             {
                 inPlaceTried = true;
