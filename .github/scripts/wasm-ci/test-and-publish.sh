@@ -197,11 +197,97 @@ upload "$LOG"                  "app-builds/$APP_BID/tests/run.log"
 upload "$SUMMARY_JSON"         "app-builds/$APP_BID/tests/summary.json"
 upload "$REPORT_DIR/index.html" "app-builds/$APP_BID/tests/index.html"
 
-# Upload the rich per-test report tree (HTML + screenshots) if it exists.
-# Use upload-batch for efficiency; a single tests run can produce hundreds
-# of screenshots across ~50 test slugs.
+# ── Stitch in host-side artefacts the tests wrote outside $TEST_OUTPUT ──
+#
+# Test scripts hardcode dev-convention paths:
+#   /tmp/static-deploy/public/<slug>.html   ← actually .../reports/<slug>.html
+#   /tmp/static-deploy/public/reports/<slug>.html  ← per-test HTML written by
+#         generate-report.js when running locally (TEST_OUTPUT_ROOT defaults
+#         to /tmp/static-deploy/public, so REPORTS_DIR=/tmp/static-deploy/public/reports).
+#         These are the FULL reports with <img> references — what the user sees
+#         locally.
+#   /tmp/static-deploy/public/shots*/      ← per-test screenshots
+#   /tmp/hot-switch-report/snapshot-milestones/  ← rich self-built report
+#   /tmp/hot-switch-report/index.html      ← top-level hot-switch test report
+#   /tmp/static-deploy/public/timing-report/    ← timing test rich report
+#
+# In CI, TEST_OUTPUT_ROOT is a fresh mktemp dir, so generate-report.js
+# (called by run-all-tests.sh) writes to $TEST_OUTPUT/reports/<slug>.html
+# but the screenshots got written elsewhere → empty placeholder reports.
+#
+# The fix: mirror everything from the host paths into $TEST_OUTPUT/ before
+# the upload-batch. We filter on RUN_START_MARKER so we don't pick up stale
+# screenshots from prior runs or the user's parallel dev sessions.
+SHOTS_HOST="/tmp/static-deploy/public"
+HOTSWITCH_HOST="/tmp/hot-switch-report"
+
+mirror_fresh_files() {
+    # mirror_fresh_files <src-dir> <dst-dir> [pattern...]
+    local src="$1" dst="$2"; shift 2
+    [[ -d "$src" ]] || return 0
+    local find_args=()
+    if (( $# > 0 )); then
+        find_args+=( '(' )
+        local first=1
+        for pat in "$@"; do
+            (( first )) || find_args+=( -o )
+            find_args+=( -name "$pat" )
+            first=0
+        done
+        find_args+=( ')' )
+    fi
+    local count=0
+    while IFS= read -r f; do
+        local rel="${f#$src/}"
+        mkdir -p "$dst/$(dirname "$rel")"
+        cp -p "$f" "$dst/$rel"
+        count=$((count + 1))
+    done < <(find "$src" -type f "${find_args[@]}" -newer "$RUN_START_MARKER" 2>/dev/null)
+    echo "  mirror $src → $dst : $count file(s)"
+}
+
+# 1. Per-test rich reports written by generate-report.js locally
+#    (these have the <img> tags pointing at ../shots-<name>/...).
+echo "--- Mirroring host artefacts into $TEST_OUTPUT ---"
+mirror_fresh_files "$SHOTS_HOST/reports" "$TEST_OUTPUT/reports" '*.html' '*.json'
+
+# 2. Per-test screenshot dirs (shots, shots3, shots-foo, …).
+for shotdir in "$SHOTS_HOST"/shots*; do
+    [[ -d "$shotdir" ]] || continue
+    name="$(basename "$shotdir")"
+    mirror_fresh_files "$shotdir" "$TEST_OUTPUT/$name" '*.png' 'checklist.json'
+done
+
+# 3. snapshot-milestones rich report. The test's index.html is the actual
+#    report; the placeholder at output/reports/snapshot-milestones.html
+#    knows nothing about it. Mirror the rich subtree, then rewrite the
+#    placeholder as a redirect.
+SNAPMS_SRC="$HOTSWITCH_HOST/snapshot-milestones"
+if [[ -d "$SNAPMS_SRC" ]] && find "$SNAPMS_SRC" -newer "$RUN_START_MARKER" -print -quit 2>/dev/null | grep -q .; then
+    mirror_fresh_files "$SNAPMS_SRC" "$TEST_OUTPUT/snapshot-milestones" '*.html' '*.png' '*.json'
+    cat > "$TEST_OUTPUT/reports/snapshot-milestones.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>Snapshot Milestones — redirecting…</title>
+<meta http-equiv="refresh" content="0; url=../snapshot-milestones/">
+<script>location.replace('../snapshot-milestones/');</script>
+<p><a href="../snapshot-milestones/">Open the snapshot-milestones rich report</a></p>
+HTML
+fi
+
+# 4. timing-report rich report (similar pattern).
+TIMING_SRC="$SHOTS_HOST/timing-report"
+if [[ -d "$TIMING_SRC" ]] && find "$TIMING_SRC" -newer "$RUN_START_MARKER" -print -quit 2>/dev/null | grep -q .; then
+    mirror_fresh_files "$TIMING_SRC" "$TEST_OUTPUT/timing-report" '*.html' '*.png' '*.json'
+    cat > "$TEST_OUTPUT/reports/timing-report.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>Timing Report — redirecting…</title>
+<meta http-equiv="refresh" content="0; url=../timing-report/">
+<script>location.replace('../timing-report/');</script>
+<p><a href="../timing-report/">Open the timing-report rich report</a></p>
+HTML
+fi
+
+# 5. Single upload-batch sweep — everything new is in $TEST_OUTPUT now.
 if [[ "$HAS_RICH_REPORT" == 1 ]]; then
-    echo "Uploading per-test reports from $TEST_OUTPUT …"
+    echo "--- Uploading $TEST_OUTPUT → tests/output ---"
     az storage blob upload-batch \
         --account-name "$ACCT" \
         --destination '$web' \
@@ -211,41 +297,6 @@ if [[ "$HAS_RICH_REPORT" == 1 ]]; then
         --overwrite \
         --no-progress 2>&1 | tail -5 || true
 fi
-
-# The per-test scripts hardcode SHOT_DIR='/tmp/static-deploy/public/shots-<name>'
-# (matches the dev convention where the local editor server serves from that
-# path). They don't read TEST_OUTPUT_ROOT. The HTML reports reference
-# `<img src="../shots-<name>/…">` which resolves to tests/output/shots-<name>/…,
-# so we copy fresh-this-run PNGs from the host's shots* dirs into a staging
-# tree and upload that. Filter on RUN_START_MARKER so we don't pick up
-# stale screenshots from prior runs or from the user's parallel dev sessions.
-SHOTS_HOST="/tmp/static-deploy/public"
-SHOTS_STAGE="$REPORT_DIR/host-shots"
-SHOTS_FOUND=0
-if [[ -d "$SHOTS_HOST" ]]; then
-    for shotdir in "$SHOTS_HOST"/shots*; do
-        [[ -d "$shotdir" ]] || continue
-        name="$(basename "$shotdir")"
-        # Only files modified after this run started.
-        mapfile -t fresh < <(find "$shotdir" -maxdepth 1 -name '*.png' -newer "$RUN_START_MARKER" 2>/dev/null)
-        (( ${#fresh[@]} == 0 )) && continue
-        mkdir -p "$SHOTS_STAGE/$name"
-        cp -p "${fresh[@]}" "$SHOTS_STAGE/$name/"
-        SHOTS_FOUND=$((SHOTS_FOUND + 1))
-    done
-    if (( SHOTS_FOUND > 0 )); then
-        echo "Uploading $SHOTS_FOUND screenshot dir(s) from $SHOTS_HOST (run-fresh only) …"
-        az storage blob upload-batch \
-            --account-name "$ACCT" \
-            --destination '$web' \
-            --destination-path "app-builds/$APP_BID/tests/output" \
-            --source "$SHOTS_STAGE" \
-            --pattern '*.png' \
-            --overwrite \
-            --no-progress 2>&1 | tail -5 || true
-    fi
-fi
-echo "[OK] Uploaded $SHOTS_FOUND screenshot directories"
 
 # Patch the per-build index.html so the tests box gets a real link.
 PATCHED="$(mktemp)"
