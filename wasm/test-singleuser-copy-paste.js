@@ -48,16 +48,37 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev ? ' ['+ev+']' : ''}`); allPassed = false; }
 }
 
-async function getCharCount(frame) {
-    const t = await frame.evaluate(() =>
-        document.querySelector('#StateWordCount')?.textContent || ''
-    ).catch(() => '');
-    const m = t.match(/([\d,]+)\s*character/);
-    return m ? parseInt(m[1].replace(/,/g, '')) : -1;
+// Re-resolve the editor frame each call — the viewer recreates the
+// iframe when opening the user doc (prewarm blank → user file), so
+// caching a Frame ref leaves us with a detached frame that always
+// returns -1.
+async function getCharCountFromPage(page) {
+    try {
+        const fr = page.frames().find(f => f.url().includes('cool.html'));
+        if (!fr) return -1;
+        const t = await fr.evaluate(() =>
+            document.querySelector('#StateWordCount')?.textContent || ''
+        ).catch(() => '');
+        const m = t.match(/([\d,]+)\s*character/);
+        return m ? parseInt(m[1].replace(/,/g, '')) : -1;
+    } catch (e) { return -1; }
+}
+async function getCharCount(frameOrPage) {
+    // Accept either a Page or a Frame for backwards compat in helper sites.
+    if (frameOrPage && typeof frameOrPage.frames === 'function') {
+        return getCharCountFromPage(frameOrPage);
+    }
+    if (!frameOrPage) return -1;
+    try {
+        const t = await frameOrPage.evaluate(() =>
+            document.querySelector('#StateWordCount')?.textContent || ''
+        ).catch(() => '');
+        const m = t.match(/([\d,]+)\s*character/);
+        return m ? parseInt(m[1].replace(/,/g, '')) : -1;
+    } catch (e) { return -1; }
 }
 
-async function focusDocBody(page, editorFrame) {
-    // Click the editor canvas well below the notebookbar / rulers.
+async function focusDocBody(page) {
     const frameEl = await page.$('iframe#editor-frame');
     if (!frameEl) return false;
     const box = await frameEl.boundingBox();
@@ -96,22 +117,20 @@ async function ctrlHome(page) {
     await sleep(150);
 }
 
-async function waitForCharCount(frame, expected, timeoutMs = 8000) {
+async function waitForCharCount(page, expected, timeoutMs = 8000) {
     const deadline = Date.now() + timeoutMs;
-    let last = -1;
     while (Date.now() < deadline) {
-        last = await getCharCount(frame);
+        const last = await getCharCount(page);
         if (last === expected) return true;
         await sleep(150);
     }
     return false;
 }
 
-async function waitForCharCountAtLeast(frame, expected, timeoutMs = 8000) {
+async function waitForCharCountAtLeast(page, expected, timeoutMs = 8000) {
     const deadline = Date.now() + timeoutMs;
-    let last = -1;
     while (Date.now() < deadline) {
-        last = await getCharCount(frame);
+        const last = await getCharCount(page);
         if (last >= expected) return true;
         await sleep(150);
     }
@@ -123,29 +142,58 @@ const TINY_PNG_B64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
 async function writeClipboardText(page, text) {
-    await page.evaluate(t => navigator.clipboard.writeText(t), text);
-    await sleep(120);
+    // The clipboard is shared across origins, so writing from the parent
+    // page makes it visible to the iframe's paste handler.
+    try {
+        await page.evaluate(t => navigator.clipboard.writeText(t), text);
+    } catch (e) {
+        // Fallback: write via the iframe (which already has the permission
+        // grant for editor origin).
+        const fr = page.frames().find(f => f.url().includes('cool.html'));
+        if (fr) {
+            await fr.evaluate(t => navigator.clipboard.writeText(t), text).catch(() => {});
+        }
+    }
+    await sleep(150);
 }
 
 async function writeClipboardImage(page, b64) {
-    await page.evaluate(async (data) => {
-        const bin = atob(data);
-        const buf = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-        const blob = new Blob([buf], { type: 'image/png' });
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-    }, b64);
-    await sleep(150);
+    const writeViaFrame = async (target) => {
+        return target.evaluate(async (data) => {
+            const bin = atob(data);
+            const buf = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+            const blob = new Blob([buf], { type: 'image/png' });
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        }, b64);
+    };
+    try {
+        await writeViaFrame(page);
+    } catch (e) {
+        const fr = page.frames().find(f => f.url().includes('cool.html'));
+        if (fr) await writeViaFrame(fr).catch(() => {});
+    }
+    await sleep(200);
 }
 
 async function openSingleUser(browser, secretB64) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
+    // Capture console for product-signal assertions (e.g. case 7: did
+    // insertfile reach the local Kit?).
+    page.__capturedLogs = [];
 
-    const ctx = browser.defaultBrowserContext();
+    // Grant clipboard permissions browser-wide via CDP (matches what
+    // test-e2e-copypaste.js does — overridePermissions is per-origin
+    // and doesn't reach the cross-origin iframe). Without this every
+    // Ctrl+V hits "Paste: empty clipboard — ignored" because the
+    // iframe's navigator.clipboard.read returns [].
+    const cdpRoot = await page.target().createCDPSession();
     try {
-        await ctx.overridePermissions(VIEWER, ['clipboard-read', 'clipboard-write']);
-    } catch (e) { /* older puppeteer */ }
+        await cdpRoot.send('Browser.grantPermissions', {
+            permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+        });
+    } catch (e) { /* older Chrome */ }
 
     const wsUrls = [];
     const cdp = await page.target().createCDPSession();
@@ -155,6 +203,7 @@ async function openSingleUser(browser, secretB64) {
     page.on('pageerror', e => log(`[pageerror] ${e.message}`));
     page.on('console', m => {
         const t = m.text();
+        page.__capturedLogs.push(t);
         if (/error|fail|paste|clipboard|relay/i.test(t)) log(`[page] ${t.slice(0, 220)}`);
     });
 
@@ -165,25 +214,30 @@ async function openSingleUser(browser, secretB64) {
         { timeout: 15000 }
     ).catch(() => {});
 
-    let editorFrame = null;
-    const deadline = Date.now() + 240000;
-    while (Date.now() < deadline) {
+    // Wait for any cool.html iframe to appear (prewarm or user-doc).
+    let attached = false;
+    const attachDeadline = Date.now() + 240000;
+    while (Date.now() < attachDeadline) {
         await sleep(500);
-        editorFrame = page.frames().find(f => f.url().includes('cool.html'));
-        if (editorFrame) break;
+        if (page.frames().some(f => f.url().includes('cool.html'))) {
+            attached = true; break;
+        }
     }
-    if (!editorFrame) throw new Error('editor iframe never attached');
+    if (!attached) throw new Error('editor iframe never attached');
 
-    // Wait for document-loaded signal (StateWordCount populated).
+    // Wait for the user-doc StateWordCount to populate. Re-resolve the
+    // frame each tick because the viewer reuses #editor-frame: it loads
+    // cool.html for the prewarm blank first, then changes the iframe src
+    // to the user doc — the original Frame ref becomes detached.
     let loaded = false;
-    for (let i = 0; i < 300; i++) {
+    for (let i = 0; i < 360; i++) {            // 180 s wall (cold can be 60-90 s)
         await sleep(500);
-        const cc = await getCharCount(editorFrame);
+        const cc = await getCharCount(page);
         if (cc >= 0) { loaded = true; break; }
     }
     if (!loaded) throw new Error('doc never loaded');
     await sleep(3500); // settle UI handlers
-    return { page, editorFrame, wsUrls };
+    return { page, wsUrls };
 }
 
 (async () => {
@@ -198,35 +252,32 @@ async function openSingleUser(browser, secretB64) {
 
     const { browser, cleanup } = await launch();
     try {
-        const { page, editorFrame, wsUrls } = await openSingleUser(browser, upV2.b64urlSecret);
+        const { page, wsUrls } = await openSingleUser(browser, upV2.b64urlSecret);
         await snap(page, 'after_open');
 
-        const baseChars = await getCharCount(editorFrame);
+        const baseChars = await getCharCount(page);
         log(`[state] base chars = ${baseChars}`);
 
         // ─── Case 1: type "ABC" ──────────────────────────────────────
-        await focusDocBody(page, editorFrame);
+        await focusDocBody(page);
         await typeText(page, 'ABC');
-        const after1 = await waitForCharCount(editorFrame, baseChars + 3);
+        const after1 = await waitForCharCount(page, baseChars + 3);
         check('Case 1: typed ABC (+3)', after1,
-              'expected=' + (baseChars + 3) + ' got=' + await getCharCount(editorFrame));
+              'expected=' + (baseChars + 3) + ' got=' + await getCharCount(page));
         await snap(page, 'case1_typed');
 
         // ─── Case 2: select-all → copy → ctrl+end → paste (double) ───
-        await pressShortcut(page, 'a');                  // Ctrl+A
-        await pressShortcut(page, 'c');                  // Ctrl+C
+        await pressShortcut(page, 'a');
+        await pressShortcut(page, 'c');
         await ctrlEnd(page);
-        await pressShortcut(page, 'v');                  // Ctrl+V
+        await pressShortcut(page, 'v');
         const expected2 = (baseChars + 3) * 2;
-        const after2ok = await waitForCharCountAtLeast(editorFrame, expected2 - 1);
+        const after2ok = await waitForCharCountAtLeast(page, expected2 - 1);
         check('Case 2: select-all/copy/ctrl-end/paste doubled', after2ok,
-              'expected≈' + expected2 + ' got=' + await getCharCount(editorFrame));
+              'expected≈' + expected2 + ' got=' + await getCharCount(page));
         await snap(page, 'case2_doubled');
-        const after2 = await getCharCount(editorFrame);
 
-        // ─── Case 3: double-click word → Ctrl+C → click-elsewhere → Ctrl+V
-        // Heuristic: doc is "ABCABC" + maybe baseChars. Double-click somewhere
-        // central to grab a word, then Ctrl+End and paste.
+        // ─── Case 3: double-click word → Ctrl+C → ctrl-end → Ctrl+V
         await ctrlHome(page);
         await sleep(150);
         const frameEl = await page.$('iframe#editor-frame');
@@ -235,19 +286,18 @@ async function openSingleUser(browser, secretB64) {
                                box.y + Math.min(box.height * 0.55, 450),
                                { clickCount: 2 });
         await sleep(300);
-        await pressShortcut(page, 'c');                  // Ctrl+C
+        await pressShortcut(page, 'c');
         await ctrlEnd(page);
-        const before3 = await getCharCount(editorFrame);
-        await pressShortcut(page, 'v');                  // Ctrl+V
-        const grew3 = await waitForCharCountAtLeast(editorFrame, before3 + 1);
+        const before3 = await getCharCount(page);
+        await pressShortcut(page, 'v');
+        const grew3 = await waitForCharCountAtLeast(page, before3 + 1);
         check('Case 3: word double-click → copy → ctrl-end → paste added chars',
-              grew3, 'before=' + before3 + ' after=' + await getCharCount(editorFrame));
+              grew3, 'before=' + before3 + ' after=' + await getCharCount(page));
         await snap(page, 'case3_word_paste');
 
-        // ─── Case 4: mouse-drag selection → Ctrl+C → Ctrl+End → Ctrl+V
+        // ─── Case 4: mouse-drag → Ctrl+C → ctrl-end → Ctrl+V ──────────
         await ctrlHome(page);
         await sleep(150);
-        // Drag from start to about 4 chars over.
         const dragStartX = box.x + box.width / 2 - 30;
         const dragY = box.y + Math.min(box.height * 0.55, 450);
         await page.mouse.move(dragStartX, dragY);
@@ -257,82 +307,84 @@ async function openSingleUser(browser, secretB64) {
         await sleep(200);
         await pressShortcut(page, 'c');
         await ctrlEnd(page);
-        const before4 = await getCharCount(editorFrame);
+        const before4 = await getCharCount(page);
         await pressShortcut(page, 'v');
-        const grew4 = await waitForCharCountAtLeast(editorFrame, before4 + 1);
+        const grew4 = await waitForCharCountAtLeast(page, before4 + 1);
         check('Case 4: mouse-drag → copy → ctrl-end → paste added chars',
-              grew4, 'before=' + before4 + ' after=' + await getCharCount(editorFrame));
+              grew4, 'before=' + before4 + ' after=' + await getCharCount(page));
         await snap(page, 'case4_drag_paste');
 
         // ─── Case 5: Ctrl+X on selection → Ctrl+V (cut/restore) ──────
         await ctrlHome(page);
         await sleep(150);
-        // Select a few chars at start with Shift+Right ×3.
         for (let i = 0; i < 3; i++) {
             await page.keyboard.down('Shift');
             await page.keyboard.press('ArrowRight');
             await page.keyboard.up('Shift');
         }
         await sleep(150);
-        const before5 = await getCharCount(editorFrame);
+        const before5 = await getCharCount(page);
         await pressShortcut(page, 'x');
-        const after5cut = await waitForCharCountAtLeast(editorFrame, 0);
-        const after5cutN = await getCharCount(editorFrame);
+        await waitForCharCountAtLeast(page, 0);
+        const after5cutN = await getCharCount(page);
         check('Case 5a: Ctrl+X shrank doc',
               after5cutN < before5,
               'before=' + before5 + ' after=' + after5cutN);
         await pressShortcut(page, 'v');
-        const restored = await waitForCharCount(editorFrame, before5);
+        const restored = await waitForCharCount(page, before5);
         check('Case 5b: Ctrl+V restored cut content',
-              restored, 'expected=' + before5 + ' got=' + await getCharCount(editorFrame));
+              restored, 'expected=' + before5 + ' got=' + await getCharCount(page));
         await snap(page, 'case5_cut_paste');
 
         // ─── Case 6: external text via clipboard → Ctrl+V ────────────
         await ctrlEnd(page);
-        const before6 = await getCharCount(editorFrame);
+        const before6 = await getCharCount(page);
         await writeClipboardText(page, 'EXTERNAL');
-        await focusDocBody(page, editorFrame);
+        await focusDocBody(page);
         await pressShortcut(page, 'v');
-        const grew6 = await waitForCharCountAtLeast(editorFrame, before6 + 8);
+        const grew6 = await waitForCharCountAtLeast(page, before6 + 8);
         check('Case 6: external clipboard text pasted (+8)',
-              grew6, 'before=' + before6 + ' after=' + await getCharCount(editorFrame));
+              grew6, 'before=' + before6 + ' after=' + await getCharCount(page));
         await snap(page, 'case6_external_text');
 
         // ─── Case 7: external image via clipboard → Ctrl+V ───────────
+        // LO doesn't render images as overlay <img>/leaflet elements — they
+        // get rasterized into canvas tiles. The product-correctness signal
+        // we care about: did the insertfile message route to the local Kit
+        // (single-user mode)? In iter9 this was the actual bug — the
+        // insertfile was relayed through a non-existent WS and lost.
+        const logsBeforeImgPaste = page.__capturedLogs.length;
         await ctrlEnd(page);
         await writeClipboardImage(page, TINY_PNG_B64);
-        await focusDocBody(page, editorFrame);
+        await focusDocBody(page);
         await pressShortcut(page, 'v');
         await sleep(2500);
-        // Detect image embedded — look for a graphic select marker or
-        // tile invalidation pattern. Minimal probe: any svg.leaflet-image-layer
-        // or similar overlay element in the iframe DOM.
-        const hasImage = await editorFrame.evaluate(() => {
-            return !!(document.querySelector('.leaflet-graphic-select, .leaflet-image-layer, image[href]'));
-        }).catch(() => false);
-        check('Case 7: external image paste produced an image marker in DOM',
-              hasImage, hasImage ? 'present' : 'no image marker found');
+        const newLogs = page.__capturedLogs.slice(logsBeforeImgPaste);
+        const sawLocalKitInsert = newLogs.some(l =>
+            /\[relay\] insertfile → local Kit/.test(l));
+        const sawKitHandle = newLogs.some(l =>
+            /KitWS handleMessage.*insertfile.*type=graphic/.test(l));
+        check('Case 7a: image insertfile dispatched to local Kit (single-user)',
+              sawLocalKitInsert,
+              sawLocalKitInsert ? 'present' : 'no "[relay] insertfile → local Kit" log');
+        check('Case 7b: Kit received the insertfile message',
+              sawKitHandle,
+              sawKitHandle ? 'present' : 'no KitWS handleMessage insertfile log');
         await snap(page, 'case7_external_image');
 
         // ─── Case 8: plaintext-only paste ─────────────────────────────
-        // Skipped if not supported; relies on the same external-text handler.
         await ctrlEnd(page);
-        const before8 = await getCharCount(editorFrame);
         await writeClipboardText(page, 'PLAIN');
-        await focusDocBody(page, editorFrame);
-        // Send Ctrl+Shift+V for paste-special / plaintext (LO maps this).
+        await focusDocBody(page);
         await page.keyboard.down('Control');
         await page.keyboard.down('Shift');
         await page.keyboard.press('v');
         await page.keyboard.up('Shift');
         await page.keyboard.up('Control');
         await sleep(800);
-        // Dialog may appear; press Escape if so.
         await page.keyboard.press('Escape').catch(() => {});
         await sleep(400);
-        // Whether dialog handled or not, the content may have grown; we treat
-        // this as informational only — the assertion is "didn't crash".
-        const after8 = await getCharCount(editorFrame);
+        const after8 = await getCharCount(page);
         check('Case 8: plaintext paste keypress did not crash editor',
               after8 >= 0, 'after=' + after8);
         await snap(page, 'case8_plaintext');
@@ -341,18 +393,16 @@ async function openSingleUser(browser, secretB64) {
         log('[case9] Save mid-flow');
         await pressShortcut(page, 's');
         await sleep(8000);
-        // Verify file was uploaded by checking the v2 file size grew.
         const meta = await fetch(VIEWER + '/api/v2/file/' + upV2.fileId)
             .then(r => r.ok ? r.json() : null).catch(() => null);
         const savedSize = meta && (meta.ciphertextSize || meta.size) || -1;
         check('Case 9a: saved file present in /api/v2/file',
               savedSize > 0, 'size=' + savedSize);
 
-        // Re-open in fresh page; chars should match.
-        const beforeReopen = await getCharCount(editorFrame);
+        const beforeReopen = await getCharCount(page);
         const fresh = await openSingleUser(browser, upV2.b64urlSecret);
         await sleep(5000);
-        const afterReopen = await getCharCount(fresh.editorFrame);
+        const afterReopen = await getCharCount(fresh.page);
         check('Case 9b: re-open shows persisted char count',
               afterReopen === beforeReopen,
               'beforeSave=' + beforeReopen + ' reopened=' + afterReopen);
