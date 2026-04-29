@@ -93,7 +93,37 @@ function chars(s) { const m = s && s.match(/(\d+) characters/); return m ? +m[1]
         await sleep(3000);
         const afterA = chars(await getWc(pageA));
         const afterB = chars(await getWc(pageB));
-        log(`Post-type: A=${afterA} (Δ${afterA-beforeA}) B=${afterB} (Δ${afterB-beforeB})`);
+        log(`Post A-type: A=${afterA} (Δ${afterA-beforeA}) B=${afterB} (Δ${afterB-beforeB})`);
+
+        // ── Now B types: tests B→A propagation ────────────────
+        log('--- B types END ---');
+        const cvB = await pageB.$('#editor-frame') || await pageB.$('canvas');
+        if (cvB) {
+            const box = await cvB.boundingBox();
+            await pageB.mouse.click(box.x + box.width/2, box.y + Math.min(box.height*0.55, 450));
+        }
+        await sleep(500);
+        await pageB.keyboard.press('End').catch(()=>{});
+        await sleep(200);
+        const beforeBtype_A = chars(await getWc(pageA));
+        const beforeBtype_B = chars(await getWc(pageB));
+        log(`Pre B-type: A=${beforeBtype_A} B=${beforeBtype_B}`);
+        for (const c of 'END') {
+            await pageB.keyboard.type(c);
+            await sleep(120);
+        }
+        await sleep(3000);
+        const post_A = chars(await getWc(pageA));
+        const post_B = chars(await getWc(pageB));
+        log(`Post B-type @+3s: A=${post_A} (Δ${post_A-beforeBtype_A}) B=${post_B} (Δ${post_B-beforeBtype_B})`);
+        // Wait up to 180s for A's remote client for B to become ready.
+        // Print every 30s.
+        for (let i = 1; i <= 6; i++) {
+            await sleep(30000);
+            const ai = chars(await getWc(pageA));
+            log(`Post B-type @+${i*30}s: A=${ai} (Δ${ai-beforeBtype_A}) B=${chars(await getWc(pageB))}`);
+            if (ai > beforeBtype_A) break;
+        }
 
         // ── Dump captured logs ────────────────────────────────
         log('=== A logs (last 60) ===');
