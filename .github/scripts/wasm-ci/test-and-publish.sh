@@ -37,7 +37,6 @@ export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in .env.deploy}"
 export TEST_TARGET="azure-deploy"
 
 REPORT_DIR="$(mktemp -d)"
-trap "rm -rf '$REPORT_DIR'" EXIT
 
 # ── Install wasm/node_modules + puppeteer's Chromium (persistent cache) ──
 # The test scripts require puppeteer; without node_modules every test
@@ -88,6 +87,13 @@ export TEST_OUTPUT_ROOT="$TEST_OUTPUT"
 LOG="$REPORT_DIR/run.log"
 SUMMARY_JSON="$REPORT_DIR/summary.json"
 START_TS="$(date -u +%s)"
+
+# Marker for the screenshot upload step. Tests hardcode SHOT_DIR=/tmp/static-deploy/public/...
+# so the host filesystem is shared with whatever the user runs locally; we
+# only want to upload screenshots written DURING this CI run, not stale
+# ones from prior runs or the user's parallel dev sessions.
+RUN_START_MARKER="$(mktemp)"
+trap 'rm -rf "$REPORT_DIR" "$RUN_START_MARKER"' EXIT
 
 {
     echo "=== TEST_TARGET=$TEST_TARGET ==="
@@ -195,7 +201,7 @@ upload "$REPORT_DIR/index.html" "app-builds/$APP_BID/tests/index.html"
 # Use upload-batch for efficiency; a single tests run can produce hundreds
 # of screenshots across ~50 test slugs.
 if [[ "$HAS_RICH_REPORT" == 1 ]]; then
-    echo "Uploading per-test reports + screenshots from $TEST_OUTPUT …"
+    echo "Uploading per-test reports from $TEST_OUTPUT …"
     az storage blob upload-batch \
         --account-name "$ACCT" \
         --destination '$web' \
@@ -205,6 +211,41 @@ if [[ "$HAS_RICH_REPORT" == 1 ]]; then
         --overwrite \
         --no-progress 2>&1 | tail -5 || true
 fi
+
+# The per-test scripts hardcode SHOT_DIR='/tmp/static-deploy/public/shots-<name>'
+# (matches the dev convention where the local editor server serves from that
+# path). They don't read TEST_OUTPUT_ROOT. The HTML reports reference
+# `<img src="../shots-<name>/…">` which resolves to tests/output/shots-<name>/…,
+# so we copy fresh-this-run PNGs from the host's shots* dirs into a staging
+# tree and upload that. Filter on RUN_START_MARKER so we don't pick up
+# stale screenshots from prior runs or from the user's parallel dev sessions.
+SHOTS_HOST="/tmp/static-deploy/public"
+SHOTS_STAGE="$REPORT_DIR/host-shots"
+SHOTS_FOUND=0
+if [[ -d "$SHOTS_HOST" ]]; then
+    for shotdir in "$SHOTS_HOST"/shots*; do
+        [[ -d "$shotdir" ]] || continue
+        name="$(basename "$shotdir")"
+        # Only files modified after this run started.
+        mapfile -t fresh < <(find "$shotdir" -maxdepth 1 -name '*.png' -newer "$RUN_START_MARKER" 2>/dev/null)
+        (( ${#fresh[@]} == 0 )) && continue
+        mkdir -p "$SHOTS_STAGE/$name"
+        cp -p "${fresh[@]}" "$SHOTS_STAGE/$name/"
+        SHOTS_FOUND=$((SHOTS_FOUND + 1))
+    done
+    if (( SHOTS_FOUND > 0 )); then
+        echo "Uploading $SHOTS_FOUND screenshot dir(s) from $SHOTS_HOST (run-fresh only) …"
+        az storage blob upload-batch \
+            --account-name "$ACCT" \
+            --destination '$web' \
+            --destination-path "app-builds/$APP_BID/tests/output" \
+            --source "$SHOTS_STAGE" \
+            --pattern '*.png' \
+            --overwrite \
+            --no-progress 2>&1 | tail -5 || true
+    fi
+fi
+echo "[OK] Uploaded $SHOTS_FOUND screenshot directories"
 
 # Patch the per-build index.html so the tests box gets a real link.
 PATCHED="$(mktemp)"
