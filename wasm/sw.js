@@ -25,7 +25,17 @@
 // On activate the SW deletes all caches whose names don't match the
 // current version, then takes control of all open clients.
 
-const CACHE_NAME = 'cool-editor-v1';
+// Cache name embeds the build fingerprint so each new deploy lands in a
+// fresh Cache Storage namespace. The activate handler drops any cache
+// whose name doesn't match the current CACHE_NAME, so an old build's
+// 60+ MB heavy assets are evicted automatically when users revisit
+// after a deploy. deploy.sh sed-patches __WASM_BUILD_FINGERPRINT__ here
+// the same way it does for wasm-loader.js. If the placeholder is still
+// present (dev tree without a deploy), fall back to a stable name.
+const BUILD_FINGERPRINT = '__WASM_BUILD_FINGERPRINT__';
+const CACHE_NAME = (BUILD_FINGERPRINT === '__WASM_BUILD' + '_FINGERPRINT__')
+    ? 'cool-editor-dev'
+    : 'cool-editor-' + BUILD_FINGERPRINT;
 
 // Heavy assets we want to lock into Cache Storage. URLs are relative to
 // the SW's scope (/browser/) — fetched from `${self.registration.scope}`.

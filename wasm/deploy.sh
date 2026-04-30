@@ -115,15 +115,22 @@ cp "$BUNDLE"            "$STAGE/bundle.js"
 cp "$BUILD_DIR/browser/dist/bundle.css" "$STAGE/bundle.css"
 cp "$SCRIPT_DIR/wasm-loader.js"    "$STAGE/wasm-loader.js"
 cp "$SCRIPT_DIR/relay-adapter.js"  "$STAGE/relay-adapter.js"
+# sw.js: heavy-asset Cache Storage backstop. CACHE_NAME embeds the build
+# fingerprint so a new deploy lands in a fresh namespace and the activate
+# handler evicts the previous build's 60+ MB of cached assets — without
+# this, users would see Cache Storage stuck on the old build until they
+# manually unregister the SW or clear site data.
+cp "$SCRIPT_DIR/sw.js"             "$STAGE/sw.js"
 
-echo "  Copied 8 artifacts to staging"
+echo "  Copied 9 artifacts to staging"
 
-# ── Step 2b: Compute build fingerprint and inject into wasm-loader.js ──
+# ── Step 2b: Compute build fingerprint and inject into wasm-loader.js + sw.js ──
 # The fingerprint ties the snapshot to this exact WASM binary. On restore,
 # wasm-loader.js compares it with the stored snapshot's fingerprint and
-# discards stale snapshots from older builds.
+# discards stale snapshots from older builds. sw.js uses it as the SW's
+# CACHE_NAME so deploys auto-invalidate the previous build's cache.
 FINGERPRINT=$(md5sum "$STAGE/online.wasm" | cut -c1-16)
-sed -i "s|__WASM_BUILD_FINGERPRINT__|$FINGERPRINT|g" "$STAGE/wasm-loader.js"
+sed -i "s|__WASM_BUILD_FINGERPRINT__|$FINGERPRINT|g" "$STAGE/wasm-loader.js" "$STAGE/sw.js"
 echo "  Build fingerprint: $FINGERPRINT"
 
 # ── Step 3: Apply snapshot restore injection to online.js ──
