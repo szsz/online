@@ -1185,9 +1185,25 @@
                             // warm visit saw an empty cache.
                             mark('snapshot:save_starting', '');
                             caches.open('wasm-snapshot').then(function(cache) {
-                                return cache.put('/snapshot/meta', new Response(meta, {
-                                    headers: { 'Content-Type': 'application/json' }
-                                })).then(function() {
+                                // Iter A9: delete the old snapshot BEFORE
+                                // putting the new one. Cache Storage holds
+                                // both during the put-with-overwrite, so a
+                                // 143 MB snapshot that overwrites itself
+                                // peaks at 286 MB+. After several iframes
+                                // (each capturing their own) we hit
+                                // QuotaExceededError and the put fails
+                                // silently — leaving stale or no snapshot
+                                // for the NEXT iframe, which then warm-
+                                // restore-hangs and watchdogs to cold.
+                                // Delete first → put second → peak 143 MB.
+                                return Promise.all([
+                                    cache.delete('/snapshot/heap-v2'),
+                                    cache.delete('/snapshot/meta'),
+                                ]).then(function() {
+                                    return cache.put('/snapshot/meta', new Response(meta, {
+                                        headers: { 'Content-Type': 'application/json' }
+                                    }));
+                                }).then(function() {
                                     var blob = new Blob([memCopy], { type: 'application/octet-stream' });
                                     return cache.put('/snapshot/heap-v2', new Response(blob));
                                 });

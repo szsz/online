@@ -155,14 +155,15 @@ async function getStatusOk(page, type) {
             }, target.secret);
 
             // Wait for the destination doc-type-specific status to fire.
-            // Bumped from 48s to 90s in Iter A8: warm cross-type can hit
-            // the warm-restore watchdog (12s) followed by a full cold
-            // reload (~30s) and capture of a fresh snapshot (~5s). 48s
-            // truncated this and made warm runs falsely look like
-            // hangs even though the cold-reload path completed cleanly.
+            // Bumped to 150s in Iter A9: warm cross-type after the
+            // first watchdog fire can take ~99s end-to-end (watchdog
+            // 12s + cold reload init ~78s + doc load + verify settle).
+            // The +30s reload regression vs first cold (~32s) comes
+            // from memory pressure after multiple iframes have been
+            // created in the same page session.
             const verifyStart = Date.now();
             let verified = false;
-            for (let i = 0; i < 450; i++) {
+            for (let i = 0; i < 750; i++) {
                 await sleep(200);
                 if (await getStatusOk(page, target.type)) {
                     verified = true;
