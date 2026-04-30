@@ -40,7 +40,14 @@ const TRANSITIONS = [
 ];
 
 async function getStatusOk(page, type) {
-    const fr = page.frames().find(f => f.url().includes('cool.html'));
+    // With the iframe pool (Bug iter 12), there can be multiple cool.html
+    // iframes in the page — parked ones for previously-visited doctypes
+    // plus the currently-active editor-frame. page.frames().find() returns
+    // the FIRST match (often a parked one), giving stale status. Look up
+    // the visible editor by id.
+    const handle = await page.$('iframe#editor-frame');
+    if (!handle) return false;
+    const fr = await handle.contentFrame();
     if (!fr) return false;
     return fr.evaluate((t) => {
         const wc = (document.querySelector('#StateWordCount')?.textContent || '');
