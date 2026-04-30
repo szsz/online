@@ -58,6 +58,25 @@ window.L.Control.NotebookbarBuilder = window.L.Control.JSDialogBuilder.extend({
 				builder.map.focus();
 				return 'focusHandled';
 			}
+			// Iter 23: stylesview iconview select must apply the chosen
+			// paragraph style. Default callback only ships a generic
+			// 'dialogevent' with the row index — kit never receives
+			// .uno:StyleApply, so clicking Heading 1 / Title / Caption
+			// did nothing. Mirror Toolbar.js's onStyleSelect path.
+			if (object.id === 'stylesview' && eventType === 'select') {
+				try {
+					var entries = (object && object.entries) ? object.entries : null;
+					var idx = parseInt(data, 10);
+					var name = (entries && entries[idx])
+						? (entries[idx].text || entries[idx].name || entries[idx])
+						: null;
+					if (name) {
+						builder.map.applyStyle(name, 'ParagraphStyles');
+						builder.map.focus();
+						return 'focusHandled';
+					}
+				} catch (e) { /* fall through to default */ }
+			}
 			if (eventType === 'selected'
 				&& comboboxesFocusingDocument.indexOf(object.id) >= 0) {
 				builder._defaultCallbackHandler(objectType, eventType, object, data, builderArg);
