@@ -108,10 +108,15 @@ cp "$WASM_BIN"          "$STAGE/online.wasm"
 cp "$WASM_WORKER"       "$STAGE/online.worker.js"
 cp "$EMSCRIPTEN_MODULE" "$STAGE/emscripten-module.js"
 cp "$BUNDLE"            "$STAGE/bundle.js"
+# bundle.css ships alongside bundle.js — it's where browser/css/*.css gets
+# concatenated by the COOL JS build. Without staging it here, source CSS
+# changes (e.g. notebookbar.css edits) never reach the live tree even
+# though the build did rebuild bundle.css.
+cp "$BUILD_DIR/browser/dist/bundle.css" "$STAGE/bundle.css"
 cp "$SCRIPT_DIR/wasm-loader.js"    "$STAGE/wasm-loader.js"
 cp "$SCRIPT_DIR/relay-adapter.js"  "$STAGE/relay-adapter.js"
 
-echo "  Copied 7 artifacts to staging"
+echo "  Copied 8 artifacts to staging"
 
 # ── Step 2b: Compute build fingerprint and inject into wasm-loader.js ──
 # The fingerprint ties the snapshot to this exact WASM binary. On restore,
@@ -383,7 +388,7 @@ fi
 # --no-brotli skips regeneration, we also drop any existing .br so
 # the server falls back to plain content instead of serving a
 # mismatched payload.
-BROTLI_FILES="online.js online.wasm bundle.js"
+BROTLI_FILES="online.js online.wasm bundle.js bundle.css"
 if [ "$DO_BROTLI" = true ]; then
     for name in $BROTLI_FILES; do
         src="$STAGE/$name"

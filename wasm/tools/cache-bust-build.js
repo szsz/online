@@ -196,11 +196,21 @@ function rewriteCoolHtml(dir, assetHashMap) {
             'window.__assetMap = ' + JSON.stringify(locMap) + ';');
     }
 
-    // Rewrite plain refs to hashed.
+    // Rewrite refs to the current hashed names. We have to handle two
+    // shapes because cool.html may be (a) freshly out of the LO build
+    // (plain <base>.<ext>) or (b) carry-over from an earlier deploy
+    // whose hashes have since rolled (<base>.<oldhash>.<ext>). Match
+    // both and rewrite to <base>.<newhash>.<ext>.
     for (const orig of COOL_HTML_RENAMED) {
         const hashed = assetHashMap[orig];
         if (!hashed) continue;
-        const re = new RegExp('(src|href)="' + escapeRe(orig) + '"', 'g');
+        const lastDot = orig.lastIndexOf('.');
+        const base = orig.substring(0, lastDot);
+        const ext = orig.substring(lastDot);
+        const re = new RegExp(
+            '(src|href)="' + escapeRe(base) +
+            '(?:\\.[0-9a-f]{8})?' +
+            escapeRe(ext) + '"', 'g');
         html = html.replace(re, '$1="' + hashed + '"');
     }
 
