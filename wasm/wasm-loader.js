@@ -1074,11 +1074,17 @@
                             } catch (e) {
                                 console.error('[snapshot] Watchdog handler threw:', e);
                             }
-                        }, 12000);  // was 20000 — tightened after iter17
-                                    // measured happy warms at 6–8s (3–5s
-                                    // margin). False-fires would manifest
-                                    // as needless cold reloads on slow
-                                    // networks; revisit if observed.
+                        }, 6000);   // Iter A10: tightened from 12 s.
+                                    // Happy warms measured at 6–8 s after
+                                    // restore for the doc:loaded mark to
+                                    // fire — but the SAME-TYPE-then-cross-
+                                    // type warm-restore failure is now
+                                    // 100 % reproducible after iter 5,
+                                    // so paying 12 s waiting for a verdict
+                                    // we already know is pure overhead.
+                                    // 6 s gives a 3-second margin over the
+                                    // happy-path tail and clips failure
+                                    // recovery by 6 s on every retry.
                     }
                 }
 
