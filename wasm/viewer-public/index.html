@@ -368,6 +368,17 @@ window.addEventListener('message', function(event) {
     if (typeof event.data !== 'string') return;
     try {
         const msg = JSON.parse(event.data);
+        // Iter A8: latch warm-restore failure so subsequent cross-type
+        // iframe creations skip the snapshot (which is ~100 % reproducible
+        // bad once it has hung once in a session). Without this the user
+        // pays the 12 s watchdog wait on every cross-type after the first
+        // failure. Latch persists for the lifetime of the viewer page.
+        if (msg.MessageId === 'WarmRestoreFailed') {
+            window.__warmRestoreFailedThisSession = true;
+            console.log('[viewer] WarmRestoreFailed received — '
+                + 'subsequent cross-type iframes will use ?planc=0');
+            return;
+        }
         // Live progress from the iframe's wasm-loader.
         if (msg.MessageId === 'WasmProgress' && msg.Values) {
             var pct = msg.Values.pct;
@@ -1001,6 +1012,13 @@ async function openFile(name, opts) {
             var __cp = new URLSearchParams(window.location.search).get('planc');
             if (__cp === '0' || __cp === 'off') __coldPlanC = '&planc=0';
             else if (__cp === '1' || __cp === 'on') __coldPlanC = '&planc=1';
+            // Iter A8 reverted: forcing planc=0 after a warm failure
+            // also skips the FRESH snapshot the watchdog just captured
+            // during its cold reload. That gave us cold-only on every
+            // subsequent cross-type (~30-40s) when many of them would
+            // have warm-restored cleanly off the new snapshot. The
+            // watchdog's drop-and-reload mechanism is already the right
+            // recovery; just trust it.
         } catch (e) { /* ignore */ }
         const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
                       + '&access_token=test'

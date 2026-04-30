@@ -155,9 +155,14 @@ async function getStatusOk(page, type) {
             }, target.secret);
 
             // Wait for the destination doc-type-specific status to fire.
+            // Bumped from 48s to 90s in Iter A8: warm cross-type can hit
+            // the warm-restore watchdog (12s) followed by a full cold
+            // reload (~30s) and capture of a fresh snapshot (~5s). 48s
+            // truncated this and made warm runs falsely look like
+            // hangs even though the cold-reload path completed cleanly.
             const verifyStart = Date.now();
             let verified = false;
-            for (let i = 0; i < 240; i++) {
+            for (let i = 0; i < 450; i++) {
                 await sleep(200);
                 if (await getStatusOk(page, target.type)) {
                     verified = true;

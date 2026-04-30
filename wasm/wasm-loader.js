@@ -1042,6 +1042,19 @@
                                     + 'doc:loaded missing 20s after restore — '
                                     + 'dropping snapshot and reloading as cold');
                                 window.__wasmWarmWatchdogTriggered = true;
+                                // Iter A8: tell the parent viewer so subsequent
+                                // iframe creations skip warm-restore entirely.
+                                // Once warm-restore fails in a session, it's
+                                // ~100 % reproducible on the same captured
+                                // snapshot, so paying the 12 s watchdog wait
+                                // every cross-type is pure overhead. Parent
+                                // appends ?planc=0 to the next iframe URL.
+                                try {
+                                    window.parent.postMessage(JSON.stringify({
+                                        MessageId: 'WarmRestoreFailed',
+                                        Values: {}
+                                    }), '*');
+                                } catch (e) { /* ignore */ }
                                 if (typeof caches !== 'undefined') {
                                     caches.open('wasm-snapshot').then(function(c) {
                                         return c.keys().then(function(keys) {
