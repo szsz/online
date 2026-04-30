@@ -48,19 +48,29 @@ function check(label, cond, ev) {
     await page.setViewport({ width: 1280, height: 900 });
     await page.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
-    // Wait for editor to fully load
+    // Wait for editor to fully load. Re-resolve the iframe each tick:
+    // the viewer's cold-reload path replaces #editor-frame with a new
+    // <iframe> element, so a cached reference becomes stale.
     let editorFrame;
     for (let i = 0; i < 300; i++) {
         await sleep(500);
         editorFrame = page.frames().find(f => f.url().includes('cool.html'));
         if (editorFrame) {
-            const wc = await editorFrame.evaluate(() =>
-                document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-            if (/\d+\s+character/i.test(wc)) {
-                const canvasOk = await editorFrame.evaluate(() =>
-                    !!document.querySelector('.leaflet-tile-container canvas, #document-container canvas')
-                ).catch(() => false);
-                if (canvasOk) break;
+            // Probe both __wasmPrewarmReady (set after the user doc is
+            // painted) and the canvas. StateWordCount alone fires for
+            // the prewarm-blank doc and races us into using the wrong
+            // frame.
+            const ready = await editorFrame.evaluate(() => !!window.__wasmPrewarmReady)
+                .catch(() => false);
+            if (ready) {
+                const wc = await editorFrame.evaluate(() =>
+                    document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
+                if (/\d+\s+character/i.test(wc)) {
+                    const canvasOk = await editorFrame.evaluate(() =>
+                        !!document.querySelector('.leaflet-tile-container canvas, #document-container canvas')
+                    ).catch(() => false);
+                    if (canvasOk) break;
+                }
             }
         }
     }
@@ -96,7 +106,15 @@ function check(label, cond, ev) {
     }
     function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? parseInt(m[1]) : -1; }
     async function getWc() {
-        return editorFrame.evaluate(() =>
+        // Re-resolve the iframe each call. Viewer recreates the editor
+        // iframe on cold-reload (the path our `page.goto + #file=`
+        // triggers when prewarm wasn't ready), so the editorFrame
+        // captured during setup may be the now-detached prewarm-blank
+        // frame whose StateWordCount still reads "0 characters" but
+        // that the user-visible document never propagates to.
+        const fr = page.frames().find(f => f.url().includes('cool.html'));
+        if (!fr) return '';
+        return fr.evaluate(() =>
             document.querySelector('#StateWordCount')?.textContent?.trim() || '').catch(() => '');
     }
     async function logStep(title) {
