@@ -34,6 +34,7 @@ TESTS=(
     # New single-user copy/paste (kit-side isolation)
     "singleuser-copy-paste|test-singleuser-copy-paste.js|Single-User Copy/Paste|All copy/paste flows in single-user mode (no relay): internal external text image plaintext save round-trip|shots-singleuser-copy-paste"
     # Hot-switch (new files added in iter10/iter11)
+    "regression-iframe-pool|test-regression-iframe-pool.js|Regression: Iframe Pool Cross-Type Revive|Cross-type to a previously-warm doctype reuses parked iframe (≪ 3s) instead of cold reload|none"
     "hotswitch-xlsx|test-hotswitch-xlsx.js|Hot-Switch xlsx → xlsx|Same-type Calc hot-switch via in-place reload|shots-hotswitch-xlsx"
     "hotswitch-pptx|test-hotswitch-pptx.js|Hot-Switch pptx → pptx|Same-type Impress hot-switch via in-place reload|shots-hotswitch-pptx"
     # Perf gate
