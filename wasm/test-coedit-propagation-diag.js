@@ -45,21 +45,36 @@ function chars(s) { const m = s && s.match(/(\d+) characters/); return m ? +m[1]
             page.on('console', m => {
                 const t = m.text();
                 if (/relay|processUI|remote client|queued|Flushing|replay|join|0x0|sendToKit|sendToRemoteClient|presence|Module|preinit/i.test(t)) {
-                    sink.push(`[${((Date.now()-T0)/1000).toFixed(1)}s ${tag}] ${t.slice(0, 280)}`);
+                    const line = `[${((Date.now()-T0)/1000).toFixed(1)}s ${tag}] ${t.slice(0, 280)}`;
+                    sink.push(line);
+                    // Echo live for diagnosis. Otherwise everything's lost on timeout.
+                    console.log(line);
                 }
             });
-            page.on('pageerror', e => sink.push(`[${tag} pageerror] ${e.message}`));
+            page.on('pageerror', e => {
+                const line = `[${tag} pageerror] ${e.message}`;
+                sink.push(line);
+                console.log(line);
+            });
         }
 
         async function openTab(label, sink) {
             const ctx = await browser.createBrowserContext();
             const page = await ctx.newPage();
             tagLogs(page, label, sink);
-            await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: 240000 });
-            await page.waitForFunction(() =>
-                document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
-                { timeout: 240000 });
-            log(`[${label}] loaded: "${await getWc(page)}"`);
+            try {
+                await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+                await page.waitForFunction(() =>
+                    document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
+                    { timeout: 90000 });
+                log(`[${label}] loaded: "${await getWc(page)}"`);
+            } catch (e) {
+                log(`[${label}] LOAD FAILED: ${e.message}`);
+                // Best-effort dump of what we got so far before bubbling up
+                const wc = await getWc(page).catch(() => '(unavailable)');
+                log(`[${label}] last #StateWordCount: "${wc}"`);
+                throw e;
+            }
             return page;
         }
 
