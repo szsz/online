@@ -70,7 +70,18 @@ t_start=$(date +%s)
 status="pass"
 TMPDIR="$tmpdir" timeout 1800 node "$SCRIPT_DIR/$script" > "$log_file" 2>&1
 rc=$?
-if [ $rc -ne 0 ]; then status="fail"; fi
+if [ $rc -ne 0 ]; then
+    # JOBS=2 contention: regression-paste-coedit, snapshot-milestones,
+    # mouse-select-copypaste flake when two tests collide on the
+    # editor-static / relay-broker. Pass solo. One-shot retry catches
+    # the flake without masking real regressions (two consecutive
+    # failures still fail).
+    echo "$slug: first attempt failed (rc=$rc), retrying..." >> "$log_file"
+    rm -rf "$tmpdir" 2>/dev/null; tmpdir=$(mktemp -d)
+    TMPDIR="$tmpdir" timeout 1800 node "$SCRIPT_DIR/$script" >> "$log_file" 2>&1
+    rc=$?
+    if [ $rc -ne 0 ]; then status="fail"; fi
+fi
 elapsed=$(( $(date +%s) - t_start ))
 
 echo "$slug|$status|$elapsed|$title|$description|$shots_name" > "$LOG_DIR/$slug.result"
