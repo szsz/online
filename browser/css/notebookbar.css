@@ -586,15 +586,20 @@ label.notebookbar.ui-checkbox-label {
 	width: 36.8vw !important;
 	/* Preview base64's width = 100px + container border's etc */
 	grid-template-columns: repeat(auto-fit, minmax(122px, 1fr));
-	/* Bug iter 26: was `grid-template-rows: repeat(auto-fit, minmax(33px, 1fr))`,
-	 * which defines explicit rows. With the parent height pinned to
-	 * --notebookbar-element-height (~64px) only one explicit row fits;
-	 * every entry past it falls into the implicit grid (default
-	 * grid-auto-rows: auto) and stamps into the same cell — entries
-	 * render visually stacked. grid-auto-rows: 33px gives the implicit
-	 * grid a fixed track size so entries flow into their own rows; the
-	 * container's overflow:auto handles any vertical overflow. */
-	grid-auto-rows: 33px;
+	/* Bug iter 26 / iter 28: was `grid-template-rows: repeat(auto-fit,
+	 * minmax(33px, 1fr))`, which defines explicit rows. With the parent
+	 * height pinned to --notebookbar-element-height (~64px) only one
+	 * explicit row fits; every entry past it fell into the implicit
+	 * grid (default grid-auto-rows: auto) and stamped into the same
+	 * cell — entries rendered visually stacked.
+	 *
+	 * Iter 26 first set `grid-auto-rows: 33px`, but the styles iconview
+	 * entries (image preview + label) are ~74px tall; a 33px row meant
+	 * each entry overflowed into the next row's cell and overlapped
+	 * with the entry below. Switch to `grid-auto-rows: max-content` so
+	 * each row sizes to its tallest entry. Container's overflow:auto
+	 * handles any vertical overflow. */
+	grid-auto-rows: max-content;
 	grid-auto-flow: row;
 }
 
