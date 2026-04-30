@@ -214,10 +214,15 @@ async function canvasHash(page) {
         await snap(pageB, 'B_after_propagation');
 
         // ── DOM-only assertion on B: the active stylesview entry / the
-        //    visible "Paragraph Style" combobox should be Heading 1.  ──
-        const styleOnB = await frB.evaluate(() => {
+        //    visible "Paragraph Style" combobox should be Heading 1.
+        //    Poll up to 30 s — the kit forwards .uno:StyleApply state-change
+        //    events asynchronously after the canvas re-paints, so the
+        //    iconview's `.selected` class lags the canvas pixel-hash flip.
+        //    A one-shot read after a fixed sleep is timing-fragile; polling
+        //    catches real bugs (if 30 s isn't enough, the propagation is
+        //    actually broken). ──
+        const probeStyle = async () => frB.evaluate(() => {
             const out = { activeText: null, comboInput: null, comboLabel: null };
-            // (a) iconview-style: look for an entry with .selected / .active class
             const root = document.getElementById('stylesview');
             if (root) {
                 const sel = root.querySelector(
@@ -225,7 +230,6 @@ async function canvasHash(page) {
                     '.ui-iconview-entry[aria-selected="true"]');
                 if (sel) out.activeText = (sel.textContent || '').trim();
             }
-            // (b) combobox-style: applystyle / paragraphstyles widget shows the name
             const candidates = ['applystyle', 'paragraphstyles', 'styles'];
             for (const id of candidates) {
                 const w = document.getElementById(id);
@@ -244,6 +248,14 @@ async function canvasHash(page) {
             }
             return out;
         }).catch(() => ({}));
+        let styleOnB = {};
+        const stylePollDeadline = Date.now() + 30000;
+        while (Date.now() < stylePollDeadline) {
+            styleOnB = await probeStyle();
+            const text = `${styleOnB.activeText || ''} ${styleOnB.comboInput || ''} ${styleOnB.comboLabel || ''}`;
+            if (/heading\s*1/i.test(text)) break;
+            await sleep(1000);
+        }
         log(`B style readout: ${JSON.stringify(styleOnB)}`);
 
         const allText = `${styleOnB.activeText || ''} ${styleOnB.comboInput || ''} ${styleOnB.comboLabel || ''}`;
