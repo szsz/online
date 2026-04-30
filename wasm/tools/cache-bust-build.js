@@ -171,13 +171,16 @@ function rewriteCoolHtml(dir, assetHashMap) {
     // in cool.html) so its first call into Module.locateFile sees the
     // asset map. The init-mobile-app-os-type input is the build-stable
     // anchor we splice in after.
+    //
+    // window.__assetMap is the single source of truth for hashed names,
+    // referenced from (a) Module.locateFile in this shim — needed for
+    // online.js's findWasmBinary (online.wasm) + getPreloadedPackage
+    // (soffice.data{.js.metadata}); and (b) wasm-loader.js's
+    // document.write that bootstraps online.js. Include the FULL hash
+    // map so both consumers can resolve any asset name.
     const alreadyInjected = html.includes('window.__assetMap');
     if (!alreadyInjected) {
-        const locMap = {};
-        for (const n of LOCATE_FILE_RENAMED) {
-            if (assetHashMap[n]) locMap[n] = assetHashMap[n];
-        }
-        const inject = buildLocateFileShim(locMap) + WASM_LOADER_INJECT_STATIC;
+        const inject = buildLocateFileShim(assetHashMap) + WASM_LOADER_INJECT_STATIC;
         const anchor = '<input type="hidden" id="init-mobile-app-os-type" value="EMSCRIPTEN" />';
         if (html.includes(anchor)) {
             html = html.replace(anchor, anchor + '\n' + inject);
@@ -186,14 +189,9 @@ function rewriteCoolHtml(dir, assetHashMap) {
         }
     } else {
         console.log('  cool.html: inject already present, refreshing __assetMap only');
-        // Refresh the map literal in case asset hashes have rolled.
-        const locMap = {};
-        for (const n of LOCATE_FILE_RENAMED) {
-            if (assetHashMap[n]) locMap[n] = assetHashMap[n];
-        }
         html = html.replace(
             /window\.__assetMap\s*=\s*\{[^}]*\};/,
-            'window.__assetMap = ' + JSON.stringify(locMap) + ';');
+            'window.__assetMap = ' + JSON.stringify(assetHashMap) + ';');
     }
 
     // Rewrite refs to the current hashed names. We have to handle two
