@@ -1077,7 +1077,7 @@
                         window.__wasmWarmWatchdogTimer = setTimeout(function() {
                             try {
                                 console.warn('[snapshot] Warm-restore watchdog: '
-                                    + 'doc:loaded missing 20s after restore — '
+                                    + 'doc:loaded missing 6s after restore — '
                                     + 'dropping snapshot and reloading as cold');
                                 window.__wasmWarmWatchdogTriggered = true;
                                 // Iter A8: tell the parent viewer so subsequent
