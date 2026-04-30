@@ -502,6 +502,43 @@ if [ -f "$GLOBAL_JS" ] && grep -q 'insertAdjacentElement("afterend",brandingLink
     echo "  Patched global.js: stripped branding-<form>.css load"
 fi
 
+# ── Patch emscripten-module.js: preserve cache-bust locateFile ──
+# bundle.js does `globalThis.Module = createEmscriptenModule(...)` which
+# clobbers the locateFile shim cool.html injects at the top of the page.
+# Without locateFile, online.js's findWasmBinary fetches the plain
+# `online.wasm` URL — but cache-bust renamed it to online.<hash>.wasm,
+# so the fetch 404s and the WASM module aborts. Inject a locateFile
+# field into the returned object so the new Module remaps via
+# window.__assetMap.
+EMSCRIPTEN_MODULE_LIVE="$BROWSER_DIR/emscripten-module.js"
+if [ -f "$EMSCRIPTEN_MODULE_LIVE" ] && ! grep -q '__assetMap' "$EMSCRIPTEN_MODULE_LIVE"; then
+    python3 - "$EMSCRIPTEN_MODULE_LIVE" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    c = f.read()
+target = "uno_scripts: [],"
+inject = """uno_scripts: [],
+\t\t// Cache-bust support: bundle.js does
+\t\t//   globalThis.Module = createEmscriptenModule(...)
+\t\t// which clobbers the locateFile shim cool.html sets at the top of
+\t\t// the page. Re-derive locateFile from window.__assetMap so
+\t\t// online.js's findWasmBinary resolves online.wasm →
+\t\t// online.<hash>.wasm correctly.
+\t\tlocateFile: function(file, prefix) {
+\t\t\tvar mapped = (typeof window !== 'undefined' && window.__assetMap && window.__assetMap[file]) || file;
+\t\t\treturn (prefix || '') + mapped;
+\t\t},"""
+n = c.count(target)
+if n != 1:
+    print(f'  WARNING: emscripten-module.js: expected 1 "{target}" anchor, found {n}; skipping locateFile injection')
+    sys.exit(0)
+with open(path, 'w') as f:
+    f.write(c.replace(target, inject, 1))
+print('  Patched emscripten-module.js: cache-bust locateFile')
+PYEOF
+fi
+
 # ── Step 6: Bake content hashes into asset filenames + cool.html ──
 # Renames each long-cacheable asset to <base>.<hash>.<ext> (sha256[:8]),
 # moves the .br sidecar alongside, and rewrites cool.html to point at

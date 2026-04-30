@@ -1550,7 +1550,13 @@
     }
     startDocPoll();
 
-    // Load online.js via document.write — only reliable path in cool.html
-    document.write('<scr' + 'ipt type="text/javascript" src="online.js"><\/scr' + 'ipt>');
-    mark('loader:online.js_written');
+    // Load online.js via document.write — only reliable path in cool.html.
+    // If the build-time cache-bust ran, window.__assetMap maps "online.js"
+    // to its content-hashed filename; use that so the fetch resolves
+    // (the plain name no longer exists on disk after cache-bust-build.js
+    // renames it to online.<hash>.js).
+    var onlineJsName = (typeof window !== 'undefined' && window.__assetMap
+        && window.__assetMap['online.js']) || 'online.js';
+    document.write('<scr' + 'ipt type="text/javascript" src="' + onlineJsName + '"><\/scr' + 'ipt>');
+    mark('loader:online.js_written', onlineJsName);
 })();
