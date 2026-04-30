@@ -24,6 +24,15 @@ const UPLOAD_DIR   = path.join(__dirname, 'uploads');
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+// Content-hashed asset filenames are baked in at build time by
+// wasm/tools/cache-bust-build.js — that step renames each long-cacheable
+// asset to <base>.<hash>.<ext>, renames its .br sidecar alongside, and
+// rewrites cool.html (asset refs + Module.locateFile shim ahead of
+// online.js). At runtime this server only has to set cache headers and
+// stream files. The HASHED_RE pattern matches the build-time naming so
+// hashed responses get max-age=1y immutable.
+const HASHED_RE = /\.[0-9a-f]{8}\.(?:js|css|wasm|data|metadata)$/;
+
 const app = express();
 
 // Cache headers (runs before the brotli chooser so the chosen response
@@ -38,7 +47,15 @@ const app = express();
 app.use((req, res, next) => {
     if (req.path.endsWith('/sw.js') || req.path === '/sw.js') {
         res.setHeader('Cache-Control', 'no-cache');
+    } else if (HASHED_RE.test(req.path)) {
+        // Content-hashed asset: hash changes when content changes,
+        // so the URL itself is a version. Cache forever.
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     } else if (/\.(wasm|data|js\.metadata)$/.test(req.path)) {
+        // Belt-and-braces: any unhashed wasm/data/metadata still gets
+        // immutable headers. Build-time hashing should rename them, so
+        // this branch is only hit by old-cool.html clients pointing at
+        // the unhashed name during a deploy window.
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     } else if (/\.html$/.test(req.path) || req.path === '/') {
         res.setHeader('Cache-Control', 'no-cache');
@@ -115,7 +132,10 @@ app.use((req, res, next) => {
 
     // Resolve request path → on-disk .br file. Both /browser/* and
     // root-level paths (/online.wasm etc.) are served by this app so
-    // we check both layouts.
+    // we check both layouts. The build step renames hashed assets in
+    // place (bundle.js → bundle.<hash>.js) and renames the .br sidecar
+    // alongside, so a direct `+ '.br'` lookup finds it without any
+    // symlink chasing.
     const candidates = [];
     if (urlPath.startsWith('/browser/')) {
         candidates.push(path.join(BROWSER_DIST, urlPath.slice('/browser/'.length) + '.br'));
@@ -174,48 +194,15 @@ for (const f of wasmFiles) {
     });
 }
 
-// ── cool.html with template substitution + wasm-loader injection ─
-// 1. Replaces %ACCESS_TOKEN%, %BRANDING_THEME%, etc. with values from
-//    POST body (or empty strings). Without substitution WASM tries to
-//    fetch document URLs containing literal "%ACCESS_TOKEN%" which fails.
-// 2. Injects a loading overlay + <script>s for wasm-loader.js and
-//    relay-adapter.js, which the sidebar viewer depends on for the
-//    hot-switch / prewarm / progress protocol (postMessage WasmProgress,
-//    WasmDocReady, WasmSwitchVisible, RelaySwitchRoom).
-const WASM_LOADER_INJECT = `
-<style id="wasm-loading-style">
-  #wasm-loading-overlay {
-    position: fixed; inset: 0; background: #f5f5f5; z-index: 999999;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; color: #333;
-  }
-  #wasm-spinner {
-    width: 64px; height: 64px; border: 6px solid #ddd; border-top-color: #4a90e2;
-    border-radius: 50%; animation: wasmspin 1s linear infinite;
-    margin-bottom: 16px;
-  }
-  @keyframes wasmspin { to { transform: rotate(360deg); } }
-  #wasm-progress-label { font-size: 15px; font-weight: 500; margin-bottom: 8px; }
-  #wasm-progress-bar {
-    width: 300px; height: 12px; background: #e0e0e0; border-radius: 6px; overflow: hidden; margin-bottom: 6px;
-  }
-  #wasm-progress-bar-fill {
-    height: 100%; background: linear-gradient(90deg, #4a90e2, #357abd); width: 0%;
-    transition: width 0.3s ease;
-  }
-  #wasm-progress-detail { font-size: 12px; color: #666; }
-</style>
-<div id="wasm-loading-overlay">
-  <div id="wasm-spinner"></div>
-  <div id="wasm-progress-label">Loading editor…</div>
-  <div id="wasm-progress-bar"><div id="wasm-progress-bar-fill"></div></div>
-  <div id="wasm-progress-detail"></div>
-</div>
-<script type="text/javascript" src="dict-loader.js"></script>
-<script type="text/javascript" src="wasm-loader.js"></script>
-<script type="text/javascript" src="relay-adapter.js"></script>
-`;
-
+// ── cool.html with template substitution ────────────────────────
+// Replaces %ACCESS_TOKEN%, %BRANDING_THEME%, etc. with values from POST
+// body (or empty strings). Without substitution the iframe tries to
+// fetch document URLs containing the literal "%ACCESS_TOKEN%" which 404s.
+//
+// Asset references (bundle.js → bundle.<hash>.js etc.), the integrator
+// branding strip, and the Module.locateFile shim are baked in at build
+// time by wasm/tools/cache-bust-build.js — this server no longer rewrites
+// HTML beyond the per-request token substitution.
 function serveCoolHtml(req, res) {
     const coolHtml = path.join(BROWSER_DIST, 'cool.html');
     if (!fs.existsSync(coolHtml)) return res.status(404).send('cool.html not built');
@@ -243,36 +230,28 @@ function serveCoolHtml(req, res) {
         html = html.split(key).join(val);
     }
 
-    // Strip the integrator branding hooks (branding.css + branding.js) —
-    // we don't theme the editor, so these would just 404 and spam the
-    // console. The dynamic device-{desktop,mobile,tablet}.css +
-    // branding-{…}.css loads in global.js are stripped at deploy time.
-    html = html.replace(/\s*<link rel="stylesheet" href="branding\.css" \/>/g, '');
-    html = html.replace(/\s*<script src="branding\.js"><\/script>/g, '');
-
-    // Inject the wasm-loader block once. The anchor is the EMSCRIPTEN hidden
-    // input that the build reliably emits; if it's missing we prepend before
-    // </body> as a fallback. Skip if the build already embeds wasm-loader.
-    if (!html.includes('wasm-loader.js')) {
-        const anchor = '<input type="hidden" id="init-mobile-app-os-type" value="EMSCRIPTEN" />';
-        if (html.includes(anchor)) {
-            html = html.replace(anchor, anchor + '\n' + WASM_LOADER_INJECT);
-        } else {
-            html = html.replace('</body>', WASM_LOADER_INJECT + '</body>');
-        }
-    }
-
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
 }
 app.get('/browser/cool.html',  serveCoolHtml);
 app.post('/browser/cool.html', serveCoolHtml);
 
-// ── Static: browser assets (bundle.js, bundle.css, images, etc.) ─
+// ── Static: browser assets (bundle.<hash>.js, images, etc.) ──────
 // fallthrough: true (default) means missing files fall through to our
 // final 404 handler which returns plain text (not HTML).
+//
+// serve-static overwrites Cache-Control via its `maxAge` option *after*
+// our cache-control middleware runs, so the long-cache decision needs
+// to be re-applied here via setHeaders. Hashed names (bundle.<hash>.js
+// etc.) and *.wasm/*.data/*.js.metadata get max-age=1y immutable; the
+// rest fall back to the regular 1h shelf life.
 app.use('/browser', express.static(BROWSER_DIST, {
     maxAge: '1h',
+    setHeaders: (res, filepath) => {
+        if (HASHED_RE.test(filepath) || /\.(wasm|data|js\.metadata)$/.test(filepath)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+    },
 }));
 
 // ── Static: /dicts/<lang>.tar.gz + /dicts/manifest.json ──────────

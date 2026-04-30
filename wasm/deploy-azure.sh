@@ -612,6 +612,14 @@ PYEOF
         browser/dist/soffice.data browser/dist/soffice.data.js.metadata \
         browser/dist/wasm-loader.js browser/dist/relay-adapter.js
 
+    # Bake content hashes into asset filenames + cool.html. Renames each
+    # long-cacheable asset to <base>.<hash>.<ext>, moves the .br sidecar
+    # alongside, and rewrites cool.html (asset refs + Module.locateFile
+    # shim ahead of online.js). Runs AFTER brotli so the .br sidecars
+    # are renamed in lockstep.
+    echo "  Cache-bust build (file rename + cool.html rewrite)..."
+    node "$SCRIPT_DIR/tools/cache-bust-build.js" --dir "$EDIR/browser/dist"
+
     deploy_app "$EDITOR_APP_NAME" "$EDIR" "/"
 fi
 

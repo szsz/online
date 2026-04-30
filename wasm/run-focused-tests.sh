@@ -38,6 +38,11 @@ TESTS=(
     "regression-samedoc-flicker|test-regression-samedoc-flicker.js|Regression: Same-Doctype Title Flicker|A↔B name flicker on same-type hot-switch (parallel setInterval writers)|shots-regression-samedoc-flicker"
     "hotswitch-xlsx|test-hotswitch-xlsx.js|Hot-Switch xlsx → xlsx|Same-type Calc hot-switch via in-place reload|shots-hotswitch-xlsx"
     "hotswitch-pptx|test-hotswitch-pptx.js|Hot-Switch pptx → pptx|Same-type Impress hot-switch via in-place reload|shots-hotswitch-pptx"
+    # UI bug regressions in 2-browser co-edit (font-size, heading style, search)
+    "regression-fontsize-coedit|test-regression-fontsize-coedit.js|Regression: Font Size Co-Edit|A picks 24 from notebookbar font-size dropdown; B's DOM reflects 24 + canvas changes|shots-regression-fontsize-coedit"
+    "regression-heading-styles-coedit|test-regression-heading-styles-coedit.js|Regression: Heading Style Co-Edit|A applies Heading 1 via styles iconview; B's DOM shows Heading 1 active + canvas changes|shots-regression-heading-styles-coedit"
+    "regression-search-coedit|test-regression-search-coedit.js|Regression: Search Co-Edit|A types FINDABLE_TOKEN; B receives via relay then Ctrl+F finds it|shots-regression-search-coedit"
+    "regression-stylesview-overlap|test-regression-stylesview-overlap.js|Regression: Stylesview Layout|Notebookbar Styles entries occupy distinct grid cells (no overlap)|shots-regression-stylesview-overlap"
     # Perf gate
     "snapshot-milestones|test-snapshot-milestones.js|Snapshot Milestones|Per-doc cold/warm × N=3 trials (writer calc impress)|none"
 )
