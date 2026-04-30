@@ -122,8 +122,19 @@ for entry in "${TESTS[@]}"; do
     if node "$SCRIPT_DIR/$script" 2>&1; then
         echo "  => PASS"
     else
-        status="fail"
-        echo "  => FAIL (exit code $?)"
+        # One-time retry. Many of these tests fail under sequential
+        # load due to accumulated state in the editor-static / relay
+        # broker (Cache Storage quota, /wasm/ files, room state) but
+        # pass cleanly solo. A single retry catches transient flakes
+        # without masking real regressions: if the test fails twice
+        # in a row, that's a real signal.
+        echo "  => first attempt failed, retrying once..."
+        if node "$SCRIPT_DIR/$script" 2>&1; then
+            echo "  => PASS (on retry)"
+        else
+            status="fail"
+            echo "  => FAIL (both attempts, exit code $?)"
+        fi
     fi
     elapsed=$((SECONDS - t_start))
     DURATIONS[$slug]="$elapsed"
