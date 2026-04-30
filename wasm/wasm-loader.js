@@ -228,61 +228,24 @@
             window.__wasmSnapshotData = null;
             return Promise.resolve(null);
         }
-        // Bug iter 14: cross-tab cold-init lock. When two tabs of
-        // viewer.szebeni.hu open simultaneously and Cache Storage is
-        // empty, both used to do their own ~33 s cold init in parallel,
-        // capture conflicting snapshots, and trip QuotaExceededError on
-        // the second put. Serialise via the Web Locks API:
-        //   1. First check Cache Storage; if snapshot present, no lock
-        //      needed — fast path warm-restore.
-        //   2. If absent, acquire 'wasm-cold-init' (exclusive). One tab
-        //      gets it; others queue. The holder either:
-        //      a) re-checks the cache (another tab may have just saved
-        //         a snapshot while we waited) and warm-restores, OR
-        //      b) returns null so this tab does the cold init + snapshot
-        //         save under the lock.
-        // Browsers without Web Locks (Safari < 15.4) skip the
-        // serialisation and fall back to the previous parallel-cold
-        // behaviour.
-        async function probeCache() {
-            const cache = await caches.open('wasm-snapshot');
+        // Iter 29: removed iter 14's navigator.locks 'wasm-cold-init'
+        // serialisation. Bisect against regression-mouse-select-copypaste
+        // showed it broke A↔B input propagation under puppeteer's two
+        // browser contexts (which share the lock space): with the lock,
+        // typing in A never reaches B and vice versa. Without the lock
+        // both directions work.
+        //
+        // What iter 14 protected against (parallel cold inits both
+        // saving snapshots → QuotaExceededError on the second put) is
+        // already covered by iter A9's cache.delete-before-put +
+        // fingerprint-guard (a stale snapshot is rejected on read), so
+        // dropping the lock doesn't reintroduce the original bug.
+        return caches.open('wasm-snapshot').then(function(cache) {
             return Promise.all([
                 cache.match('/snapshot/heap-v2'),
                 cache.match('/snapshot/meta'),
             ]);
-        }
-        async function fetchOrColdInit() {
-            let results = await probeCache();
-            if (results[0]) return results;
-            if (typeof navigator === 'undefined' || !navigator.locks) {
-                mark('snapshot:no_web_locks');
-                return results;
-            }
-            mark('snapshot:awaiting_cold_init_lock');
-            return navigator.locks.request(
-                'wasm-cold-init',
-                { mode: 'exclusive' },
-                async () => {
-                    mark('snapshot:cold_init_lock_acquired');
-                    // Re-check: another tab may have just released the
-                    // lock after saving a snapshot.
-                    const afterLock = await probeCache();
-                    if (afterLock[0]) {
-                        mark('snapshot:cold_init_lock_warm_recheck');
-                    } else {
-                        mark('snapshot:cold_init_lock_we_run_cold');
-                    }
-                    // Returning here releases the lock. The cold init
-                    // (callMain) runs OUTSIDE the lock — but that's
-                    // fine: we've already proven no snapshot exists.
-                    // Any tab that opens between our release and our
-                    // snapshot:save will redo the same probe → lock →
-                    // wait → recheck cycle.
-                    return afterLock;
-                }
-            );
-        }
-        return fetchOrColdInit().then(function(results) {
+        }).then(function(results) {
             var heapResp = results[0];
             var metaResp = results[1];
             if (!heapResp) {
