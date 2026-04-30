@@ -243,6 +243,12 @@ let currentFile = null;
 // cold reload. Memory cost: up to 3 iframes (~840 MB) for a session
 // that touches all three doctypes.
 const parkedIframes = {}; // doctype -> { iframe, lastFile }
+// Track what's actually loaded in the visible iframe. Distinct from
+// currentFile/currentDocType which can be set by openFileBySecret
+// before openFile (and the iframe lifecycle code) runs. Only updated
+// AFTER an iframe is set up to host a doc.
+let activeIframeFile = null;
+let activeIframeDocType = null;
 // Track whether the iframe's relay-adapter has activated (sent join-ready
 // + accepted by the relay). Until activated, any keystroke the user types
 // is dropped on the floor with a "Dropping input not activated yet" log
@@ -1021,22 +1027,22 @@ async function openFile(name, opts) {
             else if (__cp === '1' || __cp === 'on') __coldPlanC = '&planc=1';
         } catch (e) { /* ignore */ }
 
-        // Park the CURRENT iframe under its doctype IFF it has actually
-        // been used (currentFile is set). The initial iframe load (page
-        // navigation) hasn't loaded a user doc yet — there's nothing
-        // worth parking. Without this gate, the very first cold open
-        // duplicates iframe id="editor-frame" because we both park the
-        // initial empty iframe AND create a new one for the cross-type
-        // (which from prewarm to first file always counts as cross-type
-        // when prewarmReady is false).
-        const shouldPark = currentFile && currentDocType
-            && currentDocType !== newDocType;
+        // Park the CURRENT iframe under its doctype IFF it actually
+        // hosts a loaded doc (activeIframeFile/activeIframeDocType set).
+        // currentFile/currentDocType were reassigned upstream by
+        // openFileBySecret before this code runs, so they reflect the
+        // INCOMING file, not the one currently displayed. activeIframe*
+        // tracks the iframe's actual loaded state.
+        const shouldPark = activeIframeFile && activeIframeDocType
+            && activeIframeDocType !== newDocType;
         if (shouldPark) {
             iframe.style.display = 'none';
-            iframe.id = 'parked-iframe-' + currentDocType;
-            parkedIframes[currentDocType] = { iframe, lastFile: currentFile };
-            viewerLog('Parked iframe for ' + currentDocType
-                + ' (was: ' + currentFile + ')');
+            iframe.id = 'parked-iframe-' + activeIframeDocType;
+            parkedIframes[activeIframeDocType] = {
+                iframe, lastFile: activeIframeFile,
+            };
+            viewerLog('Parked iframe for ' + activeIframeDocType
+                + ' (was: ' + activeIframeFile + ')');
         }
 
         // Revive the previously-parked iframe for newDocType, if any.
@@ -1139,6 +1145,11 @@ async function openFile(name, opts) {
         }
     }
     currentDocType = newDocType;
+    // Iframe is now hosting (or about to host) name with newDocType.
+    // The pool's parking logic reads these on the next openFile call
+    // to decide what to park.
+    activeIframeFile = name;
+    activeIframeDocType = newDocType;
     window.__viewerState.lastOpenStart = t0;
 }
 
