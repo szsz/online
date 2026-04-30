@@ -891,24 +891,6 @@
         // see test-regression-room-switch which reads wc for validation.)
         if (text.indexOf('.uno:StateWordCount=') >= 0) shouldForward = true;
         if (text.indexOf('.uno:ModifiedStatus=') >= 0) shouldForward = true;
-        // Iter 30: forward cursor-context character/paragraph state so the
-        // notebookbar pickers (#fontsizecombobox, #stylesview, font name
-        // combo) update when a remote co-editor changes the format under
-        // OUR cursor's paragraph/run. The remote-client Kit recomputes
-        // these per-cursor values; we relay them through to the primary
-        // view's `_onStateChangedMsg` → `commandstatechanged` listeners.
-        // Skip the disabled-toolbar churn during init — those values
-        // contain no useful payload anyway.
-        if (coolwsdReady && !text.includes('=disabled')) {
-            if (text.indexOf('.uno:FontHeight=') >= 0) shouldForward = true;
-            if (text.indexOf('.uno:CharFontName=') >= 0) shouldForward = true;
-            if (text.indexOf('.uno:StyleApply=') >= 0) shouldForward = true;
-            if (text.indexOf('.uno:Bold=') >= 0) shouldForward = true;
-            if (text.indexOf('.uno:Italic=') >= 0) shouldForward = true;
-            if (text.indexOf('.uno:Underline=') >= 0) shouldForward = true;
-            if (text.indexOf('.uno:Color=') >= 0) shouldForward = true;
-            if (text.indexOf('.uno:CharBackColor=') >= 0) shouldForward = true;
-        }
 
         if (shouldForward) {
             // Defer to next tick — onRemoteClientMessage is called from
