@@ -294,10 +294,21 @@ async function openFileInViewer(page, fileId) {
         // test's scope).
         log('\n--- Phase 3: B types "XYZ" in ' + DOC2 + ' ---');
         await typeViaKeyboard(B.page, 'B', 'XYZ');
-        await sleep(8000);
-
-        const aFinal = await getCharCount(A.page);
-        const bFinal = await getCharCount(B.page);
+        // Poll for A's char count to reach DOC2+3 (or timeout). The
+        // previous fixed-8 s sleep was a race: status bar updates from
+        // the relay-forwarded statechange take 5-15 s in real-world
+        // scheduling. Screenshot taken right after showed 13 chars
+        // while getCharCount returned 10 because the latter ran in
+        // the wrong tick. Poll up to 30 s instead.
+        let aFinal = -1, bFinal = -1;
+        const expectedA = DOC2_INIT_CHARS + 3;
+        const pollDeadline = Date.now() + 30000;
+        while (Date.now() < pollDeadline) {
+            aFinal = await getCharCount(A.page);
+            if (aFinal === expectedA) break;
+            await sleep(500);
+        }
+        bFinal = await getCharCount(B.page);
         log(`After XYZ: A=${aFinal} B=${bFinal} (expected A=${DOC2_INIT_CHARS + 3})`);
         await snap(A.page, 'A_after_xyz');
         await snap(B.page, 'B_after_xyz');
