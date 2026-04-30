@@ -23,7 +23,6 @@
 //     `<file>.br` sibling exists.
 const http = require('http');
 const https = require('https');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
@@ -62,212 +61,18 @@ setInterval(() => {
     } catch (_) {}
 }, 30 * 60 * 1000);
 
-// ── Content-hashed asset filenames ──────────────────────────────
-// On startup (and on SIGHUP), hash the assets that browsers cache
-// long-term and create <base>.<hash>.<ext> symlinks. cool.html is
-// rewritten on the fly to reference the hashed filenames; assets
-// fetched from inside online.js (online.wasm / soffice.data /
-// soffice.data.js.metadata) are remapped via a Module.locateFile
-// shim injected before online.js loads. Hashed files are served
-// immutable so browsers cache forever — when content changes,
-// the URL changes and old cache entries become unreachable.
-const HASHED_ASSETS = [
-    // Custom loaders we splice into cool.html via WASM_LOADER_INJECT.
-    'wasm-loader.js', 'relay-adapter.js', 'dict-loader.js',
-    // Heavy immutables referenced directly by cool.html.
-    'bundle.js', 'bundle.css', 'global.js', 'online.js',
-    // Referenced from inside online.js via Module.locateFile.
-    'online.wasm', 'soffice.data', 'soffice.data.js.metadata',
-];
-// Names that appear as plain file references in cool.html — we
-// rewrite cool.html at serve time to use the hashed filename.
-const COOL_HTML_RENAMED = new Set([
-    'wasm-loader.js', 'relay-adapter.js', 'dict-loader.js',
-    'bundle.js', 'bundle.css', 'global.js', 'online.js',
-]);
-// Names fetched from inside online.js via Module.locateFile —
-// exposed to the page via window.__assetMap (see WASM_LOADER_INJECT).
-const LOCATE_FILE_RENAMED = new Set([
-    'online.wasm', 'soffice.data', 'soffice.data.js.metadata',
-]);
-const assetHashMap = {};  // 'bundle.js' → 'bundle.a1b2c3d4.js'
+// Content-hashed asset filenames + cool.html rewriting are baked in at
+// build/deploy time by wasm/tools/cache-bust-build.js. This server only
+// has to set cache headers and stream files — anything matching
+// HASHED_RE (<base>.<8 hex>.<ext>) gets served immutable.
+const HASHED_RE = /\.[0-9a-f]{8}\.(?:js|css|wasm|data|metadata)$/;
 
-function hashedName(name, hash) {
-    const lastDot = name.lastIndexOf('.');
-    return name.substring(0, lastDot) + '.' + hash + name.substring(lastDot);
-}
-
-function hashAssets() {
-    const browserDir = path.join(PUB, 'browser');
-    for (const name of HASHED_ASSETS) {
-        const src = path.join(browserDir, name);
-        if (!fs.existsSync(src)) continue;
-        const content = fs.readFileSync(src);
-        const hash = crypto.createHash('sha256').update(content).digest('hex').substring(0, 8);
-        const hashed = hashedName(name, hash);
-        assetHashMap[name] = hashed;
-        // Create the new hashed symlink (or copy) if it doesn't exist.
-        // Keep older hashed versions around: tabs already running (and
-        // service-worker-cached cool.html payloads) reference the OLD
-        // hashed name, and we'd rather serve them than 404.
-        const dest = path.join(browserDir, hashed);
-        if (!fs.existsSync(dest)) {
-            try { fs.symlinkSync(name, dest); }
-            catch(e) { fs.copyFileSync(src, dest); }
-        }
-        console.log(`  ${name} → ${hashed}`);
-    }
-}
-// GC stale hashed assets (>24h) — runs at startup.
-function gcOldHashedAssets() {
-    const browserDir = path.join(PUB, 'browser');
-    const cutoff = Date.now() - 24 * 3600 * 1000;
-    const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    for (const name of HASHED_ASSETS) {
-        const lastDot = name.lastIndexOf('.');
-        const base = name.substring(0, lastDot);
-        const ext = name.substring(lastDot);
-        const re = new RegExp('^' + escapeRe(base) + '\\.[0-9a-f]{8}' + escapeRe(ext) + '$');
-        try {
-            for (const f of fs.readdirSync(browserDir)) {
-                if (!re.test(f) || f === assetHashMap[name]) continue;
-                const p = path.join(browserDir, f);
-                try {
-                    const st = fs.lstatSync(p);
-                    if (st.mtimeMs < cutoff) {
-                        fs.unlinkSync(p);
-                        console.log(`  GC old hashed: ${f}`);
-                    }
-                } catch(e) {}
-            }
-        } catch(e) {}
-    }
-}
-console.log('Content-hashed assets:');
-hashAssets();
-gcOldHashedAssets();
-// Regenerate stale .br files. Called at startup + on SIGHUP.
-// Runs brotli ASYNCHRONOUSLY — the 266MB online.wasm takes ~14min to
-// compress and would freeze the event loop for that long if we used
-// execSync. While compressing, the server serves plain (uncompressed)
-// files; the .br becomes available once the background job lands.
-const BROTLI_ASSETS = ['online.js', 'online.wasm', 'bundle.js', 'bundle.css'];
-const { spawn } = require('child_process');
-const _brotliInflight = new Set();
-function refreshBrotli() {
-    const browserDir = path.join(PUB, 'browser');
-    for (const name of BROTLI_ASSETS) {
-        if (_brotliInflight.has(name)) continue;
-        const src = path.join(browserDir, name);
-        const br = src + '.br';
-        if (!fs.existsSync(src)) continue;
-        const srcMtime = fs.statSync(src).mtimeMs;
-        const brMtime = fs.existsSync(br) ? fs.statSync(br).mtimeMs : 0;
-        if (srcMtime > brMtime) {
-            // Drop any stale .br up-front so while the new one is
-            // being built the server falls back to uncompressed.
-            try { if (brMtime > 0) fs.unlinkSync(br); } catch(e) {}
-            console.log(`  Regenerating ${name}.br in background…`);
-            _brotliInflight.add(name);
-            const brTmp = br + '.tmp';
-            const child = spawn('brotli', ['-f', src, '-o', brTmp], { stdio: 'ignore' });
-            child.on('exit', (code) => {
-                _brotliInflight.delete(name);
-                if (code === 0 && fs.existsSync(brTmp)) {
-                    try {
-                        fs.renameSync(brTmp, br);
-                        console.log(`    → ${name}.br: ${fs.statSync(br).size} bytes`);
-                    } catch(e) {
-                        console.error(`    ${name}.br rename failed: ${e.message}`);
-                    }
-                } else {
-                    console.error(`    ${name}.br failed: exit=${code}`);
-                    try { fs.unlinkSync(brTmp); } catch(e) {}
-                }
-            });
-            child.on('error', (e) => {
-                _brotliInflight.delete(name);
-                console.error(`    ${name}.br spawn error: ${e.message}`);
-            });
-        }
-    }
-}
-console.log('Checking Brotli freshness (async):');
-refreshBrotli();
-
+// SIGHUP is no-op now (used to trigger runtime rehashing). Kept as a
+// handler so the default SIGHUP-kills-process behaviour doesn't tear
+// down the running server when deploy.sh signals it post-build.
 process.on('SIGHUP', () => {
-    console.log('SIGHUP — rehashing assets + checking Brotli');
-    hashAssets();
-    refreshBrotli();
+    console.log('SIGHUP — no-op (assets are hashed at build time)');
 });
-
-// Matches wasm/editor-server.js WASM_LOADER_INJECT — the stock cool.html from
-// the LO build doesn't reference wasm-loader.js or relay-adapter.js, so we
-// splice them in on the fly. Also adds the loading-overlay markup the viewer
-// shield fade-out expects, plus a Module.locateFile shim that remaps
-// online.js's internal asset names (online.wasm / soffice.data / .metadata)
-// to their content-hashed filenames so browsers cache-bust cleanly when
-// the underlying files change.
-const WASM_LOADER_INJECT_STATIC = `
-<style id="wasm-loading-style">
-  #wasm-loading-overlay {
-    position: fixed; inset: 0; background: #f5f5f5; z-index: 999999;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; color: #333;
-  }
-  #wasm-spinner {
-    width: 64px; height: 64px; border: 6px solid #ddd; border-top-color: #4a90e2;
-    border-radius: 50%; animation: wasmspin 1s linear infinite;
-    margin-bottom: 16px;
-  }
-  @keyframes wasmspin { to { transform: rotate(360deg); } }
-  #wasm-progress-label { font-size: 15px; font-weight: 500; margin-bottom: 8px; }
-  #wasm-progress-bar {
-    width: 300px; height: 12px; background: #e0e0e0; border-radius: 6px; overflow: hidden; margin-bottom: 6px;
-  }
-  #wasm-progress-bar-fill {
-    height: 100%; background: linear-gradient(90deg, #4a90e2, #357abd); width: 0%;
-    transition: width 0.3s ease;
-  }
-  #wasm-progress-detail { font-size: 12px; color: #666; }
-</style>
-<div id="wasm-loading-overlay">
-  <div id="wasm-spinner"></div>
-  <div id="wasm-progress-label">Loading editor…</div>
-  <div id="wasm-progress-bar"><div id="wasm-progress-bar-fill"></div></div>
-  <div id="wasm-progress-detail"></div>
-</div>
-<script type="text/javascript" src="dict-loader.js"></script>
-<script type="text/javascript" src="wasm-loader.js"></script>
-<script type="text/javascript" src="relay-adapter.js"></script>
-`;
-
-// Build the Module.locateFile shim once, regenerated on SIGHUP.
-// online.js (lines 121, 400, 1284 of the deployed bundle) calls
-// Module.locateFile(name, prefix) to resolve online.wasm / soffice.data /
-// soffice.data.js.metadata. We intercept those three names and return
-// the content-hashed filename so cache-busting follows the same
-// pattern as the cool.html-direct refs.
-function buildLocateFileShim() {
-    const m = {};
-    for (const name of LOCATE_FILE_RENAMED) {
-        if (assetHashMap[name]) m[name] = assetHashMap[name];
-    }
-    return `<script>
-(function(){
-  window.__assetMap = ${JSON.stringify(m)};
-  var existing = (typeof window.Module === 'object' && window.Module) ? window.Module : {};
-  var prevLocate = existing.locateFile;
-  existing.locateFile = function(file, prefix) {
-    var mapped = (window.__assetMap && window.__assetMap[file]) || file;
-    if (typeof prevLocate === 'function') return prevLocate.call(this, mapped, prefix);
-    return (prefix || '') + mapped;
-  };
-  window.Module = existing;
-})();
-</script>
-`;
-}
 
 const MIME = {
     '.html': 'text/html',
@@ -406,47 +211,16 @@ function handler(req, res) {
         }
     }
 
-    // cool.html — inject the wasm-loader + relay-adapter blocks (the stock
-    // COOL build doesn't reference them), strip the integrator branding
-    // hooks (we don't theme the editor; these would 404 and spam the
-    // console), then rewrite JS references to the content-hashed filenames
-    // so browsers always load the correct version after a deploy.
+    // cool.html is served as-is. The build step (cache-bust-build.js)
+    // already rewrote asset refs to hashed names, injected the loading
+    // overlay + custom loaders + Module.locateFile shim, and stripped
+    // branding hooks. Cache-Control: no-cache so a deploy is picked up
+    // on the next refresh.
     if (pathname.endsWith('/cool.html')) {
         const filepath = path.join(PUB, pathname);
         if (fs.existsSync(filepath)) {
-            let html = fs.readFileSync(filepath, 'utf8');
-            // Module.locateFile shim must run BEFORE online.js so that
-            // online.js's first call to locateFile sees the asset map.
-            // online.js sits early in cool.html (line ~30); the inject
-            // anchor is at line ~27 (init-mobile-app-os-type), so the
-            // shim lands ahead of online.js as required.
-            const inject = buildLocateFileShim() + WASM_LOADER_INJECT_STATIC;
-            if (!html.includes('wasm-loader.js')) {
-                const anchor = '<input type="hidden" id="init-mobile-app-os-type" value="EMSCRIPTEN" />';
-                if (html.includes(anchor)) {
-                    html = html.replace(anchor, anchor + '\n' + inject);
-                } else {
-                    html = html.replace('</body>', inject + '</body>');
-                }
-            }
-            // Strip the integrator branding hooks. They reference
-            // branding.css / branding.js which we don't ship.
-            html = html.replace(/\s*<link rel="stylesheet" href="branding\.css" \/>/g, '');
-            html = html.replace(/\s*<script src="branding\.js"><\/script>/g, '');
-            // Rewrite plain asset references to the content-hashed
-            // filenames. Only rewrite files that actually appear in
-            // cool.html — assets fetched from inside online.js go
-            // through Module.locateFile (set up by the inject above).
-            const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            for (const orig of COOL_HTML_RENAMED) {
-                const hashed = assetHashMap[orig];
-                if (!hashed) continue;
-                const re = new RegExp(
-                    '(src|href)="' + escapeRe(orig) + '"', 'g');
-                html = html.replace(re, '$1="' + hashed + '"');
-            }
             res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
-            res.end(html);
+            res.end(fs.readFileSync(filepath));
             return;
         }
     }
@@ -468,10 +242,15 @@ function handler(req, res) {
         // SW must always revalidate so a code update rolls out within
         // 24h max instead of being pinned by the immutable rule below.
         headers['Cache-Control'] = 'no-cache';
-    } else if (Object.values(assetHashMap).some(h => pathname.endsWith('/' + h))) {
-        // Content-hashed asset: hash changes when content changes, so immutable.
+    } else if (HASHED_RE.test(pathname)) {
+        // Content-hashed asset (built by cache-bust-build.js): the hash
+        // is the version, so the URL itself rolls on every change.
         headers['Cache-Control'] = 'public, max-age=31536000, immutable';
     } else if (IMMUTABLE.some(n => pathname.endsWith(n))) {
+        // Belt-and-braces for any unhashed wasm/data still on disk
+        // (e.g. clients caching an older cool.html during a deploy
+        // window). Build-time hashing replaces these in the normal
+        // path.
         headers['Cache-Control'] = 'public, max-age=31536000, immutable';
     } else if (pathname.endsWith('.js')) {
         // Non-hashed JS: no-cache so code changes take effect immediately.
@@ -499,14 +278,11 @@ function handler(req, res) {
     // A stale .br (from a previous build) causes silent binary mismatches
     // that break WebAssembly instantiation.
     //
-    // For content-hashed names (symlinks like `bundle.<hash>.js`), the
-    // sidecar `.br` lives next to the *real* file (`bundle.js.br`), not
-    // next to the symlink. realpath resolves the symlink first so the
-    // existing brotli pipeline keeps working without per-hash sidecars.
+    // The build step renames hashed assets in place (bundle.js →
+    // bundle.<hash>.js) and renames the .br sidecar alongside, so a
+    // direct `+ '.br'` lookup finds it.
     const accepted = (req.headers['accept-encoding'] || '').includes('br');
-    let realFilepath = filepath;
-    try { realFilepath = fs.realpathSync(filepath); } catch(e) {}
-    const brPath = realFilepath + '.br';
+    const brPath = filepath + '.br';
     if (accepted && fs.existsSync(brPath) &&
         fs.statSync(brPath).mtimeMs >= stat.mtimeMs) {
         const brData = fs.readFileSync(brPath);
