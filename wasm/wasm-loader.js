@@ -115,15 +115,17 @@
                 try { document.title = displayName; } catch(e) {}
             } catch(e) {}
         };
-        var overrideStart = Date.now();
-        var overrideInt = setInterval(function() {
-            applyName();
-            if (Date.now() - overrideStart > 120000) clearInterval(overrideInt);
-        }, 250);
+        // Bug iter 17 #2: removed the 120 s applyName poll that previously
+        // ran at 250 ms cadence. It raced the per-switchdoc title poll
+        // (root cause of the A↔B flicker observed when toggling between
+        // two same-type files). The MutationObserver below catches any
+        // late COOL clobber via a single one-shot apply.
+        applyName();
         // Watch for late DOM insertion of the input; once it appears,
         // attach a MutationObserver so we re-apply if COOL ever resets
         // it back to the fileId.
         var observerInstalled = false;
+        var watchStart = Date.now();
         var watchInt = setInterval(function() {
             var ni = document.querySelector('#document-name-input');
             if (ni && !observerInstalled) {
@@ -133,11 +135,8 @@
                         if (ni.value !== displayName) ni.value = displayName;
                     }).observe(ni, { attributes: true, attributeFilter: ['value'] });
                 } catch(e) {}
-                // Also watch property writes via a setInterval fallback —
-                // MutationObserver only catches attribute changes, not
-                // direct .value assignments that don't reflect to DOM.
             }
-            if (Date.now() - overrideStart > 120000) clearInterval(watchInt);
+            if (Date.now() - watchStart > 120000) clearInterval(watchInt);
         }, 500);
     }
 
@@ -469,6 +468,12 @@
         return sample !== canvasBaseline;
     }
     var pendingSwitchFilename = null;
+    // Bug iter 17: cancel the previous switchdoc title-poll interval before
+    // starting a new one. Without this each hot-switch leaks a 15 s @
+    // 250 ms interval. After A→B→A we had two parallel writers each
+    // pushing a different displayName at offset cadences — the user saw
+    // the title flicker between names every ~150 ms for ~10 s.
+    var __docNameSetInt = null;
     function trySendSwitch() {
         if (!pendingSwitchFilename) return;
         // Three things must be true before we can send a switchdocument:
@@ -553,11 +558,27 @@
             // fileId in the v2 case, which would be ugly in the title bar.
             var titleText = displayName || filename;
             try { document.title = titleText; } catch(e) {}
+            // Bug iter 17: cancel any prior switch's title-poll interval
+            // BEFORE arming a new one — otherwise A→B→A leaves two
+            // intervals alive, each writing a different name at 250 ms,
+            // and the input flickers A↔B every ~150 ms for 10 s+.
+            if (__docNameSetInt) {
+                clearInterval(__docNameSetInt);
+                __docNameSetInt = null;
+            }
             var docNameSetStart = Date.now();
-            var docNameSetInt = setInterval(function() {
+            __docNameSetInt = setInterval(function() {
                 try {
                     if (window.app && window.app.map && window.app.map['wopi']) {
-                        window.app.map['wopi'].BaseFileName = titleText;
+                        // Bug iter 17 #4: only set BreadcrumbDocName, not
+                        // BaseFileName. The Document-name input reads
+                        // BreadcrumbDocName ?? BaseFileName, so updating
+                        // BreadcrumbDocName alone is sufficient for the
+                        // visible label. BaseFileName is the WOPISrc
+                        // identity field used by save/rename/export and
+                        // should stay = the WOPISrc. Writing displayName
+                        // to it confused those paths and contributed to
+                        // the v2-fileId blip when COOL re-fired wopi:.
                         window.app.map['wopi'].BreadcrumbDocName = titleText;
                     }
                     var nameInput = document.querySelector('#document-name-input');
@@ -565,7 +586,13 @@
                         nameInput.value = titleText;
                     }
                 } catch(e) {}
-                if (Date.now() - docNameSetStart > 15000) clearInterval(docNameSetInt);
+                // Bug iter 17 #3: 3 s is plenty — the wopi: from kit
+                // arrives within ~1-2 s of switchdocument. 15 s was
+                // belt-and-braces left over from a different race.
+                if (Date.now() - docNameSetStart > 3000) {
+                    clearInterval(__docNameSetInt);
+                    __docNameSetInt = null;
+                }
             }, 250);
         } catch(e) {
             mark('bridge:switchdoc_error', e.message);
