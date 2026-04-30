@@ -122,7 +122,7 @@ done
 # swap during heavy tests, and Azure App Service B-tier may throttle. The
 # floor is the longest single test (`formats` ~36 min). Override via
 # TEST_JOBS_OVERRIDE in workflow_dispatch input if you need a different value.
-TEST_JOBS="${TEST_JOBS_OVERRIDE:-8}"
+TEST_JOBS="${TEST_JOBS_OVERRIDE:-3}"
 set +e
 ( cd "$WORKSPACE/wasm" && JOBS="$TEST_JOBS" bash run-all-tests-parallel.sh ) >> "$LOG" 2>&1
 TEST_RC=$?
