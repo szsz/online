@@ -55,12 +55,30 @@ function findExistingHashed(dir, name) {
     const base = name.substring(0, lastDot);
     const ext = name.substring(lastDot);
     const re = new RegExp('^' + escapeRe(base) + '\\.[0-9a-f]{8}' + escapeRe(ext) + '$');
+    let candidates = [];
     try {
         for (const f of fs.readdirSync(dir)) {
-            if (re.test(f)) return f;
+            if (!re.test(f)) continue;
+            const p = path.join(dir, f);
+            // Skip dangling symlinks (legacy from runtime-hashing era can
+            // point at a plain target that no longer exists). statSync
+            // follows the symlink — if the target is gone, it throws.
+            try { fs.statSync(p); } catch (_) {
+                console.log(`  ${name}: orphan ${f} (dangling symlink), removing`);
+                try { fs.unlinkSync(p); } catch (_) {}
+                continue;
+            }
+            candidates.push(f);
         }
     } catch (_) {}
-    return null;
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+    // Multiple live candidates from prior runs. Pick the most recent so
+    // hash-rolls converge on the fresh build's output.
+    candidates.sort((a, b) =>
+        fs.lstatSync(path.join(dir, b)).mtimeMs -
+        fs.lstatSync(path.join(dir, a)).mtimeMs);
+    return candidates[0];
 }
 
 const WASM_LOADER_INJECT_STATIC = `

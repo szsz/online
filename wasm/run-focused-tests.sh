@@ -43,6 +43,7 @@ TESTS=(
     "regression-heading-styles-coedit|test-regression-heading-styles-coedit.js|Regression: Heading Style Co-Edit|A applies Heading 1 via styles iconview; B's DOM shows Heading 1 active + canvas changes|shots-regression-heading-styles-coedit"
     "regression-search-coedit|test-regression-search-coedit.js|Regression: Search Co-Edit|A types FINDABLE_TOKEN; B receives via relay then Ctrl+F finds it|shots-regression-search-coedit"
     "regression-stylesview-overlap|test-regression-stylesview-overlap.js|Regression: Stylesview Layout|Notebookbar Styles entries occupy distinct grid cells (no overlap)|shots-regression-stylesview-overlap"
+    "regression-cache-bust|test-regression-cache-bust.js|Regression: Build-time Cache Bust|cool.html refs are hashed; hashed assets immutable; locateFile shim single+well-formed|none"
     # Perf gate
     "snapshot-milestones|test-snapshot-milestones.js|Snapshot Milestones|Per-doc cold/warm × N=3 trials (writer calc impress)|none"
 )
