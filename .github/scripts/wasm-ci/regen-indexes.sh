@@ -14,10 +14,14 @@ SITE="${STATIC_SITE_BASE:?}"
 
 list_prefix() {
     local prefix="$1"
+    # --num-results: az defaults to 5000; we already have 6000+ blobs under
+    # app-builds/ (mostly per-test screenshots) so the default page cuts off
+    # the most recent manifests. Bump to a safe ceiling.
     az storage blob list \
         --account-name "$ACCT" \
         --container-name '$web' \
         --prefix "$prefix" \
+        --num-results 100000 \
         --query "[?ends_with(name, '/manifest.json')].name" \
         -o tsv 2>/dev/null | sort -r
 }
@@ -56,12 +60,21 @@ HTML
                     --container-name '$web' --name "$mfp" --file "$tmp" --no-progress >/dev/null 2>&1 || continue
                 when="$(jq -r '.completed_utc // ""' "$tmp" 2>/dev/null)"
                 if [[ "$prefix" == "app-builds/" ]]; then
-                    local rc lo
+                    local rc lo p_pass p_fail
                     rc="$(jq -r '.test_report.exit_code // empty' "$tmp" 2>/dev/null)"
                     lo="$(jq -r '.lo_build_id // ""' "$tmp" 2>/dev/null)"
-                    if [[ -z "$rc" ]]; then notes="LO=$lo · <span class=\"muted\">no tests yet</span>"
-                    elif [[ "$rc" == "0" ]]; then notes="LO=$lo · <span class=\"ok\">tests passed</span>"
-                    else notes="LO=$lo · <span class=\"bad\">tests failed (rc=$rc)</span>"
+                    p_pass="$(jq -r '.test_report.pass_count // empty' "$tmp" 2>/dev/null)"
+                    p_fail="$(jq -r '.test_report.fail_count // empty' "$tmp" 2>/dev/null)"
+                    if [[ -z "$rc" ]]; then
+                        notes="LO=$lo · <span class=\"muted\">no tests yet</span>"
+                    elif [[ -n "$p_pass" && -n "$p_fail" ]]; then
+                        # Have counts: render as "X passed · Y failed" link.
+                        local pass_cls="ok" fail_cls="bad"
+                        notes="LO=$lo · <a href=\"$id/tests/\"><span class=\"$pass_cls\">$p_pass passed</span> · <span class=\"$fail_cls\">$p_fail failed</span></a>"
+                    elif [[ "$rc" == "0" ]]; then
+                        notes="LO=$lo · <a class=\"ok\" href=\"$id/tests/\">tests passed</a>"
+                    else
+                        notes="LO=$lo · <a class=\"bad\" href=\"$id/tests/\">tests failed (rc=$rc)</a>"
                     fi
                 else
                     notes="$(jq -r '.git_short_sha // ""' "$tmp" 2>/dev/null)"
