@@ -497,11 +497,22 @@ if [ -f "$GLOBAL_JS" ] && grep -q 'insertAdjacentElement("afterend",brandingLink
     echo "  Patched global.js: stripped branding-<form>.css load"
 fi
 
-# ── Step 6: Signal the server to rehash JS files ──
+# ── Step 6: Bake content hashes into asset filenames + cool.html ──
+# Renames each long-cacheable asset to <base>.<hash>.<ext> (sha256[:8]),
+# moves the .br sidecar alongside, and rewrites cool.html to point at
+# the hashed names. After this, the server only sets cache headers —
+# the URLs themselves carry the version.
+echo
+echo "Step 6: Cache-bust build (file rename + cool.html rewrite)"
+node "$SCRIPT_DIR/tools/cache-bust-build.js" --dir "$BROWSER_DIR"
+
+# ── Step 6b: Heartbeat the server (no-op SIGHUP) ──
+# The editor-static-server no longer hashes at runtime, so SIGHUP is
+# no-op — kept for visibility that the running PID is reachable.
 SERVER_PID=$(pgrep -f "editor-static-server" | head -1)
 if [ -n "$SERVER_PID" ]; then
     kill -HUP "$SERVER_PID" 2>/dev/null
-    echo "  Signaled editor-static (PID $SERVER_PID) to rehash"
+    echo "  Signaled editor-static (PID $SERVER_PID); cool.html is no-cache so the next refresh picks up new hashes"
 else
     echo "  WARNING: editor-static-server not running"
 fi
