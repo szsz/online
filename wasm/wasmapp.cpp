@@ -72,12 +72,47 @@ extern "C" EMSCRIPTEN_KEEPALIVE const char* get_temp_dir_path()
     return result.c_str();
 }
 
-// JS calls this to check if preinit is done (to save a snapshot)
+// Bug iter 11: warm-restore hang fix.
+//
+// On warm-snapshot-restore, the captured heap brings back the
+// cold-session's `coolwsd_server_socket_fd` (e.g. 22). is_preinit_done
+// based on `fd != -1` then returns 1 IMMEDIATELY after the heap
+// inject — before the new COOLWSD::run() has spawned, leakSnapshotPolls
+// has reset the fd, the server socket has rebound, or HULLO has been
+// processed. relay-adapter.js then trusts that signal and flushes its
+// _kitMessageQueue (presence-sync UNO messages from the prior room)
+// straight onto the fakesocket BEFORE the new accept-loop reads
+// `coolclient + load url=`. ClientRequestDispatcher misparses the
+// first UNO frame as the doc-id line ("Bad document ID" / "type
+// detection failed") and the kit terminates — doc:loaded never fires
+// → watchdog drops snapshot → cold reload (~30 s) → ~52-99 s warm
+// cross-type observed in test-crosstype-timing.js iter 5+.
+//
+// Fix: gate is_preinit_done on a fresh-ready atomic that only flips
+// inside notify_coolwsd_server_socket_ready(), AFTER the new server
+// socket has actually been set up by the freshly-spawned COOLWSD::run().
+// JS calls wasm_clear_server_freshly_ready() during the warm-restore
+// inject block (before callMain), so warm restore starts gated again
+// even though the captured `coolwsd_server_socket_fd` is non-zero.
+static std::atomic<int> g_serverFreshlyReady{0};
+
 extern "C" EMSCRIPTEN_KEEPALIVE int is_preinit_done()
 {
-    // This is set after globalPreinit completes in ForKit.cpp
-    // We piggyback on coolwsd_server_socket_fd being set
-    return coolwsd_server_socket_fd != -1 ? 1 : 0;
+    // Both gates must be satisfied: the C++ fd has been set AND the
+    // freshly-ready flag has been raised by THIS run's notify call
+    // (not the prior cold session's). JS clears the flag on warm
+    // restore so the gate re-engages.
+    return (coolwsd_server_socket_fd != -1
+            && g_serverFreshlyReady.load(std::memory_order_acquire))
+            ? 1 : 0;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void wasm_clear_server_freshly_ready()
+{
+    g_serverFreshlyReady.store(0, std::memory_order_release);
+    coolwsd_server_socket_fd = -1;  // belt-and-braces: also drop the
+                                     // captured fd so any other code
+                                     // path that reads it sees -1.
 }
 
 int coolwsd_server_socket_fd = -1;
@@ -95,6 +130,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void notify_coolwsd_server_socket_ready()
         std::lock_guard<std::mutex> lk(g_coolwsdSocketMutex);
         // coolwsd_server_socket_fd is set by COOLWSD.cpp before this fires
     }
+    // Bug iter 11: raise the freshly-ready gate so is_preinit_done
+    // starts returning 1. JS cleared this on warm-restore inject.
+    g_serverFreshlyReady.store(1, std::memory_order_release);
     g_coolwsdSocketCV.notify_all();
 }
 
@@ -123,6 +161,9 @@ int g_wasmDesktopPhase = 0;
 
 static char const * tempFile; // null when operating on a local file in the Emscripten file system
 static std::string remoteUrl;
+// Backing storage for tempFile after a hot-switch — wasmAppRebindSaveTarget
+// takes ownership of the new path and points tempFile at it.
+static std::string tempFileStorage;
 static std::string fileURL;
 static int fakeClientFd;
 static int closeNotificationPipeForForwardingThread[2] = {-1, -1};
@@ -549,6 +590,19 @@ void saveToServer() {
     emscripten_fetch_close(fetch);
     LOG_TRC("Saved " << tempFile << " back to <" << remoteUrl << ">: " << fetch->status);
     //TODO: handle fetch->status != 200
+}
+
+void wasmAppRebindSaveTarget(const std::string& tempPath, const std::string& docRemoteUrl)
+{
+    // Called from ChildSession::switchdocument after a successful in-place
+    // reload OR full documentLoad of a new doc. Without this, kit's save
+    // (saveToServer) keeps writing the prewarm tempfile to the prewarm
+    // URL, so every save in the user-doc room is a no-op vs the user's
+    // actual content — late joiners see stale state forever.
+    tempFileStorage = tempPath;
+    tempFile = tempFileStorage.c_str();
+    remoteUrl = docRemoteUrl;
+    LOG_INF("wasmAppRebindSaveTarget: tempFile=" << tempFile << " remoteUrl=" << remoteUrl);
 }
 
 // Snapshot wake is now handled by wasm_snapshot_complete() defined in

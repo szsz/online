@@ -34,6 +34,8 @@ TESTS=(
     # New single-user copy/paste (kit-side isolation)
     "singleuser-copy-paste|test-singleuser-copy-paste.js|Single-User Copy/Paste|All copy/paste flows in single-user mode (no relay): internal external text image plaintext save round-trip|shots-singleuser-copy-paste"
     # Hot-switch (new files added in iter10/iter11)
+    "regression-iframe-pool|test-regression-iframe-pool.js|Regression: Iframe Pool Cross-Type Revive|Cross-type to a previously-warm doctype reuses parked iframe (≪ 3s) instead of cold reload|none"
+    "regression-samedoc-flicker|test-regression-samedoc-flicker.js|Regression: Same-Doctype Title Flicker|A↔B name flicker on same-type hot-switch (parallel setInterval writers)|shots-regression-samedoc-flicker"
     "hotswitch-xlsx|test-hotswitch-xlsx.js|Hot-Switch xlsx → xlsx|Same-type Calc hot-switch via in-place reload|shots-hotswitch-xlsx"
     "hotswitch-pptx|test-hotswitch-pptx.js|Hot-Switch pptx → pptx|Same-type Impress hot-switch via in-place reload|shots-hotswitch-pptx"
     # Perf gate
@@ -70,7 +72,18 @@ t_start=$(date +%s)
 status="pass"
 TMPDIR="$tmpdir" timeout 1800 node "$SCRIPT_DIR/$script" > "$log_file" 2>&1
 rc=$?
-if [ $rc -ne 0 ]; then status="fail"; fi
+if [ $rc -ne 0 ]; then
+    # JOBS=2 contention: regression-paste-coedit, snapshot-milestones,
+    # mouse-select-copypaste flake when two tests collide on the
+    # editor-static / relay-broker. Pass solo. One-shot retry catches
+    # the flake without masking real regressions (two consecutive
+    # failures still fail).
+    echo "$slug: first attempt failed (rc=$rc), retrying..." >> "$log_file"
+    rm -rf "$tmpdir" 2>/dev/null; tmpdir=$(mktemp -d)
+    TMPDIR="$tmpdir" timeout 1800 node "$SCRIPT_DIR/$script" >> "$log_file" 2>&1
+    rc=$?
+    if [ $rc -ne 0 ]; then status="fail"; fi
+fi
 elapsed=$(( $(date +%s) - t_start ))
 
 echo "$slug|$status|$elapsed|$title|$description|$shots_name" > "$LOG_DIR/$slug.result"

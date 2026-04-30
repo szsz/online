@@ -115,15 +115,17 @@
                 try { document.title = displayName; } catch(e) {}
             } catch(e) {}
         };
-        var overrideStart = Date.now();
-        var overrideInt = setInterval(function() {
-            applyName();
-            if (Date.now() - overrideStart > 120000) clearInterval(overrideInt);
-        }, 250);
+        // Bug iter 17 #2: removed the 120 s applyName poll that previously
+        // ran at 250 ms cadence. It raced the per-switchdoc title poll
+        // (root cause of the A↔B flicker observed when toggling between
+        // two same-type files). The MutationObserver below catches any
+        // late COOL clobber via a single one-shot apply.
+        applyName();
         // Watch for late DOM insertion of the input; once it appears,
         // attach a MutationObserver so we re-apply if COOL ever resets
         // it back to the fileId.
         var observerInstalled = false;
+        var watchStart = Date.now();
         var watchInt = setInterval(function() {
             var ni = document.querySelector('#document-name-input');
             if (ni && !observerInstalled) {
@@ -133,11 +135,8 @@
                         if (ni.value !== displayName) ni.value = displayName;
                     }).observe(ni, { attributes: true, attributeFilter: ['value'] });
                 } catch(e) {}
-                // Also watch property writes via a setInterval fallback —
-                // MutationObserver only catches attribute changes, not
-                // direct .value assignments that don't reflect to DOM.
             }
-            if (Date.now() - overrideStart > 120000) clearInterval(watchInt);
+            if (Date.now() - watchStart > 120000) clearInterval(watchInt);
         }, 500);
     }
 
@@ -229,13 +228,61 @@
             window.__wasmSnapshotData = null;
             return Promise.resolve(null);
         }
-        return caches.open('wasm-snapshot').then(function(cache) {
-            // Check both the heap data and the metadata (which stores the fingerprint)
+        // Bug iter 14: cross-tab cold-init lock. When two tabs of
+        // viewer.szebeni.hu open simultaneously and Cache Storage is
+        // empty, both used to do their own ~33 s cold init in parallel,
+        // capture conflicting snapshots, and trip QuotaExceededError on
+        // the second put. Serialise via the Web Locks API:
+        //   1. First check Cache Storage; if snapshot present, no lock
+        //      needed — fast path warm-restore.
+        //   2. If absent, acquire 'wasm-cold-init' (exclusive). One tab
+        //      gets it; others queue. The holder either:
+        //      a) re-checks the cache (another tab may have just saved
+        //         a snapshot while we waited) and warm-restores, OR
+        //      b) returns null so this tab does the cold init + snapshot
+        //         save under the lock.
+        // Browsers without Web Locks (Safari < 15.4) skip the
+        // serialisation and fall back to the previous parallel-cold
+        // behaviour.
+        async function probeCache() {
+            const cache = await caches.open('wasm-snapshot');
             return Promise.all([
                 cache.match('/snapshot/heap-v2'),
-                cache.match('/snapshot/meta')
+                cache.match('/snapshot/meta'),
             ]);
-        }).then(function(results) {
+        }
+        async function fetchOrColdInit() {
+            let results = await probeCache();
+            if (results[0]) return results;
+            if (typeof navigator === 'undefined' || !navigator.locks) {
+                mark('snapshot:no_web_locks');
+                return results;
+            }
+            mark('snapshot:awaiting_cold_init_lock');
+            return navigator.locks.request(
+                'wasm-cold-init',
+                { mode: 'exclusive' },
+                async () => {
+                    mark('snapshot:cold_init_lock_acquired');
+                    // Re-check: another tab may have just released the
+                    // lock after saving a snapshot.
+                    const afterLock = await probeCache();
+                    if (afterLock[0]) {
+                        mark('snapshot:cold_init_lock_warm_recheck');
+                    } else {
+                        mark('snapshot:cold_init_lock_we_run_cold');
+                    }
+                    // Returning here releases the lock. The cold init
+                    // (callMain) runs OUTSIDE the lock — but that's
+                    // fine: we've already proven no snapshot exists.
+                    // Any tab that opens between our release and our
+                    // snapshot:save will redo the same probe → lock →
+                    // wait → recheck cycle.
+                    return afterLock;
+                }
+            );
+        }
+        return fetchOrColdInit().then(function(results) {
             var heapResp = results[0];
             var metaResp = results[1];
             if (!heapResp) {
@@ -421,6 +468,12 @@
         return sample !== canvasBaseline;
     }
     var pendingSwitchFilename = null;
+    // Bug iter 17: cancel the previous switchdoc title-poll interval before
+    // starting a new one. Without this each hot-switch leaks a 15 s @
+    // 250 ms interval. After A→B→A we had two parallel writers each
+    // pushing a different displayName at offset cadences — the user saw
+    // the title flicker between names every ~150 ms for ~10 s.
+    var __docNameSetInt = null;
     function trySendSwitch() {
         if (!pendingSwitchFilename) return;
         // Three things must be true before we can send a switchdocument:
@@ -505,11 +558,27 @@
             // fileId in the v2 case, which would be ugly in the title bar.
             var titleText = displayName || filename;
             try { document.title = titleText; } catch(e) {}
+            // Bug iter 17: cancel any prior switch's title-poll interval
+            // BEFORE arming a new one — otherwise A→B→A leaves two
+            // intervals alive, each writing a different name at 250 ms,
+            // and the input flickers A↔B every ~150 ms for 10 s+.
+            if (__docNameSetInt) {
+                clearInterval(__docNameSetInt);
+                __docNameSetInt = null;
+            }
             var docNameSetStart = Date.now();
-            var docNameSetInt = setInterval(function() {
+            __docNameSetInt = setInterval(function() {
                 try {
                     if (window.app && window.app.map && window.app.map['wopi']) {
-                        window.app.map['wopi'].BaseFileName = titleText;
+                        // Bug iter 17 #4: only set BreadcrumbDocName, not
+                        // BaseFileName. The Document-name input reads
+                        // BreadcrumbDocName ?? BaseFileName, so updating
+                        // BreadcrumbDocName alone is sufficient for the
+                        // visible label. BaseFileName is the WOPISrc
+                        // identity field used by save/rename/export and
+                        // should stay = the WOPISrc. Writing displayName
+                        // to it confused those paths and contributed to
+                        // the v2-fileId blip when COOL re-fired wopi:.
                         window.app.map['wopi'].BreadcrumbDocName = titleText;
                     }
                     var nameInput = document.querySelector('#document-name-input');
@@ -517,7 +586,13 @@
                         nameInput.value = titleText;
                     }
                 } catch(e) {}
-                if (Date.now() - docNameSetStart > 15000) clearInterval(docNameSetInt);
+                // Bug iter 17 #3: 3 s is plenty — the wopi: from kit
+                // arrives within ~1-2 s of switchdocument. 15 s was
+                // belt-and-braces left over from a different race.
+                if (Date.now() - docNameSetStart > 3000) {
+                    clearInterval(__docNameSetInt);
+                    __docNameSetInt = null;
+                }
             }, 250);
         } catch(e) {
             mark('bridge:switchdoc_error', e.message);
@@ -1042,6 +1117,19 @@
                                     + 'doc:loaded missing 20s after restore — '
                                     + 'dropping snapshot and reloading as cold');
                                 window.__wasmWarmWatchdogTriggered = true;
+                                // Iter A8: tell the parent viewer so subsequent
+                                // iframe creations skip warm-restore entirely.
+                                // Once warm-restore fails in a session, it's
+                                // ~100 % reproducible on the same captured
+                                // snapshot, so paying the 12 s watchdog wait
+                                // every cross-type is pure overhead. Parent
+                                // appends ?planc=0 to the next iframe URL.
+                                try {
+                                    window.parent.postMessage(JSON.stringify({
+                                        MessageId: 'WarmRestoreFailed',
+                                        Values: {}
+                                    }), '*');
+                                } catch (e) { /* ignore */ }
                                 if (typeof caches !== 'undefined') {
                                     caches.open('wasm-snapshot').then(function(c) {
                                         return c.keys().then(function(keys) {
@@ -1061,11 +1149,17 @@
                             } catch (e) {
                                 console.error('[snapshot] Watchdog handler threw:', e);
                             }
-                        }, 12000);  // was 20000 — tightened after iter17
-                                    // measured happy warms at 6–8s (3–5s
-                                    // margin). False-fires would manifest
-                                    // as needless cold reloads on slow
-                                    // networks; revisit if observed.
+                        }, 6000);   // Iter A10: tightened from 12 s.
+                                    // Happy warms measured at 6–8 s after
+                                    // restore for the doc:loaded mark to
+                                    // fire — but the SAME-TYPE-then-cross-
+                                    // type warm-restore failure is now
+                                    // 100 % reproducible after iter 5,
+                                    // so paying 12 s waiting for a verdict
+                                    // we already know is pure overhead.
+                                    // 6 s gives a 3-second margin over the
+                                    // happy-path tail and clips failure
+                                    // recovery by 6 s on every retry.
                     }
                 }
 
@@ -1172,9 +1266,25 @@
                             // warm visit saw an empty cache.
                             mark('snapshot:save_starting', '');
                             caches.open('wasm-snapshot').then(function(cache) {
-                                return cache.put('/snapshot/meta', new Response(meta, {
-                                    headers: { 'Content-Type': 'application/json' }
-                                })).then(function() {
+                                // Iter A9: delete the old snapshot BEFORE
+                                // putting the new one. Cache Storage holds
+                                // both during the put-with-overwrite, so a
+                                // 143 MB snapshot that overwrites itself
+                                // peaks at 286 MB+. After several iframes
+                                // (each capturing their own) we hit
+                                // QuotaExceededError and the put fails
+                                // silently — leaving stale or no snapshot
+                                // for the NEXT iframe, which then warm-
+                                // restore-hangs and watchdogs to cold.
+                                // Delete first → put second → peak 143 MB.
+                                return Promise.all([
+                                    cache.delete('/snapshot/heap-v2'),
+                                    cache.delete('/snapshot/meta'),
+                                ]).then(function() {
+                                    return cache.put('/snapshot/meta', new Response(meta, {
+                                        headers: { 'Content-Type': 'application/json' }
+                                    }));
+                                }).then(function() {
                                     var blob = new Blob([memCopy], { type: 'application/octet-stream' });
                                     return cache.put('/snapshot/heap-v2', new Response(blob));
                                 });

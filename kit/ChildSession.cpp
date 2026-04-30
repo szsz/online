@@ -355,14 +355,35 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             return (int)std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - swT0).count();
         };
+        // Accumulate phase timings in a C++ buffer instead of firing
+        // MAIN_THREAD_ASYNC_EM_ASM per-phase. Reason: the kit's main
+        // thread blocks for ~10 s inside loKit->documentLoad on a
+        // cross-type switch, queueing many ASYNC_EM_ASM calls. When
+        // they all flush at once after documentLoad returns, puppeteer's
+        // CDP console listener appears to drop or coalesce them — the
+        // observed effect is "0 SWITCHDOC marks captured" for every
+        // cross-type transition (see test-crosstype-timing.js Iter 1
+        // baseline). One batched MAIN_THREAD_EM_ASM at completion is
+        // strictly more reliable.
+        std::ostringstream swPhasesBuf;
 #ifdef __EMSCRIPTEN__
-#define SW_MARK(label) MAIN_THREAD_ASYNC_EM_ASM({ console.log('SWITCHDOC[+' + $0 + 'ms] ' + UTF8ToString($1)); }, swMs(), label)
+#define SW_MARK(label) do { \
+        const int __sw_t = swMs(); \
+        swPhasesBuf << "[+" << __sw_t << "ms] " << (label) << "\n"; \
+        MAIN_THREAD_ASYNC_EM_ASM({ console.log('SWITCHDOC[+' + $0 + 'ms] ' + UTF8ToString($1)); }, __sw_t, (label)); \
+    } while (0)
 #else
 #define SW_MARK(label) ((void)0)
 #endif
         SW_MARK("entered handler");
 
         std::string fileUrl;
+        // Hoisted out of the url= branch so we can pass them to
+        // wasmAppRebindSaveTarget at the end of a successful switch.
+        // Empty docRemoteUrl signals "this was a local-file switch — no
+        // server-side save target to rebind".
+        std::string switchTempPath;
+        std::string switchDocRemoteUrl;
         if (arg.substr(0, 4) == "url=")
         {
             const std::string remoteUrl = arg.substr(4);
@@ -396,6 +417,8 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             fileUrl = "file://" + tempPath;
             LOG_INF("SWITCHDOC: wrote to " << tempPath);
             SW_MARK("file:written");
+            switchTempPath = tempPath;
+            switchDocRemoteUrl = remoteUrl;
         }
         else
         {
@@ -443,6 +466,13 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 desiredType = LOK_DOCTYPE_PRESENTATION;
         }
 
+        // Iter A7 reverted: cap=1 for TEXT regressed cold cross-type
+        // by ~3 s on impress→writer because LO Core's in-place
+        // loadComponentFromURL still returns -1 for docx target,
+        // costing one failed in-place attempt before falling through
+        // to documentLoad. The "docx 3rd-click hang" comment from
+        // before A3 may have been the original cause, but disposeOld
+        // alone didn't unlock docx in-place. Cap stays 0 for TEXT.
         int kInPlaceCap = 0;
         if (desiredType == LOK_DOCTYPE_SPREADSHEET ||
             desiredType == LOK_DOCTYPE_PRESENTATION)
@@ -456,26 +486,32 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         std::shared_ptr<lok::Document> existing = _docManager->getLOKitDocument();
         if (existing && existing->get() && s_consecutiveInPlace < kInPlaceCap)
         {
-            int existingType = existing->getDocumentType();
-            if (desiredType != LOK_DOCTYPE_OTHER && existingType == desiredType)
+            // Iter A6: try in-place even for cross-type (was gated to
+            // existingType == desiredType). The LO Core function
+            // wasm_reload_doc_in_place loads the new model into the
+            // existing frame via XComponentLoader::loadComponentFromURL
+            // with target=_self. If the frame can't host the new
+            // doctype, the call returns -1 and we fall back to
+            // documentLoad below. Cross-type cold currently spends
+            // 10-15s in documentLoad doing model+factory+filter init
+            // for the new doctype; reusing the existing frame avoids
+            // most of that.
+            inPlaceTried = true;
+            SW_MARK("inPlace:start");
+            int rc = wasm_reload_doc_in_place(existing->get(), fileUrl.c_str());
+            SW_MARK("inPlace:done");
+            if (rc == 0)
             {
-                inPlaceTried = true;
-                SW_MARK("inPlace:start");
-                int rc = wasm_reload_doc_in_place(existing->get(), fileUrl.c_str());
-                SW_MARK("inPlace:done");
-                if (rc == 0)
-                {
-                    LOG_INF("SWITCHDOC: in-place reload succeeded (consecutive=" << (s_consecutiveInPlace + 1) << ")");
-                    inPlaceOk = true;
-                    s_consecutiveInPlace++;
-                    newDoc = existing;  // same lok::Document wrapper, but
-                                        // its underlying mxComponent now
-                                        // points at the new file's model.
-                }
-                else
-                {
-                    LOG_INF("SWITCHDOC: in-place reload returned " << rc << ", falling back to documentLoad");
-                }
+                LOG_INF("SWITCHDOC: in-place reload succeeded (consecutive=" << (s_consecutiveInPlace + 1) << ")");
+                inPlaceOk = true;
+                s_consecutiveInPlace++;
+                newDoc = existing;  // same lok::Document wrapper, but
+                                    // its underlying mxComponent now
+                                    // points at the new file's model.
+            }
+            else
+            {
+                LOG_INF("SWITCHDOC: in-place reload returned " << rc << ", falling back to documentLoad");
             }
         }
         if (!inPlaceOk)
@@ -483,10 +519,52 @@ bool ChildSession::_handleInput(const char *buffer, int length)
 
         if (!inPlaceOk)
         {
+            // Iter A3: drop the previous doc BEFORE documentLoad. The
+            // in-place path explicitly disposes its old XComponent
+            // (init.cxx wasm_reload_doc_in_place) "because the old
+            // XComponent stayed alive through frame/view back-refs and
+            // accumulated state across multiple hot-switches". Cross-
+            // type documentLoad has the same issue — old refs persist
+            // through `existing` AND _docManager's _loKitDocument, and
+            // every documentLoad has to navigate the live registry.
+            // Dropping both refs here triggers ~LibLODocument_Impl
+            // → mxComponent->dispose(), breaking the back-refs that
+            // make warm cross-type 18-44s vs cold 10-15s.
+            SW_MARK("disposeOld:start");
+            const int __sw_dispose_start = swMs();
+            _docManager->setLOKitDocument(nullptr);
+            existing.reset();
+            SW_MARK("disposeOld:done");
+            const int __sw_dispose_end = swMs();
+
             LOG_INF("SWITCHDOC: calling documentLoad(" << fileUrl << ")");
             SW_MARK("documentLoad:start");
+#ifdef __EMSCRIPTEN__
+            // Iter A4: sync mark around documentLoad. Async marks
+            // queued during the multi-second LO Core call get
+            // coalesced or dropped by puppeteer's CDP listener, so
+            // cross-type runs see ZERO marks. Synchronous fires
+            // immediately, blocks the kit thread for the JS round-
+            // trip (~1-3ms), and gives reliable book-end timestamps
+            // independent of the queue-flush timing at the end.
+            MAIN_THREAD_EM_ASM({
+                console.log('SWITCHDOC_SYNC[+' + $0 + 'ms] documentLoad:about-to-call (disposeOld='
+                          + ($1 - $2) + 'ms)');
+            }, swMs(), __sw_dispose_end, __sw_dispose_start);
+#endif
+            // Iter A5 attempted to omit Language= on subsequent loads
+            // to skip init.cxx:2928-2949 (resetTheCurrencyTable +
+            // setLanguageAndLocale). Both warm cross-type transitions
+            // timed out (>48s). Reverted — apparently the per-load
+            // locale reset is load-bearing for calc/impress models
+            // even though the docs say it sets process-global state.
             auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), "Language=en-US,Batch=true");
             SW_MARK("documentLoad:done");
+#ifdef __EMSCRIPTEN__
+            MAIN_THREAD_EM_ASM({
+                console.log('SWITCHDOC_SYNC[+' + $0 + 'ms] documentLoad:returned');
+            }, swMs());
+#endif
             newDoc = std::shared_ptr<lok::Document>(rawDoc);
             if (!newDoc || !newDoc->get())
             {
@@ -529,7 +607,34 @@ bool ChildSession::_handleInput(const char *buffer, int length)
 
         _isDocLoaded = true;
         LOG_INF("SWITCHDOC: complete, viewId=" << _viewId);
+        // Re-target the wasm-side save path. Without this, every save
+        // post-switch (Ctrl+S) reads the prewarm tempfile and POSTs to
+        // the prewarm URL, so the user-doc room's checkpoint never
+        // rotates to the actual saved content (broker logs CHECKPOINT
+        // ROTATED with the OLD hash, late joiners see stale state).
+        if (!switchTempPath.empty() && !switchDocRemoteUrl.empty())
+        {
+            wasmAppRebindSaveTarget(switchTempPath, switchDocRemoteUrl);
+        }
         SW_MARK("complete");
+#ifdef __EMSCRIPTEN__
+        // Iter A4: synchronous EM_ASM. The previous ASYNC variant
+        // queued the lambda for later execution, but $0 was
+        // blob.c_str() — by the time JS ran, blob had gone out of
+        // scope and the C-string pointed at freed memory, so cross-
+        // type runs (where the per-phase async marks are dropped
+        // during the long documentLoad block) saw NEITHER kind of
+        // mark. Synchronous blocks switchdocument briefly while JS
+        // copies the string, but blob stays valid through the call.
+        // Tests grep for SWITCHDOC_TIMINGS_BEGIN/END.
+        {
+            const std::string blob = swPhasesBuf.str();
+            MAIN_THREAD_EM_ASM({
+                console.log('SWITCHDOC_TIMINGS_BEGIN\n' + UTF8ToString($0)
+                            + 'SWITCHDOC_TIMINGS_END');
+            }, blob.c_str());
+        }
+#endif
 #undef SW_MARK
         return true;
     }

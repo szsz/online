@@ -38,6 +38,30 @@ const FILE_STORAGE_URL = process.env.FILE_STORAGE_URL || 'https://viewer.szebeni
 
 fs.mkdirSync(DOCS, { recursive: true });
 
+// Periodic cleanup of /wasm/ doc storage. Each test uploads a unique
+// file (named by sha256 in v2). Without cleanup the directory
+// accumulates thousands of files over a week of CI runs (~1 GB seen
+// in practice) and the disk reads to serve fresh tests slow down.
+// Files older than 2 hours are deleted every 30 min.
+setInterval(() => {
+    try {
+        const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+        let removed = 0;
+        for (const name of fs.readdirSync(DOCS)) {
+            const fp = `${DOCS}/${name}`;
+            try {
+                if (fs.statSync(fp).mtimeMs < cutoff) {
+                    fs.unlinkSync(fp);
+                    removed++;
+                }
+            } catch (_) {}
+        }
+        if (removed > 0) {
+            console.log(`[editor-static] reaped ${removed} doc(s) older than 2h`);
+        }
+    } catch (_) {}
+}, 30 * 60 * 1000);
+
 // ── Content-hashed JS filenames ─────────────────────────────────
 // On startup (and on SIGHUP), hash our custom JS files and create
 // <name>.<hash>.js symlinks. cool.html is rewritten on-the-fly to
@@ -299,8 +323,10 @@ function handler(req, res) {
         }
     }
 
-    // /timing-report/ and /reports/ — serve test reports from PUB.
-    if (pathname.startsWith('/timing-report/') || pathname.startsWith('/reports/')) {
+    // /reports/ — serve test reports from PUB.
+    // (/timing-report/ removed with test-timing-report.js — superseded by
+    // test-snapshot-milestones.js, served via the viewer at /report/.)
+    if (pathname.startsWith('/reports/')) {
         let filepath = path.join(PUB, pathname);
         // Resolve directory to index.html
         try { if (fs.statSync(filepath).isDirectory()) filepath = path.join(filepath, 'index.html'); } catch(e) {}

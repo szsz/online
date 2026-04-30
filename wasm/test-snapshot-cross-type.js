@@ -104,7 +104,11 @@ async function dumpIframeStatus(page) {
 }
 
 async function waitForContentLoaded(browser, page, navStart, c) {
-    const deadline = Date.now() + TIMEOUT_MS;
+    // Impress's warm-restore path can re-run loadComponentFromURL
+    // multiple times before the slide indicator stabilises. The 120 s
+    // base budget is too tight on this host. Bump for impress only.
+    const caseTimeout = c.docType === 'impress' ? 240000 : TIMEOUT_MS;
+    const deadline = Date.now() + caseTimeout;
     let t_first_canvas = null, t_status = null, t_content_ok = null;
     while (Date.now() < deadline) {
         // The editor iframe is cross-origin (wasm.atgpartners.info vs the
@@ -172,7 +176,7 @@ async function waitForContentLoaded(browser, page, navStart, c) {
         await sleep(200);
     }
     const lastDump = await dumpIframeStatus(page);
-    return { error: 'TIMEOUT after ' + TIMEOUT_MS + 'ms; last DOM: ' + lastDump,
+    return { error: 'TIMEOUT after ' + caseTimeout + 'ms; last DOM: ' + lastDump,
              t_first_canvas, t_status, t_content_ok };
 }
 

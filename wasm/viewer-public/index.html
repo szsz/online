@@ -234,6 +234,21 @@ function relayRoom(docName) {
 // Pre-warm state
 let prewarmReady = false;
 let currentFile = null;
+// Bug iter 12: iframe pool. Cross-type currently destroys the current
+// iframe and creates a fresh one — costs ~11 s of warm-restore + first
+// doc load every time. Instead, park each doctype's iframe alive and
+// hidden on cross-type, and revive it on the next cross-type back to
+// that doctype. Subsequent cross-type to a previously-parked doctype
+// becomes a same-type-style hot-switch (~200 ms-1 s) instead of a
+// cold reload. Memory cost: up to 3 iframes (~840 MB) for a session
+// that touches all three doctypes.
+const parkedIframes = {}; // doctype -> { iframe, lastFile }
+// Track what's actually loaded in the visible iframe. Distinct from
+// currentFile/currentDocType which can be set by openFileBySecret
+// before openFile (and the iframe lifecycle code) runs. Only updated
+// AFTER an iframe is set up to host a doc.
+let activeIframeFile = null;
+let activeIframeDocType = null;
 // Track whether the iframe's relay-adapter has activated (sent join-ready
 // + accepted by the relay). Until activated, any keystroke the user types
 // is dropped on the floor with a "Dropping input not activated yet" log
@@ -368,6 +383,17 @@ window.addEventListener('message', function(event) {
     if (typeof event.data !== 'string') return;
     try {
         const msg = JSON.parse(event.data);
+        // Iter A8: latch warm-restore failure so subsequent cross-type
+        // iframe creations skip the snapshot (which is ~100 % reproducible
+        // bad once it has hung once in a session). Without this the user
+        // pays the 12 s watchdog wait on every cross-type after the first
+        // failure. Latch persists for the lifetime of the viewer page.
+        if (msg.MessageId === 'WarmRestoreFailed') {
+            window.__warmRestoreFailedThisSession = true;
+            console.log('[viewer] WarmRestoreFailed received — '
+                + 'subsequent cross-type iframes will use ?planc=0');
+            return;
+        }
         // Live progress from the iframe's wasm-loader.
         if (msg.MessageId === 'WasmProgress' && msg.Values) {
             var pct = msg.Values.pct;
@@ -992,56 +1018,138 @@ async function openFile(name, opts) {
         setStatus('Opening ' + (opts.displayName || name));
         window.__viewerState.lastOpenMode = 'hot';
     } else {
-        // COLD RELOAD — start iframe IMMEDIATELY, upload file in parallel.
-        // The file just needs to arrive at /wasm/ before Kit opens it
-        // (~3-6s into WASM init). This saves the entire download+upload
-        // latency from the critical path.
+        // CROSS-TYPE — bug iter 12: try to revive a parked iframe for
+        // this doctype before falling back to creating a fresh one.
         var __coldPlanC = '';
         try {
             var __cp = new URLSearchParams(window.location.search).get('planc');
             if (__cp === '0' || __cp === 'off') __coldPlanC = '&planc=0';
             else if (__cp === '1' || __cp === 'on') __coldPlanC = '&planc=1';
         } catch (e) { /* ignore */ }
-        const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
-                      + '&access_token=test'
-                      + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
-                      + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
-                      + '&UserName=' + encodeURIComponent(MY_USER_NAME)
-                      + '&viewerT0=' + window.__viewerT0
-                      + __coldPlanC
-                      + (opts.displayName
-                          ? '&displayName=' + encodeURIComponent(opts.displayName) : '');
-        try {
-            iframe.contentWindow.postMessage(JSON.stringify({
-                MessageId: 'RelayDisconnect', Values: {}
-            }), '*');
-        } catch(e) {}
-        const newIframe = document.createElement('iframe');
-        newIframe.id = 'editor-frame';
-        newIframe.setAttribute('allow', 'cross-origin-isolated; clipboard-read; clipboard-write');
-        newIframe.setAttribute('referrerpolicy', 'no-referrer');
-        newIframe.style.width = '100%';
-        newIframe.style.height = '100%';
-        newIframe.style.border = 'none';
-        iframe.parentNode.replaceChild(newIframe, iframe);
-        newIframe.src = coolUrl;
-        viewerLog('Editor iframe loading (cold reload)');
-        setStatus('Loading ' + name + (sameType ? '' : ' (type change ' + currentDocType + '→' + newDocType + ')'));
-        window.__viewerState.lastOpenMode = 'cold-typechange';
 
-        // Upload file in background — it'll arrive before Kit needs it.
-        // When skipDownload was set the plaintext is already at /wasm/<fileId>.
-        filePromise.then(buf => {
-            if (!buf) return;
-            return fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-                method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-            }).then(() => {
-                try { newIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
-                viewerLog('File transferred to editor');
-            });
-        }).catch(e => { setStatus('Error downloading: ' + e.message); });
+        // Park the CURRENT iframe under its doctype IFF it actually
+        // hosts a loaded doc (activeIframeFile/activeIframeDocType set).
+        // currentFile/currentDocType were reassigned upstream by
+        // openFileBySecret before this code runs, so they reflect the
+        // INCOMING file, not the one currently displayed. activeIframe*
+        // tracks the iframe's actual loaded state.
+        const shouldPark = activeIframeFile && activeIframeDocType
+            && activeIframeDocType !== newDocType;
+        if (shouldPark) {
+            iframe.style.display = 'none';
+            iframe.id = 'parked-iframe-' + activeIframeDocType;
+            parkedIframes[activeIframeDocType] = {
+                iframe, lastFile: activeIframeFile,
+            };
+            viewerLog('Parked iframe for ' + activeIframeDocType
+                + ' (was: ' + activeIframeFile + ')');
+        }
+
+        // Revive the previously-parked iframe for newDocType, if any.
+        const parked = parkedIframes[newDocType];
+        if (parked && parked.iframe && parked.iframe.contentWindow) {
+            delete parkedIframes[newDocType];
+            const reviveIframe = parked.iframe;
+            reviveIframe.id = 'editor-frame';
+            reviveIframe.style.display = '';
+            viewerLog('Revived iframe for ' + newDocType
+                + ' (had: ' + parked.lastFile + ', want: ' + name + ')');
+            window.__viewerState.lastOpenMode = 'cross-revive';
+
+            if (parked.lastFile === name) {
+                // Same file is already loaded in the parked iframe —
+                // just show it.
+                updateShieldProgress('Opening document…', 90, name);
+                setStatus('Opening ' + (opts.displayName || name));
+                // Drop shield soon — no work needed.
+                docReady = true;
+                relayActivated = SINGLE_USER || true;
+                hideShield();
+            } else {
+                // Different file in this doctype — same-type hot-switch.
+                updateShieldProgress('Opening document…', 30,
+                    'Downloading ' + name);
+                const buf = await filePromise;
+                updateShieldProgress('Opening document…', 50,
+                    'Transferring to editor');
+                if (buf) {
+                    await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
+                        method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+                    });
+                    try { reviveIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+                }
+                if (!SINGLE_USER) {
+                    const newRoom = relayRoom(name);
+                    reviveIframe.contentWindow.postMessage(JSON.stringify({
+                        MessageId: 'RelaySwitchRoom',
+                        Values: { room: newRoom, docName: name }
+                    }), '*');
+                }
+                const base = reviveIframe.src.split('#')[0];
+                const switchSuffix = opts.displayName
+                    ? '&displayName=' + encodeURIComponent(opts.displayName) : '';
+                reviveIframe.src = base + '#switchdoc='
+                    + encodeURIComponent(name) + switchSuffix;
+                setStatus('Opening ' + (opts.displayName || name));
+            }
+        } else {
+            // No parked iframe for this doctype — fresh cold reload
+            // (the original code path).
+            const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
+                          + '&access_token=test'
+                          + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
+                          + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
+                          + '&UserName=' + encodeURIComponent(MY_USER_NAME)
+                          + '&viewerT0=' + window.__viewerT0
+                          + __coldPlanC
+                          + (opts.displayName
+                              ? '&displayName=' + encodeURIComponent(opts.displayName) : '');
+            // Note: we don't disconnect the OLD iframe here anymore.
+            // It's parked above, may be revived on a future cross-type
+            // back to its doctype. RelayDisconnect would tear down its
+            // WS connection — defeating the parking. The parked iframe's
+            // WS keeps the room alive for free.
+            const newIframe = document.createElement('iframe');
+            newIframe.id = 'editor-frame';
+            newIframe.setAttribute('allow', 'cross-origin-isolated; clipboard-read; clipboard-write');
+            newIframe.setAttribute('referrerpolicy', 'no-referrer');
+            newIframe.style.width = '100%';
+            newIframe.style.height = '100%';
+            newIframe.style.border = 'none';
+            // If we parked the previous iframe, append a sibling so the
+            // parked one stays alive. If we didn't park (initial open or
+            // un-used iframe), replace it — keeping a stale empty iframe
+            // would consume memory for nothing AND leave duplicate
+            // editor-frame ids that getElementById picks the wrong one of.
+            if (shouldPark) {
+                iframe.parentNode.appendChild(newIframe);
+            } else {
+                iframe.parentNode.replaceChild(newIframe, iframe);
+            }
+            newIframe.src = coolUrl;
+            viewerLog('Editor iframe loading (cold reload — first '
+                + newDocType + ' open)');
+            setStatus('Loading ' + name
+                + (sameType ? '' : ' (type change ' + currentDocType + '→' + newDocType + ')'));
+            window.__viewerState.lastOpenMode = 'cold-typechange';
+
+            filePromise.then(buf => {
+                if (!buf) return;
+                return fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
+                    method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+                }).then(() => {
+                    try { newIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+                    viewerLog('File transferred to editor');
+                });
+            }).catch(e => { setStatus('Error downloading: ' + e.message); });
+        }
     }
     currentDocType = newDocType;
+    // Iframe is now hosting (or about to host) name with newDocType.
+    // The pool's parking logic reads these on the next openFile call
+    // to decide what to park.
+    activeIframeFile = name;
+    activeIframeDocType = newDocType;
     window.__viewerState.lastOpenStart = t0;
 }
 

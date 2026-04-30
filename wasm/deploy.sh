@@ -227,6 +227,20 @@ inject = """    // Snapshot FULL restore + leak stale thread-owning objects.
           } catch(e) {
               console.warn('ThreadPool reset failed:', e);
           }
+          // Bug iter 11: clear the captured `coolwsd_server_socket_fd`
+          // and the freshly-ready gate so is_preinit_done() returns 0
+          // until the new COOLWSD::run() finishes setting up its real
+          // server socket and calls notify_coolwsd_server_socket_ready.
+          // Without this, relay-adapter's _kitMessageQueue flushes
+          // queued co-edit traffic onto the fakesocket BEFORE the new
+          // accept-loop reads `coolclient + load url=`, and the kit
+          // misparses the first UNO frame as the doc-id line — doc
+          // never loads, watchdog drops snapshot, ~30 s cold reload.
+          try { Module.ccall('wasm_clear_server_freshly_ready', null, [], []);
+              console.log('WARM_DBG: server freshly-ready gate cleared');
+          } catch(e) {
+              console.warn('server freshly-ready clear failed:', e);
+          }
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
           // Recreate VFS directories that the restored LO Core expects.

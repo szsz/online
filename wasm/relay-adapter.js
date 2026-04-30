@@ -36,6 +36,15 @@
     var coolwsdReady = false;
     var activated = false;       // true after join-ready acknowledged
     var sendQueue = [];
+    // Buffer for user-input messages (key/mouse/uno/etc.) sent by COOL.js
+    // BEFORE the relay-adapter has finished activating in a new (or
+    // switched) room. Without this, keystrokes that arrive in the
+    // narrow window between RelaySwitchRoom and activateClient → 0x06
+    // get dropped silently with "Dropping input (not activated yet)".
+    // Capped to 200 entries so a never-activating session can't grow
+    // unbounded.
+    var _preActivateQueue = [];
+    var _preActivateQueueCap = 200;
     var recvQueue = [];          // messages received before COOLWSD ready
     var myViewId = Math.floor(Math.random() * 0x7FFFFF);
     var lastSeq = 0;             // last processed sequence number
@@ -202,6 +211,7 @@
             sendQueue = [];
             recvQueue = [];
             kitQueue = []; // drop any pending messages from old room
+            _preActivateQueue = []; // drop pre-activate input from old room
             lateJoinFileReady = false;
 
             // Reset encryption state — every doc has its own per-file
@@ -233,6 +243,13 @@
 
             // Connect to new room
             relayUrl = newRoom;
+            // We started in single-user mode (no relay= URL param on the
+            // initial cool.html load — viewer prewarm path). Now that a
+            // RelaySwitchRoom hands us a real room URL, we're in co-edit
+            // mode. Without this, the save/0x07 path silently treats the
+            // user's Ctrl+S as a single-user save and never rotates the
+            // broker checkpoint, so late joiners see stale content.
+            singleUserMode = false;
             ws = new WebSocket(newRoom);
             ws.binaryType = 'arraybuffer';
             ws.onopen = onWsOpen;
@@ -398,6 +415,24 @@
     function activateClient() {
         if (activated) return;
         activated = true;
+        // Flush any input that arrived before we finished activating
+        // (e.g. typing on the new room immediately after a hot-switch).
+        // Re-feed each item through the FakeWebSocket so it goes through
+        // the normal interceptedSend path now that `activated` is true.
+        if (_preActivateQueue.length > 0) {
+            var preQ = _preActivateQueue.splice(0);
+            console.log('[relay] Flushing ' + preQ.length + ' pre-activate input messages');
+            try {
+                var fws = globalThis.TheFakeWebSocket;
+                if (fws && fws.send) {
+                    for (var pi = 0; pi < preQ.length; pi++) {
+                        fws.send(preQ[pi]);
+                    }
+                }
+            } catch (e) {
+                console.warn('[relay] pre-activate flush error:', e.message);
+            }
+        }
         // Set the initial known hash from the file we loaded/joined with.
         // This is used for conflict detection when saving.
         lastKnownHash = joinFileHash;
@@ -710,7 +745,11 @@
                 text === 'resetselection';
             if (isUserInput) {
                 if (!activated) {
-                    console.log('[relay] Dropping input (not activated yet): ' + text.substring(0, 40));
+                    if (_preActivateQueue.length >= _preActivateQueueCap) {
+                        console.log('[relay] Dropping input (queue full, not activated yet): ' + text.substring(0, 40));
+                        return;
+                    }
+                    _preActivateQueue.push(data);
                     return;
                 }
                 // Suppress Map.Keyboard's uno:Paste when our paste handler
@@ -1026,8 +1065,15 @@
         // will reject the POST with 403 anyway). If the user wants to
         // persist, they need to Save As under a new filename — that
         // flow re-instantiates with a fresh WOPISrc.
-        var curWopiSrc = params.get('WOPISrc') || '';
-        if (curWopiSrc === '__prewarm_blank.docx') {
+        //
+        // Use the MODULE-SCOPE `wopiSrc` (updated by RelaySwitchRoom on
+        // hot-switch from prewarm to user doc), NOT params.get(). The
+        // URL param is the cool.html-load-time WOPISrc, which is
+        // __prewarm_blank.docx for the prewarm path; if we read that
+        // here, every save in the user-doc room takes the early return
+        // and 0x07 is never sent — late joiners see the pre-save
+        // checkpoint forever.
+        if (wopiSrc === '__prewarm_blank.docx') {
             console.log('[relay] Save suppressed on prewarm blank — use Save As');
             return;
         }
@@ -1037,10 +1083,13 @@
         // checkpoints when they connected during the delay window.
         setTimeout(function() {
             var saveAtSeq = lastSeq;
-            var wopiSrc = params.get('WOPISrc') || '';
+            // Module-scope wopiSrc — see prewarm-blank guard above for
+            // why we DON'T re-read params.get('WOPISrc') here.
             // 1. Download saved file from editor's temp storage
             var editorFileUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
-            origFetch(editorFileUrl).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
+            origFetch(editorFileUrl).then(function(r) {
+                return r.arrayBuffer();
+            }).then(function(buf) {
                 var bytes = new Uint8Array(buf);
 
                 // Guard: if the saved file is a tiny blank doc (<15KB) but
