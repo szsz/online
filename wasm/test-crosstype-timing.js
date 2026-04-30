@@ -73,8 +73,16 @@ async function getStatusOk(page, type) {
         //   { transition, totalWall, switchdocMarks: [{label, t}] }
         const records = [];
         let activeRecord = null;
+        // DIAG dump — write every console line for the run so we can
+        // see what's really happening on cross-type transitions where
+        // SWITCHDOC marks drop. /tmp/iter-AX-console.log
+        const fsDiag = require('fs');
+        const consoleSink = '/tmp/iter-crosstype-console.log';
+        try { fsDiag.unlinkSync(consoleSink); } catch(e) {}
+        const consoleStream = fsDiag.createWriteStream(consoleSink, { flags: 'a' });
         page.on('console', m => {
             const t = m.text();
+            try { consoleStream.write(`[${(Date.now()-T0)/1000}s] ${t}\n`); } catch(e) {}
             // Per-phase async marks: "SWITCHDOC[+1234ms] label"
             const sw = t.match(/SWITCHDOC(?:_SYNC)?\[\+(\d+)ms\]\s+(.+)/);
             if (sw && activeRecord) {

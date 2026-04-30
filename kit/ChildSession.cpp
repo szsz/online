@@ -466,6 +466,13 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 desiredType = LOK_DOCTYPE_PRESENTATION;
         }
 
+        // Iter A7 reverted: cap=1 for TEXT regressed cold cross-type
+        // by ~3 s on impress→writer because LO Core's in-place
+        // loadComponentFromURL still returns -1 for docx target,
+        // costing one failed in-place attempt before falling through
+        // to documentLoad. The "docx 3rd-click hang" comment from
+        // before A3 may have been the original cause, but disposeOld
+        // alone didn't unlock docx in-place. Cap stays 0 for TEXT.
         int kInPlaceCap = 0;
         if (desiredType == LOK_DOCTYPE_SPREADSHEET ||
             desiredType == LOK_DOCTYPE_PRESENTATION)
