@@ -702,12 +702,16 @@ window.L.Control.NotebookbarWriter = window.L.Control.Notebookbar.extend({
 								'id': 'fontsizecombobox',
 								'type': 'combobox',
 								'text': '12 pt',
+								// Iter 22: was a single hardcoded '12 pt' which left the dropdown
+								// showing only one size. Same canonical list as Control.TopToolbar.js:154.
 								'entries': [
-									'12 pt'
+									'6','7','8','9','10','10.5','11','12','13','14','15',
+									'16','18','20','22','24','26','28','32','36','40',
+									'44','48','54','60','66','72','80','88','96'
 								],
 								'selectedCount': '1',
 								'selectedEntries': [
-									'0'
+									'7'
 								],
 								'command': '.uno:FontHeight',
 								'accessibility': { focusBack: false,	combination: 'FS',	de: null }
