@@ -25,7 +25,7 @@ const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;
-const TIMEOUT = 300000;
+const TIMEOUT = env.scaleTimeout(300000);
 
 const FILES = {
     writer:  { name: 'cf-writer.docx',  path: path.join(__dirname, '..', 'test', 'data', 'test document.docx') },
@@ -115,7 +115,7 @@ async function runCell(page, fromType, toType) {
     }, targetFile);
 
     // Wait for target type to show up in status bar
-    const s = await waitForType(page, toType, 60000);
+    const s = await waitForType(page, toType, env.scaleTimeout(60000));
     const dt = Date.now() - t0;
 
     if (!s) {
@@ -194,7 +194,7 @@ async function runCell(page, fromType, toType) {
         log(`Opening initial: writer (${FILES.writer.name})`);
         const cold0 = Date.now();
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-        const initialStatus = await waitForType(page, 'writer', 240000);
+        const initialStatus = await waitForType(page, 'writer', env.scaleTimeout(240000));
         if (!initialStatus) {
             log('FAIL: initial writer doc never loaded');
             allPassed = false;
