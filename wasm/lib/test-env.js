@@ -66,6 +66,17 @@ function scaleTimeout(ms) {
     return Math.round(ms * JOBS_SCALE);
 }
 
+// Iter 82: announce the scale once on first import so per-test logs
+// make it obvious whether contention scaling is active. Without this
+// a test that times out at ~scaled-budget looks identical to one that
+// times out at base — the diagnoser has to hunt for the env var. Only
+// log when scale > 1 so default solo runs stay quiet.
+if (JOBS_SCALE > 1 && !process.env.__JOBS_SCALE_ANNOUNCED) {
+    process.env.__JOBS_SCALE_ANNOUNCED = '1';
+    // eslint-disable-next-line no-console
+    console.log(`[test-env] JOBS_SCALE=${JOBS_SCALE} — patience timeouts widen by ${JOBS_SCALE}×`);
+}
+
 module.exports = {
     EDITOR_URL: process.env.EDITOR_URL,
     FILE_STORAGE_URL: process.env.FILE_STORAGE_URL,
