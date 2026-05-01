@@ -82,6 +82,7 @@ function loadEnv(scale) {
     // test would resume false-failing under contention without anyone
     // noticing.
     const SCALED_TESTS = [
+        // Original 9 (iter 38 baseline failures)
         'test-late-join.js',
         'test-regression-delete-key-coedit.js',
         'test-regression-room-switch.js',
@@ -91,6 +92,10 @@ function loadEnv(scale) {
         'test-regression-checkpoint-timing.js',
         'test-snapshot-cross-type.js',
         'test-prewarm-benchmark.js',
+        // Focused-suite known flakes (run-focused-tests.sh worker comment)
+        'test-snapshot-milestones.js',
+        'test-regression-paste-coedit.js',
+        'test-regression-mouse-select-copypaste.js',
     ];
     for (const t of SCALED_TESTS) {
         const p = path.join(__dirname, t);
