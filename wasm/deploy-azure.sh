@@ -273,6 +273,12 @@ if $DO_VIEWER; then
     cp "$SCRIPT_DIR/lib/storage/local.js" "$VDIR/lib/storage/"
     cp "$SCRIPT_DIR/lib/storage/azure.js" "$VDIR/lib/storage/"
 
+    # Iter 97: Express 5 — viewer-server.js uses path-to-regexp v8
+    # wildcard syntax (`*name`) for the /api/files/<nested/path> route,
+    # which Express 4's path-to-regexp v0.x silently fails to register.
+    # Result on Azure: POST /api/files/<n> 404s, regression-viewer-cache,
+    # regression-user-save-checkpoint, folder-api etc. all fail
+    # purely due to missing route registration.
     cat > "$VDIR/package.json" <<'VJSON'
 {
   "name": "cool-wasm-viewer",
@@ -280,7 +286,7 @@ if $DO_VIEWER; then
   "private": true,
   "scripts": { "start": "node server.js" },
   "dependencies": {
-    "express": "^4.21.0",
+    "express": "^5.2.1",
     "@azure/storage-blob": "^12.25.0"
   }
 }
@@ -347,6 +353,8 @@ if $DO_EDITOR; then
     # pre-compressed .br files (written below) instead of paying the
     # CPU cost of runtime compression.
     cp "$SCRIPT_DIR/editor-server.js" "$EDIR/server.js"
+    # Iter 97: Express 5 — match the source declaration so wildcard
+    # path-to-regexp v8 routes (e.g. /api/files/*name) register.
     cat > "$EDIR/package.json" <<'EJSON'
 {
   "name": "cool-wasm-editor",
@@ -354,7 +362,7 @@ if $DO_EDITOR; then
   "private": true,
   "scripts": { "start": "node server.js" },
   "dependencies": {
-    "express": "^4.21.0"
+    "express": "^5.2.1"
   }
 }
 EJSON
