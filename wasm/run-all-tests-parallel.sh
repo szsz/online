@@ -48,9 +48,17 @@ log_file="$LOG_DIR/$slug.log"
 tmpdir="/tmp/test-${slug}-$$-$RANDOM"
 mkdir -p "$tmpdir"
 
+# Iter 77: scale per-test wrapper timeout under contention (matches
+# the env.scaleTimeout widening inside tests). Floor at 1800s so
+# JOBS_SCALE=1 keeps the prior ceiling.
+SCALE="${JOBS_SCALE:-1}"
+case "$SCALE" in *.*) SCALE_INT=$(printf '%.0f' "$SCALE") ;; *) SCALE_INT="$SCALE" ;; esac
+WRAPPER_TIMEOUT=$(( 1800 * SCALE_INT ))
+[ "$WRAPPER_TIMEOUT" -lt 1800 ] && WRAPPER_TIMEOUT=1800
+
 t_start=$(date +%s)
 status="pass"
-TMPDIR="$tmpdir" timeout 1800 node "$SCRIPT_DIR/$script" > "$log_file" 2>&1
+TMPDIR="$tmpdir" timeout "$WRAPPER_TIMEOUT" node "$SCRIPT_DIR/$script" > "$log_file" 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then status="fail"; fi
 elapsed=$(( $(date +%s) - t_start ))
