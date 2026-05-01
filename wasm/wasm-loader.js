@@ -1375,18 +1375,13 @@
                 // so the next visit hits cache. No-op if already cached.
                 try {
                     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-                        var heavyUrls = [];
                         var assetMap = window.__assetMap || {};
-                        ['online.wasm', 'soffice.data', 'soffice.data.js.metadata',
-                         'bundle.js', 'online.js', 'global.js'].forEach(function(name) {
-                            var hashed = assetMap[name] || name;
-                            heavyUrls.push(self.registration ? null : '/browser/' + hashed);
-                        });
-                        // Use document.location-relative absolute URLs; SW
-                        // matches by full URL.
-                        heavyUrls = ['online.wasm', 'soffice.data',
-                                     'soffice.data.js.metadata', 'bundle.js',
-                                     'online.js', 'global.js']
+                        // SW matches by full URL — resolve each name (hashed
+                        // if cache-bust is active, plain in dev) against
+                        // the document base.
+                        var heavyUrls = ['online.wasm', 'soffice.data',
+                                         'soffice.data.js.metadata', 'bundle.js',
+                                         'online.js', 'global.js']
                             .map(function(name) {
                                 return new URL((assetMap[name] || name),
                                     document.baseURI).href;
