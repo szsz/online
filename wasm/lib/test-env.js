@@ -44,10 +44,34 @@ for (const key of required) {
 // (e.g. /room/<id>/file) which can't be reached over a WebSocket scheme.
 const RELAY_HTTP = (process.env.RELAY_URL || '').replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
 
+// JOBS_SCALE — multiplier for test timeouts when the suite runs under
+// contention. run-all-tests.sh exports it from JOBS env (e.g. JOBS=2 →
+// JOBS_SCALE=2). Tests pass scale-sensitive timeouts through scaleTimeout
+// so they widen automatically instead of false-failing under load.
+//
+// Default 1.0 keeps solo-run behaviour unchanged. Don't apply this blindly
+// to performance-budget assertions — those should keep their original
+// numbers so a real perf regression still trips. Use only on "wait for
+// thing to happen" timeouts that mark patience, not budget.
+const JOBS_SCALE = (() => {
+    const raw = process.env.JOBS_SCALE || process.env.TIMEOUT_SCALE;
+    if (!raw) return 1.0;
+    const n = parseFloat(raw);
+    if (!isFinite(n) || n <= 0) return 1.0;
+    // Cap at 5× to prevent a typo from making tests hang for hours.
+    return Math.min(n, 5.0);
+})();
+
+function scaleTimeout(ms) {
+    return Math.round(ms * JOBS_SCALE);
+}
+
 module.exports = {
     EDITOR_URL: process.env.EDITOR_URL,
     FILE_STORAGE_URL: process.env.FILE_STORAGE_URL,
     RELAY_URL: process.env.RELAY_URL,
     RELAY_HTTP_URL: RELAY_HTTP,
     VIEWER_URL: process.env.VIEWER_URL,
+    JOBS_SCALE,
+    scaleTimeout,
 };
