@@ -311,23 +311,32 @@ function handler(req, res) {
     // The build step renames hashed assets in place (bundle.js →
     // bundle.<hash>.js) and renames the .br sidecar alongside, so a
     // direct `+ '.br'` lookup finds it.
+    //
+    // Iter 64: stream large bodies instead of fs.readFileSync into a
+    // Buffer. online.wasm.br + soffice.data.br are tens of MB, and a
+    // burst of cold loaders allocating 30MB Buffers each is what makes
+    // the server transiently RSS-spike under load. Streaming gives
+    // TCP backpressure proper visibility into the read pipeline.
     const accepted = (req.headers['accept-encoding'] || '').includes('br');
     const brPath = filepath + '.br';
     if (accepted && fs.existsSync(brPath) &&
         fs.statSync(brPath).mtimeMs >= stat.mtimeMs) {
-        const brData = fs.readFileSync(brPath);
+        const brStat = fs.statSync(brPath);
         headers['Content-Encoding'] = 'br';
-        headers['Content-Length'] = brData.length;
+        headers['Content-Length'] = brStat.size;
         headers['Vary'] = 'Accept-Encoding';
         res.writeHead(200, headers);
-        res.end(brData);
+        const stream = fs.createReadStream(brPath);
+        stream.on('error', () => res.end());
+        stream.pipe(res);
         return;
     }
 
-    const data = fs.readFileSync(filepath);
-    headers['Content-Length'] = data.length;
+    headers['Content-Length'] = stat.size;
     res.writeHead(200, headers);
-    res.end(data);
+    const stream = fs.createReadStream(filepath);
+    stream.on('error', () => res.end());
+    stream.pipe(res);
 }
 
 // HTTP — exposed mainly so the SNI router has a fallback / for local curl.
