@@ -70,6 +70,7 @@ TESTS=(
     "regression-samedoc-flicker|test-regression-samedoc-flicker.js|Regression: Same-Doctype Title Flicker|A↔B document-name flicker on same-type hot-switch caused by parallel setInterval writers in wasm-loader.js|shots-regression-samedoc-flicker"
     "regression-stylesview-overlap|test-regression-stylesview-overlap.js|Regression: Stylesview Layout|Notebookbar Styles entries occupy distinct grid cells (no overlap)|shots-regression-stylesview-overlap"
     "regression-cache-bust|test-regression-cache-bust.js|Regression: Build-time Cache Bust|cool.html refs are hashed; hashed assets immutable; locateFile shim single+well-formed|none"
+    "regression-html-304|test-regression-html-304.js|Regression: HTML routes 304|viewer index.html, singleuser.html, help, cool.html, /config.js emit ETag and 304 on If-None-Match|none"
     "regression-cross-format-matrix|test-regression-cross-format-matrix.js|Regression: Cross-Format Hot-Switch Matrix|Phase 1.2 — single tab walking through cross-format hot-switches and validating each transition|shots-regression-cross-format-matrix"
     "regression-first-client-overwrite|test-regression-first-client-overwrite.js|Regression: First Client Overwrite|First client's activation checkpoint must not save stale/blank content over a newer relay state|shots-regression-first-client-overwrite"
     "regression-fontsize-dropdown|test-regression-fontsize-dropdown.js|Regression: Font-Size Dropdown|Bug 1 single-tab — font-size dropdown shows the full size list (not just one option)|shots-regression-fontsize-dropdown"
