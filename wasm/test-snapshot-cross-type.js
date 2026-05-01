@@ -235,7 +235,7 @@ async function waitForContentLoaded(browser, page, navStart, c) {
         const up = uploads[c.doc];
         const fileUrl = VIEWER + '/?planc=1#file=' + up.b64urlSecret;
         const navStart = Date.now();
-        await page.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
         const r = await waitForContentLoaded(browser, page, navStart, c);
         const wall = Date.now() - navStart;
         const ok = !r.error && r.t_content_ok !== null;
