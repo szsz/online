@@ -75,7 +75,7 @@ const TEST_DOCS = [
                 // — a transient miss on the heuristic regex would
                 // otherwise burn the full 7.5min loop.
                 {
-                    const warmDeadline = Date.now() + 240000;
+                    const warmDeadline = Date.now() + env.scaleTimeout(240000);
                     while (Date.now() < warmDeadline) {
                         await sleep(500);
                         const fr = page.frames().find(f => f.url().includes('cool.html'));
@@ -110,8 +110,9 @@ const TEST_DOCS = [
                 // Hard 450 s deadline — matches the assert at line ~195
                 // (`tTotal < 450000`). Aborts early on
                 // __wasmInitialDocLoaded so a heuristic-regex miss
-                // doesn't burn the full budget.
-                const visitDeadline = Date.now() + 450000;
+                // doesn't burn the full budget. Scaled under JOBS_SCALE
+                // so contention runs don't spuriously time out.
+                const visitDeadline = Date.now() + env.scaleTimeout(450000);
                 while (Date.now() < visitDeadline) {
                     await sleep(500);
                     editorFrame = page.frames().find(f => f.url().includes('cool.html'));
@@ -204,7 +205,12 @@ const TEST_DOCS = [
             // 450s: impress + rare fonts or ODP with complex graphics
             // push past 360s on Azure due to font prefetch + tile render
             // compounded with WAN RTT. Local still completes in <60s.
-            check(doc.name + ' ' + visit + ': loaded', tTotal < 450000, 'total=' + tTotal + 'ms');
+            //
+            // Scaled under JOBS_SCALE so contention runs widen — when
+            // measuring real perf, run with JOBS_SCALE=1 (default solo).
+            check(doc.name + ' ' + visit + ': loaded',
+                  tTotal < env.scaleTimeout(450000),
+                  'total=' + tTotal + 'ms');
 
             await cleanup();
         }

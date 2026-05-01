@@ -113,7 +113,7 @@ async function openViewerInContext(browser, label, recentList) {
             localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
         }, recentList);
     }
-    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(30000) });
     // Wait for prewarm to finish
     for (let i = 0; i < 240; i++) {
         await sleep(500);
@@ -176,7 +176,7 @@ async function openFileInViewer(page, fileId) {
         // Wait for the sidebar to render (seeded via rf_v1).
         for (const { page, label } of [{ page: A.page, label: 'A' }, { page: B.page, label: 'B' }]) {
             await page.waitForFunction(id => !!document.querySelector(`.file[data-fileid="${id}"]`),
-                { timeout: 30000 }, up1.fileId);
+                { timeout: env.scaleTimeout(30000) }, up1.fileId);
         }
 
         await openFileInViewer(A.page, up1.fileId);
@@ -188,8 +188,8 @@ async function openFileInViewer(page, fileId) {
         // Wait for both to load doc1 — explicitly for the expected
         // char count (3 = "one") so we don't read the prewarm blank's
         // intermediate statusbar before the hot-switch completes.
-        const aChars1 = await waitForDocLoaded(A.page, 120000, DOC1_INIT_CHARS);
-        const bChars1 = await waitForDocLoaded(B.page, 120000, DOC1_INIT_CHARS);
+        const aChars1 = await waitForDocLoaded(A.page, env.scaleTimeout(120000), DOC1_INIT_CHARS);
+        const bChars1 = await waitForDocLoaded(B.page, env.scaleTimeout(120000), DOC1_INIT_CHARS);
         log(`After doc1 open: A=${aChars1} B=${bChars1} (expected ${DOC1_INIT_CHARS})`);
         check(`A loaded ${DOC1} (${DOC1_INIT_CHARS} chars)`,
               aChars1 === DOC1_INIT_CHARS, 'A=' + aChars1);
@@ -267,7 +267,7 @@ async function openFileInViewer(page, fileId) {
         await openFileInViewer(A.page, up2.fileId);
         // WasmSwitchVisible's filename is the WOPISrc, which in v2 is the
         // fileId (the editor never sees the plaintext name).
-        const a2 = await waitForSwitchVisible(A.page, 'A', up2.fileId, 30000);
+        const a2 = await waitForSwitchVisible(A.page, 'A', up2.fileId, env.scaleTimeout(30000));
         check(`A switched to ${DOC2} (canvas changed)`, a2 >= 0, 'a2=' + a2 + 'ms');
         // Let A settle in doc2 (registers as active peer in the new room).
         await sleep(3000);
@@ -276,7 +276,7 @@ async function openFileInViewer(page, fileId) {
         // (concurrent remote-peer state messages can keep the canvas busy).
         // Don't assert on it — Phase 3 below proves B switched if A receives
         // B's typing.
-        const b2 = await waitForSwitchVisible(B.page, 'B', up2.fileId, 30000);
+        const b2 = await waitForSwitchVisible(B.page, 'B', up2.fileId, env.scaleTimeout(30000));
         log(`B canvas-switch detected: ${b2 >= 0 ? b2 + 'ms' : 'no (continuing — Phase 3 is the real check)'}`);
         await snap(A.page, 'A_doc2_loaded');
         await snap(B.page, 'B_doc2_loaded');

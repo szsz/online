@@ -67,6 +67,11 @@ setInterval(() => {
 // HASHED_RE (<base>.<8 hex>.<ext>) gets served immutable.
 const HASHED_RE = /\.[0-9a-f]{8}\.(?:js|css|wasm|data|metadata)$/;
 
+// Iter 58: in-memory cache for cool.html. Read once, hold the bytes,
+// invalidate on mtime change. Every iframe load hits this path so even
+// the small readFileSync (~30 KB) shows up under load.
+const _coolCache = { mtimeMs: 0, body: null, etag: null };
+
 // SIGHUP is no-op now (used to trigger runtime rehashing). Kept as a
 // handler so the default SIGHUP-kills-process behaviour doesn't tear
 // down the running server when deploy.sh signals it post-build.
@@ -216,11 +221,36 @@ function handler(req, res) {
     // overlay + custom loaders + Module.locateFile shim, and stripped
     // branding hooks. Cache-Control: no-cache so a deploy is picked up
     // on the next refresh.
+    //
+    // Iter 58: cache the body in memory keyed on mtime + emit ETag so
+    // the iframe's revisit hits 304. The previous early-return skipped
+    // the generic ETag block below, which meant every iframe load got
+    // a full-body 200 even though the browser already had it. Mirrors
+    // editor-server.js iter 53 (Azure side).
     if (pathname.endsWith('/cool.html')) {
         const filepath = path.join(PUB, pathname);
         if (fs.existsSync(filepath)) {
-            res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
-            res.end(fs.readFileSync(filepath));
+            const stat = fs.statSync(filepath);
+            if (_coolCache.mtimeMs !== stat.mtimeMs || !_coolCache.body) {
+                _coolCache.body = fs.readFileSync(filepath);
+                _coolCache.mtimeMs = stat.mtimeMs;
+                _coolCache.etag = '"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"';
+            }
+            const headers = {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Cache-Control': 'no-cache',
+                'ETag': _coolCache.etag,
+                'Last-Modified': new Date(stat.mtimeMs).toUTCString(),
+            };
+            const ims = req.headers['if-modified-since'];
+            const imsHit = ims && new Date(ims).getTime() >= Math.floor(stat.mtimeMs / 1000) * 1000;
+            if (req.headers['if-none-match'] === _coolCache.etag || imsHit) {
+                res.writeHead(304, headers);
+                res.end();
+                return;
+            }
+            res.writeHead(200, headers);
+            res.end(_coolCache.body);
             return;
         }
     }
@@ -281,23 +311,32 @@ function handler(req, res) {
     // The build step renames hashed assets in place (bundle.js →
     // bundle.<hash>.js) and renames the .br sidecar alongside, so a
     // direct `+ '.br'` lookup finds it.
+    //
+    // Iter 64: stream large bodies instead of fs.readFileSync into a
+    // Buffer. online.wasm.br + soffice.data.br are tens of MB, and a
+    // burst of cold loaders allocating 30MB Buffers each is what makes
+    // the server transiently RSS-spike under load. Streaming gives
+    // TCP backpressure proper visibility into the read pipeline.
     const accepted = (req.headers['accept-encoding'] || '').includes('br');
     const brPath = filepath + '.br';
     if (accepted && fs.existsSync(brPath) &&
         fs.statSync(brPath).mtimeMs >= stat.mtimeMs) {
-        const brData = fs.readFileSync(brPath);
+        const brStat = fs.statSync(brPath);
         headers['Content-Encoding'] = 'br';
-        headers['Content-Length'] = brData.length;
+        headers['Content-Length'] = brStat.size;
         headers['Vary'] = 'Accept-Encoding';
         res.writeHead(200, headers);
-        res.end(brData);
+        const stream = fs.createReadStream(brPath);
+        stream.on('error', () => res.end());
+        stream.pipe(res);
         return;
     }
 
-    const data = fs.readFileSync(filepath);
-    headers['Content-Length'] = data.length;
+    headers['Content-Length'] = stat.size;
     res.writeHead(200, headers);
-    res.end(data);
+    const stream = fs.createReadStream(filepath);
+    stream.on('error', () => res.end());
+    stream.pipe(res);
 }
 
 // HTTP — exposed mainly so the SNI router has a fallback / for local curl.

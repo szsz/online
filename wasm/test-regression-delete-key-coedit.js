@@ -11,7 +11,7 @@ const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;
-const TIMEOUT = 300000;
+const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-delete-key';
 
 const T0 = Date.now();

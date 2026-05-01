@@ -39,8 +39,13 @@ const T0 = Date.now();
 // slack). Warm sessions get a tighter budget — passing warms complete
 // in 10-15s; if a trial hasn't verified by 60s it's hung, no need to
 // wait the full 180s.
-const TIMEOUT_MS = 180000;
-const WARM_TIMEOUT_MS = 60000;
+// Iter 79: scaled via env.scaleTimeout — under JOBS_SCALE>1 the
+// per-trial wait widens proportionally so the wrapper's "any-trial
+// verified" gate gets the patience it needs under contention. The
+// WARM_BUDGET_MS gate below stays unscaled; it's the actual perf
+// regression detector and should fail when warm gets slow.
+const TIMEOUT_MS = env.scaleTimeout(180000);
+const WARM_TIMEOUT_MS = env.scaleTimeout(60000);
 // Wall-time budget for a warm trial. Typical good runs verify in 7-11 s
 // (writer/calc) and 9-12 s (impress). Under CPU contention from
 // concurrent puppeteer Chromes (parallel test runner JOBS≥2, or the
@@ -230,7 +235,7 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
     // polling loop below recovers regardless.
     const navStart = Date.now();
     try {
-        await page.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(30000) });
     } catch (e) {
         consoleLines.push({ t: Date.now(), line: 'NAV_GOTO_ERR: ' + (e.message || '') });
     }

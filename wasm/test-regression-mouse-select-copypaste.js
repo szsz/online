@@ -77,11 +77,11 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
                 };
             });
             console.log(`[${label}] Opening...`);
-            await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: 300000 });
+            await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(300000) });
             await page.waitForFunction(() => {
                 const el = document.querySelector('#StateWordCount');
                 return el && el.textContent && el.textContent.includes('characters');
-            }, { timeout: 300000 });
+            }, { timeout: env.scaleTimeout(300000) });
             console.log(`[${label}] Loaded: "${await getStatus(page)}"`);
             return page;
         }

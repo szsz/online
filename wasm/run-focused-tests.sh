@@ -20,6 +20,13 @@ SHOTS_BASE="$TEST_OUTPUT_ROOT"
 GENERATOR="$SCRIPT_DIR/generate-report.js"
 LOG_DIR="$REPORTS_DIR/.logs"
 JOBS="${JOBS:-2}"
+# Iter 70: under JOBS>1 the relay broker + viewer-server slow under load
+# and 2-browser tests time out waiting for the second tab to render.
+# Scale the patience timeouts in tests via lib/test-env.js's scaleTimeout
+# (which reads JOBS_SCALE / TIMEOUT_SCALE). Default scale = JOBS so JOBS=2
+# doubles waits, JOBS=4 quadruples. Override with explicit JOBS_SCALE if
+# the relationship isn't linear for some test environment.
+export JOBS_SCALE="${JOBS_SCALE:-$JOBS}"
 mkdir -p "$REPORTS_DIR" "$LOG_DIR"
 
 # Focused test list. Each entry: slug|script|title|description|shots-dir
@@ -67,6 +74,16 @@ log_file="$LOG_DIR/$slug.log"
 tmpdir="/tmp/test-${slug}-$$-$RANDOM"
 mkdir -p "$tmpdir"
 
+# Iter 77: scale per-test wrapper timeout under contention. Tests'
+# internal patience widens via env.scaleTimeout when JOBS_SCALE>1, so
+# the outer wrapper has to widen too — otherwise the wrapper kills
+# the test before its longest scaled wait can fire. Base 1800s × scale,
+# floored at 1800 so JOBS=1 keeps the existing 30 min ceiling.
+SCALE="${JOBS_SCALE:-1}"
+case "$SCALE" in *.*) SCALE_INT=$(printf '%.0f' "$SCALE") ;; *) SCALE_INT="$SCALE" ;; esac
+WRAPPER_TIMEOUT=$(( 1800 * SCALE_INT ))
+[ "$WRAPPER_TIMEOUT" -lt 1800 ] && WRAPPER_TIMEOUT=1800
+
 # Skip gracefully if test file does not exist yet (new tests planned but not authored).
 if [ ! -f "$SCRIPT_DIR/$script" ]; then
     echo "skip|0|missing-test-file|$title|$description|$shots_name" > "$LOG_DIR/$slug.result"
@@ -76,7 +93,7 @@ fi
 
 t_start=$(date +%s)
 status="pass"
-TMPDIR="$tmpdir" timeout 1800 node "$SCRIPT_DIR/$script" > "$log_file" 2>&1
+TMPDIR="$tmpdir" timeout "$WRAPPER_TIMEOUT" node "$SCRIPT_DIR/$script" > "$log_file" 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then
     # JOBS=2 contention: regression-paste-coedit, snapshot-milestones,

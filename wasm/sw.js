@@ -79,13 +79,22 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
     event.waitUntil((async () => {
-        // Drop any old caches from previous SW versions.
-        const names = await caches.keys();
-        await Promise.all(names
-            .filter(n => n !== CACHE_NAME)
-            .map(n => caches.delete(n)));
-        // Take control of all open clients (tabs) immediately.
-        await self.clients.claim();
+        // Iter 67: claim clients FIRST, then GC old caches in the
+        // background. The new SW serves only out of CACHE_NAME, so the
+        // old caches don't affect correctness — keeping them around
+        // for an extra few hundred ms while clients.claim() runs is
+        // harmless. Previously we awaited delete-all-caches before
+        // claim, meaning a user with N old deploys' caches paid N×
+        // delete latency before the new SW could take control of any
+        // open tab. Reorder so the perceptible "new SW active" moment
+        // happens immediately.
+        const claimP = self.clients.claim();
+        const gcP = caches.keys().then((names) =>
+            Promise.all(names.filter(n => n !== CACHE_NAME)
+                             .map(n => caches.delete(n))));
+        // waitUntil keeps the SW alive for both — claim resolves
+        // first and unblocks tabs; gc finishes whenever it finishes.
+        await Promise.all([claimP, gcP]);
     })());
 });
 

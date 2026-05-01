@@ -580,14 +580,20 @@ PYEOF
         fi
     done
 
-    # Substitute the build fingerprint in wasm-loader.js. Snapshots saved by
-    # an old build are discarded on restore when the fingerprint differs
-    # from the running binary — so every deploy must rewrite the placeholder
-    # with an identifier of THIS online.wasm.
+    # Substitute the build fingerprint in wasm-loader.js AND sw.js.
+    # Snapshots saved by an old build are discarded on restore when the
+    # fingerprint differs from the running binary, and the Service
+    # Worker's CACHE_NAME embeds it so a fresh deploy lands in a new
+    # Cache Storage namespace and the previous build's heavy assets are
+    # GC'd by the activate handler. Every deploy must rewrite both
+    # placeholders with an identifier of THIS online.wasm — otherwise
+    # sw.js falls back to the dev-tree 'cool-editor-dev' name and never
+    # rolls between deploys.
     if [[ -f "$EDIR/online.wasm" ]]; then
         FINGERPRINT=$(md5sum "$EDIR/online.wasm" | cut -c1-16)
         echo "  Build fingerprint: $FINGERPRINT"
-        for p in "$EDIR/wasm-loader.js" "$EDIR/browser/dist/wasm-loader.js"; do
+        for p in "$EDIR/wasm-loader.js" "$EDIR/browser/dist/wasm-loader.js" \
+                 "$EDIR/sw.js" "$EDIR/browser/dist/sw.js"; do
             [[ -f "$p" ]] && sed -i "s|__WASM_BUILD_FINGERPRINT__|$FINGERPRINT|g" "$p"
         done
     fi

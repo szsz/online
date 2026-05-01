@@ -96,7 +96,7 @@ async function openViewer(browser, b64urlSecret, fileId, cachedName, label) {
     page.on('frameattached', fr => {
         fr.page && fr.page.on && fr.page.on('console', () => {});
     });
-    await page.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
     // Once the iframe is attached, listen to its console too.
     const attachIframeLogs = async () => {
         try {
@@ -155,14 +155,14 @@ async function checkHasPeerSelection(page) {
         // ═══ Step 1: A opens ═══
         log('\n--- Step 1: A opens ---');
         const A = await openViewer(browser, up.b64urlSecret, up.fileId, DOC_NAME, 'A');
-        const aInit = await waitForDocLoaded(A.page, 180000);
+        const aInit = await waitForDocLoaded(A.page, env.scaleTimeout(180000));
         check('A loaded doc', aInit > 0, 'chars=' + aInit);
         await snap(A.page, 'A_initial');
 
         // ═══ Step 2: A types ALPHA (6 chars: "ALPHA ") ═══
         log('\n--- Step 2: A inserts "ALPHA " ---');
         const hA = await editorHelpers(A.page);
-        await hA.waitForEditor(120000);
+        await hA.waitForEditor(env.scaleTimeout(120000));
         await hA.typeText(' ALPHA', { delay: 80 });
         await sleep(4000);
         const aAfterAlpha = await getCharCount(A.page);
@@ -172,7 +172,7 @@ async function checkHasPeerSelection(page) {
         // ═══ Step 3: B joins (late joiner) ═══
         log('\n--- Step 3: B joins ---');
         const B = await openViewer(browser, up.b64urlSecret, up.fileId, DOC_NAME, 'B');
-        const bInit = await waitForDocLoaded(B.page, 180000);
+        const bInit = await waitForDocLoaded(B.page, env.scaleTimeout(180000));
         check('B loaded doc', bInit > 0, 'chars=' + bInit);
         // Wait for replay to settle — B should land on A's +6 post-ALPHA state.
         const bDeadline = Date.now() + 30000;
@@ -186,7 +186,7 @@ async function checkHasPeerSelection(page) {
         // ═══ Step 4: B double-clicks to select "ALPHA" ═══
         log('\n--- Step 4: B double-clicks ALPHA to select ---');
         const hB = await editorHelpers(B.page);
-        await hB.waitForEditor(120000);
+        await hB.waitForEditor(env.scaleTimeout(120000));
         // Select a word by Ctrl+Shift+End then Ctrl+Shift+Home+End — simpler
         // to just select-all via Ctrl+A so we get a non-empty selection
         // that shows up as a live cursor/selection broadcast to the relay.
@@ -208,7 +208,7 @@ async function checkHasPeerSelection(page) {
         // ═══ Step 6: C joins after the checkpoint rotation ═══
         log('\n--- Step 6: C joins post-save ---');
         const C = await openViewer(browser, up.b64urlSecret, up.fileId, DOC_NAME, 'C');
-        const cInit = await waitForDocLoaded(C.page, 180000);
+        const cInit = await waitForDocLoaded(C.page, env.scaleTimeout(180000));
         check('C loaded doc', cInit > 0, 'chars=' + cInit);
         // Wait a beat for cursor replay to be applied.
         await sleep(5000);

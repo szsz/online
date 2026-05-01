@@ -71,7 +71,7 @@ async function openViewer(browser, label, recentList) {
             localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
         }, recentList);
     }
-    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(30000) });
     for (let i = 0; i < 240; i++) {
         await sleep(500);
         try {
@@ -90,7 +90,7 @@ async function clickFile(page, fileId) {
     // reaches the server).
     await page.waitForFunction(id =>
         !!document.querySelector(`.file[data-fileid="${id}"]`),
-        { timeout: 15000 }, fileId);
+        { timeout: env.scaleTimeout(15000) }, fileId);
     await page.evaluate(id => {
         document.querySelector(`.file[data-fileid="${id}"]`).click();
     }, fileId);
@@ -148,7 +148,7 @@ async function clickCanvas(page) {
         const A = await openViewer(browser, 'A', recentList);
         await clickFile(A.page, upF.fileId);
         // 120s: Azure viewer prewarm + cross-type reload budget.
-        const aLoadTook = await waitForCharCount(A.page, INIT, 120000);
+        const aLoadTook = await waitForCharCount(A.page, INIT, env.scaleTimeout(120000));
         check(`A loaded ${FILE} (${INIT} chars)`, aLoadTook >= 0, 'took=' + aLoadTook + 'ms');
         await snap(A.page, 'A_loaded');
 
@@ -161,7 +161,7 @@ async function clickCanvas(page) {
             await A.page.keyboard.type(c, { delay: 50 });
             await sleep(800);
         }
-        const aAfterAlpha = await waitForCharCount(A.page, EXPECTED, 15000);
+        const aAfterAlpha = await waitForCharCount(A.page, EXPECTED, env.scaleTimeout(15000));
         check(`A typed ALPHA (now ${EXPECTED} chars)`,
               aAfterAlpha >= 0, 'aChars=' + (await getCharCount(A.page)));
         await snap(A.page, 'A_after_alpha');
@@ -220,7 +220,7 @@ async function clickCanvas(page) {
         // timeout is 60 s; if it fires, B gets stale and WILL NEVER
         // catch up until A's next save lands. So the ceiling has to
         // exceed one full relay-timeout + one retried save cycle.
-        const bSawAlpha = await waitForCharCount(B.page, EXPECTED, 240000);
+        const bSawAlpha = await waitForCharCount(B.page, EXPECTED, env.scaleTimeout(240000));
         const bWallClock = Date.now() - bJoinStart;
         log(`B saw final state in ${bSawAlpha}ms (wall ${bWallClock}ms)`);
         await snap(B.page, 'B_loaded');
