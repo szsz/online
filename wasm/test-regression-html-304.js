@@ -25,7 +25,7 @@ function check(label, cond, ev) {
 
 function fetchUrl(url, headers = {}) {
     return new Promise((resolve, reject) => {
-        const req = https.request(url, { method: 'GET', headers }, (res) => {
+        const req = https.request(url, { method: 'GET', headers, timeout: 10000 }, (res) => {
             let body = '';
             res.on('data', (c) => { body += c; });
             res.on('end', () => resolve({
@@ -34,6 +34,7 @@ function fetchUrl(url, headers = {}) {
                 body,
             }));
         });
+        req.on('timeout', () => { req.destroy(new Error('timeout 10s')); });
         req.on('error', reject);
         req.end();
     });
