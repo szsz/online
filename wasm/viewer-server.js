@@ -90,44 +90,63 @@ app.use((req, res, next) => {
     next();
 });
 
+// Iter 61: cache static HTML bodies in memory keyed on mtime + emit
+// ETag so revisits 304. Without this every navigation re-downloaded
+// the full body (~25KB index.html) even though Cache-Control: no-cache
+// only forces revalidation, not refetch. Mirrors the iter 53/58 pattern.
+const _htmlCache = new Map(); // path -> { mtimeMs, body, etag }
+function serveStaticHtml(req, res, htmlPath, missingMessage) {
+    if (!fs.existsSync(htmlPath)) {
+        return res.status(500).send(missingMessage);
+    }
+    const stat = fs.statSync(htmlPath);
+    let entry = _htmlCache.get(htmlPath);
+    if (!entry || entry.mtimeMs !== stat.mtimeMs) {
+        entry = {
+            mtimeMs: stat.mtimeMs,
+            body: fs.readFileSync(htmlPath),
+            etag: '"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"',
+        };
+        _htmlCache.set(htmlPath, entry);
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('ETag', entry.etag);
+    res.setHeader('Last-Modified', new Date(stat.mtimeMs).toUTCString());
+    const ims = req.headers['if-modified-since'];
+    const imsHit = ims && new Date(ims).getTime() >= Math.floor(stat.mtimeMs / 1000) * 1000;
+    if (req.headers['if-none-match'] === entry.etag || imsHit) {
+        return res.status(304).end();
+    }
+    res.send(entry.body);
+}
+
 // ── GET / and /index.html — the sidebar viewer UI ──────────────
 // Both paths resolve to the same file. Some integrations and link
 // templates write the explicit `/index.html`; without this alias they
 // get Express's default 404 page.
 for (const p of ['/', '/index.html']) {
     app.get(p, (req, res) => {
-        const indexPath = path.join(VIEWER_PUBLIC, 'index.html');
-        if (!fs.existsSync(indexPath)) {
-            return res.status(500).send('viewer-public/index.html missing — broken bundle');
-        }
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.send(fs.readFileSync(indexPath));
+        serveStaticHtml(req, res,
+            path.join(VIEWER_PUBLIC, 'index.html'),
+            'viewer-public/index.html missing — broken bundle');
     });
 }
 
 // ── GET /singleuser.html — same viewer, no relay/co-editing ────
 app.get('/singleuser.html', (req, res) => {
-    const p = path.join(VIEWER_PUBLIC, 'singleuser.html');
-    if (!fs.existsSync(p)) {
-        return res.status(500).send('viewer-public/singleuser.html missing');
-    }
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.send(fs.readFileSync(p));
+    serveStaticHtml(req, res,
+        path.join(VIEWER_PUBLIC, 'singleuser.html'),
+        'viewer-public/singleuser.html missing');
 });
 
 // ── GET /help, /help.html — setup + integration guide ──────────
 // Accessible directly (not iframed), so it does not need COEP/CORP.
 for (const p of ['/help', '/help.html']) {
     app.get(p, (req, res) => {
-        const htmlPath = path.join(VIEWER_PUBLIC, 'help.html');
-        if (!fs.existsSync(htmlPath)) {
-            return res.status(500).send('viewer-public/help.html missing');
-        }
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.send(fs.readFileSync(htmlPath));
+        serveStaticHtml(req, res,
+            path.join(VIEWER_PUBLIC, 'help.html'),
+            'viewer-public/help.html missing');
     });
 }
 
