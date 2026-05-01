@@ -492,8 +492,17 @@ class NavigatorPanel extends SidebarBase {
 			type: 'container',
 			children: [
 				{
+					// Iter 35: was 'edit'; the kit's QuickFind sidebar
+					// has no control named "Find" so the dialogevent
+					// dispatched by `useSearchCallback` (lines 541-587)
+					// was dropped silently → no .uno:ExecuteSearch fired
+					// → _docLayer._searchResults stayed empty (regression-
+					// search). Switch to 'searchedit' so the widget
+					// (Widget.SearchEdit.ts) calls app.searchService
+					// .search(...) directly with SearchItem.SearchString,
+					// matching the proven Ctrl+F status-bar path.
 					id: 'navigator-search',
-					type: 'edit',
+					type: 'searchedit',
 					placeholder: _('Search...'),
 					text: '',
 				} as EditWidgetJSON,
