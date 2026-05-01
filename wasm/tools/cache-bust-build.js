@@ -115,6 +115,32 @@ const WASM_LOADER_INJECT_STATIC = `
 <script type="text/javascript" src="relay-adapter.js"></script>
 `;
 
+// Iter 44: emit preload hints for the heavy assets so the browser starts
+// fetching them in parallel with the dict-loader / wasm-loader / online.js
+// scripts. Without these, online.wasm only starts fetching AFTER online.js
+// runs and calls findWasmBinary() — adding ~1-2 s of sequential network
+// latency to cold init. With preload, fetches start as soon as the browser
+// parses the cool.html <head>. Cached visits still hit Cache Storage via
+// the SW (preload requests go through the SW just like normal fetches).
+function buildPreloadHints(assetHashMap) {
+    const lines = [];
+    const heavy = [
+        { name: 'online.wasm', as: 'fetch', type: 'application/wasm' },
+        { name: 'soffice.data', as: 'fetch' },
+        { name: 'soffice.data.js.metadata', as: 'fetch' },
+        { name: 'bundle.js', as: 'script' },
+        { name: 'bundle.css', as: 'style' },
+        { name: 'online.js', as: 'script' },
+        { name: 'global.js', as: 'script' },
+    ];
+    for (const h of heavy) {
+        const hashed = assetHashMap[h.name] || h.name;
+        const typeAttr = h.type ? ` type="${h.type}"` : '';
+        lines.push(`<link rel="preload" href="${hashed}" as="${h.as}"${typeAttr} crossorigin>`);
+    }
+    return lines.join('\n') + '\n';
+}
+
 function buildLocateFileShim(map) {
     return `<script>
 (function(){
@@ -198,7 +224,8 @@ function rewriteCoolHtml(dir, assetHashMap) {
     // map so both consumers can resolve any asset name.
     const alreadyInjected = html.includes('window.__assetMap');
     if (!alreadyInjected) {
-        const inject = buildLocateFileShim(assetHashMap) + WASM_LOADER_INJECT_STATIC;
+        const inject = buildPreloadHints(assetHashMap)
+            + buildLocateFileShim(assetHashMap) + WASM_LOADER_INJECT_STATIC;
         const anchor = '<input type="hidden" id="init-mobile-app-os-type" value="EMSCRIPTEN" />';
         if (html.includes(anchor)) {
             html = html.replace(anchor, anchor + '\n' + inject);
@@ -206,10 +233,18 @@ function rewriteCoolHtml(dir, assetHashMap) {
             html = html.replace('</body>', inject + '</body>');
         }
     } else {
-        console.log('  cool.html: inject already present, refreshing __assetMap only');
+        console.log('  cool.html: inject already present, refreshing __assetMap + preload hints');
         html = html.replace(
             /window\.__assetMap\s*=\s*\{[^}]*\};/,
             'window.__assetMap = ' + JSON.stringify(assetHashMap) + ';');
+        // Refresh preload hints (URLs may have rolled). Drop any prior
+        // preload block then re-emit the current set just before the
+        // first locateFile shim.
+        html = html.replace(
+            /(?:<link rel="preload"[^>]+>\s*\n?)+/g, '');
+        html = html.replace('<script>\n(function(){\n  window.__assetMap',
+            buildPreloadHints(assetHashMap) +
+            '<script>\n(function(){\n  window.__assetMap');
     }
 
     // Rewrite refs to the current hashed names. We have to handle two

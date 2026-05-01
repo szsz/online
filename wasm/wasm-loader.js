@@ -1367,6 +1367,32 @@
                 updateProgress('Ready', 100);
                 setTimeout(hideOverlay, 150);
 
+                // Iter 41: postMessage SW to background-precache the heavy
+                // assets. After prewarm:ready they're already loaded into
+                // memory, but if the SW lazy-cache was bypassed (e.g. user
+                // had a stale cool.html with old hashed URLs), this nudges
+                // the SW to populate Cache Storage with the CURRENT URLs
+                // so the next visit hits cache. No-op if already cached.
+                try {
+                    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                        var assetMap = window.__assetMap || {};
+                        // SW matches by full URL — resolve each name (hashed
+                        // if cache-bust is active, plain in dev) against
+                        // the document base.
+                        var heavyUrls = ['online.wasm', 'soffice.data',
+                                         'soffice.data.js.metadata', 'bundle.js',
+                                         'online.js', 'global.js']
+                            .map(function(name) {
+                                return new URL((assetMap[name] || name),
+                                    document.baseURI).href;
+                            });
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'precache', urls: heavyUrls,
+                        });
+                        mark('sw:precache_msg', heavyUrls.length + ' urls');
+                    }
+                } catch (e) { /* SW unavailable / messaging failed */ }
+
                 // Read C++ timing log from WASM VFS
                 try {
                     if (typeof Module !== 'undefined' && Module.FS) {

@@ -347,7 +347,12 @@ if count4 == 1:
     c = c.replace(target4, inject4, 1)
     print('  Patched checkStackCookie: skip after snapshot restore')
 else:
-    print(f'  WARNING: Expected 1 checkStackCookie target, found {count4}')
+    # Iter 46: this patch is required for snapshot warm-restore not to
+    # crash on the stack-cookie assertion. If the anchor's gone the
+    # online.js shape changed and we'd ship a broken warm path. Fail
+    # the deploy loud.
+    print(f'  ERROR: Expected 1 checkStackCookie target, found {count4} — deploy aborted')
+    sys.exit(1)
 
 # INJECTION 3: Skip soffice.data download + VFS unpack on snapshot restore.
 # The snapshot already has the VFS populated. We:
@@ -538,8 +543,12 @@ inject = """uno_scripts: [],
 \t\t},"""
 n = c.count(target)
 if n != 1:
-    print(f'  WARNING: emscripten-module.js: expected 1 "{target}" anchor, found {n}; skipping locateFile injection')
-    sys.exit(0)
+    # Iter 46: without this patch, online.js's findWasmBinary fetches
+    # plain `online.wasm` (404 after cache-bust) → WASM_ABORT → editor
+    # never loads. Fail the deploy loud rather than ship a broken
+    # bundle.
+    print(f'  ERROR: emscripten-module.js: expected 1 "{target}" anchor, found {n} — deploy aborted')
+    sys.exit(1)
 with open(path, 'w') as f:
     f.write(c.replace(target, inject, 1))
 print('  Patched emscripten-module.js: cache-bust locateFile')

@@ -118,3 +118,24 @@ self.addEventListener('fetch', (event) => {
         return fresh;
     })());
 });
+
+// Iter 41: precache message handler. wasm-loader.js postMessages
+// {type: 'precache', urls: [...]} after prewarmReady fires; we fetch
+// any URL not already in the cache and tee it. Backgrounds the heavy-
+// asset population so a user who opens the doc, types, then closes the
+// tab still leaves Cache Storage warm for their NEXT visit. Already-
+// cached URLs are no-op (cheap). Errors swallowed — best-effort.
+self.addEventListener('message', (event) => {
+    if (!event.data || event.data.type !== 'precache') return;
+    const urls = Array.isArray(event.data.urls) ? event.data.urls : [];
+    event.waitUntil((async () => {
+        const cache = await caches.open(CACHE_NAME);
+        await Promise.all(urls.map(async (url) => {
+            try {
+                if (await cache.match(url)) return;
+                const r = await fetch(url, { credentials: 'same-origin' });
+                if (r.ok && r.status === 200) await cache.put(url, r);
+            } catch (_) { /* network/quota — best effort */ }
+        }));
+    })());
+});

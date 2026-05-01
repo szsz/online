@@ -3,6 +3,15 @@
 <head>
 <meta charset="utf-8">
 <title>Viewer</title>
+<!-- Iter 40: prewarm DNS+TLS to the editor origin so the iframe load
+     doesn't pay the connection setup latency. The hostnames here are
+     the production defaults; deployments using a different EDITOR_URL
+     will still resolve correctly via /config.js, these preconnects
+     just become unused (~free). -->
+<link rel="preconnect" href="https://wasm.atgpartners.info" crossorigin>
+<link rel="dns-prefetch" href="https://wasm.atgpartners.info">
+<link rel="preconnect" href="wss://relay.atgpartners.info" crossorigin>
+<link rel="dns-prefetch" href="https://relay.atgpartners.info">
 <style>
 body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
 #files {

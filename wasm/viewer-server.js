@@ -135,14 +135,30 @@ for (const p of ['/help', '/help.html']) {
 // The viewer's index.html does <script src="/config.js"></script>
 // before its own JS runs, so window.__CONFIG.EDITOR_URL / .RELAY_URL
 // are set before any code reads them.
+//
+// Iter 54: the config payload is fixed for the lifetime of the
+// viewer process (set at startup from .env). Send a stable ETag
+// based on the payload hash so revisits 304 instead of re-downloading
+// the (~120 byte) script. Tiny wire saving but freezes a step that
+// runs before the page's own JS — saves a millisecond on every
+// navigation. Cache-Control stays no-cache so a process restart
+// (env change) is picked up via the conditional GET.
+const _configPayload = 'window.__CONFIG = ' + JSON.stringify({
+    EDITOR_URL,
+    RELAY_URL,
+    VIEWER_URL,
+}) + ';';
+const _configETag = '"' + require('crypto').createHash('sha256')
+    .update(_configPayload).digest('hex').substring(0, 16) + '"';
 app.get('/config.js', (req, res) => {
     res.setHeader('Content-Type', 'application/javascript');
     res.setHeader('Cache-Control', 'no-cache');
-    res.send('window.__CONFIG = ' + JSON.stringify({
-        EDITOR_URL,
-        RELAY_URL,
-        VIEWER_URL,
-    }) + ';');
+    res.setHeader('ETag', _configETag);
+    if (req.headers['if-none-match'] === _configETag) {
+        res.status(304).end();
+        return;
+    }
+    res.send(_configPayload);
 });
 
 // ── GET /config — same data as JSON, used by editor.html ───────

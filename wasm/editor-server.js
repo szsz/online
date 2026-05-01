@@ -203,18 +203,51 @@ for (const f of wasmFiles) {
 // branding strip, and the Module.locateFile shim are baked in at build
 // time by wasm/tools/cache-bust-build.js — this server no longer rewrites
 // HTML beyond the per-request token substitution.
+// Iter 53: cache the no-token-substitution variant. The vast majority
+// of requests are GETs with no body params, all of which produce the
+// same output (every %TOKEN% → empty/branding default). readFileSync
+// + 8 split/join passes is cheap individually but gets called 100s of
+// times per page load, and warm-snapshot deploys want the cool.html
+// response to be as cheap as possible since the *next* page-load JS
+// is what we want occupying the CPU. Cache invalidates when the file
+// mtime rolls (each deploy bumps it).
+const _coolCache = { mtimeMs: 0, body: null };
 function serveCoolHtml(req, res) {
     const coolHtml = path.join(BROWSER_DIST, 'cool.html');
     if (!fs.existsSync(coolHtml)) return res.status(404).send('cool.html not built');
-
-    let html = fs.readFileSync(coolHtml, 'utf8');
 
     const accessToken = req.body?.access_token || req.query?.access_token || '';
     const accessTokenTtl = req.body?.access_token_ttl || req.query?.access_token_ttl || '0';
     const accessHeader = req.body?.access_header || '';
     const noAuthHeader = req.body?.no_auth_header || '';
     const uiRtl = req.body?.ui_rtl_settings || '';
+    const noSubs = !accessToken && !accessHeader && !noAuthHeader && !uiRtl
+                && (accessTokenTtl === '0' || accessTokenTtl === '');
 
+    if (noSubs) {
+        const stat = fs.statSync(coolHtml);
+        if (_coolCache.mtimeMs !== stat.mtimeMs || !_coolCache.body) {
+            let html = fs.readFileSync(coolHtml, 'utf8');
+            // Empty-token substitution variant — bake the static result.
+            html = html
+                .split('%ACCESS_TOKEN%').join('')
+                .split('%ACCESS_TOKEN_TTL%').join('0')
+                .split('%ACCESS_HEADER%').join('')
+                .split('%NO_AUTH_HEADER%').join('')
+                .split('%UI_RTL_SETTINGS%').join('')
+                .split('%BRANDING_THEME%').join('')
+                .split('%LOGO_URL%').join('')
+                .split('%PRODUCT_BRANDING_NAME%').join('Collabora Online');
+            _coolCache.mtimeMs = stat.mtimeMs;
+            _coolCache.body = html;
+        }
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.send(_coolCache.body);
+    }
+
+    // Token-bearing request — full substitution (rare path, e.g. when
+    // hosted by a WOPI integrator that POSTs the cool.html access token).
+    let html = fs.readFileSync(coolHtml, 'utf8');
     const subs = {
         '%ACCESS_TOKEN%':          accessToken,
         '%ACCESS_TOKEN_TTL%':      accessTokenTtl,
@@ -225,11 +258,9 @@ function serveCoolHtml(req, res) {
         '%LOGO_URL%':              '',
         '%PRODUCT_BRANDING_NAME%': 'Collabora Online',
     };
-
     for (const [key, val] of Object.entries(subs)) {
         html = html.split(key).join(val);
     }
-
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(html);
 }
