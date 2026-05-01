@@ -147,7 +147,7 @@ async function openViewer(browser) {
             localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
         }, rfList);
     }
-    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
     for (let i = 0; i < 240; i++) {
         await sleep(500);
         const fr = await getFrame(page);
@@ -162,7 +162,7 @@ async function clickFile(page, name) {
     const id = FILE_IDS[name];
     if (!id) throw new Error('No fileId known for ' + name);
     await page.waitForFunction(i => !!document.querySelector(`.file[data-fileid="${i}"]`),
-        { timeout: 30000 }, id);
+        { timeout: env.scaleTimeout(30000) }, id);
     await page.evaluate(i =>
         document.querySelector(`.file[data-fileid="${i}"]`).click(), id);
 }
@@ -246,7 +246,7 @@ async function uploadDoc(browser, name, src) {
                 // 360s. Azure cross-type cold reload + compounded
                 // prewarm + TheFakeWebSocket + Module.calledRun waits
                 // can exceed 240s on slow runs.
-                const took = await waitForDocReady(b.page, fileName, 360000);
+                const took = await waitForDocReady(b.page, fileName, env.scaleTimeout(360000));
                 check(`${label} loaded ${docType}`, took >= 0, took >= 0 ? `${took}ms` : 'timeout');
                 if (took < 0) throw new Error(`${label} did not load`);
                 const installed = await installEditObserver(b.page);
@@ -280,7 +280,7 @@ async function uploadDoc(browser, name, src) {
             // remote edit", which is the relay-forwarding contract.
             // Drop the A-local assertion entirely — it was a false
             // expectation that never matched the underlying code path.
-            const bAfter = await waitForEditTick(B.page, bPre, 15000);
+            const bAfter = await waitForEditTick(B.page, bPre, env.scaleTimeout(15000));
             log(`  post-type: B.tick=${bAfter} (A.tick local-path skipped)`);
             check(`${docType} B sees A's edit (invalidatetiles forwarded by relay-adapter)`,
                   bAfter > bPre, `bPre=${bPre} bAfter=${bAfter}`);
