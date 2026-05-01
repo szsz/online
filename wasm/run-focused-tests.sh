@@ -20,6 +20,13 @@ SHOTS_BASE="$TEST_OUTPUT_ROOT"
 GENERATOR="$SCRIPT_DIR/generate-report.js"
 LOG_DIR="$REPORTS_DIR/.logs"
 JOBS="${JOBS:-2}"
+# Iter 70: under JOBS>1 the relay broker + viewer-server slow under load
+# and 2-browser tests time out waiting for the second tab to render.
+# Scale the patience timeouts in tests via lib/test-env.js's scaleTimeout
+# (which reads JOBS_SCALE / TIMEOUT_SCALE). Default scale = JOBS so JOBS=2
+# doubles waits, JOBS=4 quadruples. Override with explicit JOBS_SCALE if
+# the relationship isn't linear for some test environment.
+export JOBS_SCALE="${JOBS_SCALE:-$JOBS}"
 mkdir -p "$REPORTS_DIR" "$LOG_DIR"
 
 # Focused test list. Each entry: slug|script|title|description|shots-dir

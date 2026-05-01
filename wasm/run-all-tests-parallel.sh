@@ -12,6 +12,10 @@ SHOTS_BASE="$TEST_OUTPUT_ROOT"
 GENERATOR="$SCRIPT_DIR/generate-report.js"
 LOG_DIR="$REPORTS_DIR/.logs"
 JOBS="${JOBS:-4}"
+# Iter 70: scale 2-browser test patience timeouts proportionally to
+# parallelism. See lib/test-env.js scaleTimeout() — tests that route
+# their timeouts through it widen automatically when JOBS_SCALE > 1.
+export JOBS_SCALE="${JOBS_SCALE:-$JOBS}"
 mkdir -p "$REPORTS_DIR" "$LOG_DIR"
 
 # Parse TESTS array from canonical runner.
