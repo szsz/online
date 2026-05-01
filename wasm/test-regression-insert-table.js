@@ -107,9 +107,9 @@ async function getCharCount(page) {
         });
 
         const url = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(DOC_NAME) + '&access_token=test';
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
 
-        const ready = await waitForLoaded(page, 180000);
+        const ready = await waitForLoaded(page, env.scaleTimeout(180000));
         check('Doc loaded', !!ready, 'status=' + ready);
         if (!ready) {
             log('Aborting: doc never loaded');
