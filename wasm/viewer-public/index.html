@@ -607,6 +607,7 @@ window.addEventListener('message', function(event) {
                         return;
                     }
                     const j = await resp.json();
+                    if (j.encName) currentV2Keys.encName = j.encName;
                     const ctBytes = Uint8Array.from(atob(j.ciphertext), c => c.charCodeAt(0));
                     const plaintext = await FileCrypto.decryptBytes(currentV2Keys.contentKey, ctBytes);
                     respondLoad({ ok: true, bytes: bytesToBase64(plaintext) });
@@ -640,17 +641,22 @@ window.addEventListener('message', function(event) {
                     const hashHex = Array.from(new Uint8Array(hashBuf))
                         .map(b => b.toString(16).padStart(2, '0')).join('');
                     // encName is reused unchanged — filename doesn't
-                    // change on a save. Fetch current encName and
-                    // rewrite it identically. In a tighter integration
-                    // we'd cache this from the initial open.
-                    let encName = '';
-                    try {
-                        const meta = await fetch('/api/v2/file/' + saveFileId);
-                        if (meta.ok) {
-                            const m = await meta.json();
-                            encName = m.encName || '';
-                        }
-                    } catch(e) {}
+                    // change on a save. Iter 60: cached on the initial
+                    // open in currentV2Keys.encName, so we no longer
+                    // refetch the full ciphertext just to read it.
+                    // Fall back to a fetch only if the cache is empty
+                    // (shouldn't happen — open path always populates it).
+                    let encName = currentV2Keys.encName || '';
+                    if (!encName) {
+                        try {
+                            const meta = await fetch('/api/v2/file/' + saveFileId);
+                            if (meta.ok) {
+                                const m = await meta.json();
+                                encName = m.encName || '';
+                                currentV2Keys.encName = encName;
+                            }
+                        } catch(e) {}
+                    }
                     const putResp = await fetch('/api/v2/file/' + saveFileId, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
@@ -874,11 +880,16 @@ let currentV2Keys = null; // { contentKey, nameKey, fileId, secretB64 }
 async function openFileBySecret(secretB64) {
     const secret = FileCrypto.b64urlDecode(secretB64);
     const { contentKey, nameKey, fileId } = await FileCrypto.deriveKeys(secret);
-    currentV2Keys = { contentKey, nameKey, fileId, secretB64 };
+    currentV2Keys = { contentKey, nameKey, fileId, secretB64, encName: null };
     setStatus('Fetching encrypted file…');
     const resp = await fetch('/api/v2/file/' + fileId);
     if (!resp.ok) { setStatus('File not found (' + resp.status + ')'); return; }
     const payload = await resp.json();
+    // Iter 60: cache encName so save doesn't have to refetch the
+    // entire ciphertext just to read it. Filename can't change
+    // without re-keying, so this is correct for the lifetime of the
+    // tab. WasmFileLoad below also refreshes this.
+    currentV2Keys.encName = payload.encName || null;
     const ct = Uint8Array.from(atob(payload.ciphertext), c => c.charCodeAt(0));
     const plainBytes = await FileCrypto.decryptBytes(contentKey, ct);
     let cachedName = null;
