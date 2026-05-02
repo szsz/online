@@ -92,8 +92,8 @@ async function waitForType(page, type, deadlineMs) {
 
         // Cold open writer.
         await page.goto(VIEWER + '/#file=' + fileIds['pool-writer.docx'].secret,
-            { waitUntil: 'domcontentloaded', timeout: 60000 });
-        const coldT = await waitForType(page, 'writer', 90000);
+            { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
+        const coldT = await waitForType(page, 'writer', env.scaleTimeout(90000));
         check('Cold writer-1 verified', coldT >= 0, 'took=' + coldT + 'ms');
 
         // Phase 1: cross-type writer → calc (FIRST cross-type, no parked
@@ -101,7 +101,7 @@ async function waitForType(page, type, deadlineMs) {
         const t1 = Date.now();
         await page.evaluate(s => { location.hash = '#file=' + s; },
             fileIds['pool-calc.xlsx'].secret);
-        const w2c = await waitForType(page, 'calc', 30000);
+        const w2c = await waitForType(page, 'calc', env.scaleTimeout(30000));
         const elapsed1 = Date.now() - t1;
         log(`writer→calc cross-type: ${w2c}ms`);
         check('writer→calc cold cross-type completes',

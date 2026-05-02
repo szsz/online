@@ -343,6 +343,52 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
         await sleep(50);
     }
 
+    // Iter 132: measure on-the-wire bytes for this visit. SUM transferSize
+    // across all resource fetches in BOTH the top-level page AND the editor
+    // iframe. transferSize is HTTP-cache-aware: a 304/cache-hit returns 0,
+    // so this metric directly reflects how much the cold/warm path actually
+    // pulled from the network. Cold should be ~60+ MB (online.wasm + soffice.data
+    // + bundle). Warm should be ≪1 MB (just relay handshake + checkpoint).
+    // A regression here means the SW cache or HTTP cache stopped honouring
+    // immutable hashed assets.
+    let transferBytes = 0;
+    let transferCount = 0;
+    let transferTopBytes = 0;
+    let transferIframeBytes = 0;
+    let topResources = [];
+    let iframeResources = [];
+    try {
+        const top = await page.evaluate(() =>
+            performance.getEntriesByType('resource').map(e => ({
+                name: e.name.split('/').pop().split('?')[0],
+                transferSize: e.transferSize || 0,
+                decodedBodySize: e.decodedBodySize || 0,
+            })));
+        topResources = top;
+        for (const e of top) {
+            transferTopBytes += e.transferSize;
+            transferCount++;
+        }
+    } catch (e) {}
+    try {
+        const editorFrame = page.frames().find(f =>
+            (f.url() || '').includes('cool.html') || (f.url() || '').includes('/browser/'));
+        if (editorFrame && !editorFrame.isDetached()) {
+            const inner = await editorFrame.evaluate(() =>
+                performance.getEntriesByType('resource').map(e => ({
+                    name: e.name.split('/').pop().split('?')[0],
+                    transferSize: e.transferSize || 0,
+                    decodedBodySize: e.decodedBodySize || 0,
+                })));
+            iframeResources = inner;
+            for (const e of inner) {
+                transferIframeBytes += e.transferSize;
+                transferCount++;
+            }
+        }
+    } catch (e) {}
+    transferBytes = transferTopBytes + transferIframeBytes;
+
     // Final screenshot. Prefer the content_verified shot if present —
     // that's what the user wants to see ("did the document actually
     // render?"). Otherwise capture whatever is on screen at end as
@@ -365,12 +411,28 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
             ? (hits.shield_dropped / 1000).toFixed(2) + 's' : null,
         finalDomProbe: lastDomProbe,
         consoleLines: consoleLines.length,
+        transferBytes,
+        transferTopBytes,
+        transferIframeBytes,
+        transferCount,
     }, null, 2));
+
+    // Iter 132: per-resource breakdown for offline analysis.
+    // The biggest contributors (online.wasm, soffice.data, bundle.js)
+    // are what determine cache health.
+    const allRes = [
+        ...topResources.map(e => ({ ...e, frame: 'top' })),
+        ...iframeResources.map(e => ({ ...e, frame: 'iframe' })),
+    ].sort((a, b) => b.transferSize - a.transferSize);
+    fs.writeFileSync(path.join(sessDir, 'resources.json'),
+        JSON.stringify(allRes, null, 2));
 
     await page.close();
 
     return { hits, screenshots, navStart, totalMs: Date.now() - navStart,
-             lastDomProbe, consoleLines: consoleLines.length };
+             lastDomProbe, consoleLines: consoleLines.length,
+             transferBytes, transferTopBytes, transferIframeBytes,
+             transferCount };
 }
 
 function formatRow(milestone, hits, screenshots, prevId, isTerminal) {
@@ -393,21 +455,27 @@ function formatRow(milestone, hits, screenshots, prevId, isTerminal) {
 
 function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
     const subdir = subdirOverride || `${docTag}-${kind}`;
-    const { hits, screenshots, totalMs, lastDomProbe } = result;
+    const { hits, screenshots, totalMs, lastDomProbe,
+            transferBytes = 0, transferTopBytes = 0,
+            transferIframeBytes = 0, transferCount = 0 } = result;
     const verified = hits.content_verified !== undefined;
     const dropped  = hits.shield_dropped !== undefined;
+    const wireMB = (transferBytes / 1048576).toFixed(2);
+    const wireDetail = `<span class="wire">wire: <strong>${wireMB} MB</strong>
+                          <small>(${transferCount} req · top ${(transferTopBytes/1048576).toFixed(2)} MB
+                            · iframe ${(transferIframeBytes/1048576).toFixed(2)} MB)</small></span>`;
     let banner;
     if (dropped) {
         banner = `<p class="ok">✓ Document VISIBLE at +${(hits.shield_dropped/1000).toFixed(2)}s
                   (DOM verified at +${(hits.content_verified/1000).toFixed(2)}s; viewer overlay dropped at
-                  +${(hits.shield_dropped/1000).toFixed(2)}s)</p>`;
+                  +${(hits.shield_dropped/1000).toFixed(2)}s)<br>${wireDetail}</p>`;
     } else if (verified) {
         banner = `<p class="warn">⚠ DOM verified at +${(hits.content_verified/1000).toFixed(2)}s
-                  but viewer overlay never dropped — user would still see a spinner.</p>`;
+                  but viewer overlay never dropped — user would still see a spinner.<br>${wireDetail}</p>`;
     } else {
         banner = `<p class="fail">✗ Document NOT verified — final iframe DOM had
                   canvas=${lastDomProbe.hasCanvas}, statusMatches=${lastDomProbe.statusMatches},
-                  statusText=<code>${(lastDomProbe.statusText || '(empty)').substring(0, 120)}</code></p>`;
+                  statusText=<code>${(lastDomProbe.statusText || '(empty)').substring(0, 120)}</code><br>${wireDetail}</p>`;
     }
 
     let prevId = null;
@@ -510,7 +578,9 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
             expectStatus: d.expectStatus, expectAssert: d.expectAssert });
         log(`[${d.tag}] cold done: ${(cold.totalMs/1000).toFixed(2)} s, ` +
             `${Object.keys(cold.hits).length} milestones, ` +
-            `verified=${cold.hits.content_verified !== undefined}`);
+            `verified=${cold.hits.content_verified !== undefined}, ` +
+            `wire=${(cold.transferBytes/1048576).toFixed(2)} MB ` +
+            `(${cold.transferCount} req)`);
         // Cold writes the 162-184 MB snapshot blob to Cache Storage
         // (which is IndexedDB-backed). Hypothesis from prior iterations:
         // warm "all-3-trials-fail" lockstep failures correlate with cold
@@ -538,7 +608,9 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
                 timeoutMs: WARM_TIMEOUT_MS });
             log(`[${d.tag}] warm ${i} done: ${(w.totalMs/1000).toFixed(2)} s, ` +
                 `${Object.keys(w.hits).length} milestones, ` +
-                `verified=${w.hits.content_verified !== undefined}`);
+                `verified=${w.hits.content_verified !== undefined}, ` +
+                `wire=${(w.transferBytes/1048576).toFixed(2)} MB ` +
+                `(${w.transferCount} req)`);
             warmTrials.push({ tag, result: w });
             await browser.close();
             await sleep(1000);
@@ -580,13 +652,17 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
     let summary = `<table class="overview"><thead><tr>
         <th>Doc</th>
         <th>Cold visible at</th>
+        <th>Cold MB</th>
         <th>Warm pass-rate</th>
-        <th>Warm visible (per trial)</th></tr></thead><tbody>`;
+        <th>Warm visible (per trial)</th>
+        <th>Warm MB (per trial)</th></tr></thead><tbody>`;
     for (const d of DOCS) {
         const r = results[d.tag];
         const coldVer = r.cold.hits.content_verified !== undefined;
         const coldCell = `<td class="${coldVer ? 'ok' : 'fail'}">${
             coldVer ? '✓ +' + (r.cold.hits.content_verified/1000).toFixed(2) + 's' : '✗'}</td>`;
+        const coldMB = ((r.cold.transferBytes || 0) / 1048576).toFixed(2);
+        const coldMBCell = `<td>${coldMB} MB</td>`;
         const passes = r.warmTrials.filter(t =>
             t.result.hits.content_verified !== undefined).length;
         const total = r.warmTrials.length;
@@ -599,11 +675,22 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
                 ? `<span class="ok">${(v/1000).toFixed(2)}s</span>`
                 : `<span class="fail">✗</span>`;
         }).join(' · ') + '</td>';
+        // Iter 132: per-trial wire bytes. Warm trials should be ≪1 MB
+        // (just the rehydration handshake + checkpoint); a regression
+        // here means the SW cache or HTTP cache stopped honouring
+        // immutable hashed assets.
+        const warmMBCell = '<td>' + r.warmTrials.map(t => {
+            const mb = ((t.result.transferBytes || 0) / 1048576).toFixed(2);
+            const big = (t.result.transferBytes || 0) > 5 * 1048576;
+            return `<span class="${big ? 'warn' : 'ok'}">${mb}</span>`;
+        }).join(' · ') + '</td>';
         summary += `<tr>
             <td>${d.label}</td>
             ${coldCell}
+            ${coldMBCell}
             ${rateCell}
             ${trialsCell}
+            ${warmMBCell}
         </tr>`;
     }
     summary += `</tbody></table>`;

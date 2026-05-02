@@ -103,42 +103,56 @@
     // from wopi events that arrive long after load, and its own UI code
     // will clobber any one-off assignment. Use a MutationObserver on
     // the input and a long-running interval so we always win.
-    if (displayName) {
-        var applyName = function() {
-            try {
-                if (window.app && window.app.map && window.app.map['wopi']) {
-                    window.app.map['wopi'].BaseFileName = displayName;
-                    window.app.map['wopi'].BreadcrumbDocName = displayName;
-                }
-                var ni = document.querySelector('#document-name-input');
-                if (ni && ni.value !== displayName) ni.value = displayName;
-                try { document.title = displayName; } catch(e) {}
-            } catch(e) {}
-        };
-        // Bug iter 17 #2: removed the 120 s applyName poll that previously
-        // ran at 250 ms cadence. It raced the per-switchdoc title poll
-        // (root cause of the A↔B flicker observed when toggling between
-        // two same-type files). The MutationObserver below catches any
-        // late COOL clobber via a single one-shot apply.
-        applyName();
-        // Watch for late DOM insertion of the input; once it appears,
-        // attach a MutationObserver so we re-apply if COOL ever resets
-        // it back to the fileId.
-        var observerInstalled = false;
-        var watchStart = Date.now();
-        var watchInt = setInterval(function() {
-            var ni = document.querySelector('#document-name-input');
-            if (ni && !observerInstalled) {
-                observerInstalled = true;
-                try {
-                    new MutationObserver(function() {
-                        if (ni.value !== displayName) ni.value = displayName;
-                    }).observe(ni, { attributes: true, attributeFilter: ['value'] });
-                } catch(e) {}
+    //
+    // Iter 89: hoisted out of the `if (displayName)` gate. On a deep-link
+    // open (`/#file=secret` on viewer load), wasm-loader runs with the
+    // PREWARM iframe URL — no displayName param. Then a hashchange
+    // delivers `#switchdoc=<fileId>&displayName=...` which sets the
+    // module-scope displayName variable (line ~671 in checkHashSwitch).
+    // The previous code skipped installing the observer if displayName
+    // was empty at init, so a late-arriving displayName never had its
+    // observer to defend it against COOL's wopi: clobber. Net effect:
+    // the title bar showed the opaque fileId on deep-link cold-load.
+    // Now: always install the watcher, no-op while displayName is
+    // empty, kicks in as soon as it lands.
+    var applyName = function() {
+        if (!displayName) return;
+        try {
+            if (window.app && window.app.map && window.app.map['wopi']) {
+                // Only set BreadcrumbDocName — BaseFileName is the WOPISrc
+                // identity used by save/rename/export and must stay = the
+                // WOPISrc (iter 17 #4 carve-out).
+                window.app.map['wopi'].BreadcrumbDocName = displayName;
             }
-            if (Date.now() - watchStart > 120000) clearInterval(watchInt);
-        }, 500);
-    }
+            var ni = document.querySelector('#document-name-input');
+            if (ni && ni.value !== displayName) ni.value = displayName;
+            try { document.title = displayName; } catch(e) {}
+        } catch(e) {}
+    };
+    applyName();
+    // Watch for late DOM insertion of the input; once it appears,
+    // attach a MutationObserver so we re-apply if COOL ever resets
+    // it back to the fileId. Watcher runs unconditionally; applyName
+    // bails fast when displayName is empty.
+    var observerInstalled = false;
+    var watchStart = Date.now();
+    var watchInt = setInterval(function() {
+        var ni = document.querySelector('#document-name-input');
+        if (ni && !observerInstalled) {
+            observerInstalled = true;
+            try {
+                new MutationObserver(function() {
+                    if (displayName && ni.value !== displayName) ni.value = displayName;
+                }).observe(ni, { attributes: true, attributeFilter: ['value'] });
+            } catch(e) {}
+            // Also catch the case where COOL writes a NEW value programmatically
+            // (input.value = '...' doesn't always emit attribute mutations).
+            // Re-apply on focus / blur events as a final defence.
+            ni.addEventListener('blur', applyName, true);
+        }
+        applyName();
+        if (Date.now() - watchStart > 120000) clearInterval(watchInt);
+    }, 500);
 
     // ───── SERVICE WORKER REGISTRATION ─────
     // Register sw.js to lock the heavy WASM assets into Cache Storage.
