@@ -82,8 +82,30 @@ async function detectShieldState(page) {
 // The iframe is cross-origin (viewer.szebeni.hu vs wasm.atgpartners.info),
 // so parent can't reach contentDocument — use page.frames() to get the
 // CDPFrame directly and evaluate inside it.
+//
+// Iter 202: cross-type cold-reload PARKS the previous iframe (still in
+// the DOM, cool.html URL) and creates a sibling new one with id
+// 'editor-frame'. page.frames() returns ALL frames, and .find returns
+// the first match — typically the parked one (created earlier). That
+// made every probe read the previous doctype's status, hiding the
+// fact that the new iframe was actually rendering correctly. Resolve
+// the active iframe via the parent's getElementById('editor-frame')
+// and match the frame whose URL equals its src.
 async function probeIframeContent(page) {
-    const frame = page.frames().find(f => f.url().includes('cool.html'));
+    const activeUrl = await page.evaluate(() => {
+        var el = document.getElementById('editor-frame');
+        return el ? el.src : null;
+    });
+    let frame;
+    if (activeUrl) {
+        frame = page.frames().find(f => f.url() === activeUrl);
+    }
+    if (!frame) {
+        // Fall back to the legacy first-cool match for the rare case
+        // where the live iframe element exists but its frame hasn't
+        // attached yet.
+        frame = page.frames().find(f => f.url().includes('cool.html'));
+    }
     if (!frame) return { err: 'no cool iframe' };
     try {
         return await frame.evaluate(() => ({
@@ -141,10 +163,24 @@ async function clickFileAndMeasure(page, label, fileMatch, expect) {
     let lastFailReason = '';
     const deadline = clickT + 90000;
     let lastProbe = null;
+    // Iter 202: cross-revive same-file path is instant (showShield then
+    // hideShield within microseconds, faster than 250 ms poll). Read
+    // the viewer's monotonic __shieldDropCount and treat an increment
+    // as a valid up→down completion when the visible-up window slips.
+    const baselineDropCount = await page.evaluate(() =>
+        window.__shieldDropCount || 0);
     while (Date.now() < deadline) {
         const s = await detectShieldState(page);
         if (s.visible && !sawUp) { shieldUpT = Date.now(); sawUp = true; }
         if (sawUp && !s.visible) { sawDown = true; }
+        if (!sawDown) {
+            const dropCount = await page.evaluate(() => window.__shieldDropCount || 0);
+            if (dropCount > baselineDropCount && !s.visible) {
+                sawDown = true;
+                if (!shieldUpT) shieldUpT = Date.now() - 1; // synth a near-zero up
+                sawUp = true;
+            }
+        }
         const probe = await probeIframeContent(page);
         lastProbe = probe;
         const fieldText = expect ? (probe[expect.field] || '') : '';

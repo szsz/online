@@ -581,6 +581,12 @@ window.addEventListener('message', function(event) {
                     return;
                 }
             }
+            // Iter 202: real paint completion clears the cold-type watchdog.
+            // The cold-reload-initialized branch ALSO flips prewarmReady
+            // off the early Initialized signal, so we can't gate on that
+            // — track WasmPrewarmReady's last-seen file in its own flag.
+            window.__lastPaintedFile = msg.Values && msg.Values.filename;
+            clearTimeout(window.__crossTypeWatchdog);
         }
 
         // App_LoadingStatus=Initialized has TWO emitters: COOL Map.js (early
@@ -1095,6 +1101,14 @@ async function openFile(name, opts) {
             if (__cp === '0' || __cp === 'off') __coldPlanC = '&planc=0';
             else if (__cp === '1' || __cp === 'on') __coldPlanC = '&planc=1';
         } catch (e) { /* ignore */ }
+        // Iter 202: once warm-restore has wedged in this session, force
+        // every subsequent cross-type into pure cold (no snapshot
+        // restore). The wedge is reproducible against the captured
+        // snapshot, so paying the watchdog wait every cross-type is
+        // pure overhead.
+        if (window.__warmRestoreFailedThisSession && !__coldPlanC) {
+            __coldPlanC = '&planc=0';
+        }
 
         // Park the CURRENT iframe under its doctype IFF it actually
         // hosts a loaded doc (activeIframeFile/activeIframeDocType set).
@@ -1201,6 +1215,54 @@ async function openFile(name, opts) {
             setStatus('Loading ' + name
                 + (sameType ? '' : ' (type change ' + currentDocType + '→' + newDocType + ')'));
             window.__viewerState.lastOpenMode = 'cold-typechange';
+
+            // Iter 202: cold-typechange canvas-paint watchdog. The 6 s
+            // warm-restore watchdog inside wasm-loader catches the case
+            // where doc:loaded never fires; this catches the worse one
+            // where doc:loaded DOES fire (runtime ready) but the actual
+            // doc never paints (kit hangs in layout because the snapshot
+            // restored writer state and we're loading calc/impress on
+            // top of it — see CanvasTileLayer's #129 sectionContainer
+            // leak). Symptom: canvas stays white, #StatusDocPos empty.
+            // WasmPrewarmReady gates on canvas paint, so its absence
+            // for 30 s is the unambiguous "kit is stuck" signal.
+            //
+            // Recovery: latch __warmRestoreFailedThisSession + recreate
+            // the iframe with ?planc=0 (no warm-restore) and ?fresh=1
+            // (skip Cache Storage snapshot) so the next attempt is a
+            // pure cold load. Set this session-wide so subsequent
+            // cross-types skip warm-restore too — once warm-restore
+            // wedges in a session it's reproducible for the same
+            // captured snapshot.
+            if (!opts.__crossTypeRetry) {
+                clearTimeout(window.__crossTypeWatchdog);
+                window.__crossTypeWatchdog = setTimeout(function() {
+                    // WasmPrewarmReady fires only when canvas actually paints.
+                    // If __lastPaintedFile matches the file we expected, the
+                    // load succeeded and we don't need to recover.
+                    if (window.__lastPaintedFile === name) return;
+                    console.warn('[viewer] Cross-type canvas-paint watchdog '
+                        + '(30s) — no WasmPrewarmReady, recreating with planc=0');
+                    window.__warmRestoreFailedThisSession = true;
+                    // Reset state so the retry takes a clean cold path.
+                    currentFile = null;
+                    currentDocType = null;
+                    activeIframeFile = null;
+                    activeIframeDocType = null;
+                    try {
+                        var rec = (typeof RecentFiles !== 'undefined' && RecentFiles.list)
+                            ? RecentFiles.list() : [];
+                        var entry = rec.find(function(r) {
+                            return r.cachedName === name || r.fileId === name;
+                        });
+                        if (entry && typeof openFileBySecret === 'function') {
+                            openFileBySecret(entry.secret, { __crossTypeRetry: true });
+                        }
+                    } catch (e) {
+                        console.error('[viewer] cross-type watchdog retry failed', e);
+                    }
+                }, 30000);
+            }
 
             filePromise.then(buf => {
                 if (!buf) return;
