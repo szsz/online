@@ -108,7 +108,15 @@ function log(msg) { console.log(`[${elapsed()}] ${msg}`); }
             // load started) and THEN drop it (signaling doc fully loaded).
             // Without the rising-edge detection we get false-positives from
             // a still-down shield from the previous load.
-            const ready = await page.evaluate(async (expected, timeoutMs) => {
+            //
+            // Iter 196: cross-revive same-file opens hideShield within
+            // microseconds (no awaits between showShield and hideShield),
+            // faster than 100 ms poll cadence. The viewer exposes a
+            // monotonic __shieldDropCount; observe its increment as
+            // proxy for a complete up→down cycle.
+            const baselineDropCount = await page.evaluate(() =>
+                window.__shieldDropCount || 0);
+            const ready = await page.evaluate(async (expected, timeoutMs, baseline) => {
                 const t0 = Date.now();
                 let sawShieldUp = false;
                 let lastStatus = '';
@@ -119,14 +127,21 @@ function log(msg) { console.log(`[${elapsed()}] ${msg}`); }
                     const status = document.getElementById('status-bar')?.textContent || '';
                     if (status !== lastStatus) lastStatus = status;
                     if (shieldVisible) sawShieldUp = true;
+                    const dropCount = window.__shieldDropCount || 0;
                     // Need to first see shield UP, then DOWN.
                     if (sawShieldUp && !shieldVisible) {
                         return { ok: true, ms: Date.now() - t0, status: lastStatus, sawShieldUp };
                     }
+                    // Cross-revive same-file: shield up→down faster than
+                    // poll cadence. Detect via the monotonic counter.
+                    if (dropCount > baseline && !shieldVisible) {
+                        return { ok: true, ms: Date.now() - t0, status: lastStatus,
+                                 sawShieldUp: 'inferred-from-counter' };
+                    }
                     await new Promise(r => setTimeout(r, 100));
                 }
                 return { ok: false, ms: Date.now() - t0, status: lastStatus, sawShieldUp };
-            }, expectedFile, 90000);
+            }, expectedFile, 90000, baselineDropCount);
 
             const dt = Date.now() - t0;
             const mode = await page.evaluate(() =>

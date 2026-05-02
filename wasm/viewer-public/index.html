@@ -301,6 +301,10 @@ function hideShield() {
     var sh = document.getElementById('editor-shield');
     sh.classList.remove('active');
     sh.style.display = 'none';
+    // Iter 196: monotonic counter so tests polling at ≥100 ms can
+    // detect cross-revive same-file open events whose shield goes
+    // up→down within microseconds (faster than poll cadence).
+    window.__shieldDropCount = (window.__shieldDropCount || 0) + 1;
 }
 function updateShieldProgress(label, pct, detail) {
     if (label) document.getElementById('editor-shield-label').textContent = label;
