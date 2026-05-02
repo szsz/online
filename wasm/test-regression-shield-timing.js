@@ -91,6 +91,22 @@ async function waitForShieldHide(page, timeoutMs) {
     return -1;
 }
 
+// Iter 191: shield-drop alone is insufficient — when prewarm has
+// already lowered the shield, the cold-load click finds it down at
+// 0ms even though the canvas hasn't painted yet. Capture the canvas
+// fingerprint by polling until it has actual pixel data, so the
+// subsequent hot-switch comparison has a real "before" baseline.
+async function waitForCanvasContent(page, timeoutMs) {
+    const t0 = Date.now();
+    let last = '';
+    while (Date.now() - t0 < timeoutMs) {
+        last = await canvasFingerprint(page);
+        if (last && last.length > 100) return last;
+        await sleep(200);
+    }
+    return last;
+}
+
 (async () => {
     log('=== Regression: shield must stay up until new doc canvas paints ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
@@ -147,7 +163,9 @@ async function waitForShieldHide(page, timeoutMs) {
         await sleep(2000);
 
         // Capture A's canvas pixels as the "before-switch" baseline.
-        const preCanvas = await canvasFingerprint(page);
+        // Poll until the canvas actually has pixel content — when prewarm
+        // already lowered the shield, A may still be loading.
+        const preCanvas = await waitForCanvasContent(page, env.scaleTimeout(60000));
         check('A: canvas fingerprint captured', preCanvas.length > 100, `len=${preCanvas.length}`);
 
         // Open B (hot-switch xlsx → xlsx)
