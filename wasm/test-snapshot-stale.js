@@ -5,6 +5,8 @@
 // 4. Verify the editor does a full cold init instead
 
 const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
 const { launch, sleep } = require('./lib/browser');
 const env = require('./lib/test-env');
 
@@ -22,9 +24,34 @@ async function waitForEditor(page, timeoutMs = 120000) {
     throw new Error('Editor did not become ready within ' + timeoutMs + 'ms');
 }
 
+// Iter 185: upload a fixture to /wasm/<name> on the editor-static server
+// before navigating with WOPISrc=<name>. Without this, the kit fetches
+// /wasm/cache-test.docx, gets 404, and the editor never reaches
+// __wasmPrewarmReady — the test then times out at 120s with
+// "Editor did not become ready". This made test-snapshot-stale dependent
+// on whatever previous test happened to upload cache-test.docx; in the
+// full suite that ordering broke after iter 173.
+async function uploadFixture(browser, name, fixtureSrc) {
+    const bytes = fs.readFileSync(fixtureSrc);
+    const up = await browser.newPage();
+    await up.goto(BASE, { waitUntil: 'networkidle0', timeout: 30000 });
+    await up.evaluate(async (url, n, arr) => {
+        await fetch(url + '/wasm/' + encodeURIComponent(n), {
+            method: 'POST', body: new Blob([new Uint8Array(arr)])
+        });
+    }, BASE, name, Array.from(bytes));
+    await up.close();
+    log(`Uploaded ${name} (${bytes.length} bytes)`);
+}
+
 (async () => {
     const { browser, cleanup } = await launch();
     try {
+        // Upload a fresh fixture so /wasm/<docName> always exists for this run.
+        const docName = 'snapshot-stale-' + Date.now() + '.docx';
+        await uploadFixture(browser, docName,
+            path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+
         const page = await browser.newPage();
         const profileEvents = [];
         page.on('console', msg => {
@@ -35,7 +62,7 @@ async function waitForEditor(page, timeoutMs = 120000) {
             }
         });
 
-        const url = `${BASE}/browser/cool.html?WOPISrc=cache-test.docx&access_token=test&lang=en`;
+        const url = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(docName)}&access_token=test&lang=en`;
 
         // ── Step 1: Clear cache, do cold visit to create snapshot ──
         log('=== Step 1: Cold visit — create snapshot ===');

@@ -762,6 +762,16 @@ async function refresh() {
     for (const r of recent) {
         const el = list.querySelector(`.file[data-fileid="${r.fileId}"]`);
         if (el) el.addEventListener('click', () => {
+            // Iter 181: collapse synchronously here, BEFORE the hash-
+            // change round-trip that lazily calls openFile (which would
+            // also collapse, but only after openFileBySecret resolves
+            // its keys + first fetch). regression-sidebar reads the
+            // body class immediately after click expecting the bar to
+            // already be docs-collapsed. The renderTree branch (line
+            // ~790) uses inline onclick="openFile(...)" so collapse
+            // fires synchronously there; the recent-files branch goes
+            // through location.hash, hence this missing collapse.
+            collapseSidebar();
             location.hash = '#file=' + r.secret;
         });
     }
