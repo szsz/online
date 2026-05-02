@@ -403,6 +403,41 @@ window.addEventListener('message', function(event) {
                 + 'subsequent cross-type iframes will use ?planc=0');
             return;
         }
+        // Iter 195: hot-switch (in-iframe #switchdoc) can wedge after
+        // 3+ consecutive switchdocs in the same kit. wasm-loader's
+        // bridge:hot_switch_watchdog fires after 30s of no canvas
+        // change and posts HotSwitchFailed. Drop the cached
+        // currentFile/currentDocType so the next openFileBySecret
+        // takes the cross-type cold-reload path, then re-trigger
+        // the open of the file the user just clicked. The iframe's
+        // src change (cool.html?... no #switchdoc) forces a fresh
+        // load — same UX as a cold reload, but recovers the user
+        // instead of staring at a stuck spinner.
+        if (msg.MessageId === 'HotSwitchFailed' && msg.Values) {
+            var stuckFile = msg.Values.filename;
+            console.warn('[viewer] HotSwitchFailed for ' + stuckFile
+                + ' (' + msg.Values.reason + ') — falling back to cold reload');
+            // Force the next open to be a cold reload.
+            currentFile = null;
+            currentDocType = null;
+            activeIframeFile = null;
+            activeIframeDocType = null;
+            // Re-fire the open for the file the user wanted, if we
+            // still have its secret cached. RecentFiles is the
+            // localStorage-backed registry; entries have
+            // {secret, fileId, cachedName}.
+            try {
+                var rec = (typeof RecentFiles !== 'undefined' && RecentFiles.list)
+                    ? RecentFiles.list() : [];
+                var entry = rec.find(function(r) {
+                    return r.cachedName === stuckFile || r.fileId === stuckFile;
+                });
+                if (entry && typeof openFileBySecret === 'function') {
+                    openFileBySecret(entry.secret);
+                }
+            } catch(e) { console.error('[viewer] HotSwitchFailed retry failed', e); }
+            return;
+        }
         // Live progress from the iframe's wasm-loader.
         if (msg.MessageId === 'WasmProgress' && msg.Values) {
             var pct = msg.Values.pct;

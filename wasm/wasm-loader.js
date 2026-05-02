@@ -593,12 +593,30 @@
         // important: it ensures we don't fire WasmDocReady on the
         // PREVIOUS doc's still-displayed status text right after a
         // switchdocument cmd is sent but before the new doc has painted.
+        //
+        // Iter 195: hot-switch watchdog. After 3+ consecutive in-iframe
+        // switchdoc operations the kit can get progressively slower (or
+        // stuck); the canvas never repaints and visiblePollInterval
+        // polls forever. Tell the parent so it can fall back to a cold
+        // iframe reload, the same way snapshot:warm_restore does. The
+        // viewer-side handler must receive a HotSwitchFailed message.
         var watchStart = performance.now();
+        var hotSwitchWatchdog = setTimeout(function() {
+            mark('bridge:hot_switch_watchdog', filename);
+            try {
+                parent.postMessage(JSON.stringify({
+                    MessageId: 'HotSwitchFailed',
+                    Values: { filename: filename, reason: 'no_canvas_change' }
+                }), '*');
+            } catch(e) {}
+            clearInterval(visiblePollInterval);
+        }, 25000);
         var visiblePollInterval = setInterval(function() {
             var sample = snapshotCanvas();
             if (sample && sample !== canvasBaseline) {
                 var dt = (performance.now() - watchStart).toFixed(0);
                 mark('bridge:canvas_visible', dt + 'ms');
+                clearTimeout(hotSwitchWatchdog);
                 clearInterval(visiblePollInterval);
                 try {
                     parent.postMessage(JSON.stringify({
