@@ -72,6 +72,7 @@ TESTS=(
     "regression-cache-bust|test-regression-cache-bust.js|Regression: Build-time Cache Bust|cool.html refs are hashed; hashed assets immutable; locateFile shim single+well-formed|none"
     "regression-html-304|test-regression-html-304.js|Regression: HTML routes 304|viewer index.html, singleuser.html, help, cool.html, /config.js emit ETag and 304 on If-None-Match|none"
     "regression-hot-switch-watchdog|test-regression-hot-switch-watchdog.js|Regression: Hot-switch Watchdog|wasm-loader emits bridge:hot_switch_watchdog + HotSwitchFailed; viewer handles HotSwitchFailed (iter 195)|none"
+    "regression-cluster-c|test-regression-cluster-c.js|Regression: Cluster C wires|wasm-loader doctype-strict docPoll + viewer cross-type cold-reload watchdog + planc=0 latch (iter 202)|none"
     "regression-jobs-scale|test-regression-jobs-scale.js|Regression: JOBS_SCALE wiring|env.scaleTimeout exported, parallel runners export JOBS_SCALE, 9 contention-flaky tests route patience timeouts through it|none"
     "regression-cross-format-matrix|test-regression-cross-format-matrix.js|Regression: Cross-Format Hot-Switch Matrix|Phase 1.2 — single tab walking through cross-format hot-switches and validating each transition|shots-regression-cross-format-matrix"
     "regression-first-client-overwrite|test-regression-first-client-overwrite.js|Regression: First Client Overwrite|First client's activation checkpoint must not save stale/blank content over a newer relay state|shots-regression-first-client-overwrite"
