@@ -182,6 +182,18 @@
             // primary mechanism).
             mark('sw:register_failed', err.message);
         });
+        // Iter 192: surface the SW's precache-done signal so tests (and
+        // callers wanting to know when Cache Storage is warm) have an
+        // observable flag. window.__swPrecacheDone reflects the latest
+        // {urls, cached, fetched, failed} report from sw.js.
+        window.__swPrecacheDone = null;
+        navigator.serviceWorker.addEventListener('message', function(ev) {
+            if (!ev.data || ev.data.type !== 'precache:done') return;
+            window.__swPrecacheDone = ev.data;
+            mark('sw:precache_done',
+                'cached=' + ev.data.cached + ' fetched=' + ev.data.fetched +
+                ' failed=' + ev.data.failed);
+        });
     } else {
         mark('sw:unavailable', 'navigator.serviceWorker missing');
     }
@@ -1387,12 +1399,19 @@
                 // had a stale cool.html with old hashed URLs), this nudges
                 // the SW to populate Cache Storage with the CURRENT URLs
                 // so the next visit hits cache. No-op if already cached.
+                //
+                // Iter 192: on the very FIRST visit `navigator.serviceWorker.
+                // controller` is null until the new SW finishes installing
+                // and clients.claim() runs. Skipping silently here meant
+                // session 1 of test-regression-wasm-cache-pressure left
+                // Cache Storage empty, so session 2 fell through to a 47 MB
+                // network re-download. Try the immediate post when a
+                // controller already exists; otherwise wait for one via
+                // controllerchange so the precache still fires on cold
+                // first visits.
                 try {
-                    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                    if ('serviceWorker' in navigator) {
                         var assetMap = window.__assetMap || {};
-                        // SW matches by full URL — resolve each name (hashed
-                        // if cache-bust is active, plain in dev) against
-                        // the document base.
                         var heavyUrls = ['online.wasm', 'soffice.data',
                                          'soffice.data.js.metadata', 'bundle.js',
                                          'online.js', 'global.js']
@@ -1400,10 +1419,23 @@
                                 return new URL((assetMap[name] || name),
                                     document.baseURI).href;
                             });
-                        navigator.serviceWorker.controller.postMessage({
-                            type: 'precache', urls: heavyUrls,
-                        });
-                        mark('sw:precache_msg', heavyUrls.length + ' urls');
+                        var sentPrecache = false;
+                        function sendPrecache(reason) {
+                            if (sentPrecache) return;
+                            var ctrl = navigator.serviceWorker.controller;
+                            if (!ctrl) return;
+                            ctrl.postMessage({ type: 'precache', urls: heavyUrls });
+                            mark('sw:precache_msg', heavyUrls.length + ' urls (' + reason + ')');
+                            sentPrecache = true;
+                        }
+                        sendPrecache('immediate');
+                        if (!sentPrecache) {
+                            navigator.serviceWorker.addEventListener('controllerchange',
+                                function() { sendPrecache('controllerchange'); });
+                            navigator.serviceWorker.ready.then(function() {
+                                sendPrecache('ready');
+                            }).catch(function() {});
+                        }
                     }
                 } catch (e) { /* SW unavailable / messaging failed */ }
 

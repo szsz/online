@@ -134,17 +134,35 @@ self.addEventListener('fetch', (event) => {
 // asset population so a user who opens the doc, types, then closes the
 // tab still leaves Cache Storage warm for their NEXT visit. Already-
 // cached URLs are no-op (cheap). Errors swallowed — best-effort.
+//
+// Iter 192: report cached-count back to clients so callers (and tests)
+// know when Cache Storage is actually warm. The fetch handler that
+// runs ahead of this message handler may already have populated the
+// cache for the URLs the page demanded; the precache loop fills the
+// gaps (e.g. heavy assets fetched before the SW took control).
 self.addEventListener('message', (event) => {
     if (!event.data || event.data.type !== 'precache') return;
     const urls = Array.isArray(event.data.urls) ? event.data.urls : [];
     event.waitUntil((async () => {
         const cache = await caches.open(CACHE_NAME);
+        let cached = 0, fetched = 0, failed = 0;
         await Promise.all(urls.map(async (url) => {
             try {
-                if (await cache.match(url)) return;
+                if (await cache.match(url)) { cached++; return; }
                 const r = await fetch(url, { credentials: 'same-origin' });
-                if (r.ok && r.status === 200) await cache.put(url, r);
-            } catch (_) { /* network/quota — best effort */ }
+                if (r.ok && r.status === 200) {
+                    await cache.put(url, r);
+                    fetched++;
+                } else {
+                    failed++;
+                }
+            } catch (_) { failed++; }
         }));
+        const all = await self.clients.matchAll({ includeUncontrolled: true });
+        for (const c of all) {
+            try { c.postMessage({ type: 'precache:done',
+                urls: urls.length, cached, fetched, failed }); }
+            catch (_) {}
+        }
     })());
 });
