@@ -278,16 +278,23 @@ async function getStatus(frame) {
                     };
                 } catch (e) { return 'ERR:' + e.message; }
             }).catch(() => null);
-            if (result && (result.hasResults || result.textSelStart)) break;
+            if (result && (result.hasResults || result.textSelStart || result.lastResult)) break;
             await sleep(300);
         }
         log(`Doc layer search state: ${JSON.stringify(result)}`);
 
-        check('_docLayer recorded a search hit for the token (selection or _searchResults)',
+        // CanvasTileLayer.js sets _searchResults only when count > 1; a
+        // single-match search ("baseline" appears once in new.docx) lands
+        // in _lastSearchResult and the cursor jumps to it. Accept any of
+        // those three as a valid hit signal.
+        check('_docLayer recorded a search hit for the token (selection / _searchResults / _lastSearchResult)',
               result && (
                   (result.hasResults && result.searchTerm &&
                    String(result.searchTerm).toLowerCase().includes(SEARCH_TOKEN.toLowerCase()))
                   || !!result.textSelStart
+                  || (result.lastResult === 'present' &&
+                      result.searchTerm &&
+                      String(result.searchTerm).toLowerCase().includes(SEARCH_TOKEN.toLowerCase()))
               ),
               JSON.stringify(result));
 

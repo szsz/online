@@ -960,7 +960,16 @@ window.L.Control.NotebookbarWriter = window.L.Control.Notebookbar.extend({
 								'id': 'stylesview',
 								'type': 'iconview',
 								'entries': [],
-								'vertical': 'false'
+								'vertical': 'false',
+								// Iter 173: bind to .uno:StyleApply so
+								// remote-edit state-changes (kit emits
+								// statechanged: .uno:StyleApply=Heading 1)
+								// update the active entry. Without this,
+								// B's stylesview stays stuck on the
+								// pre-edit style after a remote co-editor
+								// applies Heading 1 (regression-heading-
+								// styles-coedit).
+								'command': '.uno:StyleApply'
 							}
 						]
 					},

@@ -301,6 +301,10 @@ function hideShield() {
     var sh = document.getElementById('editor-shield');
     sh.classList.remove('active');
     sh.style.display = 'none';
+    // Iter 196: monotonic counter so tests polling at ≥100 ms can
+    // detect cross-revive same-file open events whose shield goes
+    // up→down within microseconds (faster than poll cadence).
+    window.__shieldDropCount = (window.__shieldDropCount || 0) + 1;
 }
 function updateShieldProgress(label, pct, detail) {
     if (label) document.getElementById('editor-shield-label').textContent = label;
@@ -401,6 +405,41 @@ window.addEventListener('message', function(event) {
             window.__warmRestoreFailedThisSession = true;
             console.log('[viewer] WarmRestoreFailed received — '
                 + 'subsequent cross-type iframes will use ?planc=0');
+            return;
+        }
+        // Iter 195: hot-switch (in-iframe #switchdoc) can wedge after
+        // 3+ consecutive switchdocs in the same kit. wasm-loader's
+        // bridge:hot_switch_watchdog fires after 30s of no canvas
+        // change and posts HotSwitchFailed. Drop the cached
+        // currentFile/currentDocType so the next openFileBySecret
+        // takes the cross-type cold-reload path, then re-trigger
+        // the open of the file the user just clicked. The iframe's
+        // src change (cool.html?... no #switchdoc) forces a fresh
+        // load — same UX as a cold reload, but recovers the user
+        // instead of staring at a stuck spinner.
+        if (msg.MessageId === 'HotSwitchFailed' && msg.Values) {
+            var stuckFile = msg.Values.filename;
+            console.warn('[viewer] HotSwitchFailed for ' + stuckFile
+                + ' (' + msg.Values.reason + ') — falling back to cold reload');
+            // Force the next open to be a cold reload.
+            currentFile = null;
+            currentDocType = null;
+            activeIframeFile = null;
+            activeIframeDocType = null;
+            // Re-fire the open for the file the user wanted, if we
+            // still have its secret cached. RecentFiles is the
+            // localStorage-backed registry; entries have
+            // {secret, fileId, cachedName}.
+            try {
+                var rec = (typeof RecentFiles !== 'undefined' && RecentFiles.list)
+                    ? RecentFiles.list() : [];
+                var entry = rec.find(function(r) {
+                    return r.cachedName === stuckFile || r.fileId === stuckFile;
+                });
+                if (entry && typeof openFileBySecret === 'function') {
+                    openFileBySecret(entry.secret);
+                }
+            } catch(e) { console.error('[viewer] HotSwitchFailed retry failed', e); }
             return;
         }
         // Live progress from the iframe's wasm-loader.
@@ -762,6 +801,16 @@ async function refresh() {
     for (const r of recent) {
         const el = list.querySelector(`.file[data-fileid="${r.fileId}"]`);
         if (el) el.addEventListener('click', () => {
+            // Iter 181: collapse synchronously here, BEFORE the hash-
+            // change round-trip that lazily calls openFile (which would
+            // also collapse, but only after openFileBySecret resolves
+            // its keys + first fetch). regression-sidebar reads the
+            // body class immediately after click expecting the bar to
+            // already be docs-collapsed. The renderTree branch (line
+            // ~790) uses inline onclick="openFile(...)" so collapse
+            // fires synchronously there; the recent-files branch goes
+            // through location.hash, hence this missing collapse.
+            collapseSidebar();
             location.hash = '#file=' + r.secret;
         });
     }

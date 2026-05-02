@@ -131,7 +131,9 @@ async function clickIframe(page) {
         try {
             // Poll the iframe (we can't use waitForFunction across frames
             // when the frame doesn't exist yet, so loop manually).
-            const deadline = Date.now() + 180000;
+            // Iter 194: under JOBS=2 contention the 2nd browser's load
+            // takes longer than the bare 180s; widen via scaleTimeout.
+            const deadline = Date.now() + env.scaleTimeout(180000);
             let bLoaded = false;
             while (Date.now() < deadline) {
                 const s = await readStatusBar(pageB);

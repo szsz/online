@@ -88,9 +88,17 @@ function check(label, condition) {
         const prepPage = await browser.newPage();
         await prepPage.goto(BASE, { waitUntil: 'networkidle0', timeout: 30000 });
 
-        const docxSrc = '/tmp/static-deploy/.wasm-docs/cache-test.docx';
-        const xlsxSrc = '/tmp/static-deploy/.wasm-docs/cache-test.xlsx';
-        const pptxSrc = '/tmp/static-deploy/.wasm-docs/cache-test.pptx';
+        // Iter 183: source from test/data/ fixtures, not from
+        // /tmp/static-deploy/.wasm-docs/. The latter is the
+        // editor-static upload-staging dir whose contents are
+        // GC'd after 2h (and only present if some other test
+        // happened to upload first). Using committed fixtures
+        // makes this test self-sufficient.
+        const path = require('path');
+        const dataDir = path.join(__dirname, '..', 'test', 'data');
+        const docxSrc = path.join(dataDir, 'new.docx');
+        const xlsxSrc = path.join(dataDir, 'testdoc.xlsx');
+        const pptxSrc = path.join(dataDir, 'rare-fonts.pptx');
 
         // Use unique names to avoid conflicts
         const ts = Date.now();

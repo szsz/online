@@ -114,6 +114,25 @@ async function trackBrowserNetwork(browser) {
     };
 }
 
+async function waitForPrecacheDone(page, label, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const fr = page.frames().find(f => f.url().includes('cool.html'));
+        if (fr) {
+            try {
+                const d = await fr.evaluate(() => window.__swPrecacheDone || null);
+                if (d) {
+                    log(`[${label}] SW precache done: cached=${d.cached} fetched=${d.fetched} failed=${d.failed} of ${d.urls}`);
+                    return true;
+                }
+            } catch(e) {}
+        }
+        await sleep(500);
+    }
+    log(`[${label}] SW precache TIMEOUT (no done signal in ${timeoutMs}ms)`);
+    return false;
+}
+
 async function waitForPrewarmReady(page, label, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -170,7 +189,10 @@ async function waitForPrewarmReady(page, label, timeoutMs) {
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         check('Session 1: prewarm reaches ready',
               await waitForPrewarmReady(page, 'session1', 300000));
-        await sleep(1000);   // let any tail-end fetches settle
+        // Iter 192: wait for the SW's precache:done signal before
+        // closing the browser, otherwise session 2 sees an empty cache
+        // because session 1's heavy-asset download didn't finish.
+        await waitForPrecacheDone(page, 'session1', 180000);
         await snap(page, 'session1_loaded');
 
         const r1 = tracker.responses();

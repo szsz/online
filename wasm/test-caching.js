@@ -49,6 +49,37 @@ function httpHead(url, headers) {
     });
 }
 
+function httpGet(url) {
+    return new Promise((resolve, reject) => {
+        const parsed = new URL(url);
+        const req = https.request({
+            hostname: parsed.hostname,
+            port: parsed.port,
+            path: parsed.pathname,
+            method: 'GET',
+            rejectUnauthorized: false,
+        }, (res) => {
+            let body = '';
+            res.on('data', c => body += c);
+            res.on('end', () => resolve({ status: res.statusCode, body }));
+        });
+        req.on('error', reject);
+        req.end();
+    });
+}
+
+// Iter 190: cool.html ships hash-named WASM/data assets
+// (online.58808279.wasm, soffice.0104cc64.data, …) and exposes a
+// logical→hashed name lookup as window.__assetMap. Discover the
+// real filenames so the brotli/cache-header HEADs hit the actual
+// resources instead of 404ing on the un-hashed paths.
+async function getAssetMap() {
+    const r = await httpGet(`${BASE}/browser/cool.html`);
+    const m = r.body.match(/window\.__assetMap\s*=\s*(\{[^}]+\})/);
+    if (!m) throw new Error('__assetMap not found in cool.html');
+    return JSON.parse(m[1]);
+}
+
 let allPassed = true;
 function check(label, condition) { __cl.recordCheck(label, condition);
     if (condition) { log(`  \u2713 ${label}`); }
@@ -116,7 +147,12 @@ async function getDocInfo(page) {
 
     // === Test 1: Brotli compression ===
     log('\n--- Test 1: Brotli compression ---');
-    const wasmResp = await httpHead(`${BASE}/browser/online.wasm`, { 'Accept-Encoding': 'br' });
+    const assetMap = await getAssetMap();
+    const wasmAsset = assetMap['online.wasm'];
+    const dataAsset = assetMap['soffice.data'];
+    const bundleAsset = assetMap['bundle.js'];
+    log(`  assetMap: online.wasm→${wasmAsset}, soffice.data→${dataAsset}, bundle.js→${bundleAsset}`);
+    const wasmResp = await httpHead(`${BASE}/browser/${wasmAsset}`, { 'Accept-Encoding': 'br' });
     check('WASM brotli: Content-Encoding=br', wasmResp.headers['content-encoding'] === 'br');
     check('WASM brotli: correct Content-Type', wasmResp.headers['content-type'] === 'application/wasm');
     const wasmBrSize = parseInt(wasmResp.headers['content-length']);
@@ -130,7 +166,7 @@ async function getDocInfo(page) {
     // serves fine. Log it instead of failing the suite.
     let dataResp;
     for (let i = 0; i < 6; i++) {
-        dataResp = await httpHead(`${BASE}/browser/soffice.data`, { 'Accept-Encoding': 'br' });
+        dataResp = await httpHead(`${BASE}/browser/${dataAsset}`, { 'Accept-Encoding': 'br' });
         const enc = dataResp.headers['content-encoding'] || '(none)';
         log(`  soffice.data brotli attempt ${i+1}: Content-Encoding=${enc}`);
         if (dataResp.headers['content-encoding'] === 'br') break;
@@ -144,7 +180,7 @@ async function getDocInfo(page) {
     const dataBrSize = parseInt(dataResp.headers['content-length']);
     log(`  soffice.data compressed: ${(dataBrSize / 1e6).toFixed(1)}MB`);
 
-    const bundleResp = await httpHead(`${BASE}/browser/bundle.js`, { 'Accept-Encoding': 'br' });
+    const bundleResp = await httpHead(`${BASE}/browser/${bundleAsset}`, { 'Accept-Encoding': 'br' });
     check('bundle.js brotli: Content-Encoding=br', bundleResp.headers['content-encoding'] === 'br');
     const bundleBrSize = parseInt(bundleResp.headers['content-length']);
     log(`  bundle.js compressed: ${(bundleBrSize / 1e6).toFixed(1)}MB`);
@@ -316,10 +352,13 @@ async function getDocInfo(page) {
         log(`  Calc status: ${info.docPos}`);
         await snap(page3, 'format_xlsx');
 
-        // Check that WASM was cached
+        // Check that WASM was cached. Iter 190: assets are hash-named
+        // (online.<hash>.wasm, soffice.<hash>.data), so match the
+        // logical extension/family rather than the literal "online.wasm".
         const xlsxResources = await page3.evaluate(() => {
             return performance.getEntriesByType('resource')
-                .filter(e => e.name.includes('online.wasm') || e.name.includes('soffice.data'))
+                .filter(e => /online\.[0-9a-f]+\.wasm(\?|$)/.test(e.name) ||
+                             /soffice\.[0-9a-f]+\.data(\?|$)/.test(e.name))
                 .map(e => ({
                     name: e.name.split('/').pop().substring(0, 50),
                     transfer: e.transferSize,
@@ -330,7 +369,7 @@ async function getDocInfo(page) {
         for (const r of xlsxResources) {
             log(`    ${r.name}: ${r.cached ? 'CACHED' : (r.transfer/1024).toFixed(0) + 'KB'}`);
         }
-        const wasmCached = xlsxResources.some(r => r.name.includes('wasm') && r.cached);
+        const wasmCached = xlsxResources.some(r => /\.wasm$/.test(r.name) && r.cached);
         check('xlsx: WASM served from cache', wasmCached);
 
     } catch (e) {
