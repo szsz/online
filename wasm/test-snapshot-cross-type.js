@@ -37,7 +37,13 @@ const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-snapshot-cross-type';
 const T0 = Date.now();
-const TIMEOUT_MS = 120000;  // per session — 2 min cap
+// Per-session budget. Cold writer occasionally lands at the 120s
+// edge on Azure (WASM compile + cold soffice.data + first doc-load
+// can serialise badly when the test starts back-to-back), so give
+// it a comfortable 180s ceiling. Warm runs are still budgeted at
+// 15s via WARM_BUDGET_MS below — this is just the wait-for-loaded
+// upper bound, not a perf assertion.
+const TIMEOUT_MS = 180000;
 
 const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
 const CASES = [
