@@ -65,7 +65,21 @@ const WARM_TIMEOUT_MS = env.scaleTimeout(60000);
 //
 // Override with WARM_BUDGET_MS env if you're investigating something
 // specific.
-const WARM_BUDGET_MS = parseInt(process.env.WARM_BUDGET_MS || '20000', 10);
+//
+// Target: warm content_verified ≤ 5 s (heap-restore + createView +
+// first paint). 8 s default = 5 s target + 3 s headroom for IndexedDB
+// read variance and JOBS_SCALE contention. The warm-restore path
+// reuses the captured _loKitDocument (kit/Kit.cpp) and skips
+// documentLoad entirely — without that, warm falls back to cold
+// (~25-35 s) and the budget is meaningless. Hard regression gate:
+// if warm > 8 s p[best], something is wrong with the warm-fast path
+// — investigate, do NOT raise the budget.
+const WARM_BUDGET_MS = parseInt(process.env.WARM_BUDGET_MS || '8000', 10);
+// Stretch goal logged on every run: we want p50 of all verified warm
+// trials, across all doctypes, ≤ 5500 ms. Not a hard fail (yet) — the
+// budget gate above already enforces best-of-3 ≤ WARM_BUDGET_MS, and
+// p50 is for tracking the typical case rather than the lucky-trial case.
+const WARM_P50_GOAL_MS = parseInt(process.env.WARM_P50_GOAL_MS || '5500', 10);
 // Number of warm trials per cold session. Warm-restore is currently flaky
 // (~33% pass rate, see project_warm_pthread_flake.md). One trial per
 // iteration produces noisy data; N=3 lets us track pass-rate trends as
@@ -772,6 +786,38 @@ ${body}
         log(`  ${w.tag}: best=${bestStr} ${w.ok ? 'PASS' : 'FAIL'} ${allStr}`);
     }
     const allWarmInBudget = warmBudgets.every(w => w.ok);
+
+    // Per-doctype p50 and overall p50 across all verified warm trials.
+    // The "warm = top product priority" directive: every dev iteration
+    // surfaces these numbers so regressions are visible immediately.
+    const allVerifiedWarms = [];
+    for (const w of warmBudgets) {
+        if (w.all.length) allVerifiedWarms.push(...w.all);
+    }
+    function pct(arr, p) {
+        if (!arr.length) return null;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p / 100));
+        return sorted[idx];
+    }
+    log('');
+    log(`Warm p50 / p95 (target p50 ≤ ${(WARM_P50_GOAL_MS/1000).toFixed(1)} s):`);
+    for (const w of warmBudgets) {
+        if (!w.all.length) {
+            log(`  ${w.tag}: — (no verified trial)`);
+            continue;
+        }
+        const p50 = pct(w.all, 50);
+        const p95 = pct(w.all, 95);
+        const p50Goal = p50 <= WARM_P50_GOAL_MS ? 'GOAL' : 'over ';
+        log(`  ${w.tag}: p50=${(p50/1000).toFixed(2)}s [${p50Goal}] p95=${(p95/1000).toFixed(2)}s n=${w.all.length}`);
+    }
+    const overallP50 = pct(allVerifiedWarms, 50);
+    const overallP95 = pct(allVerifiedWarms, 95);
+    if (overallP50 !== null) {
+        const goal = overallP50 <= WARM_P50_GOAL_MS ? '✓ at goal' : '✗ over goal';
+        log(`  OVERALL: p50=${(overallP50/1000).toFixed(2)}s p95=${(overallP95/1000).toFixed(2)}s n=${allVerifiedWarms.length} (${goal})`);
+    }
     if (!allWarmInBudget) {
         log('');
         log('!!! WARM IS SLOW. Likely causes:');

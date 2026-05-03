@@ -1156,17 +1156,18 @@
                             } catch (e) {
                                 console.error('[snapshot] Watchdog handler threw:', e);
                             }
-                        }, 6000);   // Iter A10: tightened from 12 s.
-                                    // Happy warms measured at 6–8 s after
-                                    // restore for the doc:loaded mark to
-                                    // fire — but the SAME-TYPE-then-cross-
-                                    // type warm-restore failure is now
-                                    // 100 % reproducible after iter 5,
-                                    // so paying 12 s waiting for a verdict
-                                    // we already know is pure overhead.
-                                    // 6 s gives a 3-second margin over the
-                                    // happy-path tail and clips failure
-                                    // recovery by 6 s on every retry.
+                        }, 30000);  // Iter B1: extended from 6 s while
+                                    // validating the warm re-attach fix
+                                    // in kit/Kit.cpp (keep captured
+                                    // _loKitDocument; setView after
+                                    // createView). With re-attach working,
+                                    // happy-path warm should be ~3-5 s —
+                                    // the 30 s ceiling is just a safety
+                                    // net so we measure actual warm
+                                    // timing across writer/calc/impress
+                                    // and across same-type / cross-type
+                                    // before tightening. Drop back to
+                                    // ~8-10 s once warm-p95 is established.
                     }
                 }
 

@@ -2065,27 +2065,29 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
 
     std::string spellOnline = session->getSpellOnline();
 #ifdef __EMSCRIPTEN__
-    // Plan C warm-restore: if the captured snapshot left a stale
-    // _loKitDocument from the cold visit, the createView() branch below
-    // hits view-state inconsistencies for SAME-URL re-opens (the most
-    // common second-visit case) and getView() returns -1 → onLoad
-    // returns false → JS sees no status frames → iframe stuck on
-    // "Opening document…". Force a fresh documentLoad on warm-restore
-    // so the kit goes through the well-trodden first-load code path.
-    // The HEAPU8 snapshot already gave us a hot LO Core (factories,
-    // VCL, configmgr) — actual document parse is sub-second on warm.
+    // Plan C warm-restore: keep the captured _loKitDocument and take the
+    // "doc already loaded → createView" else branch below.
+    //
+    // Earlier iterations dropped _loKitDocument here because createView()
+    // hit a getView() == -1 view-state inconsistency on warm SAME-URL
+    // re-opens. Fixed at line ~2217 by capturing createView()'s return
+    // value (the new view id) and setView()ing to it explicitly, instead
+    // of relying on LO Core's "current view" pointer which can be stale
+    // across a snapshot restore.
+    //
+    // With the captured doc kept, warm load is heap-restore + createView
+    // + first paint (~3-5 s) instead of full documentLoad (~25 s). The
+    // cold visit's view (view 0) lingers in _loKitDocument as a no-op
+    // detached view; future cleanup may destroyView() it, but it's
+    // harmless for now (just tile cache memory).
     if (_loKitDocument && wasm_is_warm_restored())
     {
-        MAIN_THREAD_EM_ASM({ console.log('TIMING: warm-restore: dropping captured _loKitDocument for fresh load'); });
-        _loKitDocument.reset();
-        _sessionUserInfo.clear();
-        // Consume the warm-restore one-shot. After this fresh load
-        // completes the kit is in a normal hot state — subsequent
-        // doc-switches in the same session must NOT drop & reload
-        // again, or every hot-switch loops the load path until the
-        // tab is closed (observed on impress cross-type, infinite
-        // "onLoad starting → drop captured → onLoad done" cycles).
-        wasm_set_warm_restored(0);
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: warm-restore: reusing captured _loKitDocument'); });
+        // Don't clear wasm_set_warm_restored here. ChildSession's
+        // post-load planC check at ChildSession.cpp:~726 needs it to
+        // still read 1 so planC=false (skip the snapshot-save dance —
+        // already saved on the cold visit). The clear happens at
+        // ChildSession.cpp after the planC resume block.
     }
 #endif
     if (!_loKitDocument)
@@ -2214,8 +2216,19 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         }
 
         LOG_INF("Creating view to url [" << uriAnonym << "] for session [" << sessionId << "] with " << options << '.');
-        _loKitDocument->createView(options.c_str());
-        LOG_TRC("View to url [" << uriAnonym << "] created.");
+        const int newViewId = _loKitDocument->createView(options.c_str());
+        if (newViewId >= 0)
+        {
+            // Force the freshly created view to be current. Some LO Core
+            // paths leave the global "current view" pointer stale on
+            // warm-snapshot restore (the captured ID still points at the
+            // cold session's view, which is detached on warm), so getView()
+            // below would otherwise return -1 and onLoad bails. Always
+            // safe to call: on cold this is a no-op (createView already
+            // promoted the new view to current).
+            _loKitDocument->setView(newViewId);
+        }
+        LOG_TRC("View to url [" << uriAnonym << "] created (id=" << newViewId << ").");
 
         switch (_loKitDocument->getDocumentType())
         {

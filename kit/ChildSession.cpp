@@ -48,6 +48,7 @@ namespace wasmshim {
 // Declared at file scope (after LibreOfficeKit.h is included) because
 // extern "C" is not allowed inside a function body in C++.
 extern "C" int wasm_is_warm_restored();
+extern "C" void wasm_set_warm_restored(int);
 extern "C" int wasm_reload_doc_in_place(LibreOfficeKitDocument*, const char*);
 extern "C" void wasm_set_quiesce(int);
 extern "C" void wasm_wait_coolwsd_parked();
@@ -745,6 +746,18 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC resume — coolwsd_resume'); });
                 wasm_coolwsd_resume();
                 MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd_resume returned'); });
+            }
+            // Consume the warm-restore one-shot AFTER the planC check
+            // above (which needs warm_restored=1 to skip the dance) and
+            // AFTER firstDocPainted (CAS one-shot, no-op on warm anyway).
+            // Subsequent same-session doc-switches must see warm_restored=0
+            // so the in-place reload optimisation in
+            // ChildSession::loadDocument is not perma-disabled (line ~483
+            // forces kInPlaceCap=0 while warm_restored is set).
+            if (wasm_is_warm_restored())
+            {
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: clearing warm_restored after first onLoad'); });
+                wasm_set_warm_restored(0);
             }
 #endif
         }
