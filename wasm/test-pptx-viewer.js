@@ -91,6 +91,11 @@ async function clickIframe(page) {
         let fr = null;
         let totalSlides = 0;
         let slideMenuSeen = false;
+        // _parts ramps up as the pptx parses (1 → N as slides are added),
+        // so don't accept the first non-zero reading. Require it to be
+        // stable across two consecutive 200ms probes — or fall back to
+        // the slide-sorter thumb count once it's populated.
+        let lastParts = 0;
         for (let i = 0; i < 1200; i++) {
             await sleep(200);
             fr = page.frames().find(f => f.url().includes('cool.html'));
@@ -104,13 +109,14 @@ async function clickIframe(page) {
                         sidebarThumbs: document.querySelectorAll('#slide-sorter > *').length,
                     };
                 });
-                totalSlides = probe.parts;
-                if (totalSlides > 0) {
+                if (probe.parts > 0 && probe.parts === lastParts) {
+                    totalSlides = probe.parts;
                     log('Impress loaded with ' + totalSlides + ' slides at ' + (i*200) + 'ms');
                     break;
                 }
-                if (probe.sidebarThumbs > 0) {
-                    totalSlides = probe.sidebarThumbs;
+                lastParts = probe.parts;
+                if (probe.sidebarThumbs >= 2) {
+                    totalSlides = Math.max(probe.parts, probe.sidebarThumbs);
                     log('Impress slide sorter populated (' + totalSlides + ' thumbs) at ' + (i*200) + 'ms');
                     break;
                 }
@@ -118,7 +124,7 @@ async function clickIframe(page) {
                     slideMenuSeen = true;
                     log('Slide Show menu visible at ' + (i*200) + 'ms (waiting for _parts)');
                 }
-            } catch(e) {}
+            } catch(e) { /* noop */ }
             if (i === 299) log('Impress slide-count still 0 at 60s');
             if (i === 599) log('Impress slide-count still 0 at 120s');
             if (i === 899) log('Impress slide-count still 0 at 180s');
