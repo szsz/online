@@ -36,12 +36,13 @@ gen_section() {
         cat <<HTML
 <!doctype html>
 <meta charset="utf-8"><title>$title</title>
+<base href="/$prefix">
 <style>body{font:14px system-ui;margin:2rem;max-width:60rem}h1{margin-bottom:.2rem}
 table{border-collapse:collapse;width:100%}td,th{padding:.4rem .6rem;border-bottom:1px solid #eee;text-align:left}
 a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}
 .muted{color:#666}.ok{color:#2e7d32}.bad{color:#c62828}</style>
 <h1>$title</h1>
-<p><a href="../">← root</a></p>
+<p><a href="/">← root</a></p>
 <table><thead><tr><th>Build ID</th><th>When</th><th>Notes</th></tr></thead><tbody>
 HTML
         local manifests
