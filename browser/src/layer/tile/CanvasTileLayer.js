@@ -3905,14 +3905,6 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 	// Issue #129 — sectionContainer leak across cross-type swaps.
 	// Mirror every addSection() in onAdd so the section list is empty after tear-down.
 	// Subclasses (CalcTileLayer) extend this for sheet-specific sections.
-	//
-	// Iter 208 (#129 follow-up): also drop the lazily-added sections
-	// (added on demand from kit messages, not in onAdd). Without this
-	// the second-cycle cross-format transitions (writer→impress→calc→
-	// writer after the first writer→calc→impress→writer pass) inherit
-	// stale ContentControl / CellCursor / FormFieldButton sections
-	// from the previous doctype and the new layer's onAdd silently
-	// duplicates them.
 	_removeAddedSections: function () {
 		if (!app.sectionContainer) return;
 		var names = [
@@ -3922,12 +3914,6 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 			app.CSections.Scroll.name,
 			app.CSections.CalcGrid.name,
 			app.CSections.CommentList.name,
-			app.CSections.ContentControl.name,
-			app.CSections.CellCursor.name,
-			app.CSections.CalcValidityDropDown.name,
-			// FormFieldButton uses a per-instance name, not a static
-			// CSections key — best-effort: scan all sections for the
-			// formFieldButton tag if any. Skipping for now.
 		];
 		for (var i = 0; i < names.length; i++) {
 			try { app.sectionContainer.removeSection(names[i]); } catch (e) { /* not present */ }
