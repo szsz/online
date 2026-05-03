@@ -1325,6 +1325,29 @@
         var seenCanvas = false, seenStatus = false, seenContent = false;
         var startTextWordCount = (document.querySelector('#StateWordCount')||{}).textContent || '';
         var startTextDocPos = (document.querySelector('#StatusDocPos')||{}).textContent || '';
+        // Iter 202: derive expected doctype from the iframe's URL so
+        // docPoll only fires "ready" on a STATUS MATCH for that doctype.
+        // Previously it accepted any doctype, which caused false positives
+        // after a snapshot warm-restore: the snapshot's writer status
+        // was still in #StateWordCount when a calc URL loaded, so
+        // writerLoaded=true → prewarm:ready → WasmPrewarmReady → the
+        // viewer's cross-type watchdog cleared even though the actual
+        // calc canvas never painted.
+        // V2 (encrypted) opens have an opaque fileId in WOPISrc — fall
+        // back to the displayName URL param the viewer passes for that
+        // exact reason.
+        var expectedDocType = '';
+        try {
+            var pollParams = new URLSearchParams(window.location.search);
+            var pollName = pollParams.get('WOPISrc') || pollParams.get('displayName') || '';
+            // If WOPISrc looks like a hex blob (no dot), try displayName.
+            if (!pollName.includes('.')) pollName = pollParams.get('displayName') || pollName;
+            var ext = pollName.split('.').pop().toLowerCase().split('?')[0];
+            if (['xlsx','xls','ods','csv','tsv'].indexOf(ext) >= 0) expectedDocType = 'calc';
+            else if (['pptx','ppt','odp','ppsx','pps'].indexOf(ext) >= 0) expectedDocType = 'impress';
+            else if (['docx','doc','odt','rtf','txt'].indexOf(ext) >= 0) expectedDocType = 'writer';
+            mark('docpoll:expectedDocType', expectedDocType + ' (from ' + pollName + ')');
+        } catch(e) {}
         docPollInterval = setInterval(function() {
             var canvases = document.querySelectorAll('canvas').length;
             if (!seenCanvas && canvases > 0) {
@@ -1357,7 +1380,16 @@
             var impressLoaded = (nav && nav.textContent && nav.textContent.includes('Slide Show')) ||
                                 (slideStatus && /Slide \d/i.test(slideStatus.textContent || '')) ||
                                 impressSlideMatch;
-            var loaded = writerLoaded || calcLoaded || impressLoaded;
+            // Iter 202: only accept the EXPECTED doctype's status as
+            // "loaded". Without this, warm-restore's leftover writer
+            // status from the snapshot satisfies writerLoaded=true on a
+            // calc/impress URL and we falsely fire prewarm:ready before
+            // the actual doc paints.
+            var loaded;
+            if (expectedDocType === 'calc') loaded = calcLoaded;
+            else if (expectedDocType === 'impress') loaded = impressLoaded;
+            else if (expectedDocType === 'writer') loaded = writerLoaded;
+            else loaded = writerLoaded || calcLoaded || impressLoaded;
             // For switches, require the displayed text to have CHANGED from
             // when we re-armed (otherwise the old blank-doc count satisfies
             // the loaded check immediately).

@@ -107,7 +107,17 @@ async function clickFile(page, fileId) {
 async function waitForDocLoaded(page, kind, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-        const fr = page.frames().find(f => f.url().includes('cool.html'));
+        // Iter 202: cross-type cold-reload PARKS the previous iframe in
+        // the DOM (still on cool.html URL) — find() returns the parked
+        // frame first if we don't filter to the active one. Resolve via
+        // getElementById('editor-frame').src.
+        const activeUrl = await page.evaluate(() => {
+            var el = document.getElementById('editor-frame');
+            return el ? el.src : null;
+        });
+        let fr;
+        if (activeUrl) fr = page.frames().find(f => f.url() === activeUrl);
+        if (!fr) fr = page.frames().find(f => f.url().includes('cool.html'));
         if (fr) {
             try {
                 const sig = await fr.evaluate((k) => {

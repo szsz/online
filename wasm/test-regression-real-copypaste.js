@@ -203,11 +203,31 @@ function check(label, cond, ev) {
     check('STEP2: clipboard HTML has COOL origin marker', hasCoolHtml,
         'marker=' + (hasCoolHtml ? 'found' : 'MISSING'));
 
-    // ═══ STEP 3: Move to end ═══
-    console.log('\n=== STEP 3: Move cursor to end ===');
+    // ═══ STEP 2.5: Explicitly populate kit's internal clipboard ═══
+    // Iter 204: STEP 2 dispatched a ClipboardEvent('copy') which the
+    // COOL document.oncopy handler converts into a system-clipboard
+    // write — but this path does NOT send uno:Copy to the kit. The
+    // kit's INTERNAL clipboard (which uno:Paste reads) is populated
+    // by Map.Keyboard's real Ctrl+C handler, which our synthetic
+    // KeyboardEvent didn't trigger. Send uno:Copy directly so STEP 4's
+    // `uno .uno:Paste (internal)` actually has bytes to paste.
+    console.log('\n=== STEP 2.5: Populate kit clipboard via uno:Copy ===');
     await editorFrame.evaluate(() => {
-        globalThis.TheFakeWebSocket.send('key type=input char=0 key=9221');
-        globalThis.TheFakeWebSocket.send('key type=up char=0 key=9221');
+        globalThis.TheFakeWebSocket.send('uno .uno:Copy');
+    });
+    await sleep(500);
+
+    // ═══ STEP 3: Move to end ═══
+    // After Select All + Copy, the selection is still active. Sending
+    // bare End (uno key 9221) doesn't reliably collapse it, so paste
+    // would replace the whole selection with the clipboard content
+    // (delta=0 because clipboard==old selection by definition). Send
+    // Ctrl+End — collapses to doc end so paste appends.
+    console.log('\n=== STEP 3: Ctrl+End to position cursor at doc end ===');
+    await editorFrame.evaluate(() => {
+        // 8192 = UNOModifier.CTRL (per docstate.ts), 9221 = End uno key.
+        globalThis.TheFakeWebSocket.send('key type=input char=0 key=' + (9221 | 8192));
+        globalThis.TheFakeWebSocket.send('key type=up char=0 key=' + (9221 | 8192));
     });
     await sleep(1000);
     const ccPrePaste = charCount(await getWc());
