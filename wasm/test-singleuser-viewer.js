@@ -52,8 +52,19 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev ? ' ['+ev+']' : ''}`); allPassed = false; }
 }
 
-async function getCharCount(frame) {
-    const t = await frame.evaluate(() =>
+// Resolve the *current* editor frame on every read. The viewer's
+// singleuser flow first attaches a prewarm iframe, then on file
+// open replaces it with a fresh one — caching `editorFrame` from
+// the polling loop will throw "Attempted to use detached Frame"
+// the moment the swap completes.
+function findEditorFrame(page) {
+    return page.frames().find(f => f.url().includes('cool.html')) || null;
+}
+
+async function getCharCount(page) {
+    const fr = findEditorFrame(page);
+    if (!fr) return -1;
+    const t = await fr.evaluate(() =>
         document.querySelector('#StateWordCount')?.textContent || ''
     ).catch(() => '');
     const m = t.match(/([\d,]+)\s*character/);
@@ -151,14 +162,14 @@ async function getFileMeta(name, fileId) {
         let loaded = false;
         for (let i = 0; i < 300; i++) {
             await sleep(500);
-            const cc = await getCharCount(editorFrame);
+            const cc = await getCharCount(page);
             if (cc >= 0) { loaded = true; break; }
         }
         check('Document loaded', loaded);
         // LO can report a char count before it is actually input-ready;
         // give it a few extra seconds to finish UI wiring + idle handlers.
         await sleep(4000);
-        const charsBefore = await getCharCount(editorFrame);
+        const charsBefore = await getCharCount(page);
         log(`[state] chars before typing = ${charsBefore}`);
 
         // 4. Type "HELLO" via real keyboard — must change char count
@@ -179,7 +190,7 @@ async function getFileMeta(name, fileId) {
         const typed = 'HELLO';
         for (const ch of typed) { await page.keyboard.type(ch, { delay: 60 }); await sleep(350); }
         await sleep(3000);
-        const charsAfter = await getCharCount(editorFrame);
+        const charsAfter = await getCharCount(page);
         await snap(page, 'after_type');
         log(`[state] chars after typing   = ${charsAfter}`);
         check(`Typing landed locally (+${typed.length} chars)`,
