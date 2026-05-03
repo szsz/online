@@ -125,8 +125,19 @@ async function clickIframe(page) {
         // --- Step 4: Browser B co-edits ---
         log('\n--- Step 4: Browser B co-edits ---');
         const pageB = await browserB.newPage();
+        // Capture B's console + page errors so a stuck load surfaces a
+        // reason instead of timing out silently. Filter to relay /
+        // wasm-loader / loading-status messages.
+        pageB.on('console', m => {
+            const t = m.text();
+            if (/relay|wasm-loader|WasmDocReady|WasmPrewarmReady|WasmFileLoad|WasmProgress|Error|FAIL|hot-switch|HotSwitchFailed/i.test(t) && !/PostMessage ignored/.test(t)) {
+                log(`  [B/console] ${t.substring(0, 200)}`);
+            }
+        });
+        pageB.on('pageerror', e => log(`  [B/pageerror] ${e.message.substring(0, 200)}`));
         const t1 = Date.now();
         await pageB.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+        log(`  B navigated to viewer (after ${((Date.now()-t1)/1000).toFixed(0)}s)`);
 
         try {
             // Poll the iframe (we can't use waitForFunction across frames
@@ -138,9 +149,17 @@ async function clickIframe(page) {
             // suite still has time on its outer wrapper.
             const deadline = Date.now() + Math.max(env.scaleTimeout(180000), 900000);
             let bLoaded = false;
+            let pollCount = 0;
             while (Date.now() < deadline) {
                 const s = await readStatusBar(pageB);
+                pollCount++;
                 if (s.wc.includes('word')) { bLoaded = true; break; }
+                // Every 30s of waiting log a heartbeat so a hang is visible
+                // in the test log instead of a silent gap.
+                if (pollCount % 15 === 0) {
+                    const elapsedB = ((Date.now() - t1) / 1000).toFixed(0);
+                    log(`  B still loading after ${elapsedB}s — wasm-progress="${(s.label || '').slice(0, 60)}" wc="${(s.wc || '').slice(0, 30)}"`);
+                }
                 await sleep(2000);
             }
             if (!bLoaded) throw new Error('B never reached word count');

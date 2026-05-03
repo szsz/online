@@ -7,10 +7,16 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const VIEWER = env.VIEWER_URL || 'https://viewer.szebeni.hu';
-// 3 different docx files. We synthesize copies of test document.docx
-// with different bytes so they have distinct fileIds in v2.
-const FIXTURES = ['hs-A.docx', 'hs-B.docx', 'hs-C.docx'];
-const SRC = '/home/localadmin/online/test/data/test document.docx';
+// 3 visually-distinct docx files. We use real fixtures (not the
+// same source padded with trailing bytes) so the wasm-loader's
+// canvas-change hot-switch watchdog actually fires when the
+// switch succeeds — see iter 218 in test-regression-samedoc-flicker
+// for the rationale.
+const FIXTURES = [
+    { name: 'hs-A.docx', src: '/home/localadmin/online/test/data/test document.docx' },
+    { name: 'hs-B.docx', src: '/home/localadmin/online/test/data/Simple small document.docx' },
+    { name: 'hs-C.docx', src: '/home/localadmin/online/test/data/template.docx' },
+];
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }
@@ -19,13 +25,9 @@ function log(msg) { console.log(`[${elapsed()}] ${msg}`); }
 (async () => {
     log('=== Same-type hot-switch via viewer UI ===');
 
-    // Stage 3 distinct copies in /tmp so v2 fileIds differ
-    for (let i = 0; i < FIXTURES.length; i++) {
-        const dst = '/tmp/' + FIXTURES[i];
-        const bytes = fs.readFileSync(SRC);
-        // Append byte to create distinct hash → distinct fileId
-        const padded = Buffer.concat([bytes, Buffer.from([0x20 + i, 0x0a])]);
-        fs.writeFileSync(dst, padded);
+    // Stage 3 visually-distinct fixtures in /tmp under stable test names
+    for (const fx of FIXTURES) {
+        fs.copyFileSync(fx.src, '/tmp/' + fx.name);
     }
 
     const { browser, cleanup } = await launch();
@@ -51,7 +53,7 @@ function log(msg) { console.log(`[${elapsed()}] ${msg}`); }
         await page.waitForSelector('#upload', { timeout: 30000 });
 
         const fileInput = await page.$('#upload');
-        await fileInput.uploadFile.apply(fileInput, FIXTURES.map(f => '/tmp/' + f));
+        await fileInput.uploadFile.apply(fileInput, FIXTURES.map(f => '/tmp/' + f.name));
 
         await page.waitForFunction(
             count => document.querySelectorAll('#list .file').length >= count,
@@ -96,12 +98,12 @@ function log(msg) { console.log(`[${elapsed()}] ${msg}`); }
         // Subsequent clicks should ALL be hot since same docType.
         const results = [];
         for (let i = 0; i < FIXTURES.length; i++) {
-            const r = await clickAndWait('open' + i, FIXTURES[i]);
+            const r = await clickAndWait('open' + i, FIXTURES[i].name);
             results.push(r);
             await sleep(2000);
         }
         // Repeat first one to test going back
-        results.push(await clickAndWait('back-to-A', FIXTURES[0]));
+        results.push(await clickAndWait('back-to-A', FIXTURES[0].name));
 
         log('\n=== RESULTS ===');
         for (let i = 0; i < results.length; i++) {

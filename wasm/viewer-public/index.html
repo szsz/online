@@ -932,7 +932,8 @@ let currentV2Keys = null; // { contentKey, nameKey, fileId, secretB64 }
 // fetch the ciphertext, decrypt, upload plaintext bytes to the editor's
 // /wasm/ temp under the opaque fileId (the editor has no key and never
 // sees the filename), then trigger a hot-switch/cold-reload.
-async function openFileBySecret(secretB64) {
+async function openFileBySecret(secretB64, callerOpts) {
+    callerOpts = callerOpts || {};
     const secret = FileCrypto.b64urlDecode(secretB64);
     const { contentKey, nameKey, fileId } = await FileCrypto.deriveKeys(secret);
     currentV2Keys = { contentKey, nameKey, fileId, secretB64, encName: null };
@@ -970,11 +971,16 @@ async function openFileBySecret(secretB64) {
     // infer the doc type from the decrypted filename — otherwise
     // xlsx/pptx would be misclassified as writer and hot-switches would
     // mix up docLayer state.
+    // __crossTypeRetry: forwarded so the cold-typechange watchdog
+    // doesn't re-arm on the recovery attempt — without this the
+    // 30 s watchdog fires repeatedly and the iframe is recreated
+    // every 30 s, never completing a cold load (>30 s on Azure).
     openFile(fileId, {
         skipDownload: true,
         hashValue: secretB64,
         docTypeHint: cachedName ? docTypeFor(cachedName) : 'writer',
         displayName: cachedName || null,
+        __crossTypeRetry: !!callerOpts.__crossTypeRetry,
     });
 }
 

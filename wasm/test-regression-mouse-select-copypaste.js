@@ -93,7 +93,8 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
 
         async function waitForReady(page, label, count) {
             const t0 = Date.now();
-            while (Date.now() - t0 < 180000) {
+            const budget = env.scaleTimeout(180000);
+            while (Date.now() - t0 < budget) {
                 const logs = await page.evaluate(() =>
                     window._logs ? window._logs.filter(l => l.includes(') ready')) : []);
                 if (logs.length >= count) return true;

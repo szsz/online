@@ -2,8 +2,14 @@
 # run-all-tests-parallel.sh — parallel test suite runner.
 # Uses xargs -P for batching (more reliable than bash job control).
 #
-# Usage:  bash wasm/run-all-tests-parallel.sh        # 4 jobs
-#         JOBS=8 bash wasm/run-all-tests-parallel.sh # 8 jobs
+# Usage:  bash wasm/run-all-tests-parallel.sh        # 2 jobs (default)
+#         JOBS=4 bash wasm/run-all-tests-parallel.sh # legacy parallel-4
+#
+# Iter 215: default dropped from 4→2. JOBS=4 had ±5 fail variance
+# per run because the relay-broker + viewer-server saturate under
+# heavier contention; tests that pass solo timed out in the
+# parallel-4 run. JOBS=2 keeps most of the speedup while halving
+# the contention pressure.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_OUTPUT_ROOT="${TEST_OUTPUT_ROOT:-/tmp/static-deploy/public}"
@@ -11,7 +17,7 @@ REPORTS_DIR="$TEST_OUTPUT_ROOT/reports"
 SHOTS_BASE="$TEST_OUTPUT_ROOT"
 GENERATOR="$SCRIPT_DIR/generate-report.js"
 LOG_DIR="$REPORTS_DIR/.logs"
-JOBS="${JOBS:-4}"
+JOBS="${JOBS:-2}"
 # Iter 70: scale 2-browser test patience timeouts proportionally to
 # parallelism. See lib/test-env.js scaleTimeout() — tests that route
 # their timeouts through it widen automatically when JOBS_SCALE > 1.

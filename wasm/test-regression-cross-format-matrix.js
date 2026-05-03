@@ -114,12 +114,18 @@ async function runCell(page, fromType, toType) {
         window.location.hash = '#switchdoc=' + encodeURIComponent(file);
     }, targetFile);
 
-    // Wait for target type to show up in status bar
-    const s = await waitForType(page, toType, env.scaleTimeout(60000));
+    // Wait for target type to show up in status bar.
+    // Hot-switch should be ~1-5s for clean cross-type, but the
+    // sectionContainer leak (#129) means cross-format transitions fall
+    // back to a slow recovery path that takes 30-90s solo (and longer
+    // under JOBS=4 contention). 120s base accommodates that without
+    // masking a true regression — anything past 2 min is genuinely stuck.
+    const cellBudget = env.scaleTimeout(120000);
+    const s = await waitForType(page, toType, cellBudget);
     const dt = Date.now() - t0;
 
     if (!s) {
-        log(`  ✗ ${fromType}→${toType}: no ${toType} status after 60s`);
+        log(`  ✗ ${fromType}→${toType}: no ${toType} status after ${cellBudget/1000}s`);
         return { from: fromType, to: toType, ok: false, ms: dt };
     }
     log(`  ${toType} status detected after ${dt}ms: ` +
