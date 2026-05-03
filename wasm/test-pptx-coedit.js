@@ -9,7 +9,12 @@ const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;
-const TIMEOUT = 300000;
+// Iter 212: scale TIMEOUT for JOBS=4 contention. The bare 300s (5 min)
+// was sufficient solo but pptx cold-load + 2-browser activation
+// regularly slips past 300s under JOBS=4 (relay-broker + viewer-server
+// saturate). pptx-coedit has been the canonical contention flake;
+// scale fixes it without masking real regressions.
+const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx-coedit';
 const DOC_NAME = 'testdoc.pptx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);

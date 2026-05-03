@@ -138,14 +138,22 @@ async function waitForCanvasContent(page, timeoutMs) {
         await seedRecentFiles(page, recentList);
         await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
 
-        // Wait for prewarm
-        for (let i = 0; i < 240; i++) {
+        // Wait for prewarm. Iter 208: bare 240×500ms (=120s) was too
+        // tight under JOBS=4 contention — relay broker + viewer-server
+        // saturate and prewarm slips past 120s, dropping the test
+        // before WasmPrewarmReady fires. Scale the bound.
+        const prewarmDeadline = Date.now() + env.scaleTimeout(120000);
+        let prewarmFired = false;
+        while (Date.now() < prewarmDeadline) {
             await sleep(500);
             const fr = await getFrame(page);
             if (fr && await fr.evaluate(() => !!window.__wasmPrewarmReady).catch(() => false)) {
-                log(`Prewarm ready (${(i*0.5).toFixed(1)}s)`); break;
+                log(`Prewarm ready (${((Date.now() - (prewarmDeadline - env.scaleTimeout(120000)))/1000).toFixed(1)}s)`);
+                prewarmFired = true;
+                break;
             }
         }
+        if (!prewarmFired) log('Prewarm TIMEOUT after ' + env.scaleTimeout(120000) + 'ms');
         // After prewarm, shield should be down.
         check('Shield down after prewarm', !(await shieldVisible(page)));
 

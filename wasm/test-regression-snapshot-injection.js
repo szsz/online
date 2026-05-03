@@ -39,13 +39,26 @@ function check(label, cond, ev) {
 
 (async () => {
     console.log('=== Regression: snapshot-restore injection present in online.js ===');
-    const url = EDITOR + '/browser/online.js';
     const t0 = Date.now();
+    // Iter 207: cache-bust ships online.js as online.<hash>.js. Resolve
+    // the hashed name via cool.html's __assetMap; fall back to the
+    // un-hashed path for dev trees without a cache-bust step.
+    let url;
+    try {
+        const cool = await fetch(EDITOR + '/browser/cool.html');
+        const html = await cool.text();
+        const m = html.match(/window\.__assetMap\s*=\s*(\{[^}]+\})/);
+        const assetMap = m ? JSON.parse(m[1]) : {};
+        const onlineJs = assetMap['online.js'] || 'online.js';
+        url = EDITOR + '/browser/' + onlineJs;
+    } catch (e) {
+        url = EDITOR + '/browser/online.js';
+    }
     let body;
     try {
         const resp = await fetch(url);
         if (!resp.ok) {
-            console.log('Fetch failed: ' + resp.status);
+            console.log('Fetch failed: ' + resp.status + ' (url=' + url + ')');
             process.exit(1);
         }
         body = await resp.text();

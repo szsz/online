@@ -129,8 +129,10 @@ async function getFileMeta(name, fileId) {
               /\/index\.html\?singleuser/.test(url), url);
 
         // 2. Editor iframe attaches AND has no `relay=` param.
+        // Iter 211: bare 240s deadline timed out under JOBS=4 in the
+        // full suite (passes solo); wrap via scaleTimeout.
         let editorFrame = null;
-        const deadline = Date.now() + 240000;
+        const deadline = Date.now() + env.scaleTimeout(240000);
         while (Date.now() < deadline) {
             await sleep(500);
             editorFrame = page.frames().find(f => f.url().includes('cool.html'));

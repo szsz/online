@@ -35,6 +35,16 @@ window.L.WriterTileLayer = window.L.CanvasTileLayer.extend({
 		map.uiManager.initializeSpecializedUI('text');
 	},
 
+	// Iter 207 (#129 follow-up) — Writer's beforeAdd registers
+	// 'commandstatechanged' on the map. Drop it on cross-format
+	// tear-down so the old writer's callback doesn't fire on the
+	// new doctype's commandstatechanged events.
+	_offMapHandlers: function (map) {
+		window.L.CanvasTileLayer.prototype._offMapHandlers.call(this, map);
+		if (!map) return;
+		try { map.off('commandstatechanged', this._onCommandStateChanged, this); } catch (e) { /* noop */ }
+	},
+
 	_onCommandStateChanged: function (e) {
 		if (e.commandName === 'CompareDocumentsProperties') {
 			if (e.state) {
