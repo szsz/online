@@ -51,7 +51,21 @@ const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-samedoc-flicker';
 const LOG_DIR = SHOT_DIR; // co-locate the timeline log with shots
-const SRC = '/home/localadmin/online/test/data/test document.docx';
+// Use two visually-DISTINCT fixtures so the wasm-loader's
+// canvas-change hot-switch watchdog can actually fire its
+// "switch succeeded" signal. Earlier this test reused the same
+// docx for A and B (with a 2-byte trailing append for B), but
+// (a) the trailing bytes corrupt the zip → LO falls back, and
+// (b) both rendered identically → canvas-change watchdog never
+// resolved → hot-switch was treated as failed → the recovery
+// path created a new iframe with stale displayName state, so
+// the test asserted on a stuck title that was a real-world
+// recovery side-effect rather than the flicker bug it set out
+// to catch. Distinct content keeps the test on the hot-switch
+// happy-path where the title-flicker is the only thing left
+// to assert on.
+const SRC_A = '/home/localadmin/online/test/data/test document.docx';
+const SRC_B = '/home/localadmin/online/test/data/Simple small document.docx';
 
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
@@ -235,10 +249,8 @@ function fmtTimeline(samples, maxRows) {
     // the viewer always takes the hot-switch path.
     const NAME_A = `samedoc-flicker-A-${STAMP}.docx`;
     const NAME_B = `samedoc-flicker-B-${STAMP}.docx`;
-    const srcBytes = fs.readFileSync(SRC);
-    // Make B byte-different so it gets a distinct fileId.
-    const bytesA = srcBytes;
-    const bytesB = Buffer.concat([srcBytes, Buffer.from([0x42, 0x0a])]);
+    const bytesA = fs.readFileSync(SRC_A);
+    const bytesB = fs.readFileSync(SRC_B);
 
     const { browser, cleanup } = await launch();
 
