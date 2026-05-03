@@ -10,7 +10,9 @@ const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-singleuser';
-const TIMEOUT = 180000;
+// Scaled patience for waitFor* calls. JOBS_SCALE>1 widens it under
+// contention; bare runs see the prior 180s ceiling.
+const TIMEOUT = env.scaleTimeout(180000);
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }
