@@ -107,7 +107,10 @@ async function waitForContentLoaded(browser, page, navStart, c) {
     // Impress's warm-restore path can re-run loadComponentFromURL
     // multiple times before the slide indicator stabilises. The 120 s
     // base budget is too tight on this host. Bump for impress only.
-    const caseTimeout = c.docType === 'impress' ? 240000 : TIMEOUT_MS;
+    // Scale by JOBS_SCALE so contention runs widen — solo runs keep
+    // the prior 120s/240s ceilings.
+    const caseTimeout = env.scaleTimeout(
+        c.docType === 'impress' ? 240000 : TIMEOUT_MS);
     const deadline = Date.now() + caseTimeout;
     let t_first_canvas = null, t_status = null, t_content_ok = null;
     while (Date.now() < deadline) {
