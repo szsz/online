@@ -288,7 +288,12 @@ async function waitForContentLoaded(browser, page, navStart, c) {
     // architectural limitation on every run. 15 s gives headroom
     // over current measurements while still failing if warm regresses
     // beyond the documented baseline (cold ≈ 28–33 s, warm ≈ 8–11 s).
-    const WARM_BUDGET_MS = 15000;
+    //
+    // Iter 213: scale by JOBS_SCALE so the budget widens under
+    // JOBS=4 contention (relay-broker + viewer-server saturate;
+    // warm-impress measured 32s in a parallel-4 run that passed
+    // 11s solo).
+    const WARM_BUDGET_MS = env.scaleTimeout(15000);
     log('goal: max-warm-content_ok ≤ ' + (WARM_BUDGET_MS/1000).toFixed(2) + 's');
 
     // Clean up the persistent userDataDir so we don't leak ~700 MB / run

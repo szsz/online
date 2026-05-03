@@ -133,7 +133,10 @@ async function clickIframe(page) {
             // when the frame doesn't exist yet, so loop manually).
             // Iter 194: under JOBS=2 contention the 2nd browser's load
             // takes longer than the bare 180s; widen via scaleTimeout.
-            const deadline = Date.now() + env.scaleTimeout(180000);
+            // Iter 213: 720s (180s × 4) was still tight under JOBS=4;
+            // floor at 15 min so we never abandon the wait while the
+            // suite still has time on its outer wrapper.
+            const deadline = Date.now() + Math.max(env.scaleTimeout(180000), 900000);
             let bLoaded = false;
             while (Date.now() < deadline) {
                 const s = await readStatusBar(pageB);
