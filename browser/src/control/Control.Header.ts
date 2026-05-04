@@ -71,6 +71,27 @@ export class Header extends CanvasSectionObject {
 		this._reInitRowColumnHeaderStylesAfterModeChange();
 	}
 
+	// Iter 235 (#129 partial fix): cluster C cross-format-matrix
+	// transitions threw on the next doctype's events because removeSection
+	// called onRemove() but the base class implementation left our map
+	// listeners attached. The disposed Header's _handleStatusUpdated
+	// then fired on Impress/Writer's statusupdated, dereferenced
+	// this._map._docLayer (now the new doctype's layer with no
+	// _splitPanesContext), and threw — blocking the new layer from
+	// completing layout. off()'ing in onRemove dropped the calc→impress
+	// and impress→writer transition wall time from 42s/14s → 10s/9s,
+	// though more leaks remain (Tabs, ColumnGroup, RowGroup, PartsPreview,
+	// VRuler, Menubar all hold this._map._docLayer.* references in
+	// handlers that aren't off()'d on doctype change — the architectural
+	// fix is a per-control onRemove pattern across that whole control set).
+	onRemove(): void {
+		if (this._map) {
+			this._map.off('move zoomchanged sheetgeometrychanged splitposchanged', this._updateCanvas, this);
+			this._map.off('darkmodechanged', this._reInitRowColumnHeaderStylesAfterModeChange, this);
+			this._map.off('statusupdated', this._handleStatusUpdated, this);
+		}
+	}
+
 	_handleStatusUpdated(): void {
 		this._reInitRowColumnHeaderStylesAfterModeChange();
 	}
