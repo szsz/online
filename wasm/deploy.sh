@@ -569,8 +569,11 @@ node "$SCRIPT_DIR/tools/cache-bust-build.js" --dir "$BROWSER_DIR"
 # no-op — kept for visibility that the running PID is reachable.
 SERVER_PID=$(pgrep -f "editor-static-server" | head -1)
 if [ -n "$SERVER_PID" ]; then
-    kill -HUP "$SERVER_PID" 2>/dev/null
-    echo "  Signaled editor-static (PID $SERVER_PID); cool.html is no-cache so the next refresh picks up new hashes"
+    if kill -HUP "$SERVER_PID" 2>/dev/null; then
+        echo "  Signaled editor-static (PID $SERVER_PID); cool.html is no-cache so the next refresh picks up new hashes"
+    else
+        echo "  WARNING: kill -HUP $SERVER_PID failed (different user?) — editor-static may be stale"
+    fi
 else
     echo "  WARNING: editor-static-server not running"
 fi
