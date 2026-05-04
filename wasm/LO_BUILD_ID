@@ -1,7 +1,17 @@
 # Pinned LibreOffice WASM build ID — points to artefacts at
 # https://coolwasmfiles.z6.web.core.windows.net/lo-builds/<ID>/
 # Format: YYYY-MM-DD-<run_number> (matches the libreoffice-core-wasm CI run on dev branch).
-# Use the literal token __LATEST__ to follow whatever lo-builds/latest.txt resolves to.
-# First successful LO CI build (for reference): 2026-04-26-3
-# Triggers full pipeline; tests should run with puppeteer installed
-__LATEST__
+#
+# Bump this file via a PR to dev. The validate-lo-build job in
+# .github/workflows/wasm-ci.yml verifies the artefact exists before
+# auto-merge fires. See wasm/CO-EDITING-ARCHITECTURE.md
+# "Build & release policy" for the full workflow.
+#
+# Use the literal token __LATEST__ to follow lo-builds/latest.txt
+# (convenient for development; pin a literal ID for reproducibility).
+#
+# History:
+#   2026-04-26-3   first successful LO CI build
+#   2026-05-03-18  current pin — git_sha b8763b46 ("WASM: weak stub for
+#                  wasm_quiesce_wake_main in standalone soffice.js")
+2026-05-03-18

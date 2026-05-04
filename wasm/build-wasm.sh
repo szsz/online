@@ -1,23 +1,30 @@
 #!/bin/bash
 # Build Collabora Online WASM binary.
-# First run: sets up Docker environment, gets LO Core (build or download), configures and builds Online.
-# Subsequent runs: make detects changed source files and only recompiles what changed.
+#
+# DEFAULT (production-style):
+#   Fetch the published LibreOffice WASM core from coolwasmfiles
+#   (matching wasm/LO_BUILD_ID), extract it locally, and build Online
+#   against it. No local LO core build is performed — same recipe the
+#   CI uses, so the resulting online.wasm matches what gets deployed.
+#
+# --local-lo (inner-loop debugging only):
+#   Use the host's $LO_CORE_HOST_DIR checkout (default
+#   $HOME/libreoffice-core-wasm) bind-mounted into the container,
+#   building LO core in-container. The output is NOT publishable —
+#   only the CI-built artefact (referenced by wasm/LO_BUILD_ID) gets
+#   deployed. See wasm/CO-EDITING-ARCHITECTURE.md "Build & release
+#   policy".
 #
 # Usage:
-#   bash wasm/build-wasm.sh              # build (incremental if already built)
-#   bash wasm/build-wasm.sh --setup      # setup only (pull image, create container, no build)
-#   bash wasm/build-wasm.sh --clean      # force full rebuild of Online (not core)
-#   bash wasm/build-wasm.sh --rebuild-core  # force full rebuild of LO Core
-#   bash wasm/build-wasm.sh --container-name=my-test  # override container name
+#   bash wasm/build-wasm.sh                       # build vs published LO (default)
+#   bash wasm/build-wasm.sh --lo-build-id=<id>    # override the pinned LO build
+#   bash wasm/build-wasm.sh --local-lo            # build vs $HOME/libreoffice-core-wasm
+#   bash wasm/build-wasm.sh --setup               # setup only (pull image, no build)
+#   bash wasm/build-wasm.sh --clean               # force full rebuild of Online
+#   bash wasm/build-wasm.sh --rebuild-core        # --local-lo only: rebuild LO core
+#   bash wasm/build-wasm.sh --container-name=NAME # override container name
 #
-# LO Core source: by default the host's $HOME/libreoffice-core-wasm checkout
-# is bind-mounted into the container at /lo/core, so edits on the host are
-# immediately visible to the build. Push to the GitHub fork via
-# wasm/publish-fork.sh when you want to share with other machines/CI.
-#
-# To force clone-from-GitHub instead (e.g., on a fresh CI machine), set
-# LO_CORE_HOST_DIR= (empty). The container will then `git clone` from
-# $LO_CORE_REPO and `git fetch + reset --hard` on subsequent builds.
+# Subsequent runs: make detects changed source files and only recompiles what changed.
 
 set -e
 
@@ -26,7 +33,9 @@ export MSYS_NO_PATHCONV=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONTAINER="lo-wasm-server"
+# Default container name varies by mode so the two paths don't fight over
+# /lo mount layout. --container-name=NAME overrides for both.
+CONTAINER=""
 IMAGE="public.ecr.aws/allotropia/libo-builders/wasm"
 LO_CORE_BRANCH="wasm-coediting"
 LO_CORE_REPO="https://github.com/szsz/libreoffice-core-wasm.git"
@@ -41,15 +50,29 @@ SETUP_ONLY=false
 CLEAN=false
 REBUILD_CORE=false
 BUILD_CORE=false
+USE_LOCAL_LO=false
+LO_BUILD_ID_OVERRIDE=""
 for arg in "$@"; do
     case "$arg" in
         --setup) SETUP_ONLY=true ;;
         --clean) CLEAN=true ;;
         --rebuild-core) REBUILD_CORE=true ;;
         --build-core) BUILD_CORE=true ;;
+        --local-lo) USE_LOCAL_LO=true ;;
+        --lo-build-id=*) LO_BUILD_ID_OVERRIDE="${arg#*=}" ;;
         --container-name=*) CONTAINER="${arg#*=}" ;;
     esac
 done
+
+# Per-mode default container name so a previous --local-lo container's /lo/core
+# bind-mount doesn't conflict with a published-LO container's /lo bind-mount.
+if [ -z "$CONTAINER" ]; then
+    if [ "$USE_LOCAL_LO" = true ]; then
+        CONTAINER="lo-wasm-server"
+    else
+        CONTAINER="lo-wasm-server-pub"
+    fi
+fi
 
 echo "=== WASM Build ==="
 echo ""
@@ -99,17 +122,37 @@ check_container_mount() {
     fi
 }
 
-# Decide whether to bind-mount the host's LO core checkout (opt-in)
+# LO Core source: published artefact (default) or local checkout (--local-lo).
 LO_CORE_MOUNT_ARGS=()
-if [ -n "$LO_CORE_HOST_DIR" ]; then
-    if [ -d "$LO_CORE_HOST_DIR/.git" ]; then
+LO_PUBLISHED_DIR=""
+if [ "$USE_LOCAL_LO" = true ]; then
+    if [ -n "$LO_CORE_HOST_DIR" ] && [ -d "$LO_CORE_HOST_DIR/.git" ]; then
         LO_CORE_MOUNT_ARGS=(-v "$LO_CORE_HOST_DIR":"$CONTAINER_CORE_DIR")
-        echo "[OK] LO Core bind-mount: $LO_CORE_HOST_DIR → $CONTAINER_CORE_DIR"
+        echo "[OK] LO Core bind-mount (--local-lo): $LO_CORE_HOST_DIR → $CONTAINER_CORE_DIR"
+    elif [ -z "$LO_CORE_HOST_DIR" ]; then
+        echo "[OK] LO Core: clone-from-fork ($LO_CORE_REPO @ $LO_CORE_BRANCH)"
     else
-        echo "[!] LO_CORE_HOST_DIR=$LO_CORE_HOST_DIR has no .git; falling back to clone-from-fork"
+        echo "ERROR: --local-lo set but $LO_CORE_HOST_DIR has no .git checkout" >&2
+        exit 1
     fi
 else
-    echo "[OK] LO Core: clone-from-fork ($LO_CORE_REPO @ $LO_CORE_BRANCH)"
+    # Default: fetch the published LO build pinned in wasm/LO_BUILD_ID.
+    # The extracted dir contains core/ and core-build/ at its root, so
+    # mounting it at /lo gives the container both /lo/core and /lo/core-build.
+    echo "--- Fetching published LO build (pin: ${LO_BUILD_ID_OVERRIDE:-wasm/LO_BUILD_ID}) ---"
+    if [ -n "$LO_BUILD_ID_OVERRIDE" ]; then
+        LO_PUBLISHED_DIR="$(bash "$SCRIPT_DIR/fetch-lo-build.sh" "$LO_BUILD_ID_OVERRIDE")"
+    else
+        LO_PUBLISHED_DIR="$(bash "$SCRIPT_DIR/fetch-lo-build.sh")"
+    fi
+    if [ -z "$LO_PUBLISHED_DIR" ] || [ ! -d "$LO_PUBLISHED_DIR/core" ] || [ ! -d "$LO_PUBLISHED_DIR/core-build" ]; then
+        echo "ERROR: published LO artefact missing core/ or core-build/ at $LO_PUBLISHED_DIR" >&2
+        exit 1
+    fi
+    # NOT read-only — Online's configure may need to write the exports stub
+    # under /lo/core-build/workdir/CustomTarget/desktop/.../exports if absent.
+    LO_CORE_MOUNT_ARGS=(-v "$LO_PUBLISHED_DIR":/lo)
+    echo "[OK] LO Core (published): $LO_PUBLISHED_DIR → /lo"
 fi
 
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
@@ -198,59 +241,75 @@ if [ "$SETUP_ONLY" = true ]; then
 fi
 
 # ---------- LibreOffice Core ----------
-if [ "$REBUILD_CORE" = true ]; then
-    docker exec "$CONTAINER" bash -c "rm -rf /lo/core-build" 2>/dev/null
-fi
+# In published-LO mode (default), the artefact downloaded by
+# fetch-lo-build.sh already contains a complete /lo/core + /lo/core-build,
+# so we skip the LO sync/configure/build steps entirely.
+if [ "$USE_LOCAL_LO" = true ]; then
+    if [ "$REBUILD_CORE" = true ]; then
+        docker exec "$CONTAINER" bash -c "rm -rf /lo/core-build" 2>/dev/null
+    fi
 
-# Sync /lo/core from the fork tip on every build, unless the host
-# checkout is bind-mounted (in which case the host is canonical and
-# git operations from the container would clobber local edits).
-if [ -z "$LO_CORE_HOST_DIR" ]; then
-    if docker exec "$CONTAINER" test -d /lo/core/.git 2>/dev/null; then
-        echo "--- Syncing /lo/core to $LO_CORE_BRANCH tip ---"
+    # Sync /lo/core from the fork tip on every build, unless the host
+    # checkout is bind-mounted (in which case the host is canonical and
+    # git operations from the container would clobber local edits).
+    if [ -z "$LO_CORE_HOST_DIR" ]; then
+        if docker exec "$CONTAINER" test -d /lo/core/.git 2>/dev/null; then
+            echo "--- Syncing /lo/core to $LO_CORE_BRANCH tip ---"
+            docker exec "$CONTAINER" bash -c "
+                cd /lo/core
+                git fetch origin '$LO_CORE_BRANCH' --depth 1 --quiet
+                git reset --hard FETCH_HEAD --quiet
+                echo \"  HEAD: \$(git log --oneline -1)\"
+            "
+        else
+            echo "--- Cloning LO core fork ($LO_CORE_BRANCH) ---"
+            docker exec "$CONTAINER" bash -c "
+                mkdir -p /lo
+                git clone --depth 1 --branch '$LO_CORE_BRANCH' '$LO_CORE_REPO' /lo/core
+            "
+        fi
+    fi
+
+    if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 2>/dev/null; then
+        if [ "$BUILD_CORE" != true ]; then
+            echo ""
+            echo "  LibreOffice Core not found. Build from source?"
+            echo "  (1-3 hours, ~12 GB RAM)"
+            echo ""
+            read -p "  Proceed? [y/N]: " -n 1 -r
+            echo ""
+            [[ ! "$REPLY" =~ ^[Yy]$ ]] && exit 0
+        fi
+
+        echo "--- Configuring LibreOffice Core ---"
         docker exec "$CONTAINER" bash -c "
-            cd /lo/core
-            git fetch origin '$LO_CORE_BRANCH' --depth 1 --quiet
-            git reset --hard FETCH_HEAD --quiet
-            echo \"  HEAD: \$(git log --oneline -1)\"
+            # Ensure gcc-12 is default (required by latest LO Core)
+            update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 2>/dev/null
+            update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100 2>/dev/null
+            source /home/builder/emsdk/emsdk_env.sh
+            mkdir -p /lo/core-build && cd /lo/core-build
+            /lo/core/autogen.sh --with-distro=LibreOfficeWASM32 --with-wasm-module='writer calc impress'
         "
+        echo "--- Building LibreOffice Core ---"
+        docker exec "$CONTAINER" bash -c "
+            source /home/builder/emsdk/emsdk_env.sh
+            cd /lo/core-build && make -rj\$(nproc) 2>&1
+        "
+        echo "[OK] Core build complete"
     else
-        echo "--- Cloning LO core fork ($LO_CORE_BRANCH) ---"
-        docker exec "$CONTAINER" bash -c "
-            mkdir -p /lo
-            git clone --depth 1 --branch '$LO_CORE_BRANCH' '$LO_CORE_REPO' /lo/core
-        "
+        echo "[OK] LibreOffice Core"
     fi
-fi
-
-if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 2>/dev/null; then
-    if [ "$BUILD_CORE" != true ]; then
-        echo ""
-        echo "  LibreOffice Core not found. Build from source?"
-        echo "  (1-3 hours, ~12 GB RAM)"
-        echo ""
-        read -p "  Proceed? [y/N]: " -n 1 -r
-        echo ""
-        [[ ! "$REPLY" =~ ^[Yy]$ ]] && exit 0
-    fi
-
-    echo "--- Configuring LibreOffice Core ---"
-    docker exec "$CONTAINER" bash -c "
-        # Ensure gcc-12 is default (required by latest LO Core)
-        update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 2>/dev/null
-        update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100 2>/dev/null
-        source /home/builder/emsdk/emsdk_env.sh
-        mkdir -p /lo/core-build && cd /lo/core-build
-        /lo/core/autogen.sh --with-distro=LibreOfficeWASM32 --with-wasm-module='writer calc impress'
-    "
-    echo "--- Building LibreOffice Core ---"
-    docker exec "$CONTAINER" bash -c "
-        source /home/builder/emsdk/emsdk_env.sh
-        cd /lo/core-build && make -rj\$(nproc) 2>&1
-    "
-    echo "[OK] Core build complete"
 else
-    echo "[OK] LibreOffice Core"
+    # Published LO mode: artefact must contain core/ and core-build/ — verified above.
+    if [ "$REBUILD_CORE" = true ]; then
+        echo "WARNING: --rebuild-core has no effect in published-LO mode (use --local-lo)" >&2
+    fi
+    if ! docker exec "$CONTAINER" test -f /lo/core-build/instdir/program/soffice.js 2>/dev/null; then
+        echo "ERROR: published LO artefact at $LO_PUBLISHED_DIR is missing core-build/instdir/program/soffice.js." >&2
+        echo "       Re-fetch with: rm -rf $LO_PUBLISHED_DIR && bash wasm/build-wasm.sh" >&2
+        exit 1
+    fi
+    echo "[OK] LibreOffice Core (published artefact)"
 fi
 
 # ---------- Configure Online (first time or --clean) ----------
