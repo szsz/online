@@ -320,14 +320,14 @@ if ! docker exec "$CONTAINER" test -f "$ONLINE_BUILD_DIR/wasm/Makefile" 2>/dev/n
         EXPORTS_DIR=/lo/core-build/workdir/CustomTarget/desktop/soffice_bin-emscripten-exports
         if [ ! -f \$EXPORTS_DIR/exports ]; then
             mkdir -p \$EXPORTS_DIR
-            printf '_main\n_libreofficekit_hook\n_libreofficekit_hook_2\n_lok_preinit\n_lok_preinit_2\n_doc_postUnoCommand\n' > \$EXPORTS_DIR/exports
+            printf '_main\n_libreofficekit_hook\n_libreofficekit_hook_2\n_lok_preinit\n_lok_preinit_2\n' > \$EXPORTS_DIR/exports
         fi
         # Online-side KEEPALIVE functions (wasm/wasmapp.cpp) must be in
         # EXPORTED_FUNCTIONS — Makefile.am uses '-s EXPORTED_FUNCTIONS=@exports'
-        # which is an allowlist; KEEPALIVE alone is ignored. Append unconditionally;
-        # idempotent via sort -u.
+        # which is an allowlist; KEEPALIVE alone is ignored. Strip any
+        # known-stale entries from prior patches, then append the live list.
         {
-            cat \$EXPORTS_DIR/exports
+            grep -vE '^(_doc_postUnoCommand)\$' \$EXPORTS_DIR/exports
             printf '%s\n' _signal_js_ready _get_heap_base _get_temp_dir_path \
                 _is_preinit_done _wasm_clear_server_freshly_ready \
                 _notify_coolwsd_server_socket_ready _create_remote_client \

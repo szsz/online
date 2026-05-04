@@ -130,7 +130,7 @@ docker exec "$CI_CONTAINER" bash -lc '
     EXPORTS_DIR=/lo/core-build/workdir/CustomTarget/desktop/soffice_bin-emscripten-exports
     if [[ ! -f "$EXPORTS_DIR/exports" ]]; then
         mkdir -p "$EXPORTS_DIR"
-        printf "_main\n_libreofficekit_hook\n_libreofficekit_hook_2\n_lok_preinit\n_lok_preinit_2\n_doc_postUnoCommand\n" \
+        printf "_main\n_libreofficekit_hook\n_libreofficekit_hook_2\n_lok_preinit\n_lok_preinit_2\n" \
             > "$EXPORTS_DIR/exports"
     fi
 
@@ -139,8 +139,14 @@ docker exec "$CI_CONTAINER" bash -lc '
     # which is an allowlist; KEEPALIVE alone is ignored under that mode.
     # The published LO exports file lists only LO core symbols so we append
     # the Online ones unconditionally (idempotent: sort -u below).
+    # The CI runner caches $LO_EXTRACTED across runs; if a previous run
+    # mutated the exports file (e.g. an earlier patch wrote
+    # _doc_postUnoCommand, which is only a static fn in
+    # kit/DummyLibreOfficeKit.cpp and not actually exportable), strip
+    # those known-stale entries on each run so we end up with a
+    # deterministic (LO core exports ∪ Online KEEPALIVE list).
     {
-        cat "$EXPORTS_DIR/exports"
+        grep -vE "^(_doc_postUnoCommand)\$" "$EXPORTS_DIR/exports"
         printf "%s\n" \
             _signal_js_ready \
             _get_heap_base \
