@@ -183,9 +183,6 @@ jobs:
     needs: build-deploy
     if: ${{ github.event.inputs.skip_tests != 'true' }}
     runs-on: [self-hosted, wasm-build]
-    permissions:
-      checks: write       # JUnit reporter posts a Check
-      pull-requests: write
     steps:
       - name: Reclaim workspace ownership
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
@@ -196,46 +193,20 @@ jobs:
           ref: ${{ github.event.inputs.online_sha || github.sha }}
 
       - name: Run test suite + publish report
-        id: run_tests
-        # Don't fail the step on test failures — let the JUnit reporter
-        # render the failures as a Check, and surface red via the
-        # explicit "Fail job on test failures" step below.
-        continue-on-error: true
         env:
           APP_BUILD_ID: ${{ needs.build-deploy.outputs.app_build_id }}
           LO_BUILD_ID:  ${{ needs.build-deploy.outputs.lo_build_id }}
           GIT_SHA: ${{ github.event.inputs.online_sha || github.sha }}
         run: bash .github/scripts/wasm-ci/test-and-publish.sh
 
-      - name: Stage JUnit XML for the reporter
-        # Move into the workspace so the action can find it via a relative
-        # path, and so it survives the chown trap in subsequent steps.
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/junit"
-          if [ -f /tmp/static-deploy/public/reports/junit.xml ]; then
-              cp /tmp/static-deploy/public/reports/junit.xml "$GITHUB_WORKSPACE/junit/junit.xml"
-          fi
-
-      - name: Publish JUnit as a GitHub Check
-        if: always()
-        uses: mikepenz/action-junit-report@v4
-        with:
-          report_paths: 'junit/junit.xml'
-          check_name: 'WASM test suite'
-          fail_on_failure: false
-          require_tests: false
-          include_passed: true
-
+      # Stage the JUnit XML into the workspace so upload-artifact can pick
+      # it up. Test-and-publish.sh already uploaded the same file to
+      # coolwasmfiles, but a workflow artifact is convenient for external
+      # consumers / quick download from the run page.
       - name: Upload junit.xml as a workflow artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-xml
-          path: junit/junit.xml
+          path: /tmp/static-deploy/public/reports/junit.xml
           if-no-files-found: ignore
-
-      - name: Fail job on test failures
-        if: ${{ steps.run_tests.outcome == 'failure' }}
-        run: |
-          echo "::error::test-and-publish.sh exited non-zero — see the run-tests step output and the published report."
-          exit 1
