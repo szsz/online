@@ -119,7 +119,7 @@ PHASE1_RC=0
 
 if [[ "$TEST_TARGET" == "local" ]]; then
     STAGE_DIR="$REPORT_DIR/stage"
-    mkdir -p "$STAGE_DIR/public/browser" "$STAGE_DIR/storage"
+    mkdir -p "$STAGE_DIR/public/browser" "$STAGE_DIR/storage" "$STAGE_DIR/wasm-docs"
 
     # Stage CI's just-built bundle. The artefacts come from two sibling
     # dirs in $CI_STATE_DIR/online-build/:
@@ -151,6 +151,7 @@ if [[ "$TEST_TARGET" == "local" ]]; then
     cp -L "$WORKSPACE/wasm/wasm-loader.js"     "$STAGE_DIR/public/browser/"
     cp -L "$WORKSPACE/wasm/relay-adapter.js"   "$STAGE_DIR/public/browser/"
     cp -L "$WORKSPACE/wasm/sw.js"              "$STAGE_DIR/public/browser/"
+    [[ -f "$WORKSPACE/wasm/dict-loader.js" ]] && cp -L "$WORKSPACE/wasm/dict-loader.js" "$STAGE_DIR/public/browser/"
     # Build fingerprint replacement (same pattern as deploy.sh): ties
     # snapshot/SW cache to this exact wasm so a stale snapshot from an
     # earlier build is rejected.
@@ -177,7 +178,12 @@ if [[ "$TEST_TARGET" == "local" ]]; then
     echo "  message-relay  → $RELAY_URL_LOCAL"
 
     # editor-static-server.js
+    # DOCS overrides the default /tmp/static-deploy/.wasm-docs (the
+    # user's host-side dir, root-owned). Without this the CI process
+    # gets EACCES on every document upload and the tests time out
+    # waiting for the doc to load.
     PUB="$STAGE_DIR/public" \
+    DOCS="$STAGE_DIR/wasm-docs" \
     HTTP_PORT="$EDITOR_PORT" \
     FILE_STORAGE_URL="$VIEWER_URL_LOCAL" \
         node "$WORKSPACE/wasm/editor-static-server.js" \
