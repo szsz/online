@@ -152,3 +152,13 @@ HTMLEOF
 
 echo "Summary: $PASSED/$TOTAL passed (${FAILED} failed). Wall: ${TOTAL_WALL}s"
 echo "URL: https://viewer.szebeni.hu/reports/"
+
+# JUnit XML for CI consumers (GitHub Actions, etc). The CI publisher
+# can pass --base-url to inject per-test report URLs into <system-out>.
+# JUNIT_BASE_URL env propagates the base URL for local runs (optional).
+JUNIT_ARGS=()
+if [ -n "${JUNIT_BASE_URL:-}" ]; then
+    JUNIT_ARGS=(--base-url "$JUNIT_BASE_URL")
+fi
+LOG_DIR="$LOG_DIR" REPORTS_DIR="$REPORTS_DIR" \
+    bash "$SCRIPT_DIR/generate-junit.sh" "${JUNIT_ARGS[@]}" || true
