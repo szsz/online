@@ -8,12 +8,17 @@
 //                              layout (computes hash, copies to _blobs/,
 //                              writes _meta/).
 //
-// Two auth modes:
-//   1) SAS URL  — set DOC_STORAGE_SAS_URL to a full container-scoped SAS URL
+// Three auth modes (preferred → fallback):
+//   1) Managed Identity / DefaultAzureCredential — set DOC_STORAGE_ACCOUNT
+//      (no key, no SAS). Picks up the App Service MSI on Azure or your
+//      `az login` credentials when running locally. Requires the identity
+//      to have "Storage Blob Data Contributor" on the target container.
+//   2) SAS URL  — set DOC_STORAGE_SAS_URL to a full container-scoped SAS
 //      (e.g. https://acct.blob.core.windows.net/container?sv=…&sig=…).
-//      Preferred for limited-scope tokens handed out to dev setups.
-//   2) Account key — set DOC_STORAGE_ACCOUNT + DOC_STORAGE_KEY, plus optional
-//      DOC_STORAGE_CONTAINER (default: "documents").
+//      Kept for legacy/limited-scope dev setups.
+//   3) Account key — set DOC_STORAGE_ACCOUNT + DOC_STORAGE_KEY. Discouraged;
+//      keep it only as a last-resort fallback.
+// Optional: DOC_STORAGE_CONTAINER (default: "userdata").
 
 const { BlobServiceClient, ContainerClient, StorageSharedKeyCredential } = require('@azure/storage-blob');
 const crypto = require('crypto');
@@ -21,7 +26,7 @@ const crypto = require('crypto');
 const sasUrl        = process.env.DOC_STORAGE_SAS_URL;
 const accountName   = process.env.DOC_STORAGE_ACCOUNT;
 const accountKey    = process.env.DOC_STORAGE_KEY;
-const containerName = process.env.DOC_STORAGE_CONTAINER || 'documents';
+const containerName = process.env.DOC_STORAGE_CONTAINER || 'userdata';
 
 let container;
 let describeSource;
@@ -36,8 +41,19 @@ if (sasUrl) {
     );
     container = blobService.getContainerClient(containerName);
     describeSource = `azure (${accountName}/${containerName})`;
+} else if (accountName) {
+    // No key/SAS → use DefaultAzureCredential (MSI on Azure, az CLI locally).
+    // Lazily-required so envs that never reach this branch don't have to
+    // install @azure/identity.
+    const { DefaultAzureCredential } = require('@azure/identity');
+    const credential = new DefaultAzureCredential();
+    const blobService = new BlobServiceClient(
+        `https://${accountName}.blob.core.windows.net`, credential
+    );
+    container = blobService.getContainerClient(containerName);
+    describeSource = `azure (${accountName}/${containerName} via DefaultAzureCredential)`;
 } else {
-    throw new Error('Azure storage backend requires DOC_STORAGE_SAS_URL or DOC_STORAGE_ACCOUNT+DOC_STORAGE_KEY');
+    throw new Error('Azure storage backend requires DOC_STORAGE_ACCOUNT (preferred, MSI/az-login auth), or DOC_STORAGE_SAS_URL, or DOC_STORAGE_ACCOUNT+DOC_STORAGE_KEY');
 }
 
 // Allow folder paths but block traversal attacks.

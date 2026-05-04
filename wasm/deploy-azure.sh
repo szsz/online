@@ -32,7 +32,7 @@ source "$ENV_FILE"
 
 # Validate required vars
 for var in RESOURCE_GROUP APP_SERVICE_PLAN VIEWER_APP_NAME RELAY_APP_NAME EDITOR_APP_NAME \
-           VIEWER_URL RELAY_URL EDITOR_URL DOC_STORAGE_ACCOUNT DOC_STORAGE_KEY DOC_STORAGE_CONTAINER; do
+           VIEWER_URL RELAY_URL EDITOR_URL DOC_STORAGE_ACCOUNT DOC_STORAGE_CONTAINER; do
     if [[ -z "${!var:-}" ]]; then
         echo "ERROR: $var is not set in $ENV_FILE"
         exit 1
@@ -143,9 +143,10 @@ configure_settings() {
     [[ -n "${EDITOR_EXTRA_ORIGINS:-}" ]] && EDITOR_ALLOWED="$EDITOR_ALLOWED,$EDITOR_EXTRA_ORIGINS"
 
     # Viewer settings — uses Azure Blob storage backend in App Services.
-    # The viewer-server.js defaults to STORAGE_BACKEND=local for dev; we
-    # explicitly set it to azure here so the deployed instance reads/writes
-    # blobs instead of the (empty) container's local filesystem.
+    # Auth via the App Service's MSI (DefaultAzureCredential). The
+    # viewer's identity must hold "Storage Blob Data Contributor" on
+    # $DOC_STORAGE_ACCOUNT. NO key is set in App Settings; if a stale
+    # DOC_STORAGE_KEY exists from a prior deploy, it is removed below.
     echo "  Viewer ($VIEWER_APP_NAME)..."
     az webapp config appsettings set \
         --resource-group "$RESOURCE_GROUP" \
@@ -156,11 +157,17 @@ configure_settings() {
             EDITOR_URL="$EDITOR_URL" \
             RELAY_URL="$RELAY_URL" \
             DOC_STORAGE_ACCOUNT="$DOC_STORAGE_ACCOUNT" \
-            DOC_STORAGE_KEY="$DOC_STORAGE_KEY" \
             DOC_STORAGE_CONTAINER="$DOC_STORAGE_CONTAINER" \
             ALLOWED_ORIGINS="$VIEWER_ALLOWED" \
             WEBSITE_NODE_DEFAULT_VERSION="~24" \
         > /dev/null
+    # Strip a leftover DOC_STORAGE_KEY app setting if present (safe no-op
+    # when absent; the --setting-names form ignores missing keys).
+    az webapp config appsettings delete \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$VIEWER_APP_NAME" \
+        --setting-names DOC_STORAGE_KEY \
+        > /dev/null 2>&1 || true
 
     # Relay settings
     echo "  Relay ($RELAY_APP_NAME)..."

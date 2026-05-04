@@ -6,8 +6,11 @@
 //
 // Storage backend selection — see wasm/lib/storage/index.js.
 //   STORAGE_BACKEND=local   filesystem under LOCAL_STORAGE_DIR (default ./storage)
-//   STORAGE_BACKEND=azure   Azure Blob. Auth via DOC_STORAGE_SAS_URL (full
-//                           container SAS) OR DOC_STORAGE_ACCOUNT+KEY.
+//   STORAGE_BACKEND=azure   Azure Blob. Auth (preferred → fallback):
+//                           1. DOC_STORAGE_ACCOUNT only → DefaultAzureCredential
+//                              (App Service MSI in Azure, `az login` locally)
+//                           2. DOC_STORAGE_SAS_URL (full container-scoped SAS)
+//                           3. DOC_STORAGE_ACCOUNT+DOC_STORAGE_KEY (legacy)
 //
 // The deployed package layout (created by wasm/deploy-azure.sh) is:
 //   server.js            (this file, copied from wasm/viewer-server.js)
