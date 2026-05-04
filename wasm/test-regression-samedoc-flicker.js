@@ -416,12 +416,27 @@ function fmtTimeline(samples, maxRows) {
         // immediately after the click is acceptable as the residue
         // from the previous switch's writer; require it to be in the
         // first 1.5 s.)
+        //
+        // If click-3 itself didn't complete (cluster C cross-type
+        // recovery race under JOBS=2 contention — the canvas-change
+        // watchdog fires HotSwitchFailed and the recovery iframe
+        // doesn't paint A within the settle), the recorder samples
+        // B as the iframe's resting state. That's a DIFFERENT failure
+        // mode, not the flicker bug — skip the late-NAME_B assertion
+        // for it. The "final input == A" assertion above already
+        // catches the click-3-didn't-complete case under its own label.
+        const click3Completed = (finalInput === NAME_A);
         const bHits = post3.filter(s => s.value === NAME_B);
         const lateBHits = bHits.filter(s => s.t >= click3T + 1500);
-        log(`post-click3 visits to NAME_B: ${bHits.length} (late: ${lateBHits.length})`);
-        check('post-click3 input has no late visits to NAME_B',
-              lateBHits.length === 0,
-              'lateB=' + lateBHits.length);
+        log(`post-click3 visits to NAME_B: ${bHits.length} (late: ${lateBHits.length})`
+            + (click3Completed ? '' : ' [click-3 did NOT complete — recovery race]'));
+        if (click3Completed) {
+            check('post-click3 input has no late visits to NAME_B',
+                  lateBHits.length === 0,
+                  'lateB=' + lateBHits.length);
+        } else {
+            log('Skipping late-NAME_B assertion: click-3 recovery race, separate failure mode');
+        }
 
         // Oscillation check: A↔B transitions in the post-click-3 window.
         // The expected user-visible sequence is (residue of B) → A and
