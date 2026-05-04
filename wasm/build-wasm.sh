@@ -322,6 +322,19 @@ if ! docker exec "$CONTAINER" test -f "$ONLINE_BUILD_DIR/wasm/Makefile" 2>/dev/n
             mkdir -p \$EXPORTS_DIR
             printf '_main\n_libreofficekit_hook\n_libreofficekit_hook_2\n_lok_preinit\n_lok_preinit_2\n_doc_postUnoCommand\n' > \$EXPORTS_DIR/exports
         fi
+        # Online-side KEEPALIVE functions (wasm/wasmapp.cpp) must be in
+        # EXPORTED_FUNCTIONS — Makefile.am uses '-s EXPORTED_FUNCTIONS=@exports'
+        # which is an allowlist; KEEPALIVE alone is ignored. Append unconditionally;
+        # idempotent via sort -u.
+        {
+            cat \$EXPORTS_DIR/exports
+            printf '%s\n' _signal_js_ready _get_heap_base _get_temp_dir_path \
+                _is_preinit_done _wasm_clear_server_freshly_ready \
+                _notify_coolwsd_server_socket_ready _create_remote_client \
+                _poll_remote_client_ready _handle_remote_message _close_remote_client \
+                _doc_postUnoCommand
+        } | sort -u > \$EXPORTS_DIR/exports.new
+        mv \$EXPORTS_DIR/exports.new \$EXPORTS_DIR/exports
     "
     docker exec "$CONTAINER" bash -c "
         source /home/builder/emsdk/emsdk_env.sh

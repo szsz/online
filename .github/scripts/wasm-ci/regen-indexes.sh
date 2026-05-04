@@ -43,7 +43,7 @@ a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}
 .muted{color:#666}.ok{color:#2e7d32}.bad{color:#c62828}</style>
 <h1>$title</h1>
 <p><a href="/">← root</a></p>
-<table><thead><tr><th>Build ID</th><th>When</th><th>Notes</th></tr></thead><tbody>
+<table><thead><tr><th>Build ID</th><th>When (UTC)</th><th>Branch</th><th>Commit</th><th>Tests</th><th>Notes</th></tr></thead><tbody>
 HTML
         local manifests
         manifests="$(list_prefix "$prefix")"
@@ -60,28 +60,35 @@ HTML
                 az storage blob download --account-name "$ACCT" \
                     --container-name '$web' --name "$mfp" --file "$tmp" --no-progress >/dev/null 2>&1 || continue
                 when="$(jq -r '.completed_utc // ""' "$tmp" 2>/dev/null)"
+                local branch sha sha_short
+                # git_ref is "refs/heads/<branch>" or "refs/pull/.../merge"
+                branch="$(jq -r '.git_ref // ""' "$tmp" 2>/dev/null | sed -E 's|^refs/heads/||;s|^refs/pull/([0-9]+).*|PR #\1|')"
+                sha="$(jq -r '.git_sha // .git_short_sha // ""' "$tmp" 2>/dev/null)"
+                sha_short="${sha:0:12}"
                 if [[ "$prefix" == "app-builds/" ]]; then
-                    local rc lo p_pass p_fail
+                    local rc lo p_pass p_fail tests_cell
                     rc="$(jq -r '.test_report.exit_code // empty' "$tmp" 2>/dev/null)"
                     lo="$(jq -r '.lo_build_id // ""' "$tmp" 2>/dev/null)"
                     p_pass="$(jq -r '.test_report.pass_count // empty' "$tmp" 2>/dev/null)"
                     p_fail="$(jq -r '.test_report.fail_count // empty' "$tmp" 2>/dev/null)"
                     if [[ -z "$rc" ]]; then
-                        notes="LO=$lo · <span class=\"muted\">no tests yet</span>"
+                        tests_cell="<span class=\"muted\">no tests yet</span>"
                     elif [[ -n "$p_pass" && -n "$p_fail" ]]; then
-                        # Have counts: render as "X passed · Y failed" link.
-                        local pass_cls="ok" fail_cls="bad"
-                        notes="LO=$lo · <a href=\"$id/tests/\"><span class=\"$pass_cls\">$p_pass passed</span> · <span class=\"$fail_cls\">$p_fail failed</span></a>"
+                        tests_cell="<a href=\"$id/tests/\"><span class=\"ok\">$p_pass</span> / <span class=\"bad\">$p_fail</span></a>"
                     elif [[ "$rc" == "0" ]]; then
-                        notes="LO=$lo · <a class=\"ok\" href=\"$id/tests/\">tests passed</a>"
+                        tests_cell="<a class=\"ok\" href=\"$id/tests/\">passed</a>"
                     else
-                        notes="LO=$lo · <a class=\"bad\" href=\"$id/tests/\">tests failed (rc=$rc)</a>"
+                        tests_cell="<a class=\"bad\" href=\"$id/tests/\">failed (rc=$rc)</a>"
                     fi
+                    notes="LO=$lo"
+                    printf '<tr><td><a href="%s/">%s</a></td><td class="muted">%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td>%s</td></tr>\n' \
+                        "$id" "$id" "$when" "$branch" "$sha_short" "$tests_cell" "$notes"
                 else
-                    notes="$(jq -r '.git_short_sha // ""' "$tmp" 2>/dev/null)"
+                    # lo-builds: branch + commit + size from git_short_sha + a generic notes column
+                    notes="$(jq -r '.lo_core_tar_size_human // ""' "$tmp" 2>/dev/null)"
+                    printf '<tr><td><a href="%s/">%s</a></td><td class="muted">%s</td><td>%s</td><td><code>%s</code></td><td class="muted">—</td><td>%s</td></tr>\n' \
+                        "$id" "$id" "$when" "$branch" "$sha_short" "$notes"
                 fi
-                printf '<tr><td><a href="%s/">%s</a></td><td class="muted">%s</td><td>%s</td></tr>\n' \
-                    "$id" "$id" "$when" "$notes"
                 [[ $n -ge 50 ]] && break
             done <<< "$manifests"
         fi

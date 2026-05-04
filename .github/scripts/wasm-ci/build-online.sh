@@ -134,6 +134,29 @@ docker exec "$CI_CONTAINER" bash -lc '
             > "$EXPORTS_DIR/exports"
     fi
 
+    # Online-side KEEPALIVE functions (declared in wasm/wasmapp.cpp) need to
+    # be in EXPORTED_FUNCTIONS — Makefile.am uses `-s EXPORTED_FUNCTIONS=@exports`
+    # which is an allowlist; KEEPALIVE alone is ignored under that mode.
+    # The published LO exports file lists only LO core symbols so we append
+    # the Online ones unconditionally (idempotent: sort -u below).
+    {
+        cat "$EXPORTS_DIR/exports"
+        printf "%s\n" \
+            _signal_js_ready \
+            _get_heap_base \
+            _get_temp_dir_path \
+            _is_preinit_done \
+            _wasm_clear_server_freshly_ready \
+            _notify_coolwsd_server_socket_ready \
+            _create_remote_client \
+            _poll_remote_client_ready \
+            _handle_remote_message \
+            _close_remote_client \
+            _doc_postUnoCommand
+    } | sort -u > "$EXPORTS_DIR/exports.new"
+    mv "$EXPORTS_DIR/exports.new" "$EXPORTS_DIR/exports"
+    echo "[OK] EXPORTED_FUNCTIONS includes $(wc -l <"$EXPORTS_DIR/exports") symbols"
+
     # autogen.sh ALWAYS — actions/checkout deletes the generated `missing`
     # script (autotools wrapper). Makefile references it; if absent, an
     # otherwise-incremental build dies at "/lo/online/missing: not found"
