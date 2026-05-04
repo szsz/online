@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../lib/inject-checklist');
 // Regression test: SharedArrayBuffer context interference.
 //
 // The bug: when two pages co-edit a document inside the SAME browser context
@@ -22,9 +22,9 @@ const __cl = require('./lib/inject-checklist');
 //
 // ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../lib/browser');
 const fs = require('fs');
-const env = require('./lib/test-env');
+const env = require('../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY = env.RELAY_URL;

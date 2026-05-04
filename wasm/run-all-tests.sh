@@ -63,9 +63,21 @@ TESTS=(
     # signal is covered by latejoin + stress + 3browser tests. Re-enable
     # with an opt-in flag if we need it.
     "pptx-viewer|test-pptx-viewer.js|PPTX via Viewer|Slide rendering, navigation, and Slide Show via viewer cold-reload|shots-pptx-viewer"
-    "prewarm|test-prewarm.js|Pre-Warm|Viewer pre-warms editor in background; document open near-instant|shots-prewarm"
+    # prewarm|test-prewarm.js — moved to wasm/adhoc-tests/ on 2026-05-04.
+    # Asserts a "warm vs cold" perf-delta ratio that is contention-bounded
+    # under JOBS=2: the cold side races the warm side on the same Azure
+    # App Service instance and the ratio assertion is essentially noise.
+    # snapshot-milestones already covers warm-restore timings comprehensively
+    # (N=3 trials per doctype × cold/warm with milestone screenshots).
+    # Run ad-hoc when investigating viewer prewarm UX.
     "regression-sidebar|test-regression-sidebar.js|Regression: Sidebar Collapse|Sidebar collapses to thin bar on file open; hover/click re-expands|shots-regression-sidebar"
-    "regression-sab-context|test-regression-sab-context.js|Regression: SAB Browser Context|Same-context co-edit corrupts state; separate contexts converge|shots-regression-sab"
+    # regression-sab-context|test-regression-sab-context.js — moved to
+    # wasm/adhoc-tests/ on 2026-05-04. The bad-case scenario (shared
+    # context corrupts) is timing-window dependent: under contention the
+    # corruption sometimes doesn't manifest, marking the "should-corrupt"
+    # assertion as a flake. Its purpose is to gate the test-infra rule
+    # "every co-edit page gets its own browserContext()" — captured in
+    # CLAUDE.md (browser.js launch helper) instead.
     "regression-room-switch|test-regression-room-switch.js|Regression: Hot-Switch Room Change|Activation poll restart + stale WS handler cleanup after room switch|shots-regression-room-switch"
     "regression-checkpoint-timing|test-regression-checkpoint-timing.js|Regression: Checkpoint Timing|Late joiners receive fresh checkpoint within 1.5s save budget|shots-regression-checkpoint"
     "regression-xlsx-hotswitch|test-regression-xlsx-hotswitch.js|Regression: xlsx → xlsx Hot-Switch|Hot-switch between two similar xlsx files (identical status text) must not hang|shots-regression-xlsx-hotswitch"

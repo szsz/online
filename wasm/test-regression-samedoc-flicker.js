@@ -143,11 +143,18 @@ async function dumpRecorder(frame) {
         return {
             samples: window.__nameRecorder.samples.slice(),
             titleSamples: window.__nameRecorder.titleSamples.slice(),
+            click3At: window.__nameRecorder.click3At,
         };
     });
 }
 
 // Open the viewer, wait for prewarm, install the name-recorder.
+//
+// Patience is scaled by env.JOBS_SCALE — under JOBS=2 contention the
+// viewer-server, relay, and editor-static all share CPU with parallel
+// browsers and prewarm can take 60+ s instead of the usual 20 s. We
+// don't fail the assertion budget when contention is the cause; the
+// flicker is what we're measuring, not the prewarm time.
 async function openViewer(browser, recentList, label) {
     const ctx = await browser.createBrowserContext();
     const page = await ctx.newPage();
@@ -163,9 +170,12 @@ async function openViewer(browser, recentList, label) {
             localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
         }, recentList);
     }
-    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    // Wait for prewarm
-    for (let i = 0; i < 240; i++) {
+    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded',
+        timeout: env.scaleTimeout(60000) });
+    // Wait for prewarm. Base budget 120 s (240 * 500 ms) widened by
+    // JOBS_SCALE so JOBS=2 → 240 s. Solo runs unchanged.
+    const prewarmIters = Math.ceil(env.scaleTimeout(120000) / 500);
+    for (let i = 0; i < prewarmIters; i++) {
         await sleep(500);
         const fr = getEditorFrame(page);
         if (fr) {
@@ -280,7 +290,7 @@ function fmtTimeline(samples, maxRows) {
         // ---- Click 1: open A ----
         log('\n--- Click 1: open A ---');
         await clickFile(page, upA.fileId);
-        let r = await waitForShieldDrop(page, 90000);
+        let r = await waitForShieldDrop(page, env.scaleTimeout(90000));
         log(`A loaded (shield down in ${r.ms}ms, ok=${r.ok})`);
         // Re-attach recorder in case the iframe was reloaded (cold path).
         const fr1 = getEditorFrame(page);
@@ -291,7 +301,7 @@ function fmtTimeline(samples, maxRows) {
         // ---- Click 2: open B ----
         log('\n--- Click 2: open B (hot-switch) ---');
         await clickFile(page, upB.fileId);
-        r = await waitForShieldDrop(page, 90000);
+        r = await waitForShieldDrop(page, env.scaleTimeout(90000));
         log(`B loaded (shield down in ${r.ms}ms, ok=${r.ok})`);
         const fr2 = getEditorFrame(page);
         if (fr2) await installRecorder(fr2); // idempotent
@@ -300,16 +310,35 @@ function fmtTimeline(samples, maxRows) {
 
         // ---- Click 3: back to A ----
         log('\n--- Click 3: back to A (hot-switch) ---');
+        // Mark the click-3 timestamp INSIDE the iframe (same epoch as
+        // recorder.installedAt) so we can slice the timeline by
+        // "samples after click 3" rather than guessing via tail-window.
+        // Without this, samples from click-1/2 leak into the assertion
+        // window and make the "ended at A" check pass even when the
+        // post-click-3 settle was a flicker fest.
+        const fr3pre = getEditorFrame(page);
+        if (fr3pre) {
+            await fr3pre.evaluate(() => {
+                if (window.__nameRecorder) {
+                    window.__nameRecorder.click3At =
+                        Date.now() - window.__nameRecorder.installedAt;
+                }
+            });
+        }
         const click3At = Date.now();
         await clickFile(page, upA.fileId);
-        r = await waitForShieldDrop(page, 90000);
+        r = await waitForShieldDrop(page, env.scaleTimeout(90000));
         log(`A2 loaded (shield down in ${r.ms}ms, ok=${r.ok})`);
         const fr3 = getEditorFrame(page);
         if (fr3) await installRecorder(fr3);
 
-        // Capture 6 seconds of post-settle samples.
-        log('Capturing 6s of post-switch title samples...');
-        await sleep(6000);
+        // Capture 8 seconds of post-settle samples. Bumped from 6 to
+        // cover the wasm-loader docNameSetInt window (3 s after each
+        // switch) plus COOL's late `wopi:` clobber that lands ~1-2 s
+        // after the canvas first paints. 6 s could miss late writes
+        // in the contention case.
+        log('Capturing 8s of post-switch title samples...');
+        await sleep(8000);
         await snap(page, 'after_A2_settle');
 
         const fr = getEditorFrame(page);
@@ -319,11 +348,15 @@ function fmtTimeline(samples, maxRows) {
             throw new Error('recorder dump failed');
         }
 
-        // Note: sample timestamps are relative to recorder install
-        // (per-iframe). Absolute alignment to click3 isn't needed —
-        // we read the LAST 5 s of the timeline regardless.
         void click3At;
+        // click3At in recorder-relative ms (set in-iframe just before the
+        // sidebar click). If for any reason it wasn't recorded, fall back
+        // to the last sample's t minus 8 s (the post-settle window).
+        const click3T = (typeof dump.click3At === 'number' && isFinite(dump.click3At))
+            ? dump.click3At
+            : (dump.samples.length ? dump.samples[dump.samples.length - 1].t - 8000 : 0);
         const log_lines = [];
+        log_lines.push(`click3 at recorder-t = ${click3T}ms`);
         log_lines.push('=== document-name-input timeline (since recorder install) ===');
         log_lines.push(fmtTimeline(dump.samples, 200));
         log_lines.push('');
@@ -349,28 +382,61 @@ function fmtTimeline(samples, maxRows) {
               !/^[0-9a-f]{64}$/i.test(finalInput),
               'final="' + finalInput + '"');
 
-        // Oscillation check: the most diagnostic. Use only the LAST 5
-        // seconds of samples — earlier samples are expected to flip
-        // once per real switch (A → fileId-of-B → B during click 2,
-        // B → fileId-of-A → A during click 3). What we're flagging is
-        // the SUBSEQUENT oscillation that comes from the parallel
-        // 15s-poll intervals.
-        const tail = dump.samples.length
-            ? dump.samples.filter(s => s.t >= dump.samples[dump.samples.length - 1].t - 5000)
-            : [];
-        const transitions = countAbTransitions(tail, NAME_A, NAME_B);
-        log(`A<->B transitions in last 5s of input timeline: ${transitions}`);
-        check('input value does not oscillate (transitions <= 1 in tail)',
+        // Slice samples to the post-click-3 window. After Click-3 we
+        // expect the title to settle on NAME_A with ZERO visits to
+        // NAME_B and ZERO visits to either fileId (the opaque
+        // BaseFileName from WOPISrc). Earlier samples are excluded
+        // because the legitimate A→B during Click-2 would otherwise
+        // count.
+        const post3 = dump.samples.filter(s => s.t >= click3T);
+        const post3T = dump.titleSamples.filter(s => s.t >= click3T);
+        log(`post-click3 input samples: ${post3.length}, title samples: ${post3T.length}`);
+
+        // Detect the fileId blip — the bug's most visible artefact.
+        // wasm-loader's hot-switch path briefly lets COOL's wopi:
+        // handler write the WOPISrc-derived BaseFileName (an opaque
+        // 64-hex fileId in v2) to #document-name-input before the
+        // 250 ms docNameSetInt poll overwrites it with displayName.
+        const fileIdRe = /^[0-9a-f]{64}$/i;
+        const fileIdHits = post3.filter(s => fileIdRe.test(s.value));
+        log(`post-click3 fileId visits: ${fileIdHits.length}`);
+        if (fileIdHits.length) {
+            log_lines.push('');
+            log_lines.push('=== post-click3 fileId visits (bug indicator) ===');
+            for (const s of fileIdHits) log_lines.push(`  [+${(s.t/1000).toFixed(2)}s] "${s.value}"`);
+            fs.writeFileSync(logPath, log_lines.join('\n'));
+        }
+        check('post-click3 input never shows opaque fileId',
+              fileIdHits.length === 0,
+              'visits=' + fileIdHits.length + (fileIdHits.length
+                  ? ' first="' + fileIdHits[0].value.substring(0, 12) + '..."' : ''));
+
+        // After Click-3 we asked for A. The input should never show B
+        // again — that's the A↔B flicker. (One transient B sample
+        // immediately after the click is acceptable as the residue
+        // from the previous switch's writer; require it to be in the
+        // first 1.5 s.)
+        const bHits = post3.filter(s => s.value === NAME_B);
+        const lateBHits = bHits.filter(s => s.t >= click3T + 1500);
+        log(`post-click3 visits to NAME_B: ${bHits.length} (late: ${lateBHits.length})`);
+        check('post-click3 input has no late visits to NAME_B',
+              lateBHits.length === 0,
+              'lateB=' + lateBHits.length);
+
+        // Oscillation check: A↔B transitions in the post-click-3 window.
+        // The expected user-visible sequence is (residue of B) → A and
+        // stay there. Two or more A↔B flips means the parallel writers
+        // are ping-ponging.
+        const transitions = countAbTransitions(post3, NAME_A, NAME_B);
+        log(`A<->B transitions in post-click3 input timeline: ${transitions}`);
+        check('input value does not oscillate (transitions <= 1 post-click3)',
               transitions <= 1,
               'transitions=' + transitions);
 
         // Same check on document.title for completeness.
-        const tailT = dump.titleSamples.length
-            ? dump.titleSamples.filter(s => s.t >= dump.titleSamples[dump.titleSamples.length - 1].t - 5000)
-            : [];
-        const titleTransitions = countAbTransitions(tailT, NAME_A, NAME_B);
-        log(`A<->B transitions in last 5s of title timeline: ${titleTransitions}`);
-        check('document.title does not oscillate (transitions <= 1 in tail)',
+        const titleTransitions = countAbTransitions(post3T, NAME_A, NAME_B);
+        log(`A<->B transitions in post-click3 title timeline: ${titleTransitions}`);
+        check('document.title does not oscillate (transitions <= 1 post-click3)',
               titleTransitions <= 1,
               'transitions=' + titleTransitions);
 
