@@ -91,11 +91,18 @@ async function clickIframe(page) {
         let fr = null;
         let totalSlides = 0;
         let slideMenuSeen = false;
-        // _parts ramps up as the pptx parses (1 → N as slides are added),
-        // so don't accept the first non-zero reading. Require it to be
-        // stable across two consecutive 200ms probes — or fall back to
-        // the slide-sorter thumb count once it's populated.
+        // _parts ramps up as the pptx parses (1 → N as slides are added).
+        // The previous "two consecutive equal probes" heuristic broke
+        // under JOBS=2 contention: parts could sit at 1 for ~400ms while
+        // the kit was still parsing later slides, the second probe saw
+        // parts=1 stable, totalSlides=1, FAIL. Now require either:
+        //   (a) parts >= 2 AND stable across two probes, OR
+        //   (b) slide-sorter has >= 2 thumbs (canonical signal once kit
+        //       finishes its slide-add loop), OR
+        //   (c) parts has held at 1 for >= 8 consecutive probes (~1.6s)
+        //       — only then do we trust it's a genuinely single-slide doc.
         let lastParts = 0;
+        let stableCount = 0;
         for (let i = 0; i < 1200; i++) {
             await sleep(200);
             fr = page.frames().find(f => f.url().includes('cool.html'));
@@ -109,15 +116,22 @@ async function clickIframe(page) {
                         sidebarThumbs: document.querySelectorAll('#slide-sorter > *').length,
                     };
                 });
-                if (probe.parts > 0 && probe.parts === lastParts) {
+                if (probe.parts === lastParts && probe.parts > 0) stableCount++;
+                else stableCount = 0;
+                lastParts = probe.parts;
+                if (probe.parts >= 2 && stableCount >= 1) {
                     totalSlides = probe.parts;
                     log('Impress loaded with ' + totalSlides + ' slides at ' + (i*200) + 'ms');
                     break;
                 }
-                lastParts = probe.parts;
                 if (probe.sidebarThumbs >= 2) {
                     totalSlides = Math.max(probe.parts, probe.sidebarThumbs);
                     log('Impress slide sorter populated (' + totalSlides + ' thumbs) at ' + (i*200) + 'ms');
+                    break;
+                }
+                if (probe.parts === 1 && stableCount >= 8) {
+                    totalSlides = 1;
+                    log('Impress single-slide doc accepted (parts=1 stable for ' + stableCount + ' probes) at ' + (i*200) + 'ms');
                     break;
                 }
                 if (!slideMenuSeen && probe.nav.includes('Slide Show')) {
