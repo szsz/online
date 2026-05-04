@@ -8,6 +8,9 @@
 #   bash wasm/deploy.sh              # deploy from default build dir
 #   bash wasm/deploy.sh --no-inject  # skip snapshot injection
 #   bash wasm/deploy.sh --no-brotli  # skip .br regeneration (fast local iter)
+#   bash wasm/deploy.sh --no-restart # skip relay restart + editor SIGHUP
+#                                    # (used by CI to stage a per-run copy
+#                                    # without disturbing host processes)
 #   bash wasm/deploy.sh --build      # build first, then deploy
 
 set -e
@@ -33,12 +36,14 @@ DO_BUILD=false
 DO_INJECT=true
 DO_BROTLI=true
 DO_SMOKE=true
+DO_RESTART=true
 for arg in "$@"; do
     case "$arg" in
         --build) DO_BUILD=true ;;
         --no-inject) DO_INJECT=false ;;
         --no-brotli) DO_BROTLI=false ;;
         --no-smoke) DO_SMOKE=false ;;
+        --no-restart) DO_RESTART=false ;;
     esac
 done
 
@@ -564,6 +569,7 @@ echo
 echo "Step 6: Cache-bust build (file rename + cool.html rewrite)"
 node "$SCRIPT_DIR/tools/cache-bust-build.js" --dir "$BROWSER_DIR"
 
+if [ "$DO_RESTART" = true ]; then
 # ── Step 6b: Heartbeat the server (no-op SIGHUP) ──
 # The editor-static-server no longer hashes at runtime, so SIGHUP is
 # no-op — kept for visibility that the running PID is reachable.
@@ -578,7 +584,7 @@ else
     echo "  WARNING: editor-static-server not running"
 fi
 
-# ── Step 6b: Restart the message-relay ──
+# ── Step 6c: Restart the message-relay ──
 # After shipping new JS, any client still on the old WebSocket is
 # running mismatched code — could interpret a frame wrong, register a
 # bad checkpoint, or deadlock late-joiners. Cleanest fix: kill the
@@ -605,6 +611,7 @@ else
     nohup bash "$SCRIPT_DIR/launch-relay.sh" > /tmp/relay.log 2>&1 &
     sleep 2
 fi
+fi  # DO_RESTART
 
 # ── Step 7: Save build fingerprint ──
 echo "$FINGERPRINT $(date -Iseconds)" > "$BROWSER_DIR/.build-fingerprint"

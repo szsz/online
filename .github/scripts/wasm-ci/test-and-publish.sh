@@ -141,25 +141,26 @@ if [[ "$TEST_TARGET" == "local" ]]; then
         echo "ERROR: expected COOL JS bundle at $BUILD_OUT_DIST not found." >&2
         exit 1
     fi
-    cp -rL "$BUILD_OUT_DIST/." "$STAGE_DIR/public/browser/"
-    cp -L "$BUILD_OUT_WASM/online.js"               "$STAGE_DIR/public/browser/"
-    cp -L "$BUILD_OUT_WASM/online.wasm"             "$STAGE_DIR/public/browser/"
-    cp -L "$BUILD_OUT_WASM/online.worker.js"        "$STAGE_DIR/public/browser/"
-    cp -L "$BUILD_OUT_WASM/emscripten-module.js"    "$STAGE_DIR/public/browser/"
-    [[ -f "$BUILD_OUT_WASM/soffice.data" ]]              && cp -L "$BUILD_OUT_WASM/soffice.data"              "$STAGE_DIR/public/browser/"
-    [[ -f "$BUILD_OUT_WASM/soffice.data.js.metadata" ]]  && cp -L "$BUILD_OUT_WASM/soffice.data.js.metadata"  "$STAGE_DIR/public/browser/"
-    cp -L "$WORKSPACE/wasm/wasm-loader.js"     "$STAGE_DIR/public/browser/"
-    cp -L "$WORKSPACE/wasm/relay-adapter.js"   "$STAGE_DIR/public/browser/"
-    cp -L "$WORKSPACE/wasm/sw.js"              "$STAGE_DIR/public/browser/"
-    [[ -f "$WORKSPACE/wasm/dict-loader.js" ]] && cp -L "$WORKSPACE/wasm/dict-loader.js" "$STAGE_DIR/public/browser/"
-    # Build fingerprint replacement (same pattern as deploy.sh): ties
-    # snapshot/SW cache to this exact wasm so a stale snapshot from an
-    # earlier build is rejected.
-    FP="$(md5sum "$STAGE_DIR/public/browser/online.wasm" | cut -c1-16)"
-    sed -i "s|__WASM_BUILD_FINGERPRINT__|$FP|g" \
-        "$STAGE_DIR/public/browser/wasm-loader.js" \
-        "$STAGE_DIR/public/browser/sw.js" 2>/dev/null || true
-    echo "[OK] staged into $STAGE_DIR/public/browser/ (fingerprint $FP)"
+    # Run wasm/deploy.sh against the per-run STAGE_DIR. This copies the
+    # build artefacts AND applies the snapshot-restore inject, the
+    # cache-bust file rename, and the fingerprint substitutions — so
+    # the Phase 1 environment is bit-equivalent to a real deploy. A
+    # plain cp-and-stage skips those steps and the gating tests
+    # (regression-snapshot-injection, regression-cache-bust,
+    # regression-html-304, regression-hot-switch-watchdog,
+    # regression-cluster-c, regression-viewer-cache) all fail at <1s.
+    # Use --no-restart to leave the host's running editor-static / relay
+    # alone (Phase 1 spawns its own pair on free ports below); --no-smoke
+    # because the host's deploy-smoke target isn't relevant here;
+    # --no-brotli because Phase 1 servers serve identity (no Accept-Encoding
+    # negotiation in the local URLs). LOCK_FILE=/dev/null lets the
+    # parallel CI builds (Azure + local) stage independently — neither
+    # writes to /tmp/static-deploy/public.
+    BUILD_DIR="$CI_STATE_DIR/online-build" \
+    PUB="$STAGE_DIR/public" \
+    LOCK_FILE=/dev/null \
+        bash "$WORKSPACE/wasm/deploy.sh" --no-restart --no-smoke --no-brotli 2>&1 \
+        | sed 's/^/  [stage-deploy] /' | tail -40
 
     # The viewer reads its own UI assets relative to wasm/viewer-public/
     # in the source tree, so we don't need to stage those — but we do
