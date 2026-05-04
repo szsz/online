@@ -151,8 +151,7 @@ docker exec "$CI_CONTAINER" bash -lc '
             _create_remote_client \
             _poll_remote_client_ready \
             _handle_remote_message \
-            _close_remote_client \
-            _doc_postUnoCommand
+            _close_remote_client
     } | sort -u > "$EXPORTS_DIR/exports.new"
     mv "$EXPORTS_DIR/exports.new" "$EXPORTS_DIR/exports"
     echo "[OK] EXPORTED_FUNCTIONS includes $(wc -l <"$EXPORTS_DIR/exports") symbols"
