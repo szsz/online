@@ -1,0 +1,132 @@
+name: WASM local build, deploy, test (viewer.szebeni.hu)
+
+# workflow_dispatch only — manual trigger to build any commit, deploy
+# locally to viewer.szebeni.hu / wasm.atgpartners.info / relay.atgpartners.info
+# (the dev box hosting the self-hosted runner), and run a chosen subset
+# of the test suite against those URLs. Reports land at
+#   coolwasmfiles.z6.web.core.windows.net/local-builds/<id>/tests/
+# linked from
+#   coolwasmfiles.z6.web.core.windows.net/local-builds/
+on:
+  workflow_dispatch:
+    inputs:
+      online_sha:
+        description: 'Online commit SHA to build (default: HEAD of selected branch)'
+        required: false
+        default: ''
+      lo_build_id:
+        description: 'Override LO_BUILD_ID (default: read from that commit''s wasm/LO_BUILD_ID)'
+        required: false
+        default: ''
+      test_profile:
+        description: 'basic = single-user / single-browser; non-basic = co-edit / multi-browser; all = both'
+        required: true
+        default: 'basic'
+        type: choice
+        options:
+          - basic
+          - non-basic
+          - all
+
+env:
+  AZURE_STORAGE_ACCOUNT: coolwasmfiles
+  CI_STATE_DIR: /home/localadmin/lo-wasm-ci-state
+  STATIC_SITE_BASE: https://coolwasmfiles.z6.web.core.windows.net
+
+concurrency:
+  group: wasm-ci-local-${{ github.event.inputs.online_sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-lo-build:
+    runs-on: ubuntu-latest
+    outputs:
+      lo_build_id: ${{ steps.lo.outputs.lo_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
+
+      - name: Resolve LO_BUILD_ID
+        id: lo
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          LO_BID="${LO_BUILD_ID_OVERRIDE:-}"
+          if [[ -z "$LO_BID" ]]; then
+              LO_BID="$(grep -v '^[[:space:]]*#' wasm/LO_BUILD_ID | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]')"
+          fi
+          if [[ "$LO_BID" == "__LATEST__" ]]; then
+              LO_BID="$(curl -fsSL "$STATIC_SITE_BASE/lo-builds/latest.txt" 2>/dev/null | tr -d '[:space:]' || true)"
+          fi
+          [[ -z "$LO_BID" ]] && { echo "::error::LO_BUILD_ID empty"; exit 1; }
+          echo "lo_build_id=$LO_BID" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build artefacts exist
+        env:
+          LO_BUILD_ID: ${{ steps.lo.outputs.lo_build_id }}
+        run: |
+          curl -fsSL --head --max-time 30 "$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/MANIFEST.json"
+
+  build-deploy-test:
+    needs: validate-lo-build
+    runs-on: [self-hosted, wasm-build]
+    outputs:
+      app_build_id: ${{ steps.ids.outputs.app_build_id }}
+      lo_build_id:  ${{ steps.ids.outputs.lo_build_id }}
+    steps:
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
+
+      - name: Resolve build IDs
+        id: ids
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          # Reuse the standard resolver but tag the APP_BUILD_ID with `local-`
+          # so it sorts/groups separately from Azure-deploy builds.
+          bash .github/scripts/wasm-ci/resolve-ids.sh
+          # Re-prefix in $GITHUB_OUTPUT
+          APP="$(grep '^app_build_id=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)"
+          # Last-line wins for GitHub Actions outputs; just append the prefixed version.
+          echo "app_build_id=local-$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch LibreOffice artefacts
+        env:
+          LO_BUILD_ID: ${{ steps.ids.outputs.lo_build_id }}
+        run: bash .github/scripts/wasm-ci/fetch-lo.sh
+
+      - name: Build Online (WASM)
+        env:
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/build-online.sh
+
+      - name: Deploy locally (viewer.szebeni.hu / wasm.atgpartners.info / relay.atgpartners.info)
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/deploy-local.sh
+
+      - name: Run test suite (profile=${{ github.event.inputs.test_profile }})
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          GIT_SHA:      ${{ github.event.inputs.online_sha || github.sha }}
+          GIT_REF:      ${{ github.ref }}
+          TEST_PROFILE: ${{ github.event.inputs.test_profile }}
+        run: bash .github/scripts/wasm-ci/test-local.sh
+
+      - name: Upload junit.xml as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-xml
+          path: /tmp/static-deploy/public/reports/junit.xml
+          if-no-files-found: ignore
