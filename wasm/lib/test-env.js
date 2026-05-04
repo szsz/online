@@ -62,8 +62,22 @@ const JOBS_SCALE = (() => {
     return Math.min(n, 5.0);
 })();
 
+// DOWNLOAD_BUDGET_MS — fixed wall-time padding added on top of the scaled
+// timeout for every patience budget. Use it when the test target makes
+// the test pay a non-trivial wait that has nothing to do with what the
+// test is checking — e.g. fetching a 270 MB online.wasm from Azure App
+// Service B-tier on first cold visit. Default 0 (local-server target).
+// CI sets it (e.g. 30000) for the Azure smoke phase.
+const DOWNLOAD_BUDGET_MS = (() => {
+    const raw = process.env.DOWNLOAD_BUDGET_MS;
+    if (!raw) return 0;
+    const n = parseInt(raw, 10);
+    if (!isFinite(n) || n < 0) return 0;
+    return Math.min(n, 120000);
+})();
+
 function scaleTimeout(ms) {
-    return Math.round(ms * JOBS_SCALE);
+    return Math.round(ms * JOBS_SCALE) + DOWNLOAD_BUDGET_MS;
 }
 
 // Iter 82: announce the scale once on first import so per-test logs
@@ -75,6 +89,11 @@ if (JOBS_SCALE > 1 && !process.env.__JOBS_SCALE_ANNOUNCED) {
     process.env.__JOBS_SCALE_ANNOUNCED = '1';
     // eslint-disable-next-line no-console
     console.log(`[test-env] JOBS_SCALE=${JOBS_SCALE} — patience timeouts widen by ${JOBS_SCALE}×`);
+}
+if (DOWNLOAD_BUDGET_MS > 0 && !process.env.__DOWNLOAD_BUDGET_ANNOUNCED) {
+    process.env.__DOWNLOAD_BUDGET_ANNOUNCED = '1';
+    // eslint-disable-next-line no-console
+    console.log(`[test-env] DOWNLOAD_BUDGET_MS=${DOWNLOAD_BUDGET_MS} — added to every patience budget for slow-remote download wait`);
 }
 
 module.exports = {

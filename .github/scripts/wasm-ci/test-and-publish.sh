@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
-# Run wasm/run-all-tests.sh against the JUST-DEPLOYED Azure App Services
-# (TEST_TARGET=azure-deploy) and publish a report under app-builds/<ID>/tests/.
+# Two-phase test runner.
 #
-# Isolation from the local dev environment:
-#   - No local services started; tests hit the deployed Azure URLs only.
-#   - URLs sourced from $CI_STATE_DIR/.env.deploy (host-managed, not in repo).
-#   - lib/test-env.js skips its wasm/.env requirement when these URLs are
-#     already in process.env, so we don't need to drop a .env in the runner
-#     checkout.
+# Phase 1 — main run, against LOCAL servers spawned on free ports on the
+# CI host. The just-built bundle is staged into a CI-private public/
+# tree, an editor-static + viewer + relay are launched against it, and
+# wasm/run-all-tests-parallel.sh runs the full TESTS array against
+# http://127.0.0.1:<port>/. This is what the user runs in dev and is
+# what catches code regressions cleanly — no Azure throttling, no WAN
+# round-trips, no contention with the deployed App Services.
+#
+# Phase 2 — Azure smoke, JOBS=1, a tiny subset (prewarm / pptx-viewer /
+# singleuser) hitting the just-deployed Azure App Service URLs. Catches
+# pure deployment regressions (CSP, headers, brotli, hot-switch into a
+# stale App Service slot) without re-running 75 tests in a slow remote
+# environment. Each smoke test gets DOWNLOAD_BUDGET_MS=30000 added on
+# top of its patience timeouts, so the time the WASM bundle takes to
+# come down off Azure App Service is paid out of band rather than
+# eating into the test's "did the thing happen?" window.
+#
+# Failure semantics: the job reports the COMBINED test_report. exit_code
+# is non-zero if either phase produced any failing test. pass_count and
+# fail_count are summed across both phases.
+#
+# Override with env:
+#   TEST_TARGET=azure-deploy   # legacy single-Azure-phase mode (skips local)
+#   TEST_JOBS_OVERRIDE=N       # parallelism for the local main run (default 3)
+#   SKIP_AZURE_SMOKE=1         # skip phase 2 entirely
+#   AZURE_SMOKE_DOWNLOAD_MS=N  # override the 30 s download budget
 set -euo pipefail
 
 # shellcheck source=_lib.sh
@@ -19,84 +38,202 @@ ACCT="${AZURE_STORAGE_ACCOUNT:?}"
 SITE="${STATIC_SITE_BASE:?}"
 WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
 
-# ── Source App Services URLs from the host-managed .env.deploy ──────────
 ENV_DEPLOY_HOST="${CI_STATE_DIR:?}/.env.deploy"
-if [[ ! -f "$ENV_DEPLOY_HOST" ]]; then
-    echo "ERROR: $ENV_DEPLOY_HOST not found — needed for TEST_TARGET=azure-deploy URLs" >&2
-    exit 1
-fi
-# shellcheck disable=SC1090
-set -a; source "$ENV_DEPLOY_HOST"; set +a
-
-# Tests read FILE_STORAGE_URL, EDITOR_URL, RELAY_URL from env (lib/test-env.js).
-# .env.deploy already provides VIEWER_URL/EDITOR_URL/RELAY_URL with the right
-# values; FILE_STORAGE_URL is the viewer (which fronts the document storage).
-export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in .env.deploy}"
-export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in .env.deploy}"
-export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in .env.deploy}"
-export TEST_TARGET="azure-deploy"
+TEST_TARGET="${TEST_TARGET:-local}"
 
 REPORT_DIR="$(mktemp -d)"
+TEST_OUTPUT="$REPORT_DIR/output"
+mkdir -p "$TEST_OUTPUT"
+LOG="$REPORT_DIR/run.log"
+SUMMARY_JSON="$REPORT_DIR/summary.json"
+START_TS="$(date -u +%s)"
+RUN_START_MARKER="$(mktemp)"
+export TEST_OUTPUT_ROOT="$TEST_OUTPUT"
+
+# Track spawned PIDs for cleanup. Cleared on exit.
+LOCAL_SERVER_PIDS=()
+trap '
+    for pid in "${LOCAL_SERVER_PIDS[@]:-}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    rm -rf "$REPORT_DIR" "$RUN_START_MARKER" "${STAGE_DIR:-}"
+' EXIT
 
 # ── Install wasm/node_modules + puppeteer's Chromium (persistent cache) ──
-# The test scripts require puppeteer; without node_modules every test
-# crashes at `Cannot find module 'puppeteer'`. We keep node_modules,
-# the npm download cache, and puppeteer's Chromium binary in $CI_STATE_DIR
-# so the second-and-later runs reinstall in seconds.
 NODE_MODULES_HOST="${CI_STATE_DIR}/online-node-modules"
 NPM_CACHE_HOST="${CI_STATE_DIR}/npm-cache"
 PUPPETEER_CACHE_HOST="${CI_STATE_DIR}/puppeteer-cache"
 mkdir -p "$NODE_MODULES_HOST" "$NPM_CACHE_HOST" "$PUPPETEER_CACHE_HOST"
 export PUPPETEER_CACHE_DIR="$PUPPETEER_CACHE_HOST"
 
-# Replace whatever's at wasm/node_modules with a symlink to the host cache,
-# so npm writes into the persistent location and tests find the modules.
 rm -rf "$WORKSPACE/wasm/node_modules"
 ln -s "$NODE_MODULES_HOST" "$WORKSPACE/wasm/node_modules"
 
-# Reinstall when the lock file changes (or on the first run). The marker
-# file inside the persistent dir records the lock file we last installed
-# from; if it differs from the current one, do a fresh `npm ci`. Also
-# verify a known package is actually present — the marker can survive an
-# external rm of the cache contents, which then sends every test into
-# `Cannot find module 'puppeteer'`.
 LOCK="$WORKSPACE/wasm/package-lock.json"
 INSTALLED_FROM="$NODE_MODULES_HOST/.installed-from-lock"
 if [[ ! -f "$INSTALLED_FROM" ]] || ! cmp -s "$LOCK" "$INSTALLED_FROM" || [[ ! -d "$NODE_MODULES_HOST/puppeteer" ]]; then
-    echo "--- Installing wasm/node_modules (cache=$NPM_CACHE_HOST chromium=$PUPPETEER_CACHE_HOST) ---"
-    # Empty the persistent dir so npm ci sees a clean slate. The symlink
-    # we just made is preserved by removing dir contents, not the dir.
+    echo "--- Installing wasm/node_modules ---"
     find "$NODE_MODULES_HOST" -mindepth 1 -delete 2>/dev/null || true
     (cd "$WORKSPACE/wasm" && npm ci --cache "$NPM_CACHE_HOST" --prefer-offline --no-audit --no-fund 2>&1 | tail -8)
     cp "$LOCK" "$INSTALLED_FROM"
     echo "[OK] node_modules installed."
 else
-    echo "[OK] node_modules cache hit (lockfile unchanged)."
+    echo "[OK] node_modules cache hit."
 fi
 
-# Direct run-all-tests.sh's per-test HTML reports + screenshots into a
-# per-build subtree so we can upload them all together at the end. The
-# layout (created by run-all-tests.sh + generate-report.js):
-#   $TEST_OUTPUT/reports/index.html             — top-level test grid
-#   $TEST_OUTPUT/reports/<slug>.html            — per-test detail page
-#   $TEST_OUTPUT/shots[-<slug>]/*.png           — screenshots
-TEST_OUTPUT="$REPORT_DIR/output"
-mkdir -p "$TEST_OUTPUT"
-export TEST_OUTPUT_ROOT="$TEST_OUTPUT"
+# Skip tests that aren't useful for every CI run (canonical TESTS array).
+CI_SKIP_TESTS=( stress )
+for slug in "${CI_SKIP_TESTS[@]}"; do
+    if grep -q "^[[:space:]]*\"$slug|" "$WORKSPACE/wasm/run-all-tests.sh"; then
+        echo "[CI] Skipping test: $slug"
+        sed -i "/^[[:space:]]*\"$slug|/d" "$WORKSPACE/wasm/run-all-tests.sh"
+    fi
+done
 
-LOG="$REPORT_DIR/run.log"
-SUMMARY_JSON="$REPORT_DIR/summary.json"
-START_TS="$(date -u +%s)"
+# ── Helpers ─────────────────────────────────────────────────────────
+pick_free_port() {
+    python3 -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+'
+}
 
-# Marker for the screenshot upload step. Tests hardcode SHOT_DIR=/tmp/static-deploy/public/...
-# so the host filesystem is shared with whatever the user runs locally; we
-# only want to upload screenshots written DURING this CI run, not stale
-# ones from prior runs or the user's parallel dev sessions.
-RUN_START_MARKER="$(mktemp)"
-trap 'rm -rf "$REPORT_DIR" "$RUN_START_MARKER"' EXIT
+wait_for_port() {
+    local port="$1" deadline=$((SECONDS + 30))
+    while (( SECONDS < deadline )); do
+        if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# ── Phase 1 setup: stage + spawn local servers (default mode) ────────
+PHASE1_PASS=0
+PHASE1_FAIL=0
+PHASE1_RC=0
+
+if [[ "$TEST_TARGET" == "local" ]]; then
+    STAGE_DIR="$REPORT_DIR/stage"
+    mkdir -p "$STAGE_DIR/public/browser" "$STAGE_DIR/storage"
+
+    # Stage CI's just-built bundle. The artefacts come from two sibling
+    # dirs in $CI_STATE_DIR/online-build/:
+    #   wasm/        ← Emscripten link output: online.js, online.wasm,
+    #                  online.worker.js, emscripten-module.js, soffice.data,
+    #                  soffice.data.js.metadata
+    #   browser/dist/← COOL JS bundle: cool.html, bundle.js, bundle.css,
+    #                  global.js, etc.
+    # editor-static-server.js serves them merged at $PUB/browser/ — so we
+    # copy both into $STAGE/public/browser/ and add the loader/sw scripts
+    # straight from the source tree (deploy.sh does the same).
+    BUILD_OUT_WASM="$CI_STATE_DIR/online-build/wasm"
+    BUILD_OUT_DIST="$CI_STATE_DIR/online-build/browser/dist"
+    if [[ ! -f "$BUILD_OUT_WASM/online.js" || ! -f "$BUILD_OUT_WASM/online.wasm" ]]; then
+        echo "ERROR: expected build artefacts at $BUILD_OUT_WASM not found." >&2
+        exit 1
+    fi
+    if [[ ! -f "$BUILD_OUT_DIST/cool.html" || ! -f "$BUILD_OUT_DIST/bundle.js" ]]; then
+        echo "ERROR: expected COOL JS bundle at $BUILD_OUT_DIST not found." >&2
+        exit 1
+    fi
+    cp -rL "$BUILD_OUT_DIST/." "$STAGE_DIR/public/browser/"
+    cp -L "$BUILD_OUT_WASM/online.js"               "$STAGE_DIR/public/browser/"
+    cp -L "$BUILD_OUT_WASM/online.wasm"             "$STAGE_DIR/public/browser/"
+    cp -L "$BUILD_OUT_WASM/online.worker.js"        "$STAGE_DIR/public/browser/"
+    cp -L "$BUILD_OUT_WASM/emscripten-module.js"    "$STAGE_DIR/public/browser/"
+    [[ -f "$BUILD_OUT_WASM/soffice.data" ]]              && cp -L "$BUILD_OUT_WASM/soffice.data"              "$STAGE_DIR/public/browser/"
+    [[ -f "$BUILD_OUT_WASM/soffice.data.js.metadata" ]]  && cp -L "$BUILD_OUT_WASM/soffice.data.js.metadata"  "$STAGE_DIR/public/browser/"
+    cp -L "$WORKSPACE/wasm/wasm-loader.js"     "$STAGE_DIR/public/browser/"
+    cp -L "$WORKSPACE/wasm/relay-adapter.js"   "$STAGE_DIR/public/browser/"
+    cp -L "$WORKSPACE/wasm/sw.js"              "$STAGE_DIR/public/browser/"
+    # Build fingerprint replacement (same pattern as deploy.sh): ties
+    # snapshot/SW cache to this exact wasm so a stale snapshot from an
+    # earlier build is rejected.
+    FP="$(md5sum "$STAGE_DIR/public/browser/online.wasm" | cut -c1-16)"
+    sed -i "s|__WASM_BUILD_FINGERPRINT__|$FP|g" \
+        "$STAGE_DIR/public/browser/wasm-loader.js" \
+        "$STAGE_DIR/public/browser/sw.js" 2>/dev/null || true
+    echo "[OK] staged into $STAGE_DIR/public/browser/ (fingerprint $FP)"
+
+    # The viewer reads its own UI assets relative to wasm/viewer-public/
+    # in the source tree, so we don't need to stage those — but we do
+    # need a writable LOCAL_STORAGE_DIR for uploads, already created.
+    EDITOR_PORT=$(pick_free_port)
+    VIEWER_PORT=$(pick_free_port)
+    RELAY_PORT=$(pick_free_port)
+
+    EDITOR_URL_LOCAL="http://127.0.0.1:$EDITOR_PORT"
+    VIEWER_URL_LOCAL="http://127.0.0.1:$VIEWER_PORT"
+    RELAY_URL_LOCAL="ws://127.0.0.1:$RELAY_PORT"
+
+    echo "--- Phase 1: spawning local servers ---"
+    echo "  editor-static  → $EDITOR_URL_LOCAL  (PUB=$STAGE_DIR/public)"
+    echo "  viewer         → $VIEWER_URL_LOCAL  (storage=$STAGE_DIR/storage)"
+    echo "  message-relay  → $RELAY_URL_LOCAL"
+
+    # editor-static-server.js
+    PUB="$STAGE_DIR/public" \
+    HTTP_PORT="$EDITOR_PORT" \
+    FILE_STORAGE_URL="$VIEWER_URL_LOCAL" \
+        node "$WORKSPACE/wasm/editor-static-server.js" \
+        > "$REPORT_DIR/editor.log" 2>&1 &
+    LOCAL_SERVER_PIDS+=($!)
+
+    # viewer-server.js
+    PORT="$VIEWER_PORT" \
+    STORAGE_BACKEND=local \
+    LOCAL_STORAGE_DIR="$STAGE_DIR/storage" \
+    FILE_STORAGE_URL="$VIEWER_URL_LOCAL" \
+    EDITOR_URL="$EDITOR_URL_LOCAL" \
+    RELAY_URL="$RELAY_URL_LOCAL" \
+        node "$WORKSPACE/wasm/viewer-server.js" \
+        > "$REPORT_DIR/viewer.log" 2>&1 &
+    LOCAL_SERVER_PIDS+=($!)
+
+    # message-relay.js
+    PORT="$RELAY_PORT" \
+        node "$WORKSPACE/wasm/message-relay.js" \
+        > "$REPORT_DIR/relay.log" 2>&1 &
+    LOCAL_SERVER_PIDS+=($!)
+
+    for port in "$EDITOR_PORT" "$VIEWER_PORT" "$RELAY_PORT"; do
+        if ! wait_for_port "$port"; then
+            echo "ERROR: server on port $port failed to listen within 30 s" >&2
+            tail -20 "$REPORT_DIR/editor.log" "$REPORT_DIR/viewer.log" "$REPORT_DIR/relay.log" 2>/dev/null
+            exit 1
+        fi
+    done
+    echo "[OK] all local servers listening."
+
+    export FILE_STORAGE_URL="$VIEWER_URL_LOCAL"
+    export EDITOR_URL="$EDITOR_URL_LOCAL"
+    export RELAY_URL="$RELAY_URL_LOCAL"
+    export VIEWER_URL="$VIEWER_URL_LOCAL"
+    export TEST_TARGET="local"
+
+elif [[ "$TEST_TARGET" == "azure-deploy" ]]; then
+    # Legacy mode: source Azure URLs from the host-managed .env.deploy.
+    if [[ ! -f "$ENV_DEPLOY_HOST" ]]; then
+        echo "ERROR: $ENV_DEPLOY_HOST not found — needed for TEST_TARGET=azure-deploy URLs" >&2
+        exit 1
+    fi
+    set -a; source "$ENV_DEPLOY_HOST"; set +a
+    export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in .env.deploy}"
+    export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in .env.deploy}"
+    export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in .env.deploy}"
+    export TEST_TARGET="azure-deploy"
+else
+    echo "ERROR: unknown TEST_TARGET=$TEST_TARGET (expected local | azure-deploy)" >&2
+    exit 1
+fi
 
 {
-    echo "=== TEST_TARGET=$TEST_TARGET ==="
+    echo "=== Phase 1 — TEST_TARGET=$TEST_TARGET ==="
     echo "  FILE_STORAGE_URL=$FILE_STORAGE_URL"
     echo "  EDITOR_URL=$EDITOR_URL"
     echo "  RELAY_URL=$RELAY_URL"
@@ -106,52 +243,129 @@ trap 'rm -rf "$REPORT_DIR" "$RUN_START_MARKER"' EXIT
     echo "==========================================="
 } > "$LOG"
 
-# Skip tests that aren't useful for every CI run. We patch the canonical
-# TESTS array (in run-all-tests.sh) — both serial and parallel runners
-# read from it. This only affects the actions/checkout workspace, not the
-# committed source.
-CI_SKIP_TESTS=( stress )
-for slug in "${CI_SKIP_TESTS[@]}"; do
-    if grep -q "^[[:space:]]*\"$slug|" "$WORKSPACE/wasm/run-all-tests.sh"; then
-        echo "[CI] Skipping test: $slug"
-        sed -i "/^[[:space:]]*\"$slug|/d" "$WORKSPACE/wasm/run-all-tests.sh"
-    fi
-done
-
-# Use the parallel runner. JOBS=8 is aggressive: 16 GB / 8 ≈ 2 GB/slot will
-# swap during heavy tests, and Azure App Service B-tier may throttle. The
-# floor is the longest single test (`formats` ~36 min). Override via
-# TEST_JOBS_OVERRIDE in workflow_dispatch input if you need a different value.
+# ── Phase 1: run the full TESTS array via the parallel runner ────────
 TEST_JOBS="${TEST_JOBS_OVERRIDE:-3}"
 set +e
 ( cd "$WORKSPACE/wasm" && JOBS="$TEST_JOBS" bash run-all-tests-parallel.sh ) >> "$LOG" 2>&1
-TEST_RC=$?
+PHASE1_RC=$?
 set -e
-END_TS="$(date -u +%s)"
-DUR=$((END_TS - START_TS))
 
-# Pass/fail counts: prefer the rich-report grid in $TEST_OUTPUT/reports/index.html.
-# Two formats live in the wild: the serial runner emits `badge-pass`/`badge-fail`
-# spans, the parallel runner emits `<tr class="pass">`/`<tr class="fail">`. Try
-# both. Fall back to a log scrape if the rich report is missing.
-PASS_COUNT=0; FAIL_COUNT=0
-# Count *occurrences*, not matching lines — the parallel runner writes the
-# whole <tbody> on a single line, so `grep -c` returns 1.
+# Tear down the local servers as soon as Phase 1 is done so they don't
+# linger during Azure smoke or upload (the trap also kills them, but
+# this gives a clean shutdown line in the log).
+if [[ ${#LOCAL_SERVER_PIDS[@]} -gt 0 ]]; then
+    echo "--- Phase 1 done: stopping local servers ---" >> "$LOG"
+    for pid in "${LOCAL_SERVER_PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    LOCAL_SERVER_PIDS=()
+fi
+
 if [[ -f "$TEST_OUTPUT/reports/index.html" ]]; then
-    p=$(grep -oE 'badge-pass|<tr class="pass"' "$TEST_OUTPUT/reports/index.html" | wc -l)
-    f=$(grep -oE 'badge-fail|<tr class="fail"' "$TEST_OUTPUT/reports/index.html" | wc -l)
-    PASS_COUNT="$p"; FAIL_COUNT="$f"
+    PHASE1_PASS=$(grep -oE 'badge-pass|<tr class="pass"' "$TEST_OUTPUT/reports/index.html" | wc -l)
+    PHASE1_FAIL=$(grep -oE 'badge-fail|<tr class="fail"' "$TEST_OUTPUT/reports/index.html" | wc -l)
 fi
-if (( PASS_COUNT == 0 && FAIL_COUNT == 0 )); then
-    PASS_COUNT="$(grep -cE '^\[?[Pp][Aa][Ss][Ss]\]?|✓|^ok ' "$LOG" || true)"
-    FAIL_COUNT="$(grep -cE '^\[?[Ff][Aa][Ii][Ll]\]?|✗|^not ok ' "$LOG" || true)"
+if (( PHASE1_PASS == 0 && PHASE1_FAIL == 0 )); then
+    PHASE1_PASS="$(grep -cE '^pass ' "$LOG" || true)"
+    PHASE1_FAIL="$(grep -cE '^fail ' "$LOG" || true)"
 fi
-# run-all-tests.sh exits 0 even if individual tests fail (it only uses
-# `set -uo pipefail`, no -e). Reflect actual test status in TEST_RC so
-# the GitHub job badge turns red on real failures.
-if [[ "$TEST_RC" == 0 && "${FAIL_COUNT:-0}" -gt 0 ]]; then
+
+# ── Phase 2: Azure smoke (only when phase 1 was local + smoke is enabled) ──
+PHASE2_PASS=0
+PHASE2_FAIL=0
+PHASE2_RC=0
+PHASE2_RAN=0
+
+if [[ "$TEST_TARGET" == "local" ]] \
+   && [[ "${SKIP_AZURE_SMOKE:-0}" != "1" ]] \
+   && [[ -f "$ENV_DEPLOY_HOST" ]]; then
+
+    PHASE2_RAN=1
+    {
+        echo ""
+        echo "=== Phase 2 — Azure smoke (JOBS=1) ==="
+    } >> "$LOG"
+
+    # Pull Azure URLs into a sub-shell scope so they don't override the
+    # local URLs already captured for any per-test report metadata.
+    AZURE_DOWNLOAD_BUDGET="${AZURE_SMOKE_DOWNLOAD_MS:-30000}"
+    SMOKE_PASS=0
+    SMOKE_FAIL=0
+    SMOKE_LOG_DIR="$TEST_OUTPUT/azure-smoke-logs"
+    mkdir -p "$SMOKE_LOG_DIR"
+
+    # Subset chosen to cover the three things that can break in
+    # deployment but not in code: CSP+COOP/COEP headers (prewarm),
+    # static asset routing for the viewer (pptx-viewer), and a
+    # full single-user open/edit/save cycle (singleuser).
+    SMOKE_TESTS=(
+        "azure-prewarm:test-prewarm.js"
+        "azure-pptx-viewer:test-pptx-viewer.js"
+        "azure-singleuser:test-singleuser.js"
+    )
+
+    (
+        # Subshell so URL re-export is scoped here.
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_DEPLOY_HOST"
+        set +a
+        export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in .env.deploy}"
+        export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in .env.deploy}"
+        export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in .env.deploy}"
+        export TEST_TARGET="azure-deploy"
+        export DOWNLOAD_BUDGET_MS="$AZURE_DOWNLOAD_BUDGET"
+        # JOBS=1 means JOBS_SCALE=1 — patience timeouts not widened
+        # for parallelism, but DOWNLOAD_BUDGET_MS adds the wall-time
+        # wait for the WASM bundle to come down off Azure.
+        export JOBS_SCALE=1
+        echo "  FILE_STORAGE_URL=$FILE_STORAGE_URL"
+        echo "  EDITOR_URL=$EDITOR_URL"
+        echo "  DOWNLOAD_BUDGET_MS=$DOWNLOAD_BUDGET_MS"
+        echo "===================="
+
+        for entry in "${SMOKE_TESTS[@]}"; do
+            slug="${entry%%:*}"
+            script="${entry##*:}"
+            log="$SMOKE_LOG_DIR/$slug.log"
+            echo ""
+            echo "--- $slug ($script) ---"
+            START="$(date -u +%s)"
+            set +e
+            timeout 1800 node "$WORKSPACE/wasm/$script" > "$log" 2>&1
+            rc=$?
+            set -e
+            END="$(date -u +%s)"
+            DUR_T=$((END - START))
+            if (( rc == 0 )); then
+                echo "[PASS] $slug ($DUR_T s)"
+            else
+                echo "[FAIL rc=$rc] $slug ($DUR_T s)"
+                echo "  --- last 20 log lines ---"
+                tail -20 "$log" | sed 's/^/  /'
+                echo "  --- end ---"
+            fi
+        done
+    ) >> "$LOG" 2>&1
+
+    # Tally Phase 2 from the log lines we just wrote.
+    PHASE2_PASS="$(grep -cE '^\[PASS\] ' "$LOG" || true)"
+    PHASE2_FAIL="$(grep -cE '^\[FAIL ' "$LOG" || true)"
+    if (( PHASE2_FAIL > 0 )); then
+        PHASE2_RC=1
+    fi
+fi
+
+# ── Combined verdict ────────────────────────────────────────────────
+TEST_RC=0
+if (( PHASE1_RC != 0 || PHASE1_FAIL > 0 || PHASE2_RC != 0 )); then
     TEST_RC=1
 fi
+PASS_COUNT=$((PHASE1_PASS + PHASE2_PASS))
+FAIL_COUNT=$((PHASE1_FAIL + PHASE2_FAIL))
+
+END_TS="$(date -u +%s)"
+DUR=$((END_TS - START_TS))
 
 cat > "$SUMMARY_JSON" <<JSON
 {
@@ -160,17 +374,17 @@ cat > "$SUMMARY_JSON" <<JSON
   "duration_seconds": $DUR,
   "pass_count_approx": ${PASS_COUNT:-0},
   "fail_count_approx": ${FAIL_COUNT:-0},
+  "phase1": { "target": "$TEST_TARGET", "pass": $PHASE1_PASS, "fail": $PHASE1_FAIL, "rc": $PHASE1_RC },
+  "phase2": { "ran": $PHASE2_RAN, "pass": $PHASE2_PASS, "fail": $PHASE2_FAIL, "rc": $PHASE2_RC },
   "completed_utc": "$(date -u -d "@$END_TS" +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON
 
-# Report HTML — a colour-coded header plus the full log inline.
+# ── Wrapper HTML report ──────────────────────────────────────────────
 STATUS_COLOUR="#2e7d32"; STATUS_TEXT="PASSED"
 if [[ "$TEST_RC" != 0 ]]; then STATUS_COLOUR="#c62828"; STATUS_TEXT="FAILED (exit $TEST_RC)"; fi
 
-# HTML-escape the log
 LOG_ESC="$(python3 -c 'import html,sys; print(html.escape(open(sys.argv[1]).read()))' "$LOG")"
-
 HAS_RICH_REPORT="$( [[ -f "$TEST_OUTPUT/reports/index.html" ]] && echo 1 || echo 0 )"
 
 cat > "$REPORT_DIR/index.html" <<HTML
@@ -184,15 +398,19 @@ h1{margin-bottom:.2rem}.muted{color:#666}
 pre{background:#0b1021;color:#d6e1ff;padding:1rem;border-radius:6px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.4}
 a{color:#0066cc}
 .box{border:1px solid #ddd;border-radius:6px;padding:1rem;margin:1rem 0}
+.stat{display:inline-block;margin-right:1rem}
 </style>
 <h1>Tests for online build <code>$APP_BID</code></h1>
 <p>Status: <span class="badge">$STATUS_TEXT</span> · duration ${DUR}s</p>
+<p>
+  <span class="stat"><strong>Phase 1 (local, JOBS=$TEST_JOBS):</strong> ${PHASE1_PASS}p / ${PHASE1_FAIL}f</span>
+  <span class="stat"><strong>Phase 2 (Azure smoke, JOBS=1):</strong> $( (( PHASE2_RAN )) && echo "${PHASE2_PASS}p / ${PHASE2_FAIL}f" || echo "skipped" )</span>
+</p>
 <p><a href="../">← back to build summary</a> · <a href="summary.json">summary.json</a> · <a href="run.log">raw run.log</a></p>
 $( [[ "$HAS_RICH_REPORT" == 1 ]] && cat <<RICH
 <div class="box">
   <h3>Per-test reports + screenshots</h3>
   <p>Browse the full grid: <a href="output/reports/"><strong>open the test report grid</strong></a>.</p>
-  <p>Each row links to its per-test detail page with screenshots, timings, and step-level checks.</p>
 </div>
 RICH
 )
@@ -221,31 +439,10 @@ upload "$SUMMARY_JSON"         "app-builds/$APP_BID/tests/summary.json"
 upload "$REPORT_DIR/index.html" "app-builds/$APP_BID/tests/index.html"
 
 # ── Stitch in host-side artefacts the tests wrote outside $TEST_OUTPUT ──
-#
-# Test scripts hardcode dev-convention paths:
-#   /tmp/static-deploy/public/<slug>.html   ← actually .../reports/<slug>.html
-#   /tmp/static-deploy/public/reports/<slug>.html  ← per-test HTML written by
-#         generate-report.js when running locally (TEST_OUTPUT_ROOT defaults
-#         to /tmp/static-deploy/public, so REPORTS_DIR=/tmp/static-deploy/public/reports).
-#         These are the FULL reports with <img> references — what the user sees
-#         locally.
-#   /tmp/static-deploy/public/shots*/      ← per-test screenshots
-#   /tmp/hot-switch-report/snapshot-milestones/  ← rich self-built report
-#   /tmp/hot-switch-report/index.html      ← top-level hot-switch test report
-#   /tmp/static-deploy/public/timing-report/    ← timing test rich report
-#
-# In CI, TEST_OUTPUT_ROOT is a fresh mktemp dir, so generate-report.js
-# (called by run-all-tests.sh) writes to $TEST_OUTPUT/reports/<slug>.html
-# but the screenshots got written elsewhere → empty placeholder reports.
-#
-# The fix: mirror everything from the host paths into $TEST_OUTPUT/ before
-# the upload-batch. We filter on RUN_START_MARKER so we don't pick up stale
-# screenshots from prior runs or the user's parallel dev sessions.
 SHOTS_HOST="/tmp/static-deploy/public"
 HOTSWITCH_HOST="/tmp/hot-switch-report"
 
 mirror_fresh_files() {
-    # mirror_fresh_files <src-dir> <dst-dir> [pattern...]
     local src="$1" dst="$2"; shift 2
     [[ -d "$src" ]] || return 0
     local find_args=()
@@ -269,22 +466,15 @@ mirror_fresh_files() {
     echo "  mirror $src → $dst : $count file(s)"
 }
 
-# 1. Per-test rich reports written by generate-report.js locally
-#    (these have the <img> tags pointing at ../shots-<name>/...).
 echo "--- Mirroring host artefacts into $TEST_OUTPUT ---"
 mirror_fresh_files "$SHOTS_HOST/reports" "$TEST_OUTPUT/reports" '*.html' '*.json'
 
-# 2. Per-test screenshot dirs (shots, shots3, shots-foo, …).
 for shotdir in "$SHOTS_HOST"/shots*; do
     [[ -d "$shotdir" ]] || continue
     name="$(basename "$shotdir")"
     mirror_fresh_files "$shotdir" "$TEST_OUTPUT/$name" '*.png' 'checklist.json'
 done
 
-# 3. snapshot-milestones rich report. The test's index.html is the actual
-#    report; the placeholder at output/reports/snapshot-milestones.html
-#    knows nothing about it. Mirror the rich subtree, then rewrite the
-#    placeholder as a redirect.
 SNAPMS_SRC="$HOTSWITCH_HOST/snapshot-milestones"
 if [[ -d "$SNAPMS_SRC" ]] && find "$SNAPMS_SRC" -newer "$RUN_START_MARKER" -print -quit 2>/dev/null | grep -q .; then
     mirror_fresh_files "$SNAPMS_SRC" "$TEST_OUTPUT/snapshot-milestones" '*.html' '*.png' '*.json'
@@ -296,7 +486,6 @@ if [[ -d "$SNAPMS_SRC" ]] && find "$SNAPMS_SRC" -newer "$RUN_START_MARKER" -prin
 HTML
 fi
 
-# 4. timing-report rich report (similar pattern).
 TIMING_SRC="$SHOTS_HOST/timing-report"
 if [[ -d "$TIMING_SRC" ]] && find "$TIMING_SRC" -newer "$RUN_START_MARKER" -print -quit 2>/dev/null | grep -q .; then
     mirror_fresh_files "$TIMING_SRC" "$TEST_OUTPUT/timing-report" '*.html' '*.png' '*.json'
@@ -308,7 +497,6 @@ if [[ -d "$TIMING_SRC" ]] && find "$TIMING_SRC" -newer "$RUN_START_MARKER" -prin
 HTML
 fi
 
-# 5. Single upload-batch sweep — everything new is in $TEST_OUTPUT now.
 if [[ "$HAS_RICH_REPORT" == 1 ]]; then
     echo "--- Uploading $TEST_OUTPUT → tests/output ---"
     az storage blob upload-batch \
@@ -342,15 +530,19 @@ PYEOF
 upload "$PATCHED" "app-builds/$APP_BID/index.html"
 rm -f "$PATCHED"
 
-# Update manifest with test_report link
+# Update manifest with combined test_report
 MANIFEST="$(mktemp)"
 az storage blob download --account-name "$ACCT" \
     --container-name '$web' --name "app-builds/$APP_BID/manifest.json" \
     --file "$MANIFEST" --no-progress >/dev/null
-python3 - "$MANIFEST" "$APP_BID" "$TEST_RC" "$DUR" "$PASS_COUNT" "$FAIL_COUNT" <<'PYEOF'
+python3 - "$MANIFEST" "$APP_BID" "$TEST_RC" "$DUR" "$PASS_COUNT" "$FAIL_COUNT" \
+    "$PHASE1_PASS" "$PHASE1_FAIL" "$PHASE2_RAN" "$PHASE2_PASS" "$PHASE2_FAIL" <<'PYEOF'
 import json, sys
-p, app_bid, rc, dur, p_pass, p_fail = sys.argv[1:7]
+(p, app_bid, rc, dur, p_pass, p_fail,
+ p1_pass, p1_fail, p2_ran, p2_pass, p2_fail) = sys.argv[1:12]
 rc, dur, p_pass, p_fail = int(rc), int(dur), int(p_pass), int(p_fail)
+p1_pass, p1_fail = int(p1_pass), int(p1_fail)
+p2_ran, p2_pass, p2_fail = int(p2_ran), int(p2_pass), int(p2_fail)
 m = json.load(open(p))
 m["test_report"] = {
     "url": f"app-builds/{app_bid}/tests/",
@@ -358,6 +550,10 @@ m["test_report"] = {
     "duration_seconds": dur,
     "pass_count": p_pass,
     "fail_count": p_fail,
+    "phase1_local": { "pass": p1_pass, "fail": p1_fail },
+    "phase2_azure_smoke": (
+        { "pass": p2_pass, "fail": p2_fail } if p2_ran else { "skipped": True }
+    ),
 }
 json.dump(m, open(p,'w'), indent=2)
 PYEOF
@@ -367,4 +563,8 @@ rm -f "$MANIFEST"
 bash "$(dirname "$0")/regen-indexes.sh"
 
 echo "Published: $SITE/app-builds/$APP_BID/tests/"
+echo "  Phase 1 (local): ${PHASE1_PASS}p / ${PHASE1_FAIL}f"
+if (( PHASE2_RAN )); then
+    echo "  Phase 2 (Azure smoke): ${PHASE2_PASS}p / ${PHASE2_FAIL}f"
+fi
 exit "$TEST_RC"
