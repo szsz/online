@@ -17,11 +17,11 @@
 //   6. Record per-transition timing
 //
 // Output: pass/fail matrix + timings.
-const __cl = require('./lib/inject-checklist');
-const { launch, sleep } = require('./lib/browser');
+const __cl = require('../lib/inject-checklist');
+const { launch, sleep } = require('../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;
