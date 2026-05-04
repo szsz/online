@@ -65,12 +65,13 @@ HTML
                 branch="$(jq -r '.git_ref // ""' "$tmp" 2>/dev/null | sed -E 's|^refs/heads/||;s|^refs/pull/([0-9]+).*|PR #\1|')"
                 sha="$(jq -r '.git_sha // .git_short_sha // ""' "$tmp" 2>/dev/null)"
                 sha_short="${sha:0:12}"
-                if [[ "$prefix" == "app-builds/" ]]; then
-                    local rc lo p_pass p_fail tests_cell
+                if [[ "$prefix" == "app-builds/" || "$prefix" == "local-builds/" ]]; then
+                    local rc lo p_pass p_fail tests_cell profile
                     rc="$(jq -r '.test_report.exit_code // empty' "$tmp" 2>/dev/null)"
                     lo="$(jq -r '.lo_build_id // ""' "$tmp" 2>/dev/null)"
                     p_pass="$(jq -r '.test_report.pass_count // empty' "$tmp" 2>/dev/null)"
                     p_fail="$(jq -r '.test_report.fail_count // empty' "$tmp" 2>/dev/null)"
+                    profile="$(jq -r '.test_profile // ""' "$tmp" 2>/dev/null)"
                     if [[ -z "$rc" ]]; then
                         tests_cell="<span class=\"muted\">no tests yet</span>"
                     elif [[ -n "$p_pass" && -n "$p_fail" ]]; then
@@ -81,6 +82,7 @@ HTML
                         tests_cell="<a class=\"bad\" href=\"$id/tests/\">failed (rc=$rc)</a>"
                     fi
                     notes="LO=$lo"
+                    [[ -n "$profile" ]] && notes="$notes · profile=$profile"
                     printf '<tr><td><a href="%s/">%s</a></td><td class="muted">%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td>%s</td></tr>\n' \
                         "$id" "$id" "$when" "$branch" "$sha_short" "$tests_cell" "$notes"
                 else
@@ -96,8 +98,9 @@ HTML
     } > "$out"
 }
 
-gen_section "lo-builds/"  "LibreOffice WASM builds"  "$WORK/lo-builds.html"
-gen_section "app-builds/" "Online (cool-wasm) builds" "$WORK/app-builds.html"
+gen_section "lo-builds/"    "LibreOffice WASM builds"    "$WORK/lo-builds.html"
+gen_section "app-builds/"   "Online (cool-wasm) builds"  "$WORK/app-builds.html"
+gen_section "local-builds/" "Local CI runs (viewer.szebeni.hu)" "$WORK/local-builds.html"
 
 # ── root index ──────────────────────────────────────────────────
 cat > "$WORK/root.html" <<HTML
@@ -116,6 +119,10 @@ a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}
   <h3><a href="app-builds/">Online (cool-wasm) builds</a></h3>
   <p>Outputs of the <code>szsz/online</code> dev branch CI — each links its test report.</p>
 </div>
+<div class="box">
+  <h3><a href="local-builds/">Local CI runs (viewer.szebeni.hu)</a></h3>
+  <p>Manual <code>workflow_dispatch</code> runs of <code>wasm-ci-local.yml</code> — tests run on the dev box's local stack with selectable profile (basic / non-basic / all).</p>
+</div>
 HTML
 
 upload() {
@@ -127,8 +134,9 @@ upload() {
         --overwrite --no-progress >/dev/null
 }
 
-upload "$WORK/lo-builds.html"  "lo-builds/index.html"
-upload "$WORK/app-builds.html" "app-builds/index.html"
-upload "$WORK/root.html"       "index.html"
+upload "$WORK/lo-builds.html"    "lo-builds/index.html"
+upload "$WORK/app-builds.html"   "app-builds/index.html"
+upload "$WORK/local-builds.html" "local-builds/index.html"
+upload "$WORK/root.html"         "index.html"
 
 echo "Indexes refreshed: $SITE/"
