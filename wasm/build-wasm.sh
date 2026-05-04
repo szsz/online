@@ -331,8 +331,7 @@ if ! docker exec "$CONTAINER" test -f "$ONLINE_BUILD_DIR/wasm/Makefile" 2>/dev/n
             printf '%s\n' _signal_js_ready _get_heap_base _get_temp_dir_path \
                 _is_preinit_done _wasm_clear_server_freshly_ready \
                 _notify_coolwsd_server_socket_ready _create_remote_client \
-                _poll_remote_client_ready _handle_remote_message _close_remote_client \
-                _doc_postUnoCommand
+                _poll_remote_client_ready _handle_remote_message _close_remote_client
         } | sort -u > \$EXPORTS_DIR/exports.new
         mv \$EXPORTS_DIR/exports.new \$EXPORTS_DIR/exports
     "
