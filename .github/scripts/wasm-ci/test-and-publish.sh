@@ -251,8 +251,11 @@ fi
 
 # ── Phase 1: run the full TESTS array via the parallel runner ────────
 TEST_JOBS="${TEST_JOBS_OVERRIDE:-3}"
+# Pass the eventual public URL of the per-test reports through to the
+# JUnit emitter so each <testcase> has a clickable deep-link.
+JUNIT_BASE_URL="$SITE/app-builds/$APP_BID/tests/output/reports"
 set +e
-( cd "$WORKSPACE/wasm" && JOBS="$TEST_JOBS" bash run-all-tests-parallel.sh ) >> "$LOG" 2>&1
+( cd "$WORKSPACE/wasm" && JOBS="$TEST_JOBS" JUNIT_BASE_URL="$JUNIT_BASE_URL" bash run-all-tests-parallel.sh ) >> "$LOG" 2>&1
 PHASE1_RC=$?
 set -e
 
@@ -444,6 +447,80 @@ upload "$LOG"                  "app-builds/$APP_BID/tests/run.log"
 upload "$SUMMARY_JSON"         "app-builds/$APP_BID/tests/summary.json"
 upload "$REPORT_DIR/index.html" "app-builds/$APP_BID/tests/index.html"
 
+# Upload junit.xml emitted by run-all-tests-parallel.sh's host-side
+# REPORTS dir. Mirror it into REPORT_DIR so the workflow's
+# upload-artifact step (path: junit.xml relative to workspace) resolves
+# from the same source.
+JUNIT_HOST="/tmp/static-deploy/public/reports/junit.xml"
+if [[ -f "$JUNIT_HOST" ]]; then
+    upload "$JUNIT_HOST" "app-builds/$APP_BID/tests/junit.xml"
+    cp "$JUNIT_HOST" "$REPORT_DIR/junit.xml"
+fi
+
+# Step Summary — clickable links per test + suite, rendered on the
+# GitHub Actions run page. Reads the same per-test .result files the
+# JUnit emitter does, so links and statuses stay in lockstep.
+write_step_summary() {
+    local sum="${GITHUB_STEP_SUMMARY:-}"
+    [[ -n "$sum" ]] || return 0
+    local results_host="/tmp/static-deploy/public/reports/.logs"
+    [[ -d "$results_host" ]] || return 0
+
+    local report_base="$SITE/app-builds/$APP_BID/tests"
+    local pass_n=0 fail_n=0 skip_n=0 total_t=0
+    for r in "$results_host"/*.result; do
+        [[ -f "$r" ]] || continue
+        IFS='|' read -r slug status elapsed _t _d _s < "$r"
+        case "$status" in
+            pass) pass_n=$((pass_n+1)) ;;
+            fail) fail_n=$((fail_n+1)) ;;
+            *)    skip_n=$((skip_n+1)) ;;
+        esac
+        total_t=$((total_t + ${elapsed:-0}))
+    done
+
+    {
+        echo "## WASM test suite — \`$APP_BID\`"
+        echo
+        echo "**Phase 1 (local):** $pass_n passed · $fail_n failed · $skip_n skipped — total **${total_t}s**"
+        if (( PHASE2_RAN )); then
+            echo
+            echo "**Phase 2 (Azure smoke):** ${PHASE2_PASS} passed · ${PHASE2_FAIL} failed"
+        fi
+        echo
+        echo "📊 [Open the full suite report]($report_base/) · [JUnit XML]($report_base/junit.xml) · [run.log]($report_base/run.log)"
+        echo
+        echo "| # | Test | Status | Duration | Report |"
+        echo "|---|------|--------|----------|--------|"
+        local i=1
+        for r in "$results_host"/*.result; do
+            [[ -f "$r" ]] || continue
+            IFS='|' read -r slug status elapsed title _d _s < "$r"
+            local icon="❓"
+            case "$status" in
+                pass) icon="✅" ;;
+                fail) icon="❌" ;;
+                skip|missing) icon="⚪" ;;
+            esac
+            local link="[open]($report_base/output/reports/$slug.html)"
+            printf '| %d | %s | %s %s | %ss | %s |\n' \
+                "$i" "${title:-$slug}" "$icon" "$status" "${elapsed:-0}" "$link"
+            i=$((i+1))
+        done
+        if (( fail_n > 0 )); then
+            echo
+            echo "### ❌ Failed tests"
+            for r in "$results_host"/*.result; do
+                IFS='|' read -r slug status elapsed title _d _s < "$r"
+                [[ "$status" == "fail" ]] || continue
+                echo "- **$title** (\`$slug\`) — [report]($report_base/output/reports/$slug.html) · [log]($report_base/output/reports/.logs/$slug.log)"
+            done
+        fi
+    } >> "$sum"
+    echo "[OK] wrote GitHub step summary"
+}
+write_step_summary
+
 # ── Stitch in host-side artefacts the tests wrote outside $TEST_OUTPUT ──
 SHOTS_HOST="/tmp/static-deploy/public"
 HOTSWITCH_HOST="/tmp/hot-switch-report"
@@ -473,7 +550,10 @@ mirror_fresh_files() {
 }
 
 echo "--- Mirroring host artefacts into $TEST_OUTPUT ---"
-mirror_fresh_files "$SHOTS_HOST/reports" "$TEST_OUTPUT/reports" '*.html' '*.json'
+# Include .log + .result + .xml so per-test log links from the GitHub
+# step summary resolve, and downstream tooling can re-read structured
+# per-test results / the JUnit XML.
+mirror_fresh_files "$SHOTS_HOST/reports" "$TEST_OUTPUT/reports" '*.html' '*.json' '*.log' '*.result' '*.xml'
 
 for shotdir in "$SHOTS_HOST"/shots*; do
     [[ -d "$shotdir" ]] || continue

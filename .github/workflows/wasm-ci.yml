@@ -198,3 +198,15 @@ jobs:
           LO_BUILD_ID:  ${{ needs.build-deploy.outputs.lo_build_id }}
           GIT_SHA: ${{ github.sha }}
         run: bash .github/scripts/wasm-ci/test-and-publish.sh
+
+      # Upload junit.xml as a workflow artifact for external consumers.
+      # test-and-publish.sh already uploaded the same file to coolwasmfiles
+      # (under app-builds/<ID>/tests/junit.xml) and wrote a clickable
+      # markdown table to $GITHUB_STEP_SUMMARY with deep-links per test.
+      - name: Upload junit.xml as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-xml
+          path: /tmp/static-deploy/public/reports/junit.xml
+          if-no-files-found: ignore
