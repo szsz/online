@@ -294,7 +294,8 @@ if $DO_VIEWER; then
   "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^5.2.1",
-    "@azure/storage-blob": "^12.25.0"
+    "@azure/storage-blob": "^12.25.0",
+    "@azure/identity": "^4.4.0"
   }
 }
 VJSON
