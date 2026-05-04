@@ -1,5 +1,12 @@
 name: WASM build, deploy, test
 
+# Two-path policy for Online deploys (mirrors LO build policy):
+#   1. PR to dev — validate + auto-merge on green (deploy runs on the
+#      post-merge `push: dev` event below).
+#   2. workflow_dispatch — redeploy any past Online commit. Set
+#      `online_sha` to the commit SHA and optionally `lo_build_id` to
+#      override the LO build pinned in that commit's wasm/LO_BUILD_ID.
+# See wasm/CLAUDE.md "How to make changes to LibreOffice / Online".
 on:
   push:
     branches: [dev]
@@ -8,6 +15,7 @@ on:
       - '.github/workflows/wasm-ci.yml'
       - '.github/scripts/wasm-ci/**'
   pull_request:
+    branches: [dev]
     paths:
       - 'wasm/LO_BUILD_ID'
       - 'wasm/**'
@@ -15,8 +23,12 @@ on:
       - '.github/scripts/wasm-ci/**'
   workflow_dispatch:
     inputs:
+      online_sha:
+        description: 'Online commit SHA to (re)deploy (default: HEAD of selected branch)'
+        required: false
+        default: ''
       lo_build_id:
-        description: 'Override LO_BUILD_ID (default: read from wasm/LO_BUILD_ID)'
+        description: 'Override LO_BUILD_ID (default: read from that commit''s wasm/LO_BUILD_ID)'
         required: false
         default: ''
       skip_tests:
@@ -33,7 +45,7 @@ env:
 # guarantees only one CI build at a time on the host; this group prevents
 # two pushes on this same repo from racing each other.
 concurrency:
-  group: wasm-ci-${{ github.ref }}
+  group: wasm-ci-${{ github.event.inputs.online_sha || github.event.pull_request.head.sha || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -44,13 +56,20 @@ jobs:
   # endpoint of coolwasmfiles, no auth required.
   # Make this job a "Required status check" in the branch protection rule
   # for `dev` to harden-block PRs that pin a non-existent LO build.
+  # On PR: green validate-lo-build → auto-merge into dev (the deploy then
+  # runs on the post-merge `push: dev` event).
   # ─────────────────────────────────────────────────────────────────────
   validate-lo-build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       lo_build_id: ${{ steps.lo.outputs.lo_build_id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.event.pull_request.head.sha || github.sha }}
 
       - name: Resolve LO_BUILD_ID
         id: lo
@@ -95,6 +114,15 @@ jobs:
           done
           $ok || { echo "::error file=wasm/LO_BUILD_ID::Pinned LO_BUILD_ID '$LO_BUILD_ID' has no valid build at coolwasmfiles. Update wasm/LO_BUILD_ID to a build listed at $STATIC_SITE_BASE/lo-builds/."; exit 1; }
 
+      # Green validate → auto-merge the PR. The full build/deploy/test
+      # then runs on the post-merge push event below.
+      - name: Auto-merge PR (rebase, no squash)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr merge "$PR_NUMBER" --rebase --auto --delete-branch
+
   # ─────────────────────────────────────────────────────────────────────
   # Heavy jobs only run on push/dispatch — never on PRs. PRs only get the
   # validate-lo-build gate above.
@@ -117,6 +145,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
 
       - name: Resolve build IDs
         id: ids
@@ -145,8 +175,8 @@ jobs:
         env:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
           LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
-          GIT_SHA: ${{ github.sha }}
-          GIT_REF: ${{ github.ref }}
+          GIT_SHA: ${{ github.event.inputs.online_sha || github.sha }}
+          GIT_REF: ${{ github.event.inputs.online_sha || github.ref }}
         run: bash .github/scripts/wasm-ci/publish-app-build.sh
 
   test:
@@ -159,6 +189,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
 
       - name: Run test suite + publish report
         env:

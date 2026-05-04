@@ -149,6 +149,39 @@ Files uploaded via the viewer are encrypted under a 128-bit secret embedded in t
 - `test-regression-snapshot-injection.js` runs first in `run-all-tests.sh` — ~500 ms HTTP probe that catches broken deploys instantly.
 - Each service must start via its `launch-*.sh` wrapper so .env is sourced correctly and the right TLS cert is used.
 
+## Build & release policy
+
+**LO builds are CI-only.** Two paths to a published LO build:
+
+1. **PR to `dev` of `szsz/libreoffice-core-wasm`.** CI builds the PR head, publishes artefacts to `coolwasmfiles/lo-builds/<BUILD_ID>/`, and on green auto-merges (`gh pr merge --rebase --auto`). The merged `dev` HEAD equals the PR head SHA, so artefacts and source line up.
+2. **`workflow_dispatch`** on libreoffice-core-wasm with an explicit `sha` input — re-mints an artefact for any past commit.
+
+Build IDs are `YYYY-MM-DD-<gh_run_number>`, unique per CI run.
+
+`wasm/LO_BUILD_ID` (in this repo) pins exactly one CI artefact. The Online CI's `validate-lo-build` job verifies the pin exists on coolwasmfiles before allowing a PR to land.
+
+**Online deploys** follow the same two-path policy:
+
+1. **PR to `dev`** — `validate-lo-build` runs; on green auto-merges. The post-merge `push: dev` event then runs the full build/deploy/test.
+2. **`workflow_dispatch`** with `online_sha` — redeploy any past Online commit. `lo_build_id` defaults to that commit's `wasm/LO_BUILD_ID`.
+
+### Local builds against a published LO
+
+`wasm/build-wasm.sh` (default mode) calls `wasm/fetch-lo-build.sh` to
+download the LO artefact pinned by `wasm/LO_BUILD_ID` from the public
+coolwasmfiles endpoint, extracts it under `~/.cache/lo-builds/<ID>/`,
+and bind-mounts that into the build container at `/lo`. No local LO
+core build runs — the same artefact CI uses is reused.
+
+`--local-lo` opts into the legacy path (bind-mounts
+`$HOME/libreoffice-core-wasm` and rebuilds LO inside the container)
+for inner-loop core-side debugging. Outputs from this mode MUST NOT
+be deployed; the only deploy-eligible build is the published one
+referenced by `wasm/LO_BUILD_ID`.
+
+Don't push directly to `dev` on either repo — the auto-merge step is
+the only sanctioned path.
+
 ## Test requirements for co-editing
 
 Every co-editing test MUST verify:
