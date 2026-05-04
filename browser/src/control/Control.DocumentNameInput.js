@@ -96,7 +96,13 @@ window.L.Control.DocumentNameInput = window.L.Control.extend({
 		// hide the caret in the main document
 		delete this._renaming;
 		this.map._onLostFocus();
-		var name = this.map['wopi'].BaseFileName;
+		// On focus we pre-fill the input with the editable name so the
+		// user can rename. Prefer window.__viewerDisplayName (set by
+		// wasm-loader from the &displayName= URL param) over BaseFileName
+		// — in v2 BaseFileName is the opaque hex-64 fileId, which is a
+		// poor user-facing label (and historically caused the post-
+		// switchdoc title flicker).
+		var name = window.__viewerDisplayName || this.map['wopi'].BaseFileName;
 		var extn = name.lastIndexOf('.');
 		if (extn < 0)
 			extn = name.length;
@@ -135,9 +141,14 @@ window.L.Control.DocumentNameInput = window.L.Control.extend({
 			el.prop('disabled', false);
 			el.removeClass('editable');
 			el.focus(function() { $(this).blur(); });
+			// Prefer window.__viewerDisplayName (set by wasm-loader from
+			// the &displayName= URL param) — in v2 the URL doc path ends
+			// in the opaque hex-64 fileId which is a poor user-facing
+			// label. Fall back to the URL-derived name otherwise.
 			// Call decodeURIComponent twice: Reverse both our encoding and the encoding of
 			// the name in the file system.
-			el.val(decodeURIComponent(decodeURIComponent(this.map.options.doc.replace(/.*\//, '')))
+			el.val(window.__viewerDisplayName ||
+				decodeURIComponent(decodeURIComponent(this.map.options.doc.replace(/.*\//, '')))
 							  // To conveniently see the initial visualViewport scale and size, un-comment the following line.
 							  // + ' (' + window.visualViewport.scale + '*' + window.visualViewport.width + 'x' + window.visualViewport.height + ')'
 							  // TODO: Yes, it would be better to see it change as you rotate the device or invoke Split View.
@@ -151,8 +162,18 @@ window.L.Control.DocumentNameInput = window.L.Control.extend({
 
 	onWopiProps: function(e) {
 		if (e.BaseFileName !== null) {
-			// set the document name into the name field
-			$('#document-name-input').val(e.BreadcrumbDocName !== undefined ? e.BreadcrumbDocName : e.BaseFileName);
+			// Pick the friendliest available name. Priority order:
+			//   1. window.__viewerDisplayName — set by wasm-loader from the
+			//      `&displayName=` URL param the viewer supplies on every
+			//      open. This is the human-readable name; in v2 it's the
+			//      ONLY readable label, since BaseFileName is the opaque
+			//      hex-64 fileId.
+			//   2. e.BreadcrumbDocName when the kit provides it
+			//   3. e.BaseFileName (last resort — opaque WOPISrc identity)
+			var friendly = window.__viewerDisplayName ||
+				(e.BreadcrumbDocName !== undefined && e.BreadcrumbDocName !== null
+					? e.BreadcrumbDocName : e.BaseFileName);
+			$('#document-name-input').val(friendly);
 			var input = window.L.DomUtil.get('document-name-input');
 			input.setAttribute('data-cooltip', input.value);
 			window.L.control.attachTooltipEventListener(input, this.map);

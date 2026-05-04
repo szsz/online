@@ -14,6 +14,12 @@
     // opaque fileId; the parent viewer passes the decrypted filename as
     // a separate query param so the editor can display a human label.
     var displayName = params.get('displayName') || '';
+    // Publish for Control.DocumentNameInput.onWopiProps — that handler
+    // reads window.__viewerDisplayName as priority over the kit's
+    // BreadcrumbDocName/BaseFileName when populating the title bar.
+    // Single-writer pattern: COOL owns the input, we just supply the
+    // label. Updated in checkHashSwitch on every #switchdoc=.
+    window.__viewerDisplayName = displayName || null;
     // Use displayName's extension (if given) for docType detection, since
     // v2 fileIds have no extension. Fall back to WOPISrc's extension.
     var typingSource = displayName || wopiSrc;
@@ -712,7 +718,12 @@
         if (amp >= 0) {
             var tail = new URLSearchParams(raw.substring(amp + 1));
             var dn = tail.get('displayName');
-            if (dn) displayName = dn; // hoisted var from the init block
+            if (dn) {
+                displayName = dn; // hoisted var from the init block
+                // Keep the global the COOL onWopiProps handler reads in
+                // sync with the new doc's name (single-writer pattern).
+                window.__viewerDisplayName = dn;
+            }
         }
         window.__bridgeLastSwitch = filename;
         pendingSwitchFilename = filename;
