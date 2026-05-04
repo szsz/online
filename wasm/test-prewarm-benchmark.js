@@ -247,7 +247,7 @@ const TEST_DOCS = [
             }
         }
     } else {
-        log('JOBS_SCALE=' + env.JOBS_SCALE + ' — skipping return-vs-first perf '
+        console.log('JOBS_SCALE=' + env.JOBS_SCALE + ' — skipping return-vs-first perf '
             + 'comparison (contention makes it meaningless; JOBS=1 still gates)');
     }
 
