@@ -1121,7 +1121,7 @@
                         window.__wasmWarmWatchdogTimer = setTimeout(function() {
                             try {
                                 console.warn('[snapshot] Warm-restore watchdog: '
-                                    + 'doc:loaded missing 6s after restore — '
+                                    + 'doc:loaded missing 8s after restore — '
                                     + 'dropping snapshot and reloading as cold');
                                 window.__wasmWarmWatchdogTriggered = true;
                                 // Iter A8: tell the parent viewer so subsequent
@@ -1156,18 +1156,18 @@
                             } catch (e) {
                                 console.error('[snapshot] Watchdog handler threw:', e);
                             }
-                        }, 30000);  // Iter B1: extended from 6 s while
-                                    // validating the warm re-attach fix
-                                    // in kit/Kit.cpp (keep captured
-                                    // _loKitDocument; setView after
-                                    // createView). With re-attach working,
-                                    // happy-path warm should be ~3-5 s —
-                                    // the 30 s ceiling is just a safety
-                                    // net so we measure actual warm
-                                    // timing across writer/calc/impress
-                                    // and across same-type / cross-type
-                                    // before tightening. Drop back to
-                                    // ~8-10 s once warm-p95 is established.
+                        }, 8000);  // Happy-path warm is 3-5 s. 8 s gives
+                                   // it a fair chance, then bails fast so
+                                   // the in-iframe cold-fallback (location
+                                   // .reload after caches.delete) has time
+                                   // to actually finish within typical test
+                                   // budgets. Previously 30 s, which on
+                                   // Azure (where warm-restore reliably
+                                   // hangs after lok_init_2 SECOND_INIT)
+                                   // ate the entire 60 s warm budget before
+                                   // the fallback even started. The 8 s
+                                   // watchdog + ~25 s Azure cold-with-cache
+                                   // = ~33 s total wall, well under budget.
                     }
                 }
 
