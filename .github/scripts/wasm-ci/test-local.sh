@@ -24,11 +24,29 @@ SITE="${STATIC_SITE_BASE:?}"
 WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
 PROFILE="${TEST_PROFILE:-basic}"
 
-# ── URLs: hit the dev box's locally-served stack ────────────────────
-export FILE_STORAGE_URL="https://viewer.szebeni.hu"
-export VIEWER_URL="https://viewer.szebeni.hu"
-export EDITOR_URL="https://wasm.atgpartners.info"
-export RELAY_URL="wss://relay.atgpartners.info"
+# ── URLs: hit the dev box's CI stack ────────────────────────────────
+# All hostnames / ports live in $ENV_FILE (default wasm/.env.ci, set by
+# the runner agent's .env). Source the values here and pass them through
+# to the test runners; no string literals in the script.
+: "${ENV_FILE:=/home/localadmin/online/wasm/.env.ci}"
+if [[ ! -r "$ENV_FILE" ]]; then
+    echo "ERROR: ENV_FILE not readable: $ENV_FILE" >&2
+    exit 1
+fi
+echo "ENV_FILE=$ENV_FILE"
+while IFS='=' read -r key value; do
+    [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+    value="${value%\"}"; value="${value#\"}"
+    value="${value%\'}"; value="${value#\'}"
+    if [[ -z "${!key+x}" ]]; then
+        export "$key=$value"
+    fi
+done < "$ENV_FILE"
+
+: "${FILE_STORAGE_URL:?FILE_STORAGE_URL must be set in $ENV_FILE}"
+: "${EDITOR_URL:?EDITOR_URL must be set in $ENV_FILE}"
+: "${RELAY_URL:?RELAY_URL must be set in $ENV_FILE}"
+export VIEWER_URL="$FILE_STORAGE_URL"
 export TEST_TARGET="local-host"
 # JOBS_SCALE=1 — no contention on the local host; tests run as fast
 # as the deployed code allows. (Set higher manually if running parallel
@@ -114,13 +132,10 @@ if [[ "$FILTER_INVERT" != "skip" ]]; then
 fi
 
 # ── Run the suite ───────────────────────────────────────────────────
-# Clear pass/fail markers from prior runs. run-all-tests-parallel.sh
-# writes to /tmp/static-deploy/public/reports/.logs/<slug>.result and
-# we tally that directory after the run. Without clearing, a prior
-# run's 68/4 tally bleeds into this run's manifest even when the
-# current run only ran 36 tests.
-rm -rf /tmp/static-deploy/public/reports/.logs
-mkdir -p /tmp/static-deploy/public/reports/.logs
+# Per-run results dir lives under TEST_OUTPUT_ROOT (set above to a fresh
+# mktemp). run-all-tests-parallel.sh wipes its own .logs dir at start
+# (run-all-tests-parallel.sh:82), so no manual clearing is needed here.
+RESULTS_DIR="$TEST_OUTPUT_ROOT/reports/.logs"
 
 {
     echo "=== local CI test run ==="
@@ -143,7 +158,6 @@ DUR=$((END_TS - START_TS))
 
 # ── Tally pass/fail from the per-test .result files (matches generate-junit.sh) ──
 PASS_COUNT=0; FAIL_COUNT=0
-RESULTS_DIR="/tmp/static-deploy/public/reports/.logs"
 if [[ -d "$RESULTS_DIR" ]]; then
     for r in "$RESULTS_DIR"/*.result; do
         [[ -f "$r" ]] || continue
@@ -175,7 +189,7 @@ JSON
 STATUS_COLOUR="#2e7d32"; STATUS_TEXT="PASSED"
 if [[ "$TEST_RC" != 0 ]]; then STATUS_COLOUR="#c62828"; STATUS_TEXT="FAILED"; fi
 LOG_ESC="$(python3 -c 'import html,sys; print(html.escape(open(sys.argv[1]).read()))' "$LOG")"
-HAS_RICH="$( [[ -f "$TEST_OUTPUT/reports/index.html" || -f /tmp/static-deploy/public/reports/index.html ]] && echo 1 || echo 0 )"
+HAS_RICH="$( [[ -f "$TEST_OUTPUT/reports/index.html" || -f $PUB/reports/index.html ]] && echo 1 || echo 0 )"
 
 cat > "$REPORT_DIR/index.html" <<HTML
 <!doctype html>
@@ -195,7 +209,7 @@ a{color:#0066cc}.box{border:1px solid #ddd;border-radius:6px;padding:1rem;margin
 HTML
 
 # ── Mirror host artefacts (reports / shots / logs) ──────────────────
-SHOTS_HOST="/tmp/static-deploy/public"
+SHOTS_HOST="$PUB"
 mirror_fresh_files() {
     local src="$1" dst="$2"; shift 2
     [[ -d "$src" ]] || return 0
@@ -243,8 +257,8 @@ upload() {
 upload "$LOG"                  "local-builds/$APP_BID/tests/run.log"
 upload "$SUMMARY_JSON"         "local-builds/$APP_BID/tests/summary.json"
 upload "$REPORT_DIR/index.html" "local-builds/$APP_BID/tests/index.html"
-[[ -f /tmp/static-deploy/public/reports/junit.xml ]] && \
-    upload /tmp/static-deploy/public/reports/junit.xml "local-builds/$APP_BID/tests/junit.xml"
+[[ -f $PUB/reports/junit.xml ]] && \
+    upload $PUB/reports/junit.xml "local-builds/$APP_BID/tests/junit.xml"
 
 # ── Per-build manifest (drives the index page) ──────────────────────
 MANIFEST="$REPORT_DIR/manifest.json"
