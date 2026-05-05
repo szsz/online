@@ -27,7 +27,7 @@ STATE_DIR="${CI_STATE_DIR:-/home/localadmin/lo-wasm-ci-state}"
 
 # Resolve ENV_FILE — runner agent sets it to wasm/.env.ci; allow callers
 # to override (handy for one-off "deploy to ad-hoc" via this same script).
-: "${ENV_FILE:=/home/localadmin/online/wasm/.env.ci}"
+: "${ENV_FILE:=$HOME/ENV/online-ci.env}"
 if [[ ! -r "$ENV_FILE" ]]; then
     echo "ERROR: ENV_FILE not readable: $ENV_FILE" >&2
     exit 1

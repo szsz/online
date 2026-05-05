@@ -1,23 +1,23 @@
-// Load test environment from wasm/.env (local dev) OR from process.env (CI).
-// All tests require FILE_STORAGE_URL, EDITOR_URL, and RELAY_URL.
-// Copy wasm/.env.example to wasm/.env and fill in your values for local dev,
-// or export the three URLs in env (CI does this from wasm/.env.deploy
-// pointing at the deployed Azure App Services).
+// Load test environment from $ENV_FILE (default $HOME/ENV/online.env) OR
+// directly from process.env if the three URLs are already set (CI / wrappers
+// that exported them). Env files live outside the repo so they're never
+// committed; the launchers and CI scripts share the same convention.
 
 const fs = require('fs');
 const path = require('path');
 
 const required = ['FILE_STORAGE_URL', 'EDITOR_URL', 'RELAY_URL'];
-const envPath = path.join(__dirname, '..', '.env');
+const envPath = process.env.ENV_FILE
+    || path.join(process.env.HOME || '', 'ENV', 'online.env');
 
-// If the three URLs are already set in process.env (CI: TEST_TARGET=azure-deploy),
-// skip the .env file requirement entirely. Otherwise load wasm/.env.
+// If the three URLs are already set in process.env (CI scripts export them
+// from $ENV_FILE before launching tests), skip the file load.
 const allEnvSet = required.every((k) => !!process.env[k]);
 if (!allEnvSet) {
     if (!fs.existsSync(envPath)) {
-        console.error('ERROR: wasm/.env not found AND FILE_STORAGE_URL/EDITOR_URL/RELAY_URL not in env.');
-        console.error('       Local dev: copy .env.example to .env and fill in your URLs.');
-        console.error('       CI: export the three URLs from .env.deploy before running tests.');
+        console.error(`ERROR: env file not found at ${envPath} AND FILE_STORAGE_URL/EDITOR_URL/RELAY_URL not in env.`);
+        console.error('       Local dev: create ~/ENV/online.env with the three URLs (and ports/cert paths).');
+        console.error('       Or run via the CI scripts which export the values from $ENV_FILE.');
         process.exit(1);
     }
     const lines = fs.readFileSync(envPath, 'utf8').split('\n');
@@ -34,7 +34,7 @@ if (!allEnvSet) {
 
 for (const key of required) {
     if (!process.env[key]) {
-        console.error(`ERROR: ${key} not set (neither in wasm/.env nor in process.env)`);
+        console.error(`ERROR: ${key} not set (neither in ${envPath} nor in process.env)`);
         process.exit(1);
     }
 }
