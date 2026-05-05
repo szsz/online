@@ -522,15 +522,43 @@ int fakeSocketConnect(int fd1, int fd2)
     // FIXME: This is grim - we should have a queue of fds and
     // accept should pop them off the queue - for now block on
     // the other thread's accept completing.
+    //
+    // Timeout 5 s on each cv-wait to avoid the warm-restore hang
+    // (fd captured in snapshot heap may not match this session's
+    // fakeSocket layout — connect lands on a pair whose accept
+    // side never fires). Returning ETIMEDOUT lets the caller
+    // bail and trigger the in-iframe cold-fallback within budget
+    // instead of hanging forever waiting on a dead listener.
+    using namespace std::chrono_literals;
     while (pair2.connectingFd != -1)
-        theCV.wait(lock);
+    {
+        if (theCV.wait_for(lock, 5s) == std::cv_status::timeout)
+        {
+            FAKESOCKET_LOG("FakeSocket connect #" << fd1 << " to #" << fd2
+                           << " timed out waiting for prior connect" << flush());
+            errno = ETIMEDOUT;
+            return -1;
+        }
+    }
 
     assert(pair2.connectingFd == -1);
     pair2.connectingFd = fd1;
     theCV.notify_all();
 
     while (pair1.fd[1] == -1)
-        theCV.wait(lock);
+    {
+        if (theCV.wait_for(lock, 5s) == std::cv_status::timeout)
+        {
+            // accept side never fired — undo our pending connect
+            // so the listener's pair is reusable.
+            pair2.connectingFd = -1;
+            theCV.notify_all();
+            FAKESOCKET_LOG("FakeSocket connect #" << fd1 << " to #" << fd2
+                           << " timed out waiting for accept" << flush());
+            errno = ETIMEDOUT;
+            return -1;
+        }
+    }
 
     assert(pair1.fd[1] == pair1.fd[0] + 1);
 
