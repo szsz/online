@@ -4,9 +4,9 @@
 // Usage:
 //   node precompress-br.js <base-dir> <relative-path> [<relative-path> ...]
 //
-// Writes <base-dir>/<relative-path>.br alongside each input. Uses the
-// maximum brotli quality (11) — the point of pre-compression is to pay
-// the CPU cost once per deploy rather than once per request.
+// Writes <base-dir>/<relative-path>.br alongside each input. Default
+// quality is BROTLI_QUALITY env var (1-11), or 2 — fast inner-loop
+// deploys; raise to 11 for prod-grade wire bytes.
 //
 // Skips files that don't exist, and skips files whose .br counterpart
 // is already newer than the source (idempotent across repeated deploys).
@@ -21,6 +21,10 @@ if (!baseDirArg || relPaths.length === 0) {
     process.exit(1);
 }
 const baseDir = path.resolve(baseDirArg);
+const QUALITY = (() => {
+    const q = parseInt(process.env.BROTLI_QUALITY, 10);
+    return Number.isFinite(q) && q >= 0 && q <= 11 ? q : 2;
+})();
 
 // Convert bytes → human-readable.
 const fmt = (n) => n > 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB'
@@ -48,7 +52,7 @@ function compressOne(relPath) {
     const input = fs.readFileSync(src);
     const output = zlib.brotliCompressSync(input, {
         params: {
-            [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
+            [zlib.constants.BROTLI_PARAM_QUALITY]: QUALITY,
             [zlib.constants.BROTLI_PARAM_SIZE_HINT]: input.length,
         },
     });

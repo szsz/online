@@ -377,15 +377,16 @@ echo "  Artifacts:"
 ls -lh "$REPO_DIR/wasm/online-build/wasm"/online.* 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
 
 # ---------- Brotli sidecars (build-time, cached) ----------
-# Pre-compress the heavy assets at quality 11 here, alongside the
-# source files in the build tree. Brotli is deterministic per input
-# bytes, so the resulting `.br` is byte-identical to what deploy.sh /
-# deploy-azure.sh would produce — which lets later deploys of the
-# same build skip ~15 min of brotli (online.wasm at q11 dominates).
+# Pre-compress the heavy assets at $BROTLI_QUALITY (default q2 for
+# fast inner-loop builds; raise to 11 for prod-sized wire bytes).
+# Brotli is deterministic per (input bytes, quality), so the same
+# (build, quality) pair produces identical .br files — letting later
+# deploys of the same build skip recompression entirely.
 # Idempotent: re-running with no source changes is ~ms.
+BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
 echo ""
-echo "--- Generating brotli sidecars (build-time) ---"
-docker exec "$CONTAINER" bash -lc "
+echo "--- Generating brotli sidecars (build-time, q$BROTLI_QUALITY) ---"
+docker exec -e "BROTLI_QUALITY=$BROTLI_QUALITY" "$CONTAINER" bash -lc "
     bash '$CONTAINER_REPO_DIR/wasm/tools/brotli-sidecar.sh' \\
         '$ONLINE_BUILD_DIR/wasm/online.js' \\
         '$ONLINE_BUILD_DIR/wasm/online.wasm' \\

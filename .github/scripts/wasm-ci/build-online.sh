@@ -190,11 +190,14 @@ ls -lh "$ONLINE_BUILD"/wasm/online.* 2>/dev/null | awk '{print "  "$NF" ("$5")"}
 
 # Brotli sidecars at build time — saved alongside source files in the
 # build tree so subsequent deploys (local CI, manual prod, manual
-# internal) can copy them straight into staging without paying the
-# ~15 min q11 compression cost again. Idempotent: skipped per-file
-# when an existing .br is newer than its source.
-echo "--- Generating brotli sidecars ---"
-docker exec "$CI_CONTAINER" bash -lc "
+# internal) can copy them straight into staging. Default quality is
+# fast (q2 — ~5 s for online.wasm) so CI doesn't pay the q11 cost
+# every commit; raise BROTLI_QUALITY to 11 in the workflow env when
+# cutting prod-grade wire bytes. Idempotent: skipped per-file when an
+# existing .br is newer than its source.
+BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
+echo "--- Generating brotli sidecars (q$BROTLI_QUALITY) ---"
+docker exec -e "BROTLI_QUALITY=$BROTLI_QUALITY" "$CI_CONTAINER" bash -lc "
     bash /lo/online/wasm/tools/brotli-sidecar.sh \\
         /lo/online/wasm/online-build/wasm/online.js \\
         /lo/online/wasm/online-build/wasm/online.wasm \\
