@@ -100,7 +100,7 @@ HTML
 
 gen_section "lo-builds/"    "LibreOffice WASM builds"    "$WORK/lo-builds.html"
 gen_section "app-builds/"   "Online (cool-wasm) builds"  "$WORK/app-builds.html"
-gen_section "local-builds/" "Local CI runs (viewer.szebeni.hu)" "$WORK/local-builds.html"
+gen_section "local-builds/" "Local CI runs (ci-viewer.szebeni.hu)" "$WORK/local-builds.html"
 
 # ── root index ──────────────────────────────────────────────────
 cat > "$WORK/root.html" <<HTML
@@ -120,7 +120,7 @@ a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}
   <p>Outputs of the <code>szsz/online</code> dev branch CI — each links its test report.</p>
 </div>
 <div class="box">
-  <h3><a href="local-builds/">Local CI runs (viewer.szebeni.hu)</a></h3>
+  <h3><a href="local-builds/">Local CI runs (ci-viewer.szebeni.hu)</a></h3>
   <p>Manual <code>workflow_dispatch</code> runs of <code>wasm-ci-local.yml</code> — tests run on the dev box's local stack with selectable profile (basic / non-basic / all).</p>
 </div>
 HTML
