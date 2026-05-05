@@ -114,14 +114,17 @@ jobs:
           done
           $ok || { echo "::error file=wasm/LO_BUILD_ID::Pinned LO_BUILD_ID '$LO_BUILD_ID' has no valid build at coolwasmfiles. Update wasm/LO_BUILD_ID to a build listed at $STATIC_SITE_BASE/lo-builds/."; exit 1; }
 
-      # Green validate → auto-merge the PR. The full build/deploy/test
-      # then runs on the post-merge push event below.
-      - name: Auto-merge PR (rebase, no squash)
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: gh pr merge "$PR_NUMBER" --rebase --auto --delete-branch
+      # NOTE: auto-merge is no longer here. wasm-ci-local.yml handles
+      # auto-merge on a successful PR build + deploy (using a GitHub
+      # App installation token so the post-merge push: dev event
+      # actually fires). The default GITHUB_TOKEN we have access to
+      # here would suppress that event (anti-recursion), so the prod
+      # deploy below would never trigger.
+      #
+      # This validate-lo-build job stays as a fast PR sanity check
+      # (LO_BUILD_ID points at a real artefact) — it's a lightweight
+      # required status check; the full build/deploy/test runs in
+      # wasm-ci-local.yml.
 
   # ─────────────────────────────────────────────────────────────────────
   # Heavy jobs only run on push/dispatch — never on PRs. PRs only get the

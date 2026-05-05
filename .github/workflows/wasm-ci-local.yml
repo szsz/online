@@ -9,6 +9,23 @@ name: WASM local build, deploy, test (ci-viewer.szebeni.hu)
 # linked from
 #   coolwasmfiles.z6.web.core.windows.net/local-builds/
 on:
+  # PR to dev: full sweep (build + deploy CI stack + run all tests +
+  # publish report). Tests are INFORMATIONAL — the auto-merge step at
+  # the end of build-deploy-test fires when build + deploy succeed,
+  # regardless of test outcome. So `dev` always advances on a clean
+  # build/deploy; test failures are visible on the published report
+  # and in the workflow's red status, but they don't gate the merge.
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'wasm/**'
+      - 'kit/**'
+      - 'wsd/**'
+      - 'net/**'
+      - 'common/**'
+      - 'browser/**'
+      - '.github/workflows/wasm-ci-local.yml'
+      - '.github/scripts/wasm-ci/**'
   workflow_dispatch:
     inputs:
       online_sha:
@@ -22,7 +39,7 @@ on:
       test_profile:
         description: 'basic = single-user/single-browser · non-basic = co-edit/multi-browser · snapshot = snapshot-milestones only · all = everything'
         required: true
-        default: 'basic'
+        default: 'all'
         type: choice
         options:
           - basic
@@ -84,7 +101,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.online_sha || github.sha }}
+          # On pull_request, GitHub provides a synthetic merge ref
+          # (refs/pull/N/merge) — use the PR head's actual sha so
+          # the build matches what's on the PR branch, not the
+          # already-merged-into-dev preview.
+          ref: ${{ github.event.inputs.online_sha || github.event.pull_request.head.sha || github.sha }}
 
       - name: Resolve build IDs
         id: ids
@@ -116,13 +137,39 @@ jobs:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
         run: bash .github/scripts/wasm-ci/deploy-local.sh
 
-      - name: Run test suite (profile=${{ github.event.inputs.test_profile }})
+      # Auto-merge runs BEFORE tests so dev advances as soon as the
+      # build + deploy are known good. Tests still run (informational)
+      # and the report goes up; their outcome is visible on the
+      # published report at coolwasmfiles/local-builds/<id>/tests/
+      # but doesn't gate the merge.
+      #
+      # The merge uses a GitHub App installation token (minted on the
+      # runner via wasm/tools/gh-app/token.js) — pushes done by the
+      # default GITHUB_TOKEN don't fire downstream workflows
+      # (anti-recursion), but App-token pushes do. Without this the
+      # post-merge `push: dev` event in wasm-ci.yml never fires, so
+      # prod doesn't auto-deploy.
+      - name: Auto-merge PR (build + deploy succeeded; tests informational)
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          GH_TOKEN="$(node "$GITHUB_WORKSPACE/wasm/tools/gh-app/token.js")"
+          export GH_TOKEN
+          gh pr merge "$PR_NUMBER" --rebase --auto --delete-branch
+
+      - name: Run test suite (profile=${{ github.event.inputs.test_profile || 'all' }})
+        # Tests are informational on PR — they don't gate auto-merge
+        # (that already fired above on a clean build + deploy). The
+        # report still gets published so failures are visible.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         env:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
           LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
-          GIT_SHA:      ${{ github.event.inputs.online_sha || github.sha }}
-          GIT_REF:      ${{ github.ref }}
-          TEST_PROFILE: ${{ github.event.inputs.test_profile }}
+          GIT_SHA:      ${{ github.event.inputs.online_sha || github.event.pull_request.head.sha || github.sha }}
+          GIT_REF:      ${{ github.event.pull_request.head.ref || github.ref }}
+          TEST_PROFILE: ${{ github.event.inputs.test_profile || 'all' }}
         run: bash .github/scripts/wasm-ci/test-local.sh
 
       - name: Upload junit.xml as a workflow artifact
