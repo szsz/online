@@ -376,30 +376,25 @@ echo ""
 echo "  Artifacts:"
 ls -lh "$REPO_DIR/wasm/online-build/wasm"/online.* 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
 
-# ---------- Brotli sidecars (build-time, cached) ----------
-# Pre-compress the heavy assets at $BROTLI_QUALITY (default q2 for
-# fast inner-loop builds; raise to 11 for prod-sized wire bytes).
-# Brotli is deterministic per (input bytes, quality), so the same
-# (build, quality) pair produces identical .br files — letting later
-# deploys of the same build skip recompression entirely.
-# Idempotent: re-running with no source changes is ~ms.
-BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
-echo ""
-echo "--- Generating brotli sidecars (build-time, q$BROTLI_QUALITY) ---"
-docker exec -e "BROTLI_QUALITY=$BROTLI_QUALITY" "$CONTAINER" bash -lc "
-    bash '$CONTAINER_REPO_DIR/wasm/tools/brotli-sidecar.sh' \\
-        '$ONLINE_BUILD_DIR/wasm/online.js' \\
-        '$ONLINE_BUILD_DIR/wasm/online.wasm' \\
-        '$ONLINE_BUILD_DIR/wasm/online.worker.js' \\
-        '$ONLINE_BUILD_DIR/wasm/soffice.data' \\
-        '$ONLINE_BUILD_DIR/browser/dist/bundle.js' \\
-        '$ONLINE_BUILD_DIR/browser/dist/bundle.css' \\
-        '$ONLINE_BUILD_DIR/browser/dist/online.js' \\
-        '$ONLINE_BUILD_DIR/browser/dist/online.wasm'
-" || echo "  WARNING: brotli-sidecar reported failures; deploys will fall back to deploy-time brotli"
+# ---------- Chown build outputs back to host user ----------
+# emcc runs as root inside the container; chown back so finalize-build.sh
+# (which runs on the host below) can edit the outputs without sudo.
+docker exec "$CONTAINER" chown -R "$(id -u):$(id -g)" "$ONLINE_BUILD_DIR" 2>/dev/null || true
 
 # ---------- Stop container ----------
 echo ""
 echo "--- Stopping container '$CONTAINER' ---"
 docker stop "$CONTAINER" >/dev/null 2>&1
+
+# ---------- Finalize build (snapshot inject + cache-bust + brotli) ----------
+# Runs on the HOST (not in docker) so it has access to brotli, node, and
+# the tracked source files (wasm/snapshot-inject*.js). All build-time
+# content patches go here so deploys can be pure cp + config + ship.
+# See wasm/PLAN-deploy-vs-build.md for the rationale.
+BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
+echo ""
+echo "--- Finalizing build on host (q${BROTLI_QUALITY}) ---"
+BROTLI_QUALITY="$BROTLI_QUALITY" \
+    bash "$SCRIPT_DIR/tools/finalize-build.sh" "$REPO_DIR/wasm/online-build" \
+    || echo "  WARNING: finalize-build.sh reported failures"
 echo "[OK] Container stopped"
