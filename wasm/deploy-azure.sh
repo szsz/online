@@ -513,6 +513,23 @@ INJECT = """    // Snapshot FULL restore + leak stale thread-owning objects.
           if (_saved && _ptSelf > 0) HEAPU8.set(_saved, _ptSelf);
           try { if (typeof PThread !== 'undefined' && PThread.threadInitTLS) PThread.threadInitTLS(); } catch(e) {}
           try { if (typeof writeStackCookie === 'function') writeStackCookie(); } catch(e) {}
+          // ── WARM-RESTORE RESETS (mirrored from wasm/deploy.sh) ──
+          // These ccalls must run after the heap copy and BEFORE main()
+          // re-enters. Captured pthread waiter lists, mutex owners, and
+          // worker-pool entries all reference the dead cold threads;
+          // without resetting them the new threads dereference dangling
+          // waiters and trap (RuntimeError: unreachable) or hang in
+          // cv.wait() with no signaler. deploy.sh has these on local;
+          // their absence in deploy-azure.sh is exactly why warm-restore
+          // hung in fakeSocketConnect on Azure but worked on viewer.szebeni.hu.
+          try { Module.ccall('wasm_set_warm_restored', null, ['number'], [1]); } catch(e) {}
+          try { Module.ccall('wasm_set_quiesce', null, ['number'], [0]); } catch(e) {}
+          try { Module.ccall('wasm_warm_restore_reset', null, [], []); } catch(e) {}
+          try { Module.ccall('wasm_warm_restore_solar_mutex_reset', null, [], []); } catch(e) {}
+          try { Module.ccall('wasm_warm_restore_yield_mutex_reset', null, [], []); } catch(e) {}
+          try { Module.ccall('wasm_warm_restore_fakesocket_reset', null, [], []); } catch(e) {}
+          try { Module.ccall('wasm_warm_restore_threadpool_reset', null, [], []); } catch(e) {}
+          try { Module.ccall('wasm_clear_server_freshly_ready', null, [], []); } catch(e) {}
           Module.__snapRestoredBeforeMain = true;
           globalThis.__wasmSnapshotRestored = true;
           try {
