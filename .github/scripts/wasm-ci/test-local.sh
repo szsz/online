@@ -253,6 +253,22 @@ for shotdir in "$SHOTS_HOST"/shots*; do
     mirror_fresh_files "$shotdir" "$TEST_OUTPUT/$(basename "$shotdir")" '*.png' 'checklist.json'
 done
 
+# Snapshot-milestones writes its rich per-doctype report (screenshots,
+# milestone tables) to /tmp/hot-switch-report/snapshot-milestones/, NOT
+# to $PUB. Mirror it into the published tree and replace the bare
+# per-test stub at reports/snapshot-milestones.html with a redirect to
+# the rich report (matches the convention test-and-publish.sh uses).
+SNAPMS_SRC="/tmp/hot-switch-report/snapshot-milestones"
+if [[ -d "$SNAPMS_SRC" ]] && find "$SNAPMS_SRC" -newer "$RUN_START_MARKER" -print -quit 2>/dev/null | grep -q .; then
+    mirror_fresh_files "$SNAPMS_SRC" "$TEST_OUTPUT/snapshot-milestones" '*.html' '*.png' '*.json'
+    cat > "$TEST_OUTPUT/reports/snapshot-milestones.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>Snapshot Milestones — redirecting…</title>
+<meta http-equiv="refresh" content="0; url=../snapshot-milestones/">
+<script>location.replace('../snapshot-milestones/');</script>
+<p><a href="../snapshot-milestones/">Open the snapshot-milestones rich report</a></p>
+HTML
+fi
+
 # ── Upload to coolwasmfiles ─────────────────────────────────────────
 upload() {
     local src="$1" name="$2" ctype=""
