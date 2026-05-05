@@ -263,6 +263,7 @@ wasm/.env.*
 !wasm/.env.example
 !wasm/.env.deploy.example
 !wasm/.env.deploy.internal.example
+!wasm/.env.deploy.test.example
 wasm/.deploy
 wasm/online-build/
 node_modules/
