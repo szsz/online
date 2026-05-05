@@ -233,12 +233,34 @@ deploy_app() {
     rm -f "$ZIP_PATH"
     (cd "$DEPLOY_DIR" && zip -qr "$ZIP_PATH" .)
 
+    # Retry around `az webapp deploy` — kudu (the SCM endpoint that
+    # accepts the zip upload) returns transient 4xx/5xx when:
+    #   - a previous deploy on this App Service hasn't fully released
+    #     its lock (Azure-side, not visible to us)
+    #   - the App Service worker is mid-restart (e.g. after a setting
+    #     change or upstream az service blip)
+    #   - the kudu container itself is being recycled
+    # All of these clear within ~30 s. Three attempts with 30 s back-off
+    # is enough cushion without dragging out failures of real bugs
+    # (which all hit the same error every retry).
     echo "  Deploying to $APP_NAME..."
-    az webapp deploy \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$APP_NAME" \
-        --type zip \
-        --src-path "$ZIP_PATH"
+    local DEPLOY_OK=0 try=0
+    for try in 1 2 3; do
+        if az webapp deploy \
+                --resource-group "$RESOURCE_GROUP" \
+                --name "$APP_NAME" \
+                --type zip \
+                --src-path "$ZIP_PATH"; then
+            DEPLOY_OK=1
+            break
+        fi
+        echo "    az webapp deploy failed (attempt $try/3); waiting 30s before retry"
+        sleep 30
+    done
+    if [[ "$DEPLOY_OK" != "1" ]]; then
+        echo "  ERROR: az webapp deploy to $APP_NAME failed 3 times — giving up"
+        return 1
+    fi
 
     # Smoke test: poll the app for up to 90s waiting for a 2xx/3xx response,
     # and (if SMOKE_CONTAINS is set) requiring the body to contain the
