@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deploy the freshly-built online to Azure App Services (prod tier).
-# Reuses ~/ENV/online-prod-deploy.env on the runner host so deploy
+# Deploy the freshly-built online to Azure App Services (staging tier).
+# Reuses ~/ENV/online-staging-deploy.env on the runner host so deploy
 # targets and storage account names stay out of source control.
 #
 # Runner identity (MSI) is what az uses; deploy-azure.sh fails fast if
@@ -8,12 +8,12 @@
 set -euo pipefail
 
 WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
-PROD_DEPLOY_ENV="${PROD_DEPLOY_ENV:-$HOME/ENV/online-prod-deploy.env}"
+STAGING_DEPLOY_ENV="${STAGING_DEPLOY_ENV:-$HOME/ENV/online-staging-deploy.env}"
 
-if [[ ! -f "$PROD_DEPLOY_ENV" ]]; then
-    echo "ERROR: $PROD_DEPLOY_ENV not found." >&2
+if [[ ! -f "$STAGING_DEPLOY_ENV" ]]; then
+    echo "ERROR: $STAGING_DEPLOY_ENV not found." >&2
     echo "       Provision it once on the runner host: copy" >&2
-    echo "       wasm/.env.deploy.example to $PROD_DEPLOY_ENV and fill in." >&2
+    echo "       wasm/.env.deploy.staging.example to $STAGING_DEPLOY_ENV and fill in." >&2
     exit 1
 fi
 
@@ -35,4 +35,4 @@ ln -s "$ONLINE_BUILD_HOST" "$WORKSPACE/wasm/online-build"
 # ENV_FILE=~/ENV/online-ci.env for the launchers in the local-CI lane).
 # Without the explicit override, deploy-azure.sh would source the
 # wrong env file (the local-stack one).
-ENV_FILE="$PROD_DEPLOY_ENV" bash "$WORKSPACE/wasm/deploy-azure.sh"
+ENV_FILE="$STAGING_DEPLOY_ENV" bash "$WORKSPACE/wasm/deploy-azure.sh"

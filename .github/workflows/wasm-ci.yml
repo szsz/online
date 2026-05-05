@@ -118,7 +118,7 @@ jobs:
       # auto-merge on a successful PR build + deploy (using a GitHub
       # App installation token so the post-merge push: dev event
       # actually fires). The default GITHUB_TOKEN we have access to
-      # here would suppress that event (anti-recursion), so the prod
+      # here would suppress that event (anti-recursion), so the staging
       # deploy below would never trigger.
       #
       # This validate-lo-build job stays as a fast PR sanity check

@@ -27,12 +27,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
 
 # ── Load config ──────────────────────────────────────────────────
-# Default points at the prod config out-of-repo; caller overrides
+# Default points at the staging config out-of-repo; caller overrides
 # with ENV_FILE=<path> to target a different Azure environment
 # (e.g. wasm/deploy-internal.sh sets it to ~/ENV/online-internal-deploy.env).
-ENV_FILE="${ENV_FILE:-$HOME/ENV/online-prod-deploy.env}"
+ENV_FILE="${ENV_FILE:-$HOME/ENV/online-staging-deploy.env}"
 if [[ ! -f "$ENV_FILE" ]]; then
-    echo "ERROR: $ENV_FILE not found. Copy wasm/.env.deploy.example to that path"
+    echo "ERROR: $ENV_FILE not found. Copy wasm/.env.deploy.staging.example to that path"
     echo "       (or another location of your choice) and fill it in;"
     echo "       optionally set ENV_FILE=<path> to point at it."
     exit 1
