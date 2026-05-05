@@ -463,6 +463,15 @@ EJSON
         if [[ -n "$src" ]]; then
             cp "$src" "$EDIR/$f"
             cp "$src" "$EDIR/browser/dist/$f"
+            # Carry brotli sidecar from the build tree if it exists
+            # (build-wasm.sh / build-online.sh emit .br at quality 11
+            # alongside each source file). precompress-br.js below is
+            # idempotent — sees the .br is newer than the source and
+            # skips the ~15-min recompression of online.wasm.
+            if [[ -f "$src.br" ]]; then
+                cp "$src.br" "$EDIR/$f.br"
+                cp "$src.br" "$EDIR/browser/dist/$f.br"
+            fi
         else
             # online.data is only present for --preload-file builds; absence
             # is not fatal for the --package build variant.
