@@ -487,106 +487,6 @@ EJSON
         fi
     done
 
-    # ── Inject snapshot restore into online.js ──────────────────────
-    # The build's raw online.js does not know about the lok_preinit_2
-    # SECOND_INIT protocol. wasm/deploy.sh runs a Python patcher that
-    # inserts the HEAPU8 restore + stack-cookie bypass + mailbox silencing.
-    # Run the same patch here so the Azure editor also takes the fast
-    # return-visit path.
-    echo "  Patching online.js (snapshot restore injection)..."
-    python3 - "$EDIR/online.js" "$EDIR/browser/dist/online.js" <<'PYEOF'
-import sys
-INJECT = """    // Snapshot FULL restore + leak stale thread-owning objects.
-    if (!ENVIRONMENT_IS_PTHREAD && typeof globalThis !== 'undefined' &&
-        globalThis.__wasmSnapshotData && HEAPU8) {
-      try {
-        var _snapSrc = new Uint8Array(globalThis.__wasmSnapshotData);
-        if (_snapSrc.length <= HEAPU8.length) {
-          var _ptSelf = 0;
-          try { _ptSelf = _pthread_self(); } catch(e) {}
-          var _saved = null;
-          if (_ptSelf > 0) {
-            _saved = new Uint8Array(512);
-            _saved.set(HEAPU8.subarray(_ptSelf, _ptSelf + 512));
-          }
-          HEAPU8.set(_snapSrc);
-          if (_saved && _ptSelf > 0) HEAPU8.set(_saved, _ptSelf);
-          try { if (typeof PThread !== 'undefined' && PThread.threadInitTLS) PThread.threadInitTLS(); } catch(e) {}
-          try { if (typeof writeStackCookie === 'function') writeStackCookie(); } catch(e) {}
-          // ── WARM-RESTORE RESETS (mirrored from wasm/deploy.sh) ──
-          // These ccalls must run after the heap copy and BEFORE main()
-          // re-enters. Captured pthread waiter lists, mutex owners, and
-          // worker-pool entries all reference the dead cold threads;
-          // without resetting them the new threads dereference dangling
-          // waiters and trap (RuntimeError: unreachable) or hang in
-          // cv.wait() with no signaler. deploy.sh has these on local;
-          // their absence in deploy-azure.sh is exactly why warm-restore
-          // hung in fakeSocketConnect on Azure but worked on viewer.szebeni.hu.
-          try { Module.ccall('wasm_set_warm_restored', null, ['number'], [1]); } catch(e) {}
-          try { Module.ccall('wasm_set_quiesce', null, ['number'], [0]); } catch(e) {}
-          try { Module.ccall('wasm_warm_restore_reset', null, [], []); } catch(e) {}
-          try { Module.ccall('wasm_warm_restore_solar_mutex_reset', null, [], []); } catch(e) {}
-          try { Module.ccall('wasm_warm_restore_yield_mutex_reset', null, [], []); } catch(e) {}
-          try { Module.ccall('wasm_warm_restore_fakesocket_reset', null, [], []); } catch(e) {}
-          try { Module.ccall('wasm_warm_restore_threadpool_reset', null, [], []); } catch(e) {}
-          try { Module.ccall('wasm_clear_server_freshly_ready', null, [], []); } catch(e) {}
-          Module.__snapRestoredBeforeMain = true;
-          globalThis.__wasmSnapshotRestored = true;
-          try {
-            var _fs = Module.FS || FS;
-            ['/instdir/user','/instdir/user/config',
-             '/instdir/user/extensions','/instdir/user/extensions/bundled',
-             '/instdir/user/extensions/shared','/instdir/user/extensions/tmp',
-             '/instdir/user/uno_packages','/instdir/user/uno_packages/cache',
-             '/instdir/user/registry','/instdir/user/registry/data',
-             '/tmp/user','/tmp/user/docs','/tmp/.config'
-            ].forEach(function(d) { try { _fs.mkdir(d); } catch(e) {} });
-            try { _fs.writeFile('/instdir/user/registrymodifications.xcu',
-              '<?xml version=\"1.0\" encoding=\"UTF-8\"?>\\n<oor:items xmlns:oor=\"http://openoffice.org/2001/registry\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\\n</oor:items>\\n');
-            } catch(e) {}
-            try {
-              var _tmpDir = Module.ccall('get_temp_dir_path', 'string', [], []);
-              if (_tmpDir) {
-                var _parts = _tmpDir.split('/').filter(Boolean);
-                var _cur = '';
-                for (var _i = 0; _i < _parts.length; _i++) {
-                  _cur += '/' + _parts[_i];
-                  try { _fs.mkdir(_cur); } catch(e) {}
-                }
-              }
-            } catch(e) {}
-          } catch(e) {}
-          console.log('[snapshot] Full restore: ' + _snapSrc.length + ' bytes');
-        }
-      } catch(ex) {
-        console.error('[snapshot] Restore error:', ex);
-      }
-      globalThis.__wasmSnapshotData = null;
-    }
-"""
-TARGET = '    if (shouldRunNow) callMain(args);'
-for path in sys.argv[1:]:
-    with open(path) as f: c = f.read()
-    if '__wasmSnapshotData' in c:
-        print(f'    {path}: already patched, skipping')
-        continue
-    if c.count(TARGET) != 1:
-        print(f'    WARNING: {path}: expected 1 callMain target, skipping snapshot injection')
-        continue
-    c = c.replace(TARGET, INJECT + TARGET, 1)
-    # Silence checkStackCookie after snapshot restore
-    t2 = 'function checkStackCookie() {'
-    if c.count(t2) == 1:
-        c = c.replace(t2, 'function checkStackCookie() { if (Module.__snapRestoredBeforeMain) return; // skip after snapshot', 1)
-    # Silence the mailbox .then chain spam
-    for t3 in ('assert(wait.async);\n        wait.value.then(checkMailbox);',
-               'assert(wait.async);wait.value.then(checkMailbox);'):
-        if t3 in c:
-            c = c.replace(t3, 'if(wait.async)wait.value.then(function _mb(){checkMailbox();});', 1)
-            break
-    with open(path, 'w') as f: f.write(c)
-    print(f'    {path}: patched')
-PYEOF
 
     # Relay adapter, wasm-loader, and the Service Worker — copied to both
     # the editor root (for any legacy /relay-adapter.js references) AND
@@ -620,18 +520,6 @@ PYEOF
         echo "  NOTE: no dict bundles — run 'bash wasm/build-dicts.sh' first (spellcheck will be disabled)"
     fi
 
-    # Strip the branding-{desktop,mobile,tablet}.css load in global.js.
-    # Stock global.js appends a <link rel="stylesheet" href="branding-<form>.css">
-    # at runtime. We don't ship integrator themes, so that 404s — patching
-    # the insertion out keeps the browser console clean. cool.html's
-    # <link>/<script> branding refs are stripped at request time by
-    # editor-server.js.
-    for p in "$EDIR/browser/dist/global.js"; do
-        if [[ -f "$p" ]] && grep -q 'insertAdjacentElement("afterend",brandingLink)' "$p"; then
-            sed -i 's|\.insertAdjacentElement("afterend",link)\.insertAdjacentElement("afterend",brandingLink)|.insertAdjacentElement("afterend",link)|g' "$p"
-            echo "  Patched $(basename $p): stripped branding-<form>.css load"
-        fi
-    done
 
     # Substitute the build fingerprint in wasm-loader.js AND sw.js.
     # Snapshots saved by an old build are discarded on restore when the
@@ -655,63 +543,12 @@ PYEOF
     echo "  Installing npm dependencies..."
     (cd "$EDIR" && npm install --production --silent)
 
-    # Pre-compress large static assets with brotli at $BROTLI_QUALITY
-    # (default 2 — fast inner-loop; export BROTLI_QUALITY=11 for prod
-    # wire bytes). Cached in the staging dir so only changed files get
-    # recompressed on subsequent deploys. The editor server serves the
-    # .br counterpart whenever the client sends Accept-Encoding: br.
-    echo "  Pre-compressing assets with brotli (q$BROTLI_QUALITY)..."
-    node "$SCRIPT_DIR/tools/precompress-br.js" "$EDIR" \
-        online.wasm online.data online.worker.js online.js \
-        soffice.data soffice.data.js.metadata \
-        relay-adapter.js wasm-loader.js \
-        browser/dist/online.wasm browser/dist/online.data \
-        browser/dist/online.worker.js browser/dist/online.js \
-        browser/dist/bundle.js browser/dist/bundle.css \
-        browser/dist/soffice.data browser/dist/soffice.data.js.metadata \
-        browser/dist/wasm-loader.js browser/dist/relay-adapter.js
-
-    # ── Patch emscripten-module.js: preserve cache-bust locateFile ──
-    # bundle.js does `globalThis.Module = createEmscriptenModule(...)` which
-    # clobbers the locateFile shim cool.html injects at the top of the page.
-    # Without locateFile, online.js's findWasmBinary fetches the plain
-    # `online.wasm` URL — but cache-bust renamed it to online.<hash>.wasm,
-    # so the fetch 404s and the WASM module aborts. Inject a locateFile
-    # field into the returned object so the new Module remaps via
-    # window.__assetMap. Mirrors deploy.sh's patch so the Azure editor
-    # stays loadable on first deploy (where no stale plain online.wasm
-    # exists from earlier builds to mask the bug).
-    for p in "$EDIR/emscripten-module.js" "$EDIR/browser/dist/emscripten-module.js"; do
-        [[ -f "$p" ]] || continue
-        grep -q '__assetMap' "$p" && continue
-        python3 - "$p" <<'PYEOF'
-import sys
-path = sys.argv[1]
-with open(path) as f:
-    c = f.read()
-target = "uno_scripts: [],"
-inject = """uno_scripts: [],
-\t\tlocateFile: function(file, prefix) {
-\t\t\tvar mapped = (typeof window !== 'undefined' && window.__assetMap && window.__assetMap[file]) || file;
-\t\t\treturn (prefix || '') + mapped;
-\t\t},"""
-n = c.count(target)
-if n != 1:
-    print(f'  ERROR: {path}: expected 1 "{target}" anchor, found {n} — deploy aborted')
-    sys.exit(1)
-with open(path, 'w') as f:
-    f.write(c.replace(target, inject, 1))
-print(f'  Patched {path}: cache-bust locateFile')
-PYEOF
-    done
 
     # Bake content hashes into asset filenames + cool.html. Renames each
     # long-cacheable asset to <base>.<hash>.<ext>, moves the .br sidecar
     # alongside, and rewrites cool.html (asset refs + Module.locateFile
     # shim ahead of online.js). Runs AFTER brotli so the .br sidecars
     # are renamed in lockstep.
-    echo "  Cache-bust build (file rename + cool.html rewrite)..."
-    node "$SCRIPT_DIR/tools/cache-bust-build.js" --dir "$EDIR/browser/dist"
 
     deploy_app "$EDITOR_APP_NAME" "$EDIR" "/"
 fi
