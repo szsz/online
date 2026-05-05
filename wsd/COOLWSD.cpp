@@ -1063,6 +1063,9 @@ std::shared_ptr<ChildProcess> getNewChild_Blocks(const std::shared_ptr<SocketPol
 
                     // Ugly to have that static global PrisonerServerSocketFD, Otoh we know
                     // there is just one COOLWSD object. (Even in real Online.)
+#ifdef __EMSCRIPTEN__
+                    MAIN_THREAD_EM_ASM({ console.log('TRACE: spawn lokit_main with PrisonerServerSocketFD=' + $0); }, PrisonerServerSocketFD);
+#endif
                     lokit_main(PrisonerServerSocketFD, COOLWSD::UserInterface, mobileAppDocId);
                 }).detach();
 #endif // MOBILEAPP
@@ -3756,6 +3759,9 @@ std::shared_ptr<ServerSocket> COOLWSDServer::findPrisonerServerPort()
 
     PrisonerServerSocketFD = socket->getFD();
     LOG_INF("Listening to prisoner connections on #" << PrisonerServerSocketFD);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TRACE: PrisonerServerSocketFD set fd=' + $0); }, PrisonerServerSocketFD);
+#endif
 #endif
     return socket;
 }
