@@ -649,6 +649,40 @@ PYEOF
         browser/dist/soffice.data browser/dist/soffice.data.js.metadata \
         browser/dist/wasm-loader.js browser/dist/relay-adapter.js
 
+    # ── Patch emscripten-module.js: preserve cache-bust locateFile ──
+    # bundle.js does `globalThis.Module = createEmscriptenModule(...)` which
+    # clobbers the locateFile shim cool.html injects at the top of the page.
+    # Without locateFile, online.js's findWasmBinary fetches the plain
+    # `online.wasm` URL — but cache-bust renamed it to online.<hash>.wasm,
+    # so the fetch 404s and the WASM module aborts. Inject a locateFile
+    # field into the returned object so the new Module remaps via
+    # window.__assetMap. Mirrors deploy.sh's patch so the Azure editor
+    # stays loadable on first deploy (where no stale plain online.wasm
+    # exists from earlier builds to mask the bug).
+    for p in "$EDIR/emscripten-module.js" "$EDIR/browser/dist/emscripten-module.js"; do
+        [[ -f "$p" ]] || continue
+        grep -q '__assetMap' "$p" && continue
+        python3 - "$p" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    c = f.read()
+target = "uno_scripts: [],"
+inject = """uno_scripts: [],
+\t\tlocateFile: function(file, prefix) {
+\t\t\tvar mapped = (typeof window !== 'undefined' && window.__assetMap && window.__assetMap[file]) || file;
+\t\t\treturn (prefix || '') + mapped;
+\t\t},"""
+n = c.count(target)
+if n != 1:
+    print(f'  ERROR: {path}: expected 1 "{target}" anchor, found {n} — deploy aborted')
+    sys.exit(1)
+with open(path, 'w') as f:
+    f.write(c.replace(target, inject, 1))
+print(f'  Patched {path}: cache-bust locateFile')
+PYEOF
+    done
+
     # Bake content hashes into asset filenames + cool.html. Renames each
     # long-cacheable asset to <base>.<hash>.<ext>, moves the .br sidecar
     # alongside, and rewrites cool.html (asset refs + Module.locateFile
