@@ -205,15 +205,35 @@ if [[ "$TEST_RC" != 0 ]]; then STATUS_COLOUR="#c62828"; STATUS_TEXT="FAILED"; fi
 LOG_ESC="$(python3 -c 'import html,sys; print(html.escape(open(sys.argv[1]).read()))' "$LOG")"
 HAS_RICH="$( [[ -f "$TEST_OUTPUT/reports/index.html" || -f $PUB/reports/index.html ]] && echo 1 || echo 0 )"
 
+# Show source / environment metadata so the reader can see exactly
+# which branch, commit, and SNI hostnames the tests ran against.
+GIT_SHA_SHORT="$(echo "${GIT_SHA:-}" | cut -c1-12)"
+GIT_REF_DISPLAY="$(echo "${GIT_REF:-}" | sed -E 's|^refs/heads/||;s|^refs/pull/([0-9]+).*|PR #\1|')"
+RELAY_HTTP="${RELAY_URL/wss:/https:}"
+RELAY_HTTP="${RELAY_HTTP/ws:/http:}"
+
 cat > "$REPORT_DIR/index.html" <<HTML
 <!doctype html>
 <meta charset="utf-8"><title>local tests for $APP_BID</title>
 <style>body{font:14px system-ui;margin:2rem;max-width:80rem}h1{margin-bottom:.2rem}
 .muted{color:#666}.badge{display:inline-block;padding:.2rem .6rem;border-radius:4px;color:white;background:$STATUS_COLOUR;font-weight:600}
+.meta{border:1px solid #ddd;border-radius:6px;padding:.75rem 1rem;margin:1rem 0;background:#fafafa}
+.meta dl{margin:0;display:grid;grid-template-columns:max-content 1fr;gap:.25rem 1rem}
+.meta dt{color:#555;font-weight:600}.meta dd{margin:0;font-family:monospace;word-break:break-all}
 pre{background:#0b1021;color:#d6e1ff;padding:1rem;border-radius:6px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.4}
 a{color:#0066cc}.box{border:1px solid #ddd;border-radius:6px;padding:1rem;margin:1rem 0}</style>
 <h1>Local tests for build <code>$APP_BID</code></h1>
 <p>Status: <span class="badge">$STATUS_TEXT</span> · profile <code>$PROFILE</code> · ${PASS_COUNT}p / ${FAIL_COUNT}f · ${DUR}s</p>
+
+<div class="meta"><dl>
+  <dt>Branch</dt>     <dd>${GIT_REF_DISPLAY:-?}</dd>
+  <dt>Commit</dt>     <dd><a href="https://github.com/szsz/online/commit/${GIT_SHA:-}" target="_blank">${GIT_SHA_SHORT:-?}</a></dd>
+  <dt>LO build</dt>   <dd>$LO_BID</dd>
+  <dt>Viewer</dt>     <dd><a href="$FILE_STORAGE_URL" target="_blank">$FILE_STORAGE_URL</a></dd>
+  <dt>Editor</dt>     <dd><a href="$EDITOR_URL" target="_blank">$EDITOR_URL</a></dd>
+  <dt>Relay</dt>      <dd><a href="$RELAY_HTTP/healthz" target="_blank">$RELAY_URL</a></dd>
+</dl></div>
+
 <p><a href="../">← all local builds</a> · <a href="summary.json">summary.json</a> · <a href="run.log">run.log</a> · <a href="junit.xml">junit.xml</a></p>
 <div class="box">
   <h3>Per-test reports</h3>
