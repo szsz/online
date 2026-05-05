@@ -3,15 +3,28 @@
 <head>
 <meta charset="utf-8">
 <title>Viewer</title>
-<!-- Iter 40: prewarm DNS+TLS to the editor origin so the iframe load
-     doesn't pay the connection setup latency. The hostnames here are
-     the production defaults; deployments using a different EDITOR_URL
-     will still resolve correctly via /config.js, these preconnects
-     just become unused (~free). -->
-<link rel="preconnect" href="https://wasm.atgpartners.info" crossorigin>
-<link rel="dns-prefetch" href="https://wasm.atgpartners.info">
-<link rel="preconnect" href="wss://relay.atgpartners.info" crossorigin>
-<link rel="dns-prefetch" href="https://relay.atgpartners.info">
+<!-- Iter 40: prewarm DNS+TLS to the editor + relay origins. URLs come
+     from /config.js (window.__CONFIG); injected here so the head tags
+     fire before any iframe load. No env-specific hostnames in source. -->
+<script src="/config.js"></script>
+<script>
+(function preconnectFromConfig() {
+    var c = window.__CONFIG || {};
+    var hosts = [c.EDITOR_URL, c.RELAY_URL].filter(Boolean);
+    for (var i = 0; i < hosts.length; i++) {
+        var u = hosts[i];
+        var link = document.createElement('link');
+        link.rel = 'preconnect';
+        link.href = u;
+        link.crossOrigin = 'anonymous';
+        document.head.appendChild(link);
+        var dns = document.createElement('link');
+        dns.rel = 'dns-prefetch';
+        dns.href = u.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+        document.head.appendChild(dns);
+    }
+})();
+</script>
 <style>
 body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
 #files {
@@ -131,8 +144,9 @@ h3 { margin: 5px 0; }
 }
 #save-toast.show { opacity: 1; }
 </style>
-<script src="/config.js"></script>
 <script>
+// /config.js was already loaded in <head> for the preconnect injection
+// above — window.__CONFIG is therefore available below.
 // Timestamp of the viewer page load (navigation start). Passed to the
 // editor iframe so wasm-loader.js can measure total time from when the
 // user actually started loading the page, not from when the iframe loads.
@@ -197,14 +211,21 @@ function collapseSidebar() {
     document.body.classList.remove('docs-hover');
 }
 
-// Domain URLs injected by the viewer server at /config.js
-// Falls back to defaults if config not loaded
-const EDITOR = window.__CONFIG?.EDITOR_URL || 'https://wasm.atgpartners.info:6932';
-const RELAY  = window.__CONFIG?.RELAY_URL  || 'wss://wasm.atgpartners.info:9091';
+// Domain URLs injected by the viewer server at /config.js. Required —
+// no fallbacks (a hardcoded prod default would silently misroute on
+// non-prod deployments instead of failing fast).
+if (!window.__CONFIG || !window.__CONFIG.EDITOR_URL || !window.__CONFIG.RELAY_URL) {
+    document.body.innerHTML = '<pre style="padding:2em;color:#b00">'
+        + 'Viewer config missing — /config.js did not deliver EDITOR_URL/RELAY_URL.\n'
+        + 'Check viewer-server.js + ~/ENV/online*.env.</pre>';
+    throw new Error('viewer config missing');
+}
+const EDITOR = window.__CONFIG.EDITOR_URL;
+const RELAY  = window.__CONFIG.RELAY_URL;
 // Pass our own origin to the iframe so the relay-adapter knows where to
 // upload checkpoint saves (the cross-origin iframe can't read parent.origin
 // and the referrer is suppressed by referrerpolicy="no-referrer").
-const FILE_STORAGE_URL = window.__CONFIG?.VIEWER_URL || window.location.origin;
+const FILE_STORAGE_URL = window.__CONFIG.VIEWER_URL || window.location.origin;
 const BLANK_FILENAME = '__prewarm_blank.docx';
 
 // Read-only mode: set by readonly.html or ?readonly=1 URL param.
@@ -1231,7 +1252,10 @@ async function openFile(name, opts) {
             // top of it — see CanvasTileLayer's #129 sectionContainer
             // leak). Symptom: canvas stays white, #StatusDocPos empty.
             // WasmPrewarmReady gates on canvas paint, so its absence
-            // for 30 s is the unambiguous "kit is stuck" signal.
+            // for 60 s is the unambiguous "kit is stuck" signal —
+            // 60 s tolerates Azure cold-start prewarm (which can take
+            // 35-50 s under load); on the dev box prewarm is < 15 s so
+            // the watchdog has plenty of headroom in either env.
             //
             // Recovery: latch __warmRestoreFailedThisSession + recreate
             // the iframe with ?planc=0 (no warm-restore) and ?fresh=1
@@ -1248,7 +1272,7 @@ async function openFile(name, opts) {
                     // load succeeded and we don't need to recover.
                     if (window.__lastPaintedFile === name) return;
                     console.warn('[viewer] Cross-type canvas-paint watchdog '
-                        + '(30s) — no WasmPrewarmReady, recreating with planc=0');
+                        + '(60s) — no WasmPrewarmReady, recreating with planc=0');
                     window.__warmRestoreFailedThisSession = true;
                     // Reset state so the retry takes a clean cold path.
                     currentFile = null;
@@ -1267,7 +1291,7 @@ async function openFile(name, opts) {
                     } catch (e) {
                         console.error('[viewer] cross-type watchdog retry failed', e);
                     }
-                }, 30000);
+                }, 60000);
             }
 
             filePromise.then(buf => {

@@ -33,7 +33,12 @@ const HTTP_PORT        = parseInt(process.env.HTTP_PORT  || '6931', 10);
 const HTTPS_PORT       = parseInt(process.env.HTTPS_PORT || '6932', 10);
 const SSL_CERT         = process.env.SSL_CERT         || '';
 const SSL_KEY          = process.env.SSL_KEY          || '';
-const FILE_STORAGE_URL = process.env.FILE_STORAGE_URL || 'https://viewer.szebeni.hu';
+const FILE_STORAGE_URL = process.env.FILE_STORAGE_URL;
+if (!FILE_STORAGE_URL) {
+    console.error('ERROR: FILE_STORAGE_URL env not set — needed for CSP frame-ancestors. '
+        + 'Source the matching ~/ENV/online*.env before launching, or pass it inline.');
+    process.exit(1);
+}
 
 fs.mkdirSync(DOCS, { recursive: true });
 

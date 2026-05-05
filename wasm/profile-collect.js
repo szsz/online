@@ -11,7 +11,15 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const BASE = 'https://wasm.atgpartners.info:6932';
+// Editor base URL. Pulled from EDITOR_URL env (same convention as the
+// rest of the test/CI scripts; see lib/test-env.js). Override per run
+// without touching source: EDITOR_URL=https://editor.example node ...
+const BASE = process.env.EDITOR_URL;
+if (!BASE) {
+    console.error('ERROR: EDITOR_URL env not set. Source ~/ENV/online.env first '
+        + 'or pass EDITOR_URL=... explicitly.');
+    process.exit(1);
+}
 const TIMEOUT = 300000;
 const TYPE = process.argv.find(a => a.startsWith('--type='))?.split('=')[1] || 'writer';
 const PROFILE_DIR = path.join(__dirname, 'profiles');
