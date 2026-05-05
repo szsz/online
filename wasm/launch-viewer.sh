@@ -60,5 +60,38 @@ for var in FILE_STORAGE_URL EDITOR_URL RELAY_URL; do
     fi
 done
 
+# Bridge the dev-box MI gap: this VM's Managed Identity has Contributor
+# on coolwasmfiles (control-plane → can list account keys) but NOT
+# Storage Blob Data Contributor (data-plane → blob writes 401). So
+# DefaultAzureCredential auths but every PUT /api/v2/file/<id> 500s
+# with empty error.
+#
+# When STORAGE_BACKEND=azure and the operator hasn't pre-supplied
+# DOC_STORAGE_KEY or DOC_STORAGE_SAS_URL, mint an account key at startup
+# from the MI's Contributor role. This is identical to the trick the
+# CI scripts use (.github/scripts/wasm-ci/_lib.sh::ensure_storage_key).
+# The key is held only in this process's env; nothing persists to disk.
+#
+# The Azure App Service deploy doesn't go through this script, so its
+# viewer keeps using DefaultAzureCredential straight (its MI has the
+# data-plane role).
+if [[ "$STORAGE_BACKEND" == "azure" \
+   && -n "${DOC_STORAGE_ACCOUNT:-}" \
+   && -z "${DOC_STORAGE_KEY:-}" \
+   && -z "${DOC_STORAGE_SAS_URL:-}" ]]; then
+    if command -v az >/dev/null 2>&1; then
+        echo "Minting DOC_STORAGE_KEY for $DOC_STORAGE_ACCOUNT via MI control-plane…"
+        if KEY="$(az storage account keys list \
+                    --account-name "$DOC_STORAGE_ACCOUNT" \
+                    --query '[0].value' -o tsv 2>/dev/null)" \
+           && [[ -n "$KEY" ]]; then
+            export DOC_STORAGE_KEY="$KEY"
+            echo "  OK — viewer will use shared-key auth (data-plane bridge)."
+        else
+            echo "  WARNING: could not list keys (no MI? insufficient role?). Falling back to DefaultAzureCredential — uploads may 500." >&2
+        fi
+    fi
+fi
+
 export PORT STORAGE_BACKEND
 exec node "$SCRIPT_DIR/viewer-server.js"
