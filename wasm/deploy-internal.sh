@@ -9,7 +9,7 @@
 #   internal  → wasm-viewer-internal.azurewebsites.net  (Azure, manual)
 #               bash wasm/deploy-internal.sh
 #
-#   prod      → szebeni-wasm-viewer.azurewebsites.net  (Azure, CI-driven)
+#   staging  → szebeni-wasm-viewer.azurewebsites.net  (Azure, CI-driven)
 #               wasm-ci.yml workflow_dispatch / merge to dev
 #
 # This script wraps wasm/deploy-azure.sh against the INTERNAL Azure
@@ -113,7 +113,7 @@ echo "    online.wasm:   $WASM_SIZE  fp=$FINGERPRINT"
 echo "    last modified: $WASM_MTIME"
 [[ -n "$COMMIT" ]] && echo "    git commit:    $COMMIT"
 echo
-echo "  This deploys to INTERNAL — NOT prod (szebeni-wasm-*)."
+echo "  This deploys to INTERNAL — NOT staging (szebeni-wasm-*)."
 echo "==============================================================="
 read -r -p "Proceed? [y/N] " ANS
 [[ "$ANS" == "y" || "$ANS" == "Y" ]] || { echo "aborted."; exit 1; }
@@ -128,7 +128,7 @@ fi
 ln -sfT "$BUILD_TREE" "$REPO_DIR/wasm/online-build"
 
 # Tell deploy-azure.sh to use the internal config instead of the default
-# ~/ENV/online-prod-deploy.env (which points at prod).
+# ~/ENV/online-staging-deploy.env (which points at staging).
 ENV_FILE="$INTERNAL_ENV_FILE" bash "$REPO_DIR/wasm/deploy-azure.sh" "${PASS_ARGS[@]}"
 
 echo

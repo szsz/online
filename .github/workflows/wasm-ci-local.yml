@@ -148,7 +148,7 @@ jobs:
       # default GITHUB_TOKEN don't fire downstream workflows
       # (anti-recursion), but App-token pushes do. Without this the
       # post-merge `push: dev` event in wasm-ci.yml never fires, so
-      # prod doesn't auto-deploy.
+      # staging doesn't auto-deploy.
       - name: Auto-merge PR (build + deploy succeeded; tests informational)
         if: github.event_name == 'pull_request'
         env:

@@ -39,9 +39,9 @@ SITE="${STATIC_SITE_BASE:?}"
 WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
 
 # Phase 2 (Azure smoke) reads the deployed App Service URLs from the
-# prod-deploy env file (~/ENV/online-prod-deploy.env, populated once
+# prod-deploy env file (~/ENV/online-staging-deploy.env, populated once
 # on the runner host — see .github/scripts/wasm-ci/deploy.sh).
-ENV_DEPLOY_HOST="${PROD_DEPLOY_ENV:-$HOME/ENV/online-prod-deploy.env}"
+ENV_DEPLOY_HOST="${STAGING_DEPLOY_ENV:-$HOME/ENV/online-staging-deploy.env}"
 TEST_TARGET="${TEST_TARGET:-local}"
 
 REPORT_DIR="$(mktemp -d)"
@@ -245,9 +245,9 @@ elif [[ "$TEST_TARGET" == "azure-deploy" ]]; then
         exit 1
     fi
     set -a; source "$ENV_DEPLOY_HOST"; set +a
-    export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in ~/ENV/online-prod-deploy.env}"
-    export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in ~/ENV/online-prod-deploy.env}"
-    export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in ~/ENV/online-prod-deploy.env}"
+    export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in ~/ENV/online-staging-deploy.env}"
+    export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in ~/ENV/online-staging-deploy.env}"
+    export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in ~/ENV/online-staging-deploy.env}"
     export TEST_TARGET="azure-deploy"
 else
     echo "ERROR: unknown TEST_TARGET=$TEST_TARGET (expected local | azure-deploy)" >&2
@@ -335,9 +335,9 @@ if [[ "$TEST_TARGET" == "local" ]] \
         # shellcheck disable=SC1090
         source "$ENV_DEPLOY_HOST"
         set +a
-        export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in ~/ENV/online-prod-deploy.env}"
-        export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in ~/ENV/online-prod-deploy.env}"
-        export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in ~/ENV/online-prod-deploy.env}"
+        export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in ~/ENV/online-staging-deploy.env}"
+        export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in ~/ENV/online-staging-deploy.env}"
+        export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in ~/ENV/online-staging-deploy.env}"
         export TEST_TARGET="azure-deploy"
         export DOWNLOAD_BUDGET_MS="$AZURE_DOWNLOAD_BUDGET"
         # JOBS=1 means JOBS_SCALE=1 — patience timeouts not widened
