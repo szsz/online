@@ -69,6 +69,17 @@ fi
 
 echo "--- Local deploy: BUILD_DIR=$BUILD_DIR  PUB=$PUB ---"
 
+# wasm/deploy.sh's Step 2 only writes the 9 hot-loop artefacts (online.js,
+# online.wasm, bundle.js, etc.) — it relies on a pre-existing $PUB/browser/
+# tree for everything else (cool.html, editor.html, global.js, l10n-all.js,
+# images/, color palettes, …). On a fresh CI deploy this PUB is empty,
+# leaving /browser/ holding only the 10 hot files; every fetch of
+# /browser/cool.html 404s and downstream tests fail with TLS / 404 errors.
+#
+# Same fix as test-and-publish.sh's Phase 1 staging.
+mkdir -p "$PUB/browser"
+cp -a "$BUILD_DIR/browser/dist/." "$PUB/browser/"
+
 # wasm/deploy.sh uses a flock at /tmp/online-deploy.lock per PUB tree.
 # Override per-stack so the CI deploy doesn't block the ad-hoc deploy.
 LOCK_FILE="${LOCK_FILE:-${PUB%/public}.lock}" \
