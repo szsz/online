@@ -1,9 +1,10 @@
-name: WASM local build, deploy, test (viewer.szebeni.hu)
+name: WASM local build, deploy, test (ci-viewer.szebeni.hu)
 
 # workflow_dispatch only — manual trigger to build any commit, deploy
-# locally to viewer.szebeni.hu / wasm.atgpartners.info / relay.atgpartners.info
-# (the dev box hosting the self-hosted runner), and run a chosen subset
-# of the test suite against those URLs. Reports land at
+# locally to the CI stack on the dev box (ci-viewer.szebeni.hu /
+# ci-editor.atgpartners.info / ci-relay.atgpartners.info — see
+# wasm/.env.ci), and run a chosen subset of the test suite against
+# those URLs. Reports land at
 #   coolwasmfiles.z6.web.core.windows.net/local-builds/<id>/tests/
 # linked from
 #   coolwasmfiles.z6.web.core.windows.net/local-builds/
@@ -19,13 +20,14 @@ on:
         required: false
         default: ''
       test_profile:
-        description: 'basic = single-user / single-browser; non-basic = co-edit / multi-browser; all = both'
+        description: 'basic = single-user/single-browser · non-basic = co-edit/multi-browser · snapshot = snapshot-milestones only · all = everything'
         required: true
         default: 'basic'
         type: choice
         options:
           - basic
           - non-basic
+          - snapshot
           - all
 
 env:
