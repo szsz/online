@@ -24,17 +24,21 @@
 # Usage:
 #
 #   bash wasm/deploy-test.sh [--commit <sha>]
-#                            [--skip-viewer|--skip-relay|--skip-editor]
+#                            [--viewer|--relay|--editor]
 #
 #   bash wasm/deploy-test.sh
 #     Deploy current /home/localadmin/online/wasm/online-build/ tree
-#     to the test Azure App Services. The build must be already
+#     to ALL three test Azure App Services. The build must be already
 #     finalized — run 'bash wasm/build-wasm.sh' first.
 #
 #   bash wasm/deploy-test.sh --commit <sha>
 #     Detached-worktree build of <sha>, then deploy. Slower (kit +
 #     Emscripten link) but lets you redeploy any historical commit
 #     without going through GitHub Actions.
+#
+#   bash wasm/deploy-test.sh --viewer | --relay | --editor
+#     Deploy ONLY the named service. Useful when only one service's
+#     bytes changed and you want to skip ~3-5 min of Azure churn.
 
 set -euo pipefail
 
@@ -46,8 +50,8 @@ PASS_ARGS=()
 
 while (( $# > 0 )); do
     case "$1" in
-        --commit)    COMMIT="$2"; shift 2 ;;
-        --skip-viewer|--skip-relay|--skip-editor)
+        --commit)  COMMIT="$2"; shift 2 ;;
+        --viewer|--relay|--editor|--settings|--create)
             PASS_ARGS+=("$1"); shift ;;
         -h|--help)
             sed -nE '2,/^set -euo/{s|^# ?||;p}' "${BASH_SOURCE[0]}" | head -n 40
