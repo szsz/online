@@ -37,6 +37,9 @@ DO_INJECT=true
 DO_BROTLI=true
 DO_SMOKE=true
 DO_RESTART=true
+# Default brotli quality is fast (q2) so inner-loop deploys finish in
+# seconds. Override with BROTLI_QUALITY=11 for prod-grade wire bytes.
+export BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
 for arg in "$@"; do
     case "$arg" in
         --build) DO_BUILD=true ;;
@@ -430,8 +433,8 @@ if [ "$DO_BROTLI" = true ]; then
             cp "$build_br" "$STAGE/$name.br"
             echo "  Reused build-time $name.br ($(du -h "$STAGE/$name.br" | cut -f1))"
         else
-            echo -n "  Compressing $name → $name.br..."
-            brotli -f "$src" -o "$STAGE/$name.br"
+            echo -n "  Compressing $name → $name.br (q$BROTLI_QUALITY)..."
+            brotli -f -q "$BROTLI_QUALITY" "$src" -o "$STAGE/$name.br"
             echo " $(du -h "$STAGE/$name.br" | cut -f1)"
         fi
     done
@@ -503,7 +506,7 @@ fi
 if [ -f "$SCRIPT_DIR/dict-loader.js" ]; then
     cp "$SCRIPT_DIR/dict-loader.js" "$BROWSER_DIR/dict-loader.js"
     if [ "$DO_BROTLI" = true ] && command -v brotli >/dev/null 2>&1; then
-        brotli -f -q 11 "$BROWSER_DIR/dict-loader.js"
+        brotli -f -q "$BROTLI_QUALITY" "$BROWSER_DIR/dict-loader.js"
     else
         rm -f "$BROWSER_DIR/dict-loader.js.br"
     fi
@@ -532,7 +535,7 @@ GLOBAL_JS="$BROWSER_DIR/global.js"
 if [ -f "$GLOBAL_JS" ] && grep -q 'insertAdjacentElement("afterend",brandingLink)' "$GLOBAL_JS"; then
     sed -i 's|\.insertAdjacentElement("afterend",link)\.insertAdjacentElement("afterend",brandingLink)|.insertAdjacentElement("afterend",link)|g' "$GLOBAL_JS"
     if [ "$DO_BROTLI" = true ] && command -v brotli >/dev/null 2>&1; then
-        brotli -f -q 11 "$GLOBAL_JS"
+        brotli -f -q "$BROTLI_QUALITY" "$GLOBAL_JS"
     else
         rm -f "$GLOBAL_JS.br"
     fi

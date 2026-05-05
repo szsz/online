@@ -14,11 +14,15 @@
 #   bash wasm/tools/brotli-sidecar.sh path/to/online.wasm path/to/bundle.js …
 #
 # Env:
-#   BROTLI_QUALITY   1-11, default 11 (max ratio)
+#   BROTLI_QUALITY   1-11, default 2 (fast — wire bytes ~10-20% larger
+#                    than q11 but compressing online.wasm drops from
+#                    ~15 min to ~5 s, which is the bottleneck of the
+#                    inner-loop deploy). Override to 11 for prod-grade
+#                    sizes when shipping a final build.
 #   BROTLI_FORCE     "1" to ignore cached .br and regenerate
 
 set -euo pipefail
-QUALITY="${BROTLI_QUALITY:-11}"
+QUALITY="${BROTLI_QUALITY:-2}"
 FORCE="${BROTLI_FORCE:-0}"
 
 if ! command -v brotli >/dev/null 2>&1; then

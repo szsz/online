@@ -21,6 +21,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Default brotli quality is fast (q2) for inner-loop deploys; raise via
+# BROTLI_QUALITY=11 for prod-grade wire bytes. Exported so child scripts
+# (precompress-br.js, brotli-sidecar.sh) inherit it.
+export BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
+
 # ── Load config ──────────────────────────────────────────────────
 # Default points at the prod config out-of-repo; caller overrides
 # with ENV_FILE=<path> to target a different Azure environment
@@ -633,12 +638,12 @@ PYEOF
     echo "  Installing npm dependencies..."
     (cd "$EDIR" && npm install --production --silent)
 
-    # Pre-compress large static assets with brotli (quality 11). This
-    # is slow the first time (~2-3 min for 260MB online.wasm) but the
-    # result is cached in the staging dir, so only changed files get
+    # Pre-compress large static assets with brotli at $BROTLI_QUALITY
+    # (default 2 — fast inner-loop; export BROTLI_QUALITY=11 for prod
+    # wire bytes). Cached in the staging dir so only changed files get
     # recompressed on subsequent deploys. The editor server serves the
     # .br counterpart whenever the client sends Accept-Encoding: br.
-    echo "  Pre-compressing assets with brotli..."
+    echo "  Pre-compressing assets with brotli (q$BROTLI_QUALITY)..."
     node "$SCRIPT_DIR/tools/precompress-br.js" "$EDIR" \
         online.wasm online.data online.worker.js online.js \
         soffice.data soffice.data.js.metadata \
