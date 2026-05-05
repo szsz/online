@@ -124,7 +124,7 @@ read -r -p "Proceed? [y/N] " ANS
 ln -sfT "$BUILD_TREE" "$REPO_DIR/wasm/online-build"
 
 # Tell deploy-azure.sh to use the internal config instead of the default
-# wasm/.env.deploy (which points at prod).
+# ~/ENV/online-prod-deploy.env (which points at prod).
 ENV_FILE="$INTERNAL_ENV_FILE" bash "$REPO_DIR/wasm/deploy-azure.sh" "${PASS_ARGS[@]}"
 
 echo
