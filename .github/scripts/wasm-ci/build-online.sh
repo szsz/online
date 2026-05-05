@@ -188,26 +188,21 @@ docker exec "$CI_CONTAINER" bash -lc '
 echo "--- Build complete; key artefacts: ---"
 ls -lh "$ONLINE_BUILD"/wasm/online.* 2>/dev/null | awk '{print "  "$NF" ("$5")"}' || true
 
-# Brotli sidecars at build time — saved alongside source files in the
-# build tree so subsequent deploys (local CI, manual prod, manual
-# internal) can copy them straight into staging. Default quality is
-# fast (q2 — ~5 s for online.wasm) so CI doesn't pay the q11 cost
-# every commit; raise BROTLI_QUALITY to 11 in the workflow env when
-# cutting prod-grade wire bytes. Idempotent: skipped per-file when an
-# existing .br is newer than its source.
+# Chown build outputs back to the runner user BEFORE finalize so the
+# host can edit them. Container runs as root.
+docker exec "$CI_CONTAINER" chown -R 1000:1000 "$ONLINE_BUILD" 2>/dev/null || true
+
+# Finalize build — runs on the HOST (the runner) so it has access to
+# brotli, node, and the tracked source files (wasm/snapshot-inject*.js).
+# Snapshot inject + emscripten-module locateFile + global.js branding
+# strip + fingerprint substitution + cache-bust + brotli sidecars.
+# After this the tree is "complete" — deploys are pure cp + config +
+# ship + smoke. See wasm/PLAN-deploy-vs-build.md.
 BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
-echo "--- Generating brotli sidecars (q$BROTLI_QUALITY) ---"
-docker exec -e "BROTLI_QUALITY=$BROTLI_QUALITY" "$CI_CONTAINER" bash -lc "
-    bash /lo/online/wasm/tools/brotli-sidecar.sh \\
-        /lo/online/wasm/online-build/wasm/online.js \\
-        /lo/online/wasm/online-build/wasm/online.wasm \\
-        /lo/online/wasm/online-build/wasm/online.worker.js \\
-        /lo/online/wasm/online-build/wasm/soffice.data \\
-        /lo/online/wasm/online-build/browser/dist/bundle.js \\
-        /lo/online/wasm/online-build/browser/dist/bundle.css \\
-        /lo/online/wasm/online-build/browser/dist/online.js \\
-        /lo/online/wasm/online-build/browser/dist/online.wasm
-" || echo "  WARNING: brotli-sidecar reported failures; deploys will fall back to deploy-time brotli"
+echo "--- Finalizing build on host (q$BROTLI_QUALITY) ---"
+BROTLI_QUALITY="$BROTLI_QUALITY" \
+    bash "$WORKSPACE/wasm/tools/finalize-build.sh" "$ONLINE_BUILD" \
+    || echo "  WARNING: finalize-build.sh reported failures"
 
 # Stop the container; persistent state survives in the bind mounts.
 docker stop "$CI_CONTAINER" >/dev/null 2>&1 || true
