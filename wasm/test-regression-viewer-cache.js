@@ -12,10 +12,10 @@ const __cl = require('./lib/inject-checklist');
 // The user-visible bug this guards against: clicking a doc in the sidebar
 // re-streams its bytes from the storage backend (Azure Blob round-trip)
 // every single time, even when the doc hasn't changed.
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { pickLib } = require('./lib/fetch-url');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const PROBE_NAME = 'viewer-cache-probe-' + Date.now() + '.bin';
@@ -33,7 +33,8 @@ function check(label, cond, ev) {
 function request(method, urlStr, headers) {
     return new Promise((resolve, reject) => {
         const u = new URL(urlStr);
-        const req = https.request({
+        const lib = pickLib(urlStr);
+        const req = lib.request({
             method, hostname: u.hostname, port: u.port,
             path: u.pathname + (u.search || ''),
             headers: headers || {},
@@ -53,11 +54,13 @@ function request(method, urlStr, headers) {
 
 function uploadProbe() {
     return new Promise((resolve, reject) => {
-        const u = new URL(VIEWER + '/api/files/' + encodeURIComponent(PROBE_NAME));
+        const url = VIEWER + '/api/files/' + encodeURIComponent(PROBE_NAME);
+        const u = new URL(url);
+        const lib = pickLib(url);
         // 64 KiB random payload.
         const body = Buffer.alloc(64 * 1024);
         for (let i = 0; i < body.length; i++) body[i] = Math.floor(Math.random() * 256);
-        const req = https.request({
+        const req = lib.request({
             method: 'POST', hostname: u.hostname, port: u.port, path: u.pathname,
             headers: { 'Content-Type': 'application/octet-stream',
                        'Content-Length': body.length },
