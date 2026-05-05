@@ -188,6 +188,24 @@ docker exec "$CI_CONTAINER" bash -lc '
 echo "--- Build complete; key artefacts: ---"
 ls -lh "$ONLINE_BUILD"/wasm/online.* 2>/dev/null | awk '{print "  "$NF" ("$5")"}' || true
 
+# Brotli sidecars at build time — saved alongside source files in the
+# build tree so subsequent deploys (local CI, manual prod, manual
+# internal) can copy them straight into staging without paying the
+# ~15 min q11 compression cost again. Idempotent: skipped per-file
+# when an existing .br is newer than its source.
+echo "--- Generating brotli sidecars ---"
+docker exec "$CI_CONTAINER" bash -lc "
+    bash /lo/online/wasm/tools/brotli-sidecar.sh \\
+        /lo/online/wasm/online-build/wasm/online.js \\
+        /lo/online/wasm/online-build/wasm/online.wasm \\
+        /lo/online/wasm/online-build/wasm/online.worker.js \\
+        /lo/online/wasm/online-build/wasm/soffice.data \\
+        /lo/online/wasm/online-build/browser/dist/bundle.js \\
+        /lo/online/wasm/online-build/browser/dist/bundle.css \\
+        /lo/online/wasm/online-build/browser/dist/online.js \\
+        /lo/online/wasm/online-build/browser/dist/online.wasm
+" || echo "  WARNING: brotli-sidecar reported failures; deploys will fall back to deploy-time brotli"
+
 # Stop the container; persistent state survives in the bind mounts.
 docker stop "$CI_CONTAINER" >/dev/null 2>&1 || true
 echo "[OK] APP_BUILD_ID=$APP_BUILD_ID built against LO_BUILD_ID=$LO_BID"

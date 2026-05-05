@@ -405,11 +405,31 @@ fi
 # --no-brotli skips regeneration, we also drop any existing .br so
 # the server falls back to plain content instead of serving a
 # mismatched payload.
+#
+# Build-time brotli: if `<src>.br` exists alongside the source in the
+# build tree (build-wasm.sh / build-online.sh now generate these),
+# copy it to staging instead of compressing again. Brotli is
+# deterministic per (input bytes, quality) so the bytes are identical.
+# Saves ~15 min on `online.wasm` per redeploy of the same build.
 BROTLI_FILES="online.js online.wasm bundle.js bundle.css"
+# Map staged-file basename → source path under $BUILD_DIR. online.{js,wasm}
+# came from $PAIRED_DIR (wasm/ or browser/dist/, picked at Step 1);
+# bundle.{js,css} always come from browser/dist/.
+declare -A BR_SRC_DIR=( \
+    [online.js]="$PAIRED_DIR" \
+    [online.wasm]="$PAIRED_DIR" \
+    [bundle.js]="$BUILD_DIR/browser/dist" \
+    [bundle.css]="$BUILD_DIR/browser/dist" \
+)
 if [ "$DO_BROTLI" = true ]; then
     for name in $BROTLI_FILES; do
         src="$STAGE/$name"
-        if [ -f "$src" ]; then
+        [ -f "$src" ] || continue
+        build_br="${BR_SRC_DIR[$name]:-}/$name.br"
+        if [ -f "$build_br" ]; then
+            cp "$build_br" "$STAGE/$name.br"
+            echo "  Reused build-time $name.br ($(du -h "$STAGE/$name.br" | cut -f1))"
+        else
             echo -n "  Compressing $name → $name.br..."
             brotli -f "$src" -o "$STAGE/$name.br"
             echo " $(du -h "$STAGE/$name.br" | cut -f1)"

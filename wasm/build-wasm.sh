@@ -376,6 +376,27 @@ echo ""
 echo "  Artifacts:"
 ls -lh "$REPO_DIR/wasm/online-build/wasm"/online.* 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
 
+# ---------- Brotli sidecars (build-time, cached) ----------
+# Pre-compress the heavy assets at quality 11 here, alongside the
+# source files in the build tree. Brotli is deterministic per input
+# bytes, so the resulting `.br` is byte-identical to what deploy.sh /
+# deploy-azure.sh would produce — which lets later deploys of the
+# same build skip ~15 min of brotli (online.wasm at q11 dominates).
+# Idempotent: re-running with no source changes is ~ms.
+echo ""
+echo "--- Generating brotli sidecars (build-time) ---"
+docker exec "$CONTAINER" bash -lc "
+    bash '$CONTAINER_REPO_DIR/wasm/tools/brotli-sidecar.sh' \\
+        '$ONLINE_BUILD_DIR/wasm/online.js' \\
+        '$ONLINE_BUILD_DIR/wasm/online.wasm' \\
+        '$ONLINE_BUILD_DIR/wasm/online.worker.js' \\
+        '$ONLINE_BUILD_DIR/wasm/soffice.data' \\
+        '$ONLINE_BUILD_DIR/browser/dist/bundle.js' \\
+        '$ONLINE_BUILD_DIR/browser/dist/bundle.css' \\
+        '$ONLINE_BUILD_DIR/browser/dist/online.js' \\
+        '$ONLINE_BUILD_DIR/browser/dist/online.wasm'
+" || echo "  WARNING: brotli-sidecar reported failures; deploys will fall back to deploy-time brotli"
+
 # ---------- Stop container ----------
 echo ""
 echo "--- Stopping container '$CONTAINER' ---"
