@@ -121,7 +121,7 @@ a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}
 </div>
 <div class="box">
   <h3><a href="local-builds/">Local CI runs (ci-viewer.szebeni.hu)</a></h3>
-  <p>Manual <code>workflow_dispatch</code> runs of <code>wasm-ci-local.yml</code> — tests run on the dev box's local stack with selectable profile (basic / non-basic / all).</p>
+  <p>Manual <code>workflow_dispatch</code> runs of <code>wasm-ci-local.yml</code> — tests run on the dev box's CI stack (ci-viewer.szebeni.hu / ci-editor.atgpartners.info / ci-relay.atgpartners.info) with selectable profile (basic / non-basic / snapshot / all).</p>
 </div>
 HTML
 
