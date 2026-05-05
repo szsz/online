@@ -120,7 +120,11 @@ read -r -p "Proceed? [y/N] " ANS
 
 # ── Run the actual Azure deploy ─────────────────────────────────────
 # wasm/deploy-azure.sh expects build artefacts at $REPO/wasm/online-build/.
-# Symlink the chosen build tree so we don't move bytes.
+# Symlink the chosen build tree so we don't move bytes. If a real dir
+# exists there from an earlier `bash wasm/build-wasm.sh`, replace it.
+if [[ -e "$REPO_DIR/wasm/online-build" || -L "$REPO_DIR/wasm/online-build" ]]; then
+    sudo rm -rf "$REPO_DIR/wasm/online-build"
+fi
 ln -sfT "$BUILD_TREE" "$REPO_DIR/wasm/online-build"
 
 # Tell deploy-azure.sh to use the internal config instead of the default
