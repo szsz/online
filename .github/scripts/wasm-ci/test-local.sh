@@ -83,30 +83,33 @@ if [[ ! -f "$INSTALLED_FROM" ]] || ! cmp -s "$LOCK" "$INSTALLED_FROM" || [[ ! -d
 fi
 
 # ── Apply test profile filter to the canonical TESTS array ──────────
-# Categorise by name pattern. Any test slug matching the regex below
-# is considered "non-basic" (multi-browser / co-edit / cross-format /
-# heavy benchmark). Everything else is "basic" (single-user, headers,
-# small smokes). The two patterns must partition the suite.
+# Each profile picks a regex over test slugs and either keeps matches
+# or keeps non-matches. `basic` and `non-basic` together partition the
+# full suite; `snapshot` is a one-test cut for fast warm-path iteration.
 NON_BASIC_RE='2browser|3browser|coedit|latejoin|paste|copypaste|propagation|hard-refresh|formats|^chart$|cross-format|same-type|cross-type|prewarm-benchmark|e2e-upload|e2e-copypaste|checkpoint|room-switch|first-client-overwrite|samedoc-flicker|delete-key|select-delete|user-save|docname-switch|calc-impress|iframe-pool|xlsx-hotswitch|wasm-cache-crosstype|snapshot-(milestones|cross-type)|stress|prewarm$|sab-context'
+SNAPSHOT_RE='^snapshot-milestones$'
 
 case "$PROFILE" in
     basic)
         # KEEP only slugs NOT matching the non-basic pattern.
-        FILTER_INVERT=true ;;
+        FILTER_RE="$NON_BASIC_RE"; FILTER_INVERT=true ;;
     non-basic)
         # KEEP only slugs matching the non-basic pattern.
-        FILTER_INVERT=false ;;
+        FILTER_RE="$NON_BASIC_RE"; FILTER_INVERT=false ;;
+    snapshot)
+        # KEEP only snapshot-milestones — fastest signal for warm-restore work.
+        FILTER_RE="$SNAPSHOT_RE";  FILTER_INVERT=false ;;
     all)
         FILTER_INVERT=skip ;;
     *)
-        echo "ERROR: TEST_PROFILE must be basic | non-basic | all (got: $PROFILE)" >&2
+        echo "ERROR: TEST_PROFILE must be basic | non-basic | snapshot | all (got: $PROFILE)" >&2
         exit 1 ;;
 esac
 
 if [[ "$FILTER_INVERT" != "skip" ]]; then
     # Patch run-all-tests.sh's TESTS array in-place. The actions/checkout
     # workspace is throwaway; we restore by checkout if needed.
-    awk -v re="$NON_BASIC_RE" -v inv="$FILTER_INVERT" '
+    awk -v re="$FILTER_RE" -v inv="$FILTER_INVERT" '
         BEGIN { in_tests=0 }
         /^TESTS=\(/ { in_tests=1; print; next }
         in_tests && /^\)/ { in_tests=0; print; next }
@@ -114,8 +117,8 @@ if [[ "$FILTER_INVERT" != "skip" ]]; then
             slug=$0
             sub(/^[[:space:]]+"/, "", slug)
             sub(/\|.*/, "", slug)
-            keep = (slug ~ re)        # true = matches non-basic
-            if (inv == "true") keep = !keep   # basic = inverted
+            keep = (slug ~ re)            # matches the per-profile pattern
+            if (inv == "true") keep = !keep   # invert when the profile keeps non-matches
             if (keep) print
             next
         }
