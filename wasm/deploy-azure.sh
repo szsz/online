@@ -243,6 +243,12 @@ deploy_app() {
     # All of these clear within ~30 s. Three attempts with 30 s back-off
     # is enough cushion without dragging out failures of real bugs
     # (which all hit the same error every retry).
+    # --clean true: wipe wwwroot before extracting. Without this, kudu
+    # merges the new zip over the old tree and stale hash-named files
+    # (online.<hash>.wasm, soffice.<hash>.data, …) accumulate forever.
+    # With ~15 stale 266 MB online.wasm copies we filled the 10 GB
+    # plan-shared SMB volume, after which kudu silently 400s every
+    # publish (empty body) — see incident on 2026-05-05.
     echo "  Deploying to $APP_NAME..."
     local DEPLOY_OK=0 try=0
     for try in 1 2 3; do
@@ -250,6 +256,7 @@ deploy_app() {
                 --resource-group "$RESOURCE_GROUP" \
                 --name "$APP_NAME" \
                 --type zip \
+                --clean true \
                 --src-path "$ZIP_PATH"; then
             DEPLOY_OK=1
             break
