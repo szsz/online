@@ -111,7 +111,7 @@ jobs:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
         run: bash .github/scripts/wasm-ci/build-online.sh
 
-      - name: Deploy locally (viewer.szebeni.hu / wasm.atgpartners.info / relay.atgpartners.info)
+      - name: Deploy locally (config from ~/ENV/online-ci.env on the runner host)
         env:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
         run: bash .github/scripts/wasm-ci/deploy-local.sh
