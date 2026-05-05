@@ -22,14 +22,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Load config ──────────────────────────────────────────────────
-# Default config is wasm/.env.deploy (gitignored, on the host).
-# Caller can override with ENV_FILE=<path> to target a different
-# Azure environment (e.g. internal vs prod) — wasm/deploy-internal.sh
-# uses this to point at the internal App Services config.
-ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env.deploy}"
+# Default points at the prod config out-of-repo; caller overrides
+# with ENV_FILE=<path> to target a different Azure environment
+# (e.g. wasm/deploy-internal.sh sets it to ~/ENV/online-internal-deploy.env).
+ENV_FILE="${ENV_FILE:-$HOME/ENV/online-prod-deploy.env}"
 if [[ ! -f "$ENV_FILE" ]]; then
-    echo "ERROR: $ENV_FILE not found. Copy .env.deploy.example and fill it in,"
-    echo "       or set ENV_FILE=<path> to point at a different env config."
+    echo "ERROR: $ENV_FILE not found. Copy wasm/.env.deploy.example to that path"
+    echo "       (or another location of your choice) and fill it in;"
+    echo "       optionally set ENV_FILE=<path> to point at it."
     exit 1
 fi
 echo "deploy-azure: using ENV_FILE=$ENV_FILE"

@@ -38,7 +38,10 @@ ACCT="${AZURE_STORAGE_ACCOUNT:?}"
 SITE="${STATIC_SITE_BASE:?}"
 WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
 
-ENV_DEPLOY_HOST="${CI_STATE_DIR:?}/.env.deploy"
+# Phase 2 (Azure smoke) reads the deployed App Service URLs from the
+# prod-deploy env file (~/ENV/online-prod-deploy.env, populated once
+# on the runner host — see .github/scripts/wasm-ci/deploy.sh).
+ENV_DEPLOY_HOST="${PROD_DEPLOY_ENV:-$HOME/ENV/online-prod-deploy.env}"
 TEST_TARGET="${TEST_TARGET:-local}"
 
 REPORT_DIR="$(mktemp -d)"
