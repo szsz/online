@@ -1,53 +1,48 @@
 #!/usr/bin/env bash
-# deploy-internal.sh — manual deploy to one of the dev box's INTERNAL stacks.
+# deploy-internal.sh — manual deploy to the INTERNAL Azure environment.
 #
-# Two parallel local stacks share :443 via the SNI router:
+# Three-tier deploy model:
 #
-#   adhoc  →  https://viewer.szebeni.hu        (live dev playground)
-#             https://wasm.atgpartners.info    (editor)
-#             wss://relay.atgpartners.info     (relay)
-#             config: ~/ENV/online.env  (PUB=/tmp/static-deploy/public)
+#   local     → viewer.szebeni.hu                    (dev box)
+#               bash wasm/deploy.sh    (or /local-deploy skill)
 #
-#   ci     →  https://ci-viewer.szebeni.hu     (CI lane)
-#             https://ci-editor.atgpartners.info
-#             wss://ci-relay.atgpartners.info
-#             config: ~/ENV/online-ci.env  (PUB=/tmp/static-deploy-ci/public)
+#   internal  → wasm-viewer-internal.azurewebsites.net  (Azure, manual)
+#               bash wasm/deploy-internal.sh
 #
-# AZURE PROD App Services are NOT touched by this script. Use the
-# wasm-ci.yml workflow_dispatch (or merge to dev) to push to prod.
+#   prod      → szebeni-wasm-viewer.azurewebsites.net  (Azure, CI-driven)
+#               wasm-ci.yml workflow_dispatch / merge to dev
+#
+# This script wraps wasm/deploy-azure.sh against the INTERNAL Azure
+# config — config file at $HOME/ENV/online-internal-deploy.env
+# (template: wasm/.env.deploy.internal.example).
 #
 # Usage:
 #
-#   bash wasm/deploy-internal.sh [--target adhoc|ci] [--commit <sha>]
-#                                [--no-brotli] [--no-smoke]
+#   bash wasm/deploy-internal.sh [--commit <sha>]
+#                                [--no-brotli] [--skip-viewer|--skip-relay|--skip-editor]
 #
 #   bash wasm/deploy-internal.sh
 #     Deploy current /home/localadmin/lo-wasm-ci-state/online-build/
-#     tree to the ad-hoc stack (viewer.szebeni.hu).
-#
-#   bash wasm/deploy-internal.sh --target ci
-#     Same tree, but push to the CI stack (ci-viewer.szebeni.hu).
-#     Useful for testing the CI lane without dispatching wasm-ci-local.yml.
+#     tree to the internal Azure App Services.
 #
 #   bash wasm/deploy-internal.sh --commit <sha>
-#     Detached-worktree build of <sha>, then deploy. Slower (you pay
-#     the kit + Emscripten link) but lets you redeploy any commit
-#     without going through CI.
+#     Detached-worktree build of <sha>, then deploy. Slower (kit +
+#     Emscripten link) but lets you redeploy any historical commit
+#     without going through GitHub Actions.
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="${CI_STATE_DIR:-/home/localadmin/lo-wasm-ci-state}"
+INTERNAL_ENV_FILE="${INTERNAL_ENV_FILE:-$HOME/ENV/online-internal-deploy.env}"
 
-TARGET="adhoc"
 COMMIT=""
 PASS_ARGS=()
 
 while (( $# > 0 )); do
     case "$1" in
-        --target)    TARGET="$2"; shift 2 ;;
         --commit)    COMMIT="$2"; shift 2 ;;
-        --no-brotli|--no-smoke|--no-inject)
+        --no-brotli|--skip-viewer|--skip-relay|--skip-editor)
             PASS_ARGS+=("$1"); shift ;;
         -h|--help)
             sed -nE '2,/^set -euo/{s|^# ?||;p}' "${BASH_SOURCE[0]}" | head -n 40
@@ -58,21 +53,24 @@ while (( $# > 0 )); do
     esac
 done
 
-case "$TARGET" in
-    adhoc) ENV_FILE="$HOME/ENV/online.env" ;;
-    ci)    ENV_FILE="$HOME/ENV/online-ci.env" ;;
-    *)     echo "ERROR: --target must be 'adhoc' or 'ci' (got: $TARGET)" >&2; exit 1 ;;
-esac
-[[ -r "$ENV_FILE" ]] || { echo "ERROR: $ENV_FILE not readable" >&2; exit 1; }
+# ── Pre-flight ──────────────────────────────────────────────────────
+if [[ ! -f "$INTERNAL_ENV_FILE" ]]; then
+    echo "ERROR: $INTERNAL_ENV_FILE not found." >&2
+    echo "       Copy wasm/.env.deploy.internal.example to that path and fill it in." >&2
+    exit 1
+fi
 
-# Source values from the chosen env file as defaults — caller's shell wins.
-while IFS='=' read -r key value; do
-    [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
-    value="${value%\"}"; value="${value#\"}"
-    value="${value%\'}"; value="${value#\'}"
-    [[ -z "${!key+x}" ]] && export "$key=$value"
-done < "$ENV_FILE"
-export ENV_FILE
+if ! az account show >/dev/null 2>&1; then
+    echo "ERROR: az CLI not logged in. Run 'az login' first." >&2
+    exit 1
+fi
+
+ACCT_INFO="$(az account show --query '{name:name, user:user.name}' -o tsv)"
+echo "Azure subscription: $ACCT_INFO"
+
+# Source the internal env file so we can show what we're about to do.
+# shellcheck disable=SC1090
+. "$INTERNAL_ENV_FILE"
 
 # ── Pick the build tree ─────────────────────────────────────────────
 if [[ -n "$COMMIT" ]]; then
@@ -97,41 +95,49 @@ fi
 
 FINGERPRINT="$(md5sum "$BUILD_TREE/wasm/online.wasm" | cut -c1-16)"
 WASM_SIZE="$(du -h "$BUILD_TREE/wasm/online.wasm" | cut -f1)"
+WASM_MTIME="$(stat -c %y "$BUILD_TREE/wasm/online.wasm")"
 
+# ── Confirm with the user ───────────────────────────────────────────
 echo
 echo "==============================================================="
-echo "  Target:  $TARGET ($ENV_FILE)"
-echo "    Viewer:  $FILE_STORAGE_URL"
+echo "  About to deploy to INTERNAL Azure environment:"
+echo "    Viewer:  $VIEWER_URL"
 echo "    Editor:  $EDITOR_URL"
 echo "    Relay:   $RELAY_URL"
-echo "    PUB:     $PUB"
+echo "    RG:      $RESOURCE_GROUP"
+echo "    Plan:    $APP_SERVICE_PLAN"
+echo "    Storage: $DOC_STORAGE_ACCOUNT/$DOC_STORAGE_CONTAINER"
 echo
 echo "  Build tree: $BUILD_TREE"
-echo "    online.wasm: $WASM_SIZE  fp=$FINGERPRINT"
-[[ -n "$COMMIT" ]] && echo "    commit:      $COMMIT"
+echo "    online.wasm:   $WASM_SIZE  fp=$FINGERPRINT"
+echo "    last modified: $WASM_MTIME"
+[[ -n "$COMMIT" ]] && echo "    git commit:    $COMMIT"
+echo
+echo "  This deploys to INTERNAL — NOT prod (szebeni-wasm-*)."
 echo "==============================================================="
 read -r -p "Proceed? [y/N] " ANS
 [[ "$ANS" == "y" || "$ANS" == "Y" ]] || { echo "aborted."; exit 1; }
 
-# Pre-stage the LO browser/dist tree (deploy.sh's Step 2 is incremental;
-# without this, fresh PUB trees miss cool.html / editor.html / etc.).
-mkdir -p "$PUB/browser"
-cp -a "$BUILD_TREE/browser/dist/." "$PUB/browser/"
+# ── Run the actual Azure deploy ─────────────────────────────────────
+# wasm/deploy-azure.sh expects build artefacts at $REPO/wasm/online-build/.
+# Symlink the chosen build tree so we don't move bytes.
+ln -sfT "$BUILD_TREE" "$REPO_DIR/wasm/online-build"
 
-# Per-stack deploy lock so the two stacks can deploy concurrently.
-LOCK_FILE="${LOCK_FILE:-${PUB%/public}.lock}"
-
-BUILD_DIR="$BUILD_TREE" PUB="$PUB" LOCK_FILE="$LOCK_FILE" \
-    bash "$REPO_DIR/wasm/deploy.sh" "${PASS_ARGS[@]}"
+# Tell deploy-azure.sh to use the internal config instead of the default
+# wasm/.env.deploy (which points at prod).
+ENV_FILE="$INTERNAL_ENV_FILE" bash "$REPO_DIR/wasm/deploy-azure.sh" "${PASS_ARGS[@]}"
 
 echo
-echo "Smoke through SNI router:"
-RELAY_HEALTHZ="${RELAY_URL/wss:/https:}"
-RELAY_HEALTHZ="${RELAY_HEALTHZ/ws:/http:}/healthz"
-for u in "$FILE_STORAGE_URL/" "$EDITOR_URL/browser/cool.html" "$RELAY_HEALTHZ"; do
-    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$u" || echo 000)"
+echo "Smoke (Azure App Service public URLs):"
+RELAY_HTTP="${RELAY_URL/wss:/https:}"
+RELAY_HTTP="${RELAY_HTTP/ws:/http:}"
+for u in "$VIEWER_URL/" "$EDITOR_URL/browser/cool.html" "$RELAY_HTTP/healthz"; do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$u" || echo 000)"
     printf '  %-60s %s\n' "$u" "$code"
 done
 
 echo
-echo "[OK] Deployed to $TARGET ($FILE_STORAGE_URL)."
+echo "[OK] Deploy to INTERNAL Azure done."
+echo "    Tail viewer:  az webapp log tail --resource-group $RESOURCE_GROUP --name $VIEWER_APP_NAME"
+echo "    Tail editor:  az webapp log tail --resource-group $RESOURCE_GROUP --name $EDITOR_APP_NAME"
+echo "    Tail relay:   az webapp log tail --resource-group $RESOURCE_GROUP --name $RELAY_APP_NAME"

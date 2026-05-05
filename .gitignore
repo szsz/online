@@ -262,6 +262,7 @@ qt/translations/*.qm
 wasm/.env.*
 !wasm/.env.example
 !wasm/.env.deploy.example
+!wasm/.env.deploy.internal.example
 wasm/.deploy
 wasm/online-build/
 node_modules/
