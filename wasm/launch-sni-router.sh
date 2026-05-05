@@ -33,8 +33,13 @@ fi
 # (and the viewer's launcher). Using SNI_PORT avoids clobbering.
 : "${SNI_PORT:=443}"
 
-# If ROUTES isn't set in env, use a sensible default for this host.
-: "${ROUTES:=viewer.szebeni.hu=127.0.0.1:6934;wasm.atgpartners.info=127.0.0.1:6932;relay.atgpartners.info=127.0.0.1:9091}"
+# ROUTES must be set in $ENV_FILE (or the calling shell). No hostname or
+# port literals live in scripts — the routing table is data, owned by
+# wasm/.env.
+if [[ -z "${ROUTES:-}" ]]; then
+    echo "ERROR: ROUTES is unset. Define it in $ENV_FILE." >&2
+    exit 1
+fi
 
 # Translate to PORT for sni-router.js, without leaking it to sub-processes
 # via the loop above.
