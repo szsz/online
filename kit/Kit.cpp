@@ -4170,10 +4170,24 @@ void lokit_main(
         MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 done (SECOND_INIT)'); });
 #endif
 
+        // ── Trace: warm-restore Azure hang investigation ──
+        // On internal Azure, the kit goes silent after SECOND_INIT.
+        // On local viewer.szebeni.hu the same code reaches startMainLoop
+        // in ~50 ms. These probes show which call blocks on the failing
+        // env so the resource-not-restored bug can be pinpointed.
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit pre-loKit-init'); });
+#endif
         static std::shared_ptr<lok::Office> loKit = std::make_shared<lok::Office>(kit);
         assert(loKit);
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit post-loKit-init'); });
+#endif
 
         COOLWSD::LOKitVersion = loKit->getVersionInfo();
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit post-getVersionInfo'); });
+#endif
 
         // Dummies
         const std::string jailId = "jailid";
@@ -4182,6 +4196,9 @@ void lokit_main(
 
         std::shared_ptr<KitWebSocketHandler> websocketHandler =
             std::make_shared<KitWebSocketHandler>("child_ws", loKit, jailId, mainKit, numericIdentifier);
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit websocketHandler created'); });
+#endif
 
 #if !MOBILEAPP
 
@@ -4207,13 +4224,22 @@ void lokit_main(
             Util::forcedExit(EX_SOFTWARE);
         }
 #else
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit pre-insertNewFakeSocket fd=' + $0); }, docBrokerSocket);
+#endif
         bool fatalError =
             !mainKit->insertNewFakeSocket(docBrokerSocket, websocketHandler);
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit post-insertNewFakeSocket fatalError=' + $0); }, fatalError ? 1 : 0);
+#endif
         if (fatalError)
             LOG_SYS("Fatal error connecting to socket #" << docBrokerSocket);
 #endif
 
         LOG_INF("New kit client websocket inserted.");
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit websocket inserted, before startMainLoop'); });
+#endif
 
 #if !MOBILEAPP
 
