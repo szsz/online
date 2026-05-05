@@ -105,10 +105,12 @@ if [[ "$FILTER_INVERT" != "skip" ]]; then
     ' "$WORKSPACE/wasm/run-all-tests.sh" > "$WORKSPACE/wasm/run-all-tests.sh.filtered"
     mv "$WORKSPACE/wasm/run-all-tests.sh.filtered" "$WORKSPACE/wasm/run-all-tests.sh"
     echo "--- Filtered TESTS (profile=$PROFILE) ---"
-    awk '/^TESTS=\(/{f=1;next} /^\)/{f=0} f' "$WORKSPACE/wasm/run-all-tests.sh" \
-        | grep -oE '"[^"]+"' | head -1 >/dev/null  # sanity-check non-empty
     NTESTS=$(awk '/^TESTS=\(/{f=1;next} /^\)/{f=0} f && /^[[:space:]]*"/' "$WORKSPACE/wasm/run-all-tests.sh" | wc -l)
     echo "  $NTESTS tests selected"
+    if [[ "$NTESTS" -eq 0 ]]; then
+        echo "ERROR: filter eliminated all tests; pattern bug?" >&2
+        exit 1
+    fi
 fi
 
 # ── Run the suite ───────────────────────────────────────────────────
