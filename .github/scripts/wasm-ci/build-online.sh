@@ -189,8 +189,15 @@ echo "--- Build complete; key artefacts: ---"
 ls -lh "$ONLINE_BUILD"/wasm/online.* 2>/dev/null | awk '{print "  "$NF" ("$5")"}' || true
 
 # Chown build outputs back to the runner user BEFORE finalize so the
-# host can edit them. Container runs as root.
-docker exec "$CI_CONTAINER" chown -R 1000:1000 "$ONLINE_BUILD" 2>/dev/null || true
+# host (which runs finalize) can edit them. The container's emcc ran
+# as root, so the bind-mounted output dir has root-owned files.
+#
+# The chown must hit the BIND-MOUNT TARGET inside the container
+# (/lo/online/wasm/online-build) — $ONLINE_BUILD is a host path that
+# doesn't exist inside the container. Belt-and-braces with a host-side
+# sudo chown so we recover even if the container chown fails.
+docker exec "$CI_CONTAINER" chown -R 1000:1000 /lo/online/wasm/online-build 2>/dev/null || true
+sudo chown -R "$(id -u):$(id -g)" "$ONLINE_BUILD" 2>/dev/null || true
 
 # Finalize build — runs on the HOST (the runner) so it has access to
 # brotli, node, and the tracked source files (wasm/snapshot-inject*.js).
@@ -198,11 +205,15 @@ docker exec "$CI_CONTAINER" chown -R 1000:1000 "$ONLINE_BUILD" 2>/dev/null || tr
 # strip + fingerprint substitution + cache-bust + brotli sidecars.
 # After this the tree is "complete" — deploys are pure cp + config +
 # ship + smoke. See wasm/PLAN-deploy-vs-build.md.
+#
+# Use `set -e` here: if finalize fails, the deploy step's __assetMap
+# check will trip anyway, but failing the build step makes the
+# diagnostic visible directly in the workflow's "Build Online" log
+# instead of one step later.
 BROTLI_QUALITY="${BROTLI_QUALITY:-2}"
 echo "--- Finalizing build on host (q$BROTLI_QUALITY) ---"
 BROTLI_QUALITY="$BROTLI_QUALITY" \
-    bash "$WORKSPACE/wasm/tools/finalize-build.sh" "$ONLINE_BUILD" \
-    || echo "  WARNING: finalize-build.sh reported failures"
+    bash "$WORKSPACE/wasm/tools/finalize-build.sh" "$ONLINE_BUILD"
 
 # Stop the container; persistent state survives in the bind mounts.
 docker stop "$CI_CONTAINER" >/dev/null 2>&1 || true
