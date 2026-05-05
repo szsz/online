@@ -114,6 +114,14 @@ if [[ "$FILTER_INVERT" != "skip" ]]; then
 fi
 
 # ── Run the suite ───────────────────────────────────────────────────
+# Clear pass/fail markers from prior runs. run-all-tests-parallel.sh
+# writes to /tmp/static-deploy/public/reports/.logs/<slug>.result and
+# we tally that directory after the run. Without clearing, a prior
+# run's 68/4 tally bleeds into this run's manifest even when the
+# current run only ran 36 tests.
+rm -rf /tmp/static-deploy/public/reports/.logs
+mkdir -p /tmp/static-deploy/public/reports/.logs
+
 {
     echo "=== local CI test run ==="
     echo "  APP_BUILD_ID=$APP_BID  LO_BUILD_ID=$LO_BID  GIT_SHA=${GIT_SHA:-?}"
