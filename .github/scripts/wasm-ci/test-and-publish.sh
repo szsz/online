@@ -141,12 +141,24 @@ if [[ "$TEST_TARGET" == "local" ]]; then
         echo "ERROR: expected COOL JS bundle at $BUILD_OUT_DIST not found." >&2
         exit 1
     fi
-    # Run wasm/deploy.sh against the per-run STAGE_DIR. This copies the
-    # build artefacts AND applies the snapshot-restore inject, the
-    # cache-bust file rename, and the fingerprint substitutions — so
-    # the Phase 1 environment is bit-equivalent to a real deploy. A
-    # plain cp-and-stage skips those steps and the gating tests
-    # (regression-snapshot-injection, regression-cache-bust,
+    # Pre-stage the full LO browser/dist tree. wasm/deploy.sh's Step 2
+    # only copies the 9 hot-loop artefacts (online.js/wasm, bundle.js,
+    # wasm-loader, etc.) — it relies on a pre-existing /browser/ tree
+    # for everything else (cool.html, editor.html, global.js, l10n-all.js,
+    # color palettes, images/, …). On the host's /tmp/static-deploy/public/
+    # that tree was seeded by an earlier full deploy. Phase 1's STAGE_DIR
+    # is freshly mktemp'd, so without this copy we end up with /browser/
+    # holding only the 10 hot files and 22 missing — every fetch of
+    # /browser/cool.html 404s and regression-snapshot-injection plus the
+    # whole suite fail in <1s "fetch failed: 404".
+    cp -a "$BUILD_OUT_DIST/." "$STAGE_DIR/public/browser/"
+
+    # Run wasm/deploy.sh against the per-run STAGE_DIR. This OVERWRITES
+    # the 9 hot-loop artefacts with the snapshot-restore-injected,
+    # cache-busted versions, and rewrites cool.html with the
+    # __assetMap — so the Phase 1 environment is bit-equivalent to a
+    # real deploy. A plain cp-and-stage skips those steps and the
+    # gating tests (regression-snapshot-injection, regression-cache-bust,
     # regression-html-304, regression-hot-switch-watchdog,
     # regression-cluster-c, regression-viewer-cache) all fail at <1s.
     # Use --no-restart to leave the host's running editor-static / relay
