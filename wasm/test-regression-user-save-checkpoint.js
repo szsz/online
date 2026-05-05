@@ -12,13 +12,16 @@ const __cl = require('./lib/inject-checklist');
 //     new content (and the two hashes should match each other).
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
-const https = require('https');
 const env = require('./lib/test-env');
+const { pickLib } = require('./lib/fetch-url');
 
 const BASE = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
-const RELAY_HTTP = RELAY_BASE.replace(/^wss?:/, 'https:');
+// wss → https, ws → http — match the relay's actual transport so the
+// HTTP probe doesn't blow up with EPROTO under Phase 1's plain-WS local
+// setup.
+const RELAY_HTTP = RELAY_BASE.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-user-save';
 
@@ -35,7 +38,8 @@ function check(label, cond, ev) {
 function httpGet(urlStr, opts) {
     return new Promise((resolve, reject) => {
         const u = new URL(urlStr);
-        const req = https.request({
+        const lib = pickLib(urlStr);
+        const req = lib.request({
             hostname: u.hostname, port: u.port, path: u.pathname,
             method: opts && opts.method || 'GET',
             rejectUnauthorized: false,

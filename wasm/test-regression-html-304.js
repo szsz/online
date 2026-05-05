@@ -11,7 +11,7 @@ const __cl = require('./lib/inject-checklist');
 // other infrastructure regression tests.
 
 const env = require('./lib/test-env');
-const https = require('https');
+const { fetchUrl } = require('./lib/fetch-url');
 
 const T0 = Date.now();
 const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`);
@@ -21,23 +21,6 @@ function check(label, cond, ev) {
     __cl.recordCheck(label, cond, ev);
     if (cond) log(`  PASS: ${label}${ev ? ' [' + ev + ']' : ''}`);
     else { log(`  FAIL: ${label}${ev ? ' [' + ev + ']' : ''}`); allPassed = false; }
-}
-
-function fetchUrl(url, headers = {}) {
-    return new Promise((resolve, reject) => {
-        const req = https.request(url, { method: 'GET', headers, timeout: 10000 }, (res) => {
-            let body = '';
-            res.on('data', (c) => { body += c; });
-            res.on('end', () => resolve({
-                status: res.statusCode,
-                headers: res.headers,
-                body,
-            }));
-        });
-        req.on('timeout', () => { req.destroy(new Error('timeout 10s')); });
-        req.on('error', reject);
-        req.end();
-    });
 }
 
 async function checkRoute(label, url, opts) {

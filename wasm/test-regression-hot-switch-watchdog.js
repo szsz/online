@@ -20,7 +20,7 @@ const __cl = require('./lib/inject-checklist');
 // Static-only — no browser launch needed. Fast (<1 s).
 
 const env = require('./lib/test-env');
-const https = require('https');
+const { fetchUrl } = require('./lib/fetch-url');
 
 const BASE = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;
@@ -35,21 +35,7 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev ? ' [' + ev + ']' : ''}`); allPassed = false; }
 }
 
-function httpGet(url) {
-    return new Promise((resolve, reject) => {
-        const u = new URL(url);
-        const req = https.request({
-            hostname: u.hostname, port: u.port, path: u.pathname + u.search,
-            method: 'GET', rejectUnauthorized: false,
-        }, (res) => {
-            let body = '';
-            res.on('data', (c) => body += c);
-            res.on('end', () => resolve({ status: res.statusCode, body }));
-        });
-        req.on('error', reject);
-        req.end();
-    });
-}
+const httpGet = fetchUrl;
 
 (async () => {
     log('=== Regression: hot-switch watchdog wired end-to-end ===');

@@ -22,7 +22,7 @@ const __cl = require('./lib/inject-checklist');
 // before any heavyweight test does.
 
 const env = require('./lib/test-env');
-const https = require('https');
+const { fetchUrl, headUrl } = require('./lib/fetch-url');
 
 const BASE = env.EDITOR_URL;
 const HASHED_RE = /\.[0-9a-f]{8}\.(?:js|css|wasm|data|metadata)$/;
@@ -35,33 +35,6 @@ function check(label, cond, ev) {
     __cl.recordCheck(label, cond, ev);
     if (cond) log(`  PASS: ${label}${ev ? ' [' + ev + ']' : ''}`);
     else { log(`  FAIL: ${label}${ev ? ' [' + ev + ']' : ''}`); allPassed = false; }
-}
-
-function fetchUrl(url) {
-    return new Promise((resolve, reject) => {
-        https.get(url, (res) => {
-            let body = '';
-            res.on('data', (c) => { body += c; });
-            res.on('end', () => resolve({
-                status: res.statusCode,
-                headers: res.headers,
-                body,
-            }));
-        }).on('error', reject);
-    });
-}
-function headUrl(url) {
-    return new Promise((resolve, reject) => {
-        const req = https.request(url, { method: 'HEAD' }, (res) => {
-            res.on('data', () => {});
-            res.on('end', () => resolve({
-                status: res.statusCode,
-                headers: res.headers,
-            }));
-        });
-        req.on('error', reject);
-        req.end();
-    });
 }
 
 (async () => {

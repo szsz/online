@@ -10,11 +10,11 @@ const __cl = require('./lib/inject-checklist');
 // 7. Format switch (odt): Writer loads from cache
 // 8. Format switch (ods): Calc loads from cache
 const puppeteer = require('puppeteer');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
 const { uploadV2 } = require('./lib/v2-upload');
+const { fetchUrl, headUrl } = require('./lib/fetch-url');
 
 const BASE = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;
@@ -33,40 +33,8 @@ async function snap(page, name) {
     log(`[snap] ${filename}`);
 }
 
-function httpHead(url, headers) {
-    return new Promise((resolve, reject) => {
-        const parsed = new URL(url);
-        const req = https.request({
-            hostname: parsed.hostname,
-            port: parsed.port,
-            path: parsed.pathname,
-            method: 'HEAD',
-            headers: headers || {},
-            rejectUnauthorized: false,
-        }, (res) => resolve({ status: res.statusCode, headers: res.headers }));
-        req.on('error', reject);
-        req.end();
-    });
-}
-
-function httpGet(url) {
-    return new Promise((resolve, reject) => {
-        const parsed = new URL(url);
-        const req = https.request({
-            hostname: parsed.hostname,
-            port: parsed.port,
-            path: parsed.pathname,
-            method: 'GET',
-            rejectUnauthorized: false,
-        }, (res) => {
-            let body = '';
-            res.on('data', c => body += c);
-            res.on('end', () => resolve({ status: res.statusCode, body }));
-        });
-        req.on('error', reject);
-        req.end();
-    });
-}
+const httpHead = headUrl;
+const httpGet = fetchUrl;
 
 // Iter 190: cool.html ships hash-named WASM/data assets
 // (online.58808279.wasm, soffice.0104cc64.data, …) and exposes a
