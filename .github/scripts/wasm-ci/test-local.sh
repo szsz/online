@@ -28,7 +28,7 @@ PROFILE="${TEST_PROFILE:-basic}"
 # All hostnames / ports live in $ENV_FILE (default wasm/.env.ci, set by
 # the runner agent's .env). Source the values here and pass them through
 # to the test runners; no string literals in the script.
-: "${ENV_FILE:=/home/localadmin/online/wasm/.env.ci}"
+: "${ENV_FILE:=$HOME/ENV/online-ci.env}"
 if [[ ! -r "$ENV_FILE" ]]; then
     echo "ERROR: ENV_FILE not readable: $ENV_FILE" >&2
     exit 1

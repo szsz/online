@@ -14,7 +14,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
+ENV_FILE="${ENV_FILE:-$HOME/ENV/online.env}"
 
 # Load .env values as DEFAULTS; calling shell wins.
 if [[ -f "$ENV_FILE" ]]; then
