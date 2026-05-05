@@ -245,9 +245,9 @@ elif [[ "$TEST_TARGET" == "azure-deploy" ]]; then
         exit 1
     fi
     set -a; source "$ENV_DEPLOY_HOST"; set +a
-    export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in .env.deploy}"
-    export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in .env.deploy}"
-    export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in .env.deploy}"
+    export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in ~/ENV/online-prod-deploy.env}"
+    export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in ~/ENV/online-prod-deploy.env}"
+    export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in ~/ENV/online-prod-deploy.env}"
     export TEST_TARGET="azure-deploy"
 else
     echo "ERROR: unknown TEST_TARGET=$TEST_TARGET (expected local | azure-deploy)" >&2
@@ -335,9 +335,9 @@ if [[ "$TEST_TARGET" == "local" ]] \
         # shellcheck disable=SC1090
         source "$ENV_DEPLOY_HOST"
         set +a
-        export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in .env.deploy}"
-        export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in .env.deploy}"
-        export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in .env.deploy}"
+        export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in ~/ENV/online-prod-deploy.env}"
+        export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in ~/ENV/online-prod-deploy.env}"
+        export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in ~/ENV/online-prod-deploy.env}"
         export TEST_TARGET="azure-deploy"
         export DOWNLOAD_BUDGET_MS="$AZURE_DOWNLOAD_BUDGET"
         # JOBS=1 means JOBS_SCALE=1 — patience timeouts not widened
