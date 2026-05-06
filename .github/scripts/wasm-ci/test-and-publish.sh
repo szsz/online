@@ -24,7 +24,7 @@
 #
 # Override with env:
 #   TEST_TARGET=azure-deploy   # legacy single-Azure-phase mode (skips local)
-#   TEST_JOBS_OVERRIDE=N       # parallelism for the local main run (default 3)
+#   TEST_JOBS_OVERRIDE=N       # parallelism for the local main run (default 2)
 #   SKIP_AZURE_SMOKE=1         # skip phase 2 entirely
 #   AZURE_SMOKE_DOWNLOAD_MS=N  # override the 30 s download budget
 set -euo pipefail
@@ -206,10 +206,23 @@ if [[ "$TEST_TARGET" == "local" ]]; then
         > "$REPORT_DIR/editor.log" 2>&1 &
     LOCAL_SERVER_PIDS+=($!)
 
-    # viewer-server.js
+    # viewer-server.js — backed by real Azure storage (coolwasmfiles)
+    # rather than the local FS. The local storage backend doesn't surface
+    # the `displayName` field that the deployed ci-viewer.szebeni.hu and
+    # staging viewer-server return, so tests that check the title-bar
+    # filename (regression-docname-switch / -samedoc-flicker / viewer-e2e
+    # / cross-format-matrix) saw the opaque fileId hex instead and
+    # red-failed only in this CI phase. Same-storage as ci-viewer keeps
+    # phase-1 bit-equivalent to the deployed stack.
+    #
+    # ensure_storage_key (sourced above) exports AZURE_STORAGE_KEY by
+    # listing the storage account keys via the runner's MI. viewer-server
+    # reads DOC_STORAGE_KEY, so we pass the same value through.
     PORT="$VIEWER_PORT" \
-    STORAGE_BACKEND=local \
-    LOCAL_STORAGE_DIR="$STAGE_DIR/storage" \
+    STORAGE_BACKEND=azure \
+    DOC_STORAGE_ACCOUNT="$ACCT" \
+    DOC_STORAGE_CONTAINER="${DOC_STORAGE_CONTAINER:-userdata}" \
+    DOC_STORAGE_KEY="$AZURE_STORAGE_KEY" \
     FILE_STORAGE_URL="$VIEWER_URL_LOCAL" \
     EDITOR_URL="$EDITOR_URL_LOCAL" \
     RELAY_URL="$RELAY_URL_LOCAL" \
@@ -266,7 +279,7 @@ fi
 } > "$LOG"
 
 # ── Phase 1: run the full TESTS array via the parallel runner ────────
-TEST_JOBS="${TEST_JOBS_OVERRIDE:-3}"
+TEST_JOBS="${TEST_JOBS_OVERRIDE:-2}"
 # Pass the eventual public URL of the per-test reports through to the
 # JUnit emitter so each <testcase> has a clickable deep-link.
 JUNIT_BASE_URL="$SITE/app-builds/$APP_BID/tests/output/reports"

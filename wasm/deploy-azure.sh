@@ -439,6 +439,40 @@ EJSON
         exit 1
     fi
 
+    # Prune stale hashed assets from the staging dir. cool.html /
+    # bundle.<hash>.js reference exactly one hash per asset family
+    # (online.<hash>.{js,wasm}, soffice.<hash>.data, …). The build dir
+    # accumulates a new hash per cache-bust iteration but never GCs
+    # old ones. Without this prune step the editor zip grew to ~1.94 GB
+    # and the kudu wwwroot's 10 GB plan-shared SMB volume filled after
+    # ~3-4 deploys, after which kudu silently 400'd every /api/publish
+    # (see incident on 2026-05-06). Extracting the kept-set from the
+    # just-staged cool.html + bundle.*.js gives us a deterministic
+    # source of truth.
+    echo "  Pruning stale hashed assets in $EDIR/browser/dist/..."
+    KEPT="$(grep -hoE '"online\.[0-9a-f]{8}\.(js|wasm|wasm\.br|worker\.js)"|"soffice\.[0-9a-f]{8}\.(data|data\.br|data\.js\.metadata|data\.js\.metadata\.br)"' \
+            "$EDIR/browser/dist/cool.html" "$EDIR/browser/dist/"bundle.*.js 2>/dev/null \
+            | tr -d '"' | sort -u || true)"
+    PRUNED=0
+    shopt -s nullglob
+    for f in "$EDIR/browser/dist/"online.*.{js,wasm,wasm.br,worker.js} \
+             "$EDIR/browser/dist/"soffice.*.{data,data.br,data.js.metadata,data.js.metadata.br}; do
+        base="$(basename "$f")"
+        # Skip the unhashed canonical names (online.js / online.wasm /
+        # soffice.data) — those are kept regardless and overwritten by
+        # the WASM-artifact copy step below.
+        case "$base" in
+            online.js|online.wasm|online.wasm.br|online.worker.js|\
+            soffice.data|soffice.data.br|soffice.data.js.metadata|soffice.data.js.metadata.br) continue ;;
+        esac
+        if ! grep -qFx "$base" <<<"$KEPT"; then
+            rm -f "$f"
+            PRUNED=$((PRUNED+1))
+        fi
+    done
+    shopt -u nullglob
+    echo "  Pruned $PRUNED stale hashed asset(s); kept $(printf '%s\n' "$KEPT" | wc -l) referenced"
+
     # WASM artifacts — copied to BOTH root (for direct /online.wasm access)
     # and browser/dist/ (since cool.html loads online.js from /browser/,
     # which then spawns /browser/online.worker.js relative to itself).
