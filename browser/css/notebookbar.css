@@ -696,6 +696,134 @@ label.notebookbar.ui-checkbox-label {
 	margin: 5px;
 }
 
+/* ── Stylesview entry preview ────────────────────────────────────
+ * Each iconview entry's placeholder span is supposed to be replaced
+ * by a kit-rendered thumbnail (via OnDemand renderer). When that
+ * thumbnail isn't available — which is most of the time today — the
+ * placeholder falls back to plain text and every style ends up
+ * looking identical, defeating the picker.
+ *
+ * Rather than block on getting OnDemand to land, we style the
+ * placeholder text itself so each entry previews its visual effect
+ * in CSS. Center the text in the 96×72 box, scale font-size to fit,
+ * apply weight / italic / color matching the LO default for each
+ * built-in style.
+ *
+ * Phase 1 (this file) — built-in styles only, keyed off the title
+ * attribute that carries the (localized) display name. Works for
+ * English UI; non-English UIs see plain placeholder text — which is
+ * exactly the pre-fix fallback, so this is strictly an improvement.
+ *
+ * Phase 2 — when LO core gains the per-entry visual-properties
+ * payload, Widget.IconView.ts will set data-style-id on the
+ * placeholder using the stable internal id, and these rules switch
+ * from [title=...] to [data-style-id=...] so all 85 UI languages
+ * preview correctly. Custom user styles get their CSS rule
+ * generated at runtime from the manifest.
+ *
+ * Sizes are deliberately scaled so the largest (Title) fits in the
+ * 72px box height — direct font-size in pt would overflow. The
+ * relative ordering (Title > H1 > H2 > … > Body Text > Footnote)
+ * is what carries the visual signal. */
+
+[id^='stylesview'] .ui-iconview-entry > span[title] {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+	line-height: 1.1;
+	padding: 2px 4px;
+	font-family: "Liberation Serif", Georgia, serif;
+	font-size: 11px;
+	font-weight: 400;
+	color: var(--color-main-text);
+}
+
+/* Sans-serif for headings, matching the LO defaults that ship with
+ * the standard Writer template (Liberation Sans for Title/Heading,
+ * Liberation Serif for body). */
+[id^='stylesview'] .ui-iconview-entry > span[title='Title'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Subtitle'],
+[id^='stylesview'] .ui-iconview-entry > span[title^='Heading'] {
+	font-family: "Liberation Sans", Arial, sans-serif;
+}
+
+/* Headline styles — Title is the visual peak. */
+[id^='stylesview'] .ui-iconview-entry > span[title='Title'] {
+	font-size: 17px;
+	font-weight: 700;
+}
+[id^='stylesview'] .ui-iconview-entry > span[title='Subtitle'] {
+	font-size: 13px;
+	font-weight: 400;
+	color: #555;
+}
+
+/* Heading 1 → 10 — descending size, all bold-ish. */
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 1'] {
+	font-size: 15px;
+	font-weight: 700;
+}
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 2'] {
+	font-size: 13px;
+	font-weight: 700;
+}
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 3'] {
+	font-size: 12px;
+	font-weight: 700;
+}
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 4'] {
+	font-size: 11px;
+	font-weight: 700;
+	font-style: italic;
+}
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 5'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 6'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 7'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 8'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 9'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading 10'] {
+	font-size: 10px;
+	font-weight: 700;
+}
+[id^='stylesview'] .ui-iconview-entry > span[title='Heading'] {
+	font-size: 13px;
+	font-weight: 700;
+}
+
+/* Body / default — neutral baseline. */
+[id^='stylesview'] .ui-iconview-entry > span[title='Body Text'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Default Style'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Default Paragraph Style'],
+[id^='stylesview'] .ui-iconview-entry > span[title='No Spacing'] {
+	font-size: 11px;
+	font-weight: 400;
+}
+
+/* Quote / caption — italic + muted. */
+[id^='stylesview'] .ui-iconview-entry > span[title='Quotations'],
+[id^='stylesview'] .ui-iconview-entry > span[title='Block Quotation'] {
+	font-size: 10px;
+	font-style: italic;
+	color: #444;
+}
+[id^='stylesview'] .ui-iconview-entry > span[title='Caption'] {
+	font-size: 9px;
+	font-style: italic;
+	color: #666;
+}
+
+/* Footnote — smallest, neutral. */
+[id^='stylesview'] .ui-iconview-entry > span[title='Footnote'] {
+	font-size: 8px;
+	font-weight: 400;
+	color: #555;
+}
+
+/* List / Index / etc. — fall through to the default rule above (11px
+ * regular serif). Custom user styles also fall through; phase 2's
+ * runtime CSS injection will override per-style. */
+
 #format-style-list-dialog:hover {
 	border: 1px solid transparent;
 	margin: 5px;

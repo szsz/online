@@ -140,6 +140,17 @@ function _iconViewEntry(
 		else if (entry.text) placeholder.title = entry.text;
 		else placeholder.title = '';
 
+		// Phase 1 of the stylesview-preview feature: the title attribute
+		// carries the localized display name and the CSS in
+		// notebookbar.css keys built-in style previews off it. When LO
+		// core gains the per-style visual-properties payload (phase 2),
+		// switch the CSS to key off data-style-id (a stable internal id)
+		// so all UI languages preview correctly + so custom user styles
+		// get a runtime-generated rule too. Setting both today costs ~5
+		// bytes per entry and lets phase 2 land as a CSS-only change.
+		const eAny = entry as any;
+		if (eAny.id) placeholder.setAttribute('data-style-id', String(eAny.id));
+
 		parentContainer.requestRenders(entry, placeholder, entryContainer);
 	} else {
 		_createEntryImage(entryContainer, builder, entry, entry.image);
