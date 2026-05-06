@@ -1137,13 +1137,20 @@
                         // warmup-only snapshot opening a calc / impress
                         // file the heap has the factories but no doctype-
                         // specific module, so file parse + render takes
-                        // 20-40 s on its own. Bumping the watchdog only
-                        // for that case lets warm-restore actually finish
-                        // (~40 s warm vs ~90 s cold-after-watchdog).
-                        // Long-term fix: per-fileId / per-doctype snapshot
+                        // 20-90 s on its own (worst case: heavy 50-slide
+                        // pptx on Azure B1). Two distinct watchdogs cover
+                        // this codepath: this one (doc:loaded) and the
+                        // parent viewer's cross-type canvas-paint watchdog
+                        // (180 s, sees actual paint). For the cross-doctype-
+                        // warmup-only case the parent's watchdog is the
+                        // better signal — it gates on rendered output
+                        // rather than on Module callback timing — so we
+                        // skip the inner watchdog entirely there. Long-
+                        // term fix: per-fileId / per-doctype snapshot
                         // capture in C++ so the heap already has the
                         // doctype module loaded — see #170.
                         var watchdogMs = 8000;
+                        var skipWatchdog = false;
                         try {
                             var mp = new URLSearchParams(window.location.search);
                             var nm = mp.get('WOPISrc') || mp.get('displayName') || '';
@@ -1152,17 +1159,15 @@
                             var crossType =
                                 ['xlsx','xls','ods','csv','tsv','pptx','ppt','odp','ppsx','pps']
                                     .indexOf(ex) >= 0;
-                            // Only bump if the snapshot we restored was
-                            // a generic warmup (saved __wasmFirstDocType
-                            // is undefined / 'text' / 'warmup-only').
-                            // For per-fileId / per-doctype snapshots once
-                            // those exist the 8 s remains correct — they
-                            // already have the doc loaded.
                             var savedType = window.__wasmRestoredDocType || '';
                             var generic = !savedType || savedType === 'text' ||
                                           savedType === 'warmup-only';
-                            if (crossType && generic) watchdogMs = 45000;
+                            if (crossType && generic) skipWatchdog = true;
                         } catch (_) { /* keep default */ }
+                        if (skipWatchdog) {
+                            mark('snapshot:warm_watchdog_skipped',
+                                 'cross-type-warmup-only — parent shield handles');
+                        } else
                         window.__wasmWarmWatchdogTimer = setTimeout(function() {
                             try {
                                 console.warn('[snapshot] Warm-restore watchdog: '
@@ -1203,10 +1208,12 @@
                             }
                         }, watchdogMs);  // Default 8 s — happy-path warm is
                                    // 3-5 s. Cross-doctype warmup-only
-                                   // restore is bumped to 45 s above (file
-                                   // parse + render dominates). Bails fast
-                                   // so the in-iframe cold-fallback (
-                                   // location.reload after caches.delete)
+                                   // restore skips this watchdog above
+                                   // (parent's cross-type canvas-paint
+                                   // watchdog at 180 s is the better
+                                   // signal). Bails fast so the in-iframe
+                                   // cold-fallback (location.reload after
+                                   // caches.delete)
                                    // finishes within typical test budgets.
                                    // Previously 30 s for both, which on
                                    // Azure (where warm-restore reliably
