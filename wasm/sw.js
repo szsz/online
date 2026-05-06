@@ -52,12 +52,24 @@ const HEAVY_PATHS = [
 
 // Match any request whose URL ends with one of HEAVY_PATHS (allowing for
 // content-hash filenames like online.abc12345.wasm or stable filenames).
+//
+// Hash-slot placement is asset-specific: cache-bust-build.js inserts the
+// 8-hex digest right before the *terminal* extension. So:
+//   online.wasm                 → online.<hash>.wasm
+//   soffice.data                → soffice.<hash>.data
+//   soffice.data.js.metadata    → soffice.data.js.<hash>.metadata   ← hash before .metadata
+// Earlier versions of these patterns lacked the hash slot for the two
+// soffice.* entries; after iter 27 cache-bust hashing landed they stopped
+// matching real deployed filenames, so the SW silently passed them
+// through. Default browsing was masked by the HTTP disk cache; incognito
+// (in-memory cache, smaller quota) re-downloaded soffice.data on every
+// new tab. See test-regression-incognito-warm-cache.js.
 const HEAVY_PATTERNS = [
     /\/online(\.[a-f0-9]+)?\.wasm(\?|$)/,
     /\/online(\.[a-f0-9]+)?\.js(\?|$)/,
     /\/online\.worker\.js(\?|$)/,
-    /\/soffice\.data(\?|$)/,
-    /\/soffice\.data\.js\.metadata(\?|$)/,
+    /\/soffice(\.[a-f0-9]+)?\.data(\?|$)/,
+    /\/soffice\.data\.js(\.[a-f0-9]+)?\.metadata(\?|$)/,
     /\/bundle(\.[a-f0-9]+)?\.js(\?|$)/,
     /\/bundle(\.[a-f0-9]+)?\.css(\?|$)/,
     /\/global(\.[a-f0-9]+)?\.js(\?|$)/,
