@@ -1284,10 +1284,15 @@ async function openFile(name, opts) {
             // top of it — see CanvasTileLayer's #129 sectionContainer
             // leak). Symptom: canvas stays white, #StatusDocPos empty.
             // WasmPrewarmReady gates on canvas paint, so its absence
-            // for 60 s is the unambiguous "kit is stuck" signal —
-            // 60 s tolerates Azure cold-start prewarm (which can take
-            // 35-50 s under load); on the dev box prewarm is < 15 s so
-            // the watchdog has plenty of headroom in either env.
+            // is the unambiguous "kit is stuck" signal. 180 s budget:
+            // tolerates Azure cold-start prewarm (35-50 s under load)
+            // PLUS a heavy first-paint of a complex doc (a 50-slide
+            // pptx with images/charts/tables takes 60-90 s to render
+            // its first slide; see incident 2026-05-06 with
+            // heavy-50slides.pptx — 60 s budget fired the watchdog,
+            // recreated with planc=0, wiped the snapshot, and put the
+            // user in a permanent cold-loop). On the dev box prewarm
+            // is < 15 s so 180 s has plenty of headroom there.
             //
             // Recovery: latch __warmRestoreFailedThisSession + recreate
             // the iframe with ?planc=0 (no warm-restore) and ?fresh=1
@@ -1304,7 +1309,7 @@ async function openFile(name, opts) {
                     // load succeeded and we don't need to recover.
                     if (window.__lastPaintedFile === name) return;
                     console.warn('[viewer] Cross-type canvas-paint watchdog '
-                        + '(60s) — no WasmPrewarmReady, recreating with planc=0');
+                        + '(180s) — no WasmPrewarmReady, recreating with planc=0');
                     window.__warmRestoreFailedThisSession = true;
                     // Reset state so the retry takes a clean cold path.
                     currentFile = null;
@@ -1323,7 +1328,7 @@ async function openFile(name, opts) {
                     } catch (e) {
                         console.error('[viewer] cross-type watchdog retry failed', e);
                     }
-                }, 60000);
+                }, 180000);
             }
 
             filePromise.then(buf => {
