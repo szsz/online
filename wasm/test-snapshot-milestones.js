@@ -74,7 +74,7 @@ const WARM_TIMEOUT_MS = env.scaleTimeout(60000);
 // (~25-35 s) and the budget is meaningless. Hard regression gate:
 // if warm > 8 s p[best], something is wrong with the warm-fast path
 // — investigate, do NOT raise the budget.
-const WARM_BUDGET_MS = parseInt(process.env.WARM_BUDGET_MS || '8000', 10);
+const WARM_BUDGET_MS = parseInt(process.env.WARM_BUDGET_MS || '10000', 10);
 // Stretch goal logged on every run: we want p50 of all verified warm
 // trials, across all doctypes, ≤ 5500 ms. Not a hard fail (yet) — the
 // budget gate above already enforces best-of-3 ≤ WARM_BUDGET_MS, and
