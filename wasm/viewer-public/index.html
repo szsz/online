@@ -106,9 +106,14 @@ h3 { margin: 5px 0; }
 <body>
 <script src="lib/file-crypto.js"></script>
 <script src="lib/recent-files.js"></script>
+<script src="lib/ui-lang.js"></script>
 <div id="sidebar-hover-zone"></div>
 <div id="files">
     <h3>Files</h3>
+    <div id="ui-lang-row" style="display:flex;align-items:center;gap:6px;font-size:12px;color:#555;margin-bottom:6px;">
+        <label for="ui-lang-switcher" style="white-space:nowrap;">Language:</label>
+        <span id="ui-lang-mount" style="flex:1"></span>
+    </div>
     <div id="prewarm-status">🔄 Pre-warming editor...</div>
     <input type="file" id="upload" onchange="uploadFile()" multiple>
     <div id="new-folder-bar">
@@ -227,6 +232,31 @@ const RELAY  = window.__CONFIG.RELAY_URL;
 // and the referrer is suppressed by referrerpolicy="no-referrer").
 const FILE_STORAGE_URL = window.__CONFIG.VIEWER_URL || window.location.origin;
 const BLANK_FILENAME = '__prewarm_blank.docx';
+
+// UI language: resolve once at viewer load (browser-detect →
+// localStorage pin → English fallback) and apply to every iframe
+// URL we build below via &lang=<code>. Switcher dropdown lives in
+// the sidebar header; changing it persists the pin and reloads the
+// page so the editor iframe re-fetches with the new language. We
+// reload-the-page rather than postMessage-into-the-editor because
+// cool.html reads window.LANG synchronously at startup; a mid-life
+// switch would leave half the menus in the old language.
+const UI_LANG = (window.UILang && window.UILang.getActiveLang())
+                 ? window.UILang.getActiveLang() : 'en';
+const UI_LANG_PARAM = '&lang=' + encodeURIComponent(UI_LANG);
+(function mountLangSwitcher() {
+    if (!window.UILang) return;
+    const mount = document.getElementById('ui-lang-mount');
+    if (!mount) return;
+    const sel = window.UILang.buildSwitcher(UI_LANG, function (newCode) {
+        // Trigger a top-level reload — this forces the iframe to
+        // re-create with ?lang=<newCode>, which is the only path
+        // that actually swaps cool.html's UI language.
+        window.location.reload();
+    });
+    sel.style.cssText = 'font-size:12px;padding:1px 4px;width:100%;';
+    mount.appendChild(sel);
+})();
 
 // Read-only mode: set by readonly.html or ?readonly=1 URL param.
 // When true, the relay parameter is omitted from iframe URLs (disabling
@@ -777,6 +807,7 @@ async function startPrewarm() {
                + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                + '&viewerT0=' + window.__viewerT0
+               + UI_LANG_PARAM
                + __viewerPlanC;
 
     // Upload blank doc in parallel — arrives before Kit needs it
@@ -1211,6 +1242,7 @@ async function openFile(name, opts) {
                           + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                           + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                           + '&viewerT0=' + window.__viewerT0
+                          + UI_LANG_PARAM
                           + __coldPlanC
                           + (opts.displayName
                               ? '&displayName=' + encodeURIComponent(opts.displayName) : '');
