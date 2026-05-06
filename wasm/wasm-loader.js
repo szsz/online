@@ -240,13 +240,18 @@
         if (SNAPSHOT_DISABLED) {
             mark('snapshot:disabled_by_killswitch');
             window.__wasmSnapshotData = null;
-            // Also delete any stale Cache Storage entry so subsequent
-            // visits don't even find the metadata.
-            if ('caches' in self) {
-                caches.open('wasm-snapshot').then(function(c) {
-                    return Promise.all([c.delete('/snapshot/heap-v2'), c.delete('/snapshot/meta')]);
-                }).catch(function() {});
-            }
+            // Do NOT wipe Cache Storage here. ?planc=0 is set by two
+            // distinct paths: (a) explicit URL opt-out for one-off
+            // cold-only testing, and (b) the viewer's 60 s cross-type
+            // canvas-paint watchdog after a sectionContainer leak.
+            // Path (b) is a transient session-level recovery — wiping
+            // the snapshot makes the next page-load cold too, and the
+            // cycle repeats every time the user opens this heavy file
+            // (see incident on 2026-05-06 with heavy-50slides.pptx
+            // taking > 60 s to fire WasmPrewarmReady on Azure). The
+            // fingerprint guard in the lookup already discards stale
+            // snapshots from older builds, so leaving the cache
+            // populated on planc=0 is safe.
             return Promise.resolve(null);
         }
         if (!('caches' in self)) {
