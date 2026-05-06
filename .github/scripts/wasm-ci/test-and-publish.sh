@@ -140,7 +140,7 @@ if [[ "$TEST_TARGET" == "local" ]]; then
         echo "ERROR: expected build artefacts at $BUILD_OUT_WASM not found." >&2
         exit 1
     fi
-    if [[ ! -f "$BUILD_OUT_DIST/cool.html" || ! -f "$BUILD_OUT_DIST/bundle.js" ]]; then
+    if [[ ! -f "$BUILD_OUT_DIST/cool.html" ]] || ! ls "$BUILD_OUT_DIST"/bundle*.js >/dev/null 2>&1; then
         echo "ERROR: expected COOL JS bundle at $BUILD_OUT_DIST not found." >&2
         exit 1
     fi
