@@ -91,10 +91,18 @@ async function getEditorStatus(page, fileId) {
     } catch (_) { return null; }
 }
 
-async function getDocName(page) {
-    return page.evaluate(() =>
-        document.querySelector('#document-name-input')?.value || ''
-    ).catch(() => '');
+async function getDocName(page, fileId) {
+    // #document-name-input lives inside the editor iframe (cool.html), not
+    // on the parent viewer page. Reading from the parent always returns
+    // empty. Filter the iframe by fileId so we don't latch onto the
+    // prewarm-blank's frame and read its (empty) title.
+    const fr = getEditorFrame(page, fileId);
+    if (!fr) return '';
+    return fr.evaluate(() => {
+        const input = document.querySelector('#document-name-input');
+        const wopi = window.app && window.app.map && window.app.map['wopi'];
+        return input?.value || (wopi && wopi.BaseFileName) || '';
+    }).catch(() => '');
 }
 
 async function waitForDoctype(page, doc, timeoutMs) {
@@ -108,15 +116,54 @@ async function waitForDoctype(page, doc, timeoutMs) {
     return null;
 }
 
-async function waitForName(page, expectedBase, timeoutMs) {
+async function waitForName(page, fileId, expectedBase, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     let last = '';
     while (Date.now() < deadline) {
-        last = await getDocName(page);
+        last = await getDocName(page, fileId);
         if (last.includes(expectedBase)) return last;
         await sleep(250);
     }
     return last;
+}
+
+// Read the parent viewer's shield-drop counter (purpose-built signal,
+// see viewer-public/index.html hideShield: a monotonic counter that
+// increments every time #editor-shield is removed from the user's view).
+async function readShieldDropCount(page) {
+    return page.evaluate(() => window.__shieldDropCount || 0).catch(() => 0);
+}
+
+// Wait for the user-visible doc to actually paint. Required signals:
+//   • EITHER window.__shieldDropCount > preClickCount (the parent's
+//     #editor-shield dropped after our click — fires for cross-type and
+//     fresh deep-link opens), OR the iframe's wasm-loading-overlay has
+//     cleared (covers the same-type new-iframe path where the parent
+//     shield is never raised because the in-iframe wasm-loader handles
+//     the bootstrap entirely).
+//   • The iframe's <canvas> has non-zero width/height — paint ran.
+async function waitForCanvasPainted(page, fileId, preCount, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const fr = getEditorFrame(page, fileId);
+        if (fr) {
+            const dropCount = await readShieldDropCount(page);
+            const shieldSignal = dropCount > preCount;
+            const inner = await fr.evaluate(() => {
+                const o = document.getElementById('wasm-loading-overlay');
+                const overlayUp = !!o && o.offsetParent !== null
+                    && getComputedStyle(o).opacity !== '0';
+                const c = document.querySelector('canvas');
+                return {
+                    overlayUp,
+                    canvasOk: !!c && c.width > 0 && c.height > 0,
+                };
+            }).catch(() => ({ overlayUp: true, canvasOk: false }));
+            if ((shieldSignal || !inner.overlayUp) && inner.canvasOk) return true;
+        }
+        await sleep(200);
+    }
+    return false;
 }
 
 function baseName(filename) {
@@ -179,15 +226,31 @@ function baseName(filename) {
         const first = BY_ID[WALK[0]];
         log(`\n--- Step 0: open ${first.id} (${first.name}) via #file= deep link ---`);
         const t0 = Date.now();
+        // window.__shieldDropCount starts at 0 on a fresh viewer load and
+        // increments on every hideShield(). For step 0 the deep-link load
+        // counts as one shield up→down cycle, so we expect ≥ 1 by the time
+        // the doc is painted.
+        const preDrop0 = 0;
         await page.goto(VIEWER + '/#file=' + first.b64urlSecret,
             { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
         const initStatus = await waitForDoctype(page, first, env.scaleTimeout(240000));
         check(`step 0 ${first.id}: ${first.type} status visible`, !!initStatus,
               initStatus ? '' : 'no status pattern');
-        const initName = await waitForName(page, baseName(first.name), env.scaleTimeout(30000));
+        const initName = await waitForName(page, first.fileId, baseName(first.name), env.scaleTimeout(30000));
         check(`step 0 ${first.id}: title shows "${baseName(first.name)}"`,
               initName.includes(baseName(first.name)),
               `inputValue=${initName}`);
+        // Two-stage settle before screenshot:
+        //  (1) waitForCanvasPainted — gates on the parent's __shieldDropCount
+        //      incrementing (purpose-built signal in viewer-public's
+        //      hideShield) AND the iframe's wasm-loading-overlay clearing
+        //      AND the canvas having non-zero dimensions (15 s budget).
+        //  (2) Fixed 2 s sleep — wasm-loader fires updateProgress('Ready',100)
+        //      150 ms before hideOverlay(), whose opacity transition is 0.4 s
+        //      with a +500 ms DOM-removal delay. iframe-pool revive can also
+        //      re-display the overlay briefly. 2 s clears every observed tail.
+        await waitForCanvasPainted(page, first.fileId, preDrop0, env.scaleTimeout(15000));
+        await sleep(2000);
         await page.screenshot({ path: `${SHOT_DIR}/00_${first.id}_${first.type}.png` });
         log(`step 0 done in ${Date.now() - t0}ms`);
 
@@ -208,17 +271,35 @@ function baseName(filename) {
                 continue;
             }
 
+            // Snapshot the shield-drop counter before the click so the
+            // post-click wait can require it to increment (and not be
+            // satisfied by a previous cell's drop).
+            const preDrop = await readShieldDropCount(page);
             const tCell = Date.now();
             await clickSidebarFile(page, next.fileId);
 
             // Wait for the editor iframe to reflect the new doctype.
-            const status = await waitForDoctype(page, next, env.scaleTimeout(120000));
+            // 180 s base budget scaled by env.scaleTimeout — under JOBS=2
+            // contention or background load, cold-load of an unseen doc-type
+            // (typically the first impress / pptx) can take 60–120 s on the
+            // dev box, and "stuck" only really starts past ~3 min.
+            const status = await waitForDoctype(page, next, env.scaleTimeout(180000));
             const dt = Date.now() - tCell;
 
             // Check the title bar, with its own settle window — the title
             // can lag the doc-loaded signal by a few seconds.
-            const observed = status ? await waitForName(page, baseName(next.name),
-                env.scaleTimeout(30000)) : await getDocName(page);
+            const observed = status ? await waitForName(page, next.fileId, baseName(next.name),
+                env.scaleTimeout(30000)) : await getDocName(page, next.fileId);
+
+            // Wait for the iframe-pool's swap to actually paint before
+            // screenshotting. The status field + title bar populate well
+            // before #wasm-loading-overlay clears, so a screenshot taken
+            // right after the assertions captures the "Ready" splash on
+            // fast (≤1 s) cross-type / warm-restore swaps.
+            if (status) {
+                await waitForCanvasPainted(page, next.fileId, preDrop, env.scaleTimeout(15000));
+                await sleep(2000);
+            }
 
             const stepNum = String(i).padStart(2, '0');
             const suffix = status && observed.includes(baseName(next.name)) ? '' : '_FAIL';
@@ -227,7 +308,7 @@ function baseName(filename) {
             });
 
             check(`step ${i} ${tag}: ${next.type} status visible (${dt}ms)`, !!status,
-                  status ? '' : `no status pattern in ${env.scaleTimeout(120000) / 1000}s`);
+                  status ? '' : `no status pattern in ${env.scaleTimeout(180000) / 1000}s`);
             check(`step ${i} ${tag}: title shows "${baseName(next.name)}"`,
                   observed.includes(baseName(next.name)),
                   `inputValue=${observed}`);
