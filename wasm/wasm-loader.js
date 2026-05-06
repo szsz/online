@@ -310,6 +310,13 @@
                     if (meta.fingerprint !== BUILD_FINGERPRINT) {
                         return discardStale('stored=' + meta.fingerprint + ' current=' + BUILD_FINGERPRINT);
                     }
+                    // Carry the saved doctype across to the warm-restore
+                    // watchdog: when meta.docType is the legacy warmup-only
+                    // (factories warmed but no user doc) and the URL is a
+                    // calc / impress file, parsing the user file inside the
+                    // restored heap takes 20-40 s on its own — the default
+                    // 8 s watchdog would kill a perfectly healthy restore.
+                    window.__wasmRestoredDocType = meta.docType || '';
                     // Fingerprint matches — snapshot is valid. Eagerly read
                     // the heap blob so it's ready before Module.preRun fires.
                     // Reading 256MB from Cache API takes ~500ms-2s; smaller
@@ -1118,6 +1125,39 @@
                     // pay nothing. window.__wasmWarmWatchdogTriggered is
                     // set so the cold reload doesn't immediately re-arm.
                     if (!window.__wasmWarmWatchdogTriggered) {
+                        // The 8 s budget below assumes "snapshot doctype
+                        // matches what the user is opening" — i.e. factories
+                        // and module already in heap, so doc:loaded fires
+                        // within a few seconds of restore. For the
+                        // warmup-only snapshot opening a calc / impress
+                        // file the heap has the factories but no doctype-
+                        // specific module, so file parse + render takes
+                        // 20-40 s on its own. Bumping the watchdog only
+                        // for that case lets warm-restore actually finish
+                        // (~40 s warm vs ~90 s cold-after-watchdog).
+                        // Long-term fix: per-fileId / per-doctype snapshot
+                        // capture in C++ so the heap already has the
+                        // doctype module loaded — see #170.
+                        var watchdogMs = 8000;
+                        try {
+                            var mp = new URLSearchParams(window.location.search);
+                            var nm = mp.get('WOPISrc') || mp.get('displayName') || '';
+                            if (!nm.includes('.')) nm = mp.get('displayName') || nm;
+                            var ex = nm.split('.').pop().toLowerCase().split('?')[0];
+                            var crossType =
+                                ['xlsx','xls','ods','csv','tsv','pptx','ppt','odp','ppsx','pps']
+                                    .indexOf(ex) >= 0;
+                            // Only bump if the snapshot we restored was
+                            // a generic warmup (saved __wasmFirstDocType
+                            // is undefined / 'text' / 'warmup-only').
+                            // For per-fileId / per-doctype snapshots once
+                            // those exist the 8 s remains correct — they
+                            // already have the doc loaded.
+                            var savedType = window.__wasmRestoredDocType || '';
+                            var generic = !savedType || savedType === 'text' ||
+                                          savedType === 'warmup-only';
+                            if (crossType && generic) watchdogMs = 45000;
+                        } catch (_) { /* keep default */ }
                         window.__wasmWarmWatchdogTimer = setTimeout(function() {
                             try {
                                 console.warn('[snapshot] Warm-restore watchdog: '
@@ -1156,12 +1196,14 @@
                             } catch (e) {
                                 console.error('[snapshot] Watchdog handler threw:', e);
                             }
-                        }, 8000);  // Happy-path warm is 3-5 s. 8 s gives
-                                   // it a fair chance, then bails fast so
-                                   // the in-iframe cold-fallback (location
-                                   // .reload after caches.delete) has time
-                                   // to actually finish within typical test
-                                   // budgets. Previously 30 s, which on
+                        }, watchdogMs);  // Default 8 s — happy-path warm is
+                                   // 3-5 s. Cross-doctype warmup-only
+                                   // restore is bumped to 45 s above (file
+                                   // parse + render dominates). Bails fast
+                                   // so the in-iframe cold-fallback (
+                                   // location.reload after caches.delete)
+                                   // finishes within typical test budgets.
+                                   // Previously 30 s for both, which on
                                    // Azure (where warm-restore reliably
                                    // hangs after lok_init_2 SECOND_INIT)
                                    // ate the entire 60 s warm budget before
