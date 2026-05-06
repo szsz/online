@@ -53,6 +53,7 @@ TESTS=(
     "regression-stylesview-preview|test-regression-stylesview-preview.js|Regression: Stylesview Visual Preview|Ribbon Styles entries visually preview their effect — Title bigger+bolder than Body Text; H1 > H2 > H3. Includes screenshots of ribbon + each entry + dropdown.|shots-regression-stylesview-preview"
     "regression-ui-lang|test-regression-ui-lang.js|Regression: Viewer UI Language Detect + Switcher|navigator.languages → iframe ?lang=<code>; localStorage pin overrides; dropdown switcher reloads viewer; English fallback for unsupported.|shots-regression-ui-lang"
     "regression-cache-bust|test-regression-cache-bust.js|Regression: Build-time Cache Bust|cool.html refs are hashed; hashed assets immutable; locateFile shim single+well-formed|none"
+    "regression-incognito-warm-cache|test-regression-incognito-warm-cache.js|Regression: Incognito Warm-Tab Cache|Second tab in same incognito context must hit Cache Storage for online.wasm + soffice.data + soffice.data.js.metadata; SW HEAVY_PATTERNS must match hashed filenames (regression after iter 27 cache-bust)|none"
     # Perf gate
     "snapshot-milestones|test-snapshot-milestones.js|Snapshot Milestones|Per-doc cold/warm × N=3 trials (writer calc impress)|none"
     "regression-snapshot-survival|test-regression-snapshot-survival.js|Regression: Snapshot Survival across watchdog cycle|Heavy 50-slide pptx that exceeds the cross-type canvas-paint watchdog: snapshot must survive in Cache Storage so the next visit can warm-restore. See incident 2026-05-06.|shots-regression-snapshot-survival"

@@ -449,26 +449,45 @@ EJSON
     # (see incident on 2026-05-06). Extracting the kept-set from the
     # just-staged cool.html + bundle.*.js gives us a deterministic
     # source of truth.
+    #
+    # `.br` siblings are NEVER referenced by HTML — server.js's brotli
+    # chooser serves them transparently when Accept-Encoding: br is
+    # present, so cool.html only mentions e.g. "online.<hash>.wasm",
+    # not "online.<hash>.wasm.br". A naive prune that compared file
+    # names directly against KEPT deleted every hashed `.br` sidecar,
+    # forcing Azure to ship the uncompressed 265 MB / 93 MB body on
+    # every cold load. The fix: treat a `.br` file as kept iff its
+    # source (filename minus `.br`) is in KEPT.
     echo "  Pruning stale hashed assets in $EDIR/browser/dist/..."
-    KEPT="$(grep -hoE '"online\.[0-9a-f]{8}\.(js|wasm|wasm\.br|worker\.js)"|"soffice\.[0-9a-f]{8}\.(data|data\.br|data\.js\.metadata|data\.js\.metadata\.br)"' \
+    KEPT="$(grep -hoE '"online\.[0-9a-f]{8}\.(js|wasm|worker\.js)"|"soffice\.[0-9a-f]{8}\.data"|"soffice\.data\.js\.[0-9a-f]{8}\.metadata"' \
             "$EDIR/browser/dist/cool.html" "$EDIR/browser/dist/"bundle.*.js 2>/dev/null \
             | tr -d '"' | sort -u || true)"
     PRUNED=0
     shopt -s nullglob
-    for f in "$EDIR/browser/dist/"online.*.{js,wasm,wasm.br,worker.js} \
-             "$EDIR/browser/dist/"soffice.*.{data,data.br,data.js.metadata,data.js.metadata.br}; do
+    for f in "$EDIR/browser/dist/"online.*.{js,js.br,wasm,wasm.br,worker.js,worker.js.br} \
+             "$EDIR/browser/dist/"soffice.*.{data,data.br} \
+             "$EDIR/browser/dist/"soffice.data.js.*.{metadata,metadata.br}; do
         base="$(basename "$f")"
         # Skip the unhashed canonical names (online.js / online.wasm /
-        # soffice.data) — those are kept regardless and overwritten by
-        # the WASM-artifact copy step below.
+        # soffice.data, plus their .br sidecars) — those are kept
+        # regardless and overwritten by the WASM-artifact copy step below.
         case "$base" in
-            online.js|online.wasm|online.wasm.br|online.worker.js|\
-            soffice.data|soffice.data.br|soffice.data.js.metadata|soffice.data.js.metadata.br) continue ;;
+            online.js|online.js.br|online.wasm|online.wasm.br|\
+            online.worker.js|online.worker.js.br|\
+            soffice.data|soffice.data.br|\
+            soffice.data.js.metadata|soffice.data.js.metadata.br) continue ;;
         esac
-        if ! grep -qFx "$base" <<<"$KEPT"; then
-            rm -f "$f"
-            PRUNED=$((PRUNED+1))
+        # `.br` sidecars are kept iff the source asset is kept. cool.html
+        # only references the source name; the brotli chooser uses the
+        # .br as a transparent encoding alternative.
+        src="${base%.br}"
+        if [[ "$src" != "$base" ]]; then
+            if grep -qFx "$src" <<<"$KEPT"; then continue; fi
+        elif grep -qFx "$base" <<<"$KEPT"; then
+            continue
         fi
+        rm -f "$f"
+        PRUNED=$((PRUNED+1))
     done
     shopt -u nullglob
     echo "  Pruned $PRUNED stale hashed asset(s); kept $(printf '%s\n' "$KEPT" | wc -l) referenced"
