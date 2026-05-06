@@ -142,6 +142,19 @@ function buildPreloadHints(assetHashMap) {
 }
 
 function buildLocateFileShim(map) {
+    // Two pre-bundle setup steps wrapped in one inline <script>:
+    //
+    // 1. Module.locateFile shim — must run BEFORE online.js so its first
+    //    locateFile() call sees the hashed-asset map.
+    //
+    // 2. window.LANG initialiser — must run BEFORE bundle.js (which has
+    //    l10n-all.js prepended at line 1: `var onlylang = window.LANG;
+    //    ...`). Without this, l10n-all.js reads `undefined`, falls into
+    //    the else branch, and LOCALIZATIONS stays empty even when the
+    //    viewer correctly passed ?lang=<code>. Set window.LANG from the
+    //    URL param so the cool.html iframe URL ?lang=<code> propagates
+    //    into the COOL editor's locale lookup. Falls back to "en-US"
+    //    so the existing English path is unchanged when no lang is set.
     return `<script>
 (function(){
   window.__assetMap = ${JSON.stringify(map)};
@@ -153,6 +166,34 @@ function buildLocateFileShim(map) {
     return (prefix || '') + mapped;
   };
   window.Module = existing;
+  // window.LANG init for l10n-all.js (which is prepended into bundle.js
+  // and reads window.LANG synchronously at bundle-start). The viewer
+  // (and any WOPI integrator) passes the chosen UI language via ?lang=
+  // on the cool.html URL.
+  //
+  // Defined as a non-writable, non-configurable property whose value is
+  // derived from the URL on every read. Empirically a downstream COOL
+  // path overwrites \`window.LANG = "en-US"\` after init, defeating the
+  // straightforward assignment we tried first; the read-only descriptor
+  // makes the assignment a silent no-op (or throws in strict mode), so
+  // l10n-all.js reads the URL-derived value every single time. URL
+  // resolution is cached on the first read since cool.html's URL is
+  // immutable for its lifetime — costs one URLSearchParams construction
+  // per page load.
+  try {
+    var __p = new URLSearchParams(window.location.search);
+    var __lang = __p.get('lang') || 'en-US';
+    Object.defineProperty(window, 'LANG', {
+      value: __lang,
+      writable: false,
+      configurable: false,
+      enumerable: true,
+    });
+  } catch (_) {
+    try { Object.defineProperty(window, 'LANG',
+            { value: 'en-US', writable: false, configurable: false }); }
+    catch (_) { window.LANG = 'en-US'; }
+  }
 })();
 </script>
 `;

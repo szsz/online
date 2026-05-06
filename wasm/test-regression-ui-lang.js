@@ -138,6 +138,42 @@ async function pickLangFromSrc(src) {
               lang1 === 'de',
               `lang=${lang1} src=${(src1||'').substring(0,140)}`);
 
+        // Wait for cool.html to come up inside the editor iframe and
+        // assert that window.LANG (which l10n-all.js reads at bundle
+        // start to pick which locale chunk to load) actually equals
+        // 'de'. Without this assertion the bug we're guarding against
+        // (URL param reaches iframe, but window.LANG never gets set,
+        // so LOCALIZATIONS stays empty and the UI is English) would
+        // pass the surface-level "URL has lang=de" check but every
+        // user-visible string would still be English.
+        let editorFrame = null;
+        for (let i = 0; i < 90 && !editorFrame; i++) {
+            editorFrame = page1.frames().find(f => f.url().includes('cool.html'));
+            if (editorFrame) {
+                const haveCanvas = await editorFrame
+                    .$('#document-canvas').catch(() => null);
+                if (!haveCanvas) editorFrame = null;
+            }
+            if (!editorFrame) await sleep(1000);
+        }
+        if (editorFrame) {
+            await sleep(2000);   // settle for l10n-all.js to populate
+            const editorState = await editorFrame.evaluate(() => ({
+                windowLANG: window.LANG || null,
+                localeKeys: window.LOCALIZATIONS
+                    ? Object.keys(window.LOCALIZATIONS).length : 0,
+            }));
+            check('window.LANG inside editor iframe matches URL lang (=de)',
+                  editorState.windowLANG === 'de',
+                  `windowLANG=${editorState.windowLANG}`);
+            check('LOCALIZATIONS populated (German strings loaded)',
+                  editorState.localeKeys > 100,
+                  `keys=${editorState.localeKeys}`);
+        } else {
+            check('editor iframe with #document-canvas reachable',
+                  false, 'no frame found');
+        }
+
         await closePage(page1);
 
         // ── 2. localStorage pin to "fr" → URL has lang=fr ────────
