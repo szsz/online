@@ -461,6 +461,106 @@
         try { return c.toDataURL('image/png').substring(0, 200); }
         catch(e) { return null; }
     }
+
+    // ───── EVENT-DRIVEN DOC-READY (Phase 1) ─────
+    // Kit emits a `docready: viewid=N type=text path=cold|switch|warm` text
+    // frame from kit/ChildSession.cpp at three sites (cold load, hot-switch,
+    // warm-restore re-attach). The historical mechanism — polling DOM
+    // status text + canvas pixel-hash — is fragile (60 s timeouts on
+    // Azure cold loads, doctype-specific quirks). The kit knows
+    // authoritatively when the doc is loaded; we just route that signal
+    // into the existing fan-out (`__wasmInitialDocLoaded`,
+    // `__wasmPrewarmReady`, `WasmDocReady` postMessage, etc).
+    //
+    // Phase 1 (this commit) — the polling stays in place. Both paths
+    // call `fireDocReady(opts)`; whoever wins records via
+    // `recordReadyArrival(source)` and we log `[event-vs-poll]` per
+    // load so we can verify the kit event consistently arrives first
+    // before deleting the polling in Phase 4.
+    //
+    // Idempotency keyed on the loaded filename. Each switchdoc resets
+    // `__docReadyFiredFor` to null so the next load re-fires.
+    window.__docReadyFiredFor = null;
+    window.__docReadyArrivals = {};
+    function fireDocReady(opts) {
+        opts = opts || {};
+        var key = String(opts.filename || window.__wasmLoadedDocName ||
+                         pendingSwitchFilename || 'cold');
+        if (window.__docReadyFiredFor === key) return false;
+        window.__docReadyFiredFor = key;
+        mark('bridge:doc_ready', (opts.source || '?') + ' ' + key +
+                                  (opts.type ? ' (' + opts.type + ')' : ''));
+        // Fan out to existing signals so consumers don't need a code change.
+        window.__wasmPrewarmReady = true;
+        window.__wasmInitialDocLoaded = true;
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage(JSON.stringify({
+                    MessageId: 'WasmDocReady',
+                    Values: { filename: key, source: opts.source || 'kit' }
+                }), '*');
+            }
+        } catch (_) {}
+        return true;
+    }
+    function recordReadyArrival(source) {
+        var key = String(window.__wasmLoadedDocName ||
+                         pendingSwitchFilename || 'cold');
+        var slot = window.__docReadyArrivals[key] = window.__docReadyArrivals[key] || {};
+        if (slot[source] != null) return;   // first wins per source
+        slot[source] = performance.now();
+        if (slot.kit != null && slot.poll != null) {
+            var winner = slot.kit < slot.poll ? 'kit' : 'poll';
+            var deltaMs = Math.abs(slot.kit - slot.poll).toFixed(0);
+            mark('event-vs-poll', winner + '+' + deltaMs + 'ms key=' + key);
+            // Phase 1 stays passive — don't act on the winner here, both
+            // paths already called fireDocReady (idempotent). The mark
+            // is what feeds the gating decision for the Phase 4 cleanup.
+            delete window.__docReadyArrivals[key];
+        }
+    }
+
+    // Installer for the docready: text-frame parser. Runs idempotently;
+    // can be called from multiple call sites (cold-load init below, the
+    // switch-flow's existing __switchMsgHooked block) — first one to find
+    // TheFakeWebSocket wins. Uses a polling installer (50 ms × 600) only
+    // because the WS is wired late by the WASM runtime; the actual hook
+    // is event-driven once installed.
+    window.__docReadyHookInstalled = window.__docReadyHookInstalled || false;
+    function installDocReadyHook() {
+        if (window.__docReadyHookInstalled) return;
+        var tries = 0;
+        var iv = setInterval(function () {
+            var fws = globalThis.TheFakeWebSocket;
+            if (!fws) {
+                if (++tries > 600) clearInterval(iv);   // 30 s ceiling
+                return;
+            }
+            clearInterval(iv);
+            if (window.__docReadyHookInstalled) return;
+            window.__docReadyHookInstalled = true;
+            var origOnMsg = fws.onmessage;
+            fws.onmessage = function (ev) {
+                var txt = (typeof ev.data === 'string' ? ev.data : '');
+                if (txt.indexOf('docready:') === 0) {
+                    // Parse "docready: viewid=N type=X path=Y"
+                    var m = /\btype=(\S+)/.exec(txt);
+                    var p = /\bpath=(\S+)/.exec(txt);
+                    var fired = fireDocReady({
+                        source: 'kit-' + (p ? p[1] : '?'),
+                        type: m ? m[1] : null,
+                    });
+                    if (fired) recordReadyArrival('kit');
+                }
+                if (typeof origOnMsg === 'function')
+                    return origOnMsg.apply(this, arguments);
+            };
+            mark('docready-hook:installed');
+        }, 50);
+    }
+    // Kick off the cold-load installer immediately. Switch-flow path
+    // calls it again, but the idempotency guard makes that a no-op.
+    installDocReadyHook();
     function isCanvasNonBlank(sample) {
         // Empty docs render as a near-uniform white canvas. Non-blank rendering
         // produces high pixel variance which compresses to very different PNG
@@ -683,15 +783,33 @@
                     var stableFor = performance.now() - lastChangeAt;
                     if (statusReady && stableFor >= STABILITY_MS) {
                         var rdt = (performance.now() - readyStart).toFixed(0);
-                        mark('bridge:doc_ready', rdt + 'ms, stable ' + stableFor.toFixed(0) + 'ms');
                         clearInterval(docReadyInterval);
                         window.__wasmLoadedDocName = filename;
-                        try {
-                            parent.postMessage(JSON.stringify({
-                                MessageId: 'WasmDocReady',
-                                Values: { filename: filename, ms: +rdt + +dt }
-                            }), '*');
-                        } catch(e) {}
+                        // Phase 1 telemetry: record poll arrival. If the
+                        // kit `docready:` event already fired for this
+                        // filename, fireDocReady() inside is a no-op
+                        // (idempotent on filename); recordReadyArrival
+                        // logs `[event-vs-poll]` showing which won by
+                        // how many ms. After Phase 4 cleanup the
+                        // polling block is deleted entirely.
+                        var fired = fireDocReady({
+                            source: 'poll-switch', filename: filename,
+                        });
+                        recordReadyArrival('poll');
+                        if (fired) {
+                            // Only emit the legacy postMessage when our
+                            // fan-out ran. fireDocReady already posted
+                            // WasmDocReady but with source='poll-switch'
+                            // and no ms field — keep the historical
+                            // payload too, gated on us being the winner.
+                            mark('bridge:doc_ready', rdt + 'ms, stable ' + stableFor.toFixed(0) + 'ms');
+                            try {
+                                parent.postMessage(JSON.stringify({
+                                    MessageId: 'WasmDocReady',
+                                    Values: { filename: filename, ms: +rdt + +dt }
+                                }), '*');
+                            } catch(e) {}
+                        }
                     }
                     if (performance.now() - readyStart > 60000) {
                         clearInterval(docReadyInterval);
@@ -1490,6 +1608,16 @@
                     var initWopi = initParams.get('WOPISrc') || '';
                     if (initWopi) window.__wasmLoadedDocName = initWopi;
                 } catch(e) {}
+                // Phase 1 telemetry — race log between this polling
+                // path and the kit `docready:` event hook. fireDocReady
+                // is idempotent on filename, so if the kit event fired
+                // first this is a no-op except for the [event-vs-poll]
+                // mark. After Phase 4 cleanup the polling block dies.
+                fireDocReady({
+                    source: 'poll-cold',
+                    filename: window.__wasmLoadedDocName,
+                });
+                recordReadyArrival('poll');
                 prewarmWordCountAtReady = wc ? wc.textContent : '';
                 mark('prewarm:ready');
                 logTiming('Document ready');

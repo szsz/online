@@ -606,6 +606,20 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                   << " isfirst=true";
         sendTextFrame(loadedMsg.str());
 
+        // Event-driven doc-ready signal (replaces JS DOM polling in
+        // wasm-loader.js). Authoritative: the C++ side knows the doc
+        // is loaded; the JS side has historically had to infer this
+        // by polling status text + canvas pixel-hash, which is fragile
+        // (60 s timeouts on Azure cold loads). One frame per load
+        // path: cold (loadDocument), hot-switch (here), warm-restore
+        // re-attach. JS hooks `docready:` and routes it through a
+        // single `fireDocReady()` that fans out to existing signals.
+        // Phase 1 keeps the polling running in parallel + logs
+        // [event-vs-poll]; Phase 4 deletes the polling.
+        sendTextFrame("docready: viewid=" + std::to_string(_viewId)
+                      + " type=" + LOKitHelper::getDocumentTypeAsString(newDoc->get())
+                      + " path=switch");
+
         _isDocLoaded = true;
         LOG_INF("SWITCHDOC: complete, viewId=" << _viewId);
         // Re-target the wasm-side save path. Without this, every save
@@ -662,6 +676,15 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                           << " views=" << _docManager->getViewsCount()
                           << " isfirst=true";
                 sendTextFrame(loadedMsg.str());
+
+                // Event-driven doc-ready (warm-restore re-attach path).
+                // The snapshot already has the doc fully loaded; we're
+                // just re-binding the JS view to the existing kit-side
+                // model. Same `docready:` shape as cold/switch — JS
+                // routes all three through fireDocReady().
+                sendTextFrame("docready: viewid=" + std::to_string(_viewId)
+                              + " type=" + LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get())
+                              + " path=warm");
                 return true;
             }
 #endif
@@ -1548,6 +1571,12 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     oss << "loaded: viewid=" << _viewId << " views=" << _docManager->getViewsCount()
         << " isfirst=" << (isFirstView ? "true" : "false");
     sendTextFrame(oss.str());
+
+    // Event-driven doc-ready (cold-load path). See switchdocument
+    // emit site for the rationale; this is the cold-load counterpart.
+    sendTextFrame("docready: viewid=" + std::to_string(_viewId)
+                  + " type=" + LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get())
+                  + " path=cold");
 
 #ifdef __EMSCRIPTEN__
     MAIN_THREAD_EM_ASM({ console.log('TIMING: Loaded session (status+tiles sent to JS)'); });
