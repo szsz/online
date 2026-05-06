@@ -42,6 +42,7 @@ echo "Test output root: $TEST_OUTPUT_ROOT"
 # Each entry:  slug | script | human name | description | shots_dir_name
 TESTS=(
     "regression-snapshot-injection|test-regression-snapshot-injection.js|Regression: Snapshot Injection|deploy.sh HEAPU8 restore injection must be present in online.js — missing → warm visits re-run full init|none"
+    "regression-snapshot-survival|test-regression-snapshot-survival.js|Regression: Snapshot Survival across watchdog cycle|Heavy 50-slide pptx that exceeds the cross-type canvas-paint watchdog: snapshot must survive in Cache Storage so the next visit can warm-restore (was previously wiped by ?planc=0 path, putting the user in a permanent cold-loop). See incident 2026-05-06.|shots-regression-snapshot-survival"
     "regression-checkpoint-cursor-delete|test-regression-checkpoint-cursor-delete.js|Regression: Checkpoint Rotation + Cursor + Late-Join Delete|A inserts, B selects, A saves → checkpoint rotates with cursor snapshot, C joins and sees B's selection, B deletes and all three converge|shots-regression-checkpoint-cursor"
     "regression-insert-table|test-regression-insert-table.js|Regression: Insert Table (LO Core crash)|SvxAutoFormatData copy-ctor OOB in .uno:InsertTable — single-browser repro. Expected to FAIL until the LO Core fix lands.|shots-regression-insert-table"
     "relay|test-relay.js|Relay Test|WebSocket relay message ordering and delivery|none"

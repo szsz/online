@@ -9,6 +9,7 @@ this file is the authoritative spec.
 2. **Each tab has its own cursor.** Remote cursors are displayed as colored markers but never move the local cursor.
 3. **Every user-input action goes through the relay first.** The relay assigns a monotonically-increasing sequence number, broadcasts to all clients, and only then does each client apply the action. The relay is the single source of truth for total ordering.
 4. **The relay never stores file bytes.** It holds metadata: current checkpoint (`{hash, locator, seq, cursors}`) and a bounded broadcast messageLog.
+5. **Snapshots only contain prewarm-blank state — never any user file.** The HEAPU8 snapshot saved to Cache Storage represents Kit/COOLWSD with the empty `__prewarm_blank.<ext>` loaded for the captured doctype. Capturing user-doc state into the snapshot is forbidden: it would persist user content (potentially confidential) on disk in browser cache, leak across sessions / users on shared machines, and bake stale content that diverges from the canonical file in storage. The snapshot is purely a runtime warm-start optimisation (factories + module + blank doc loaded); the user's actual file is fetched and parsed on every visit through the normal load path.
 
 ## Services
 
