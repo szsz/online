@@ -78,6 +78,19 @@ const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`)
         if (t.startsWith('[OnDemandRenderer]')) events.push(t);
     });
 
+    // CRITICAL: set the debug flag BEFORE any iframe JS runs.
+    // page.evaluateOnNewDocument installs the script via CDP's
+    // Page.addScriptToEvaluateOnNewDocument and propagates it to
+    // every nested frame too — including the editor iframe.
+    // Without this, frame.evaluate(setFlag) runs AFTER the
+    // OnDemandRenderer.setupOnDemandRenderer calls have already
+    // fired (TileManager.appendAfterFirstTileTask runs them on the
+    // first tile, well before our 4s settle window) and the flag
+    // check returns false at every callsite — totalEvents=0.
+    await page.evaluateOnNewDocument(() => {
+        window.__l10nIconviewDebug = true;
+    });
+
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded',
                               timeout: env.scaleTimeout(120000) });
@@ -92,20 +105,34 @@ const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`)
         if (!frame) throw new Error('editor frame never loaded');
         await sleep(4000); // settle for stylesview population
 
-        // Flip the debug flag — also re-flip after a short delay in case
-        // the iframe is reparented during ribbon mount, which would
-        // discard the flag.
+        // Belt-and-braces: re-set in case the iframe document was
+        // recreated mid-load (cool.html navigates inside the iframe
+        // a couple of times during snapshot restore).
         await frame.evaluate(() => { window.__l10nIconviewDebug = true; });
-        log('debug flag set in iframe; observing for 4s of activity');
+        log(`debug flag locked in via evaluateOnNewDocument; ${events.length} events captured during initial mount`);
 
-        // Trigger ribbon Styles dropdown — this forces a fresh batch
-        // of iconview placeholder renders so we get a clean signal.
-        // The exact selector is brittle across builds; try a couple
-        // of fallbacks and don't fail if none hit.
+        // Force lazy renders: scroll the stylesview to the end then
+        // back to the start so every offscreen entry intersects the
+        // viewport at least once. Util.OnDemandRenderer uses an
+        // IntersectionObserver, so the entries that never come into
+        // view never request a render. Without this, only the
+        // initially-visible entries get logged.
+        await frame.evaluate(() => {
+            const sv = document.getElementById('stylesview');
+            if (!sv) return;
+            const entries = sv.querySelectorAll('.ui-iconview-entry');
+            for (const e of entries) {
+                e.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+            }
+        });
+        await sleep(2000);
+
+        // Also click the Styles dropdown if accessible — opens the
+        // full picker (different controlId from the ribbon strip).
         const dropdownSelectors = [
             '#stylesview-dropdown-image',
-            '#stylesview .ui-iconview-entry',
             '#paragraph-styles-button',
+            '.notebookbar #stylesview-arrow',
         ];
         for (const sel of dropdownSelectors) {
             const handle = await frame.$(sel).catch(() => null);
@@ -114,7 +141,7 @@ const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`)
                 catch (_) {}
             }
         }
-        await sleep(4000);
+        await sleep(2000);
 
         // Stop receiving events now — anything past this is noise.
         await frame.evaluate(() => { window.__l10nIconviewDebug = false; });
