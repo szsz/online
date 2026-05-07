@@ -1574,9 +1574,25 @@ bool ChildSession::loadDocument(const StringVector& tokens)
 
     // Event-driven doc-ready (cold-load path). See switchdocument
     // emit site for the rationale; this is the cold-load counterpart.
-    sendTextFrame("docready: viewid=" + std::to_string(_viewId)
-                  + " type=" + LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get())
-                  + " path=cold");
+    {
+        const std::string drFrame =
+            "docready: viewid=" + std::to_string(_viewId)
+            + " type=" + LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get())
+            + " path=cold";
+#ifdef __EMSCRIPTEN__
+        // Iter 2 diagnostic: confirm the cold-load emit actually fires
+        // by sync-logging immediately before sendTextFrame. The JS-side
+        // accessor hook on TheFakeWebSocket.onmessage logs `bridge:doc_ready
+        // kit-cold` when it sees the frame. If we see THIS console line
+        // but NOT the JS-side mark, the channel is dropping the frame.
+        // If we DON'T see THIS line, the cold-load loadDocument path
+        // simply isn't being reached for this scenario.
+        MAIN_THREAD_EM_ASM({
+            console.log('[KIT] about to sendTextFrame(' + UTF8ToString($0) + ')');
+        }, drFrame.c_str());
+#endif
+        sendTextFrame(drFrame);
+    }
 
 #ifdef __EMSCRIPTEN__
     MAIN_THREAD_EM_ASM({ console.log('TIMING: Loaded session (status+tiles sent to JS)'); });

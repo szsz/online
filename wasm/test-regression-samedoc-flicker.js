@@ -307,9 +307,36 @@ function fmtTimeline(samples, maxRows) {
         const fr3 = getEditorFrame(page);
         if (fr3) await installRecorder(fr3);
 
-        // Capture 6 seconds of post-settle samples.
-        log('Capturing 6s of post-switch title samples...');
-        await sleep(6000);
+        // Wait for the title to actually stabilize on A — poll until
+        // the input + document.title both equal NAME_A for 2 consecutive
+        // seconds (no further writes), with a 30 s ceiling. This
+        // replaces a fixed 6 s wait that was insufficient when the
+        // wasm-loader's 15 s `docNameSetInt` interval (per the
+        // root-cause comment up top) wrote a stale value AFTER the 6 s
+        // window closed, making the final-sampled value undeterministic
+        // on contended runs. "Wait for state, not for time" — once we
+        // see 2 s of A-only writes, the parallel intervals have
+        // converged and any subsequent assertion is deterministic.
+        log('Waiting for title to stabilize on A (max 30 s)...');
+        const stabT0 = Date.now();
+        let stableSince = null;
+        while (Date.now() - stabT0 < 30000) {
+            const fr = getEditorFrame(page);
+            if (!fr) { await sleep(200); continue; }
+            const cur = await fr.evaluate(() => {
+                const el = document.getElementById('document-name-input');
+                return { input: el ? el.value : '', title: document.title };
+            }).catch(() => null);
+            if (cur && cur.input === NAME_A && cur.title === NAME_A) {
+                if (stableSince === null) stableSince = Date.now();
+                if (Date.now() - stableSince >= 2000) break;
+            } else {
+                stableSince = null;
+            }
+            await sleep(200);
+        }
+        log(`Title stabilization wait: ${(Date.now() - stabT0) / 1000}s ` +
+            `(stable=${stableSince !== null})`);
         await snap(page, 'after_A2_settle');
 
         const fr = getEditorFrame(page);
