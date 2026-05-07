@@ -209,7 +209,8 @@ if command -v brotli >/dev/null 2>&1; then
         "$BUILD_DIR/browser/dist"/*.js \
         "$BUILD_DIR/browser/dist"/*.css \
         "$BUILD_DIR/browser/dist"/*.wasm \
-        "$BUILD_DIR/browser/dist"/*.data 2>/dev/null || \
+        "$BUILD_DIR/browser/dist"/*.data \
+        "$BUILD_DIR/browser/dist"/*.metadata 2>/dev/null || \
         echo "  WARNING: brotli-sidecar reported failures"
 else
     echo "  WARNING: brotli not on PATH — deploys will fall back to deploy-time brotli"
