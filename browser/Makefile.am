@@ -17,14 +17,17 @@ L10N_JSON = $(patsubst $(srcdir)/po/help-%.po,$(DIST_FOLDER)/l10n/help-%.json,$(
 L10N_JSON += $(patsubst $(srcdir)/po/ui-%.po,$(DIST_FOLDER)/l10n/ui-%.json,$(L10N_PO))
 else
 L10N_ALL_JS = $(DIST_FOLDER)/l10n-all.js
-L10N_JSON = $(L10N_ALL_JS)
+L10N_CHUNKS_DIR = $(DIST_FOLDER)/l10n-chunks
+L10N_CHUNKS_MANIFEST = $(L10N_CHUNKS_DIR)/l10n-manifest.json
+L10N_JSON = $(L10N_ALL_JS) $(L10N_CHUNKS_MANIFEST)
 L10N_ALL_JS_ENTRY = l10n-all.js
 
-$(L10N_ALL_JS) : $(wildcard $(srcdir)/po/ui-*.po) $(wildcard $(srcdir)/po/help-*.po) $(shell find $(srcdir)/l10n -name '*.*') $(srcdir)/util/create-l10n-all-js.py
+$(L10N_ALL_JS) $(L10N_CHUNKS_MANIFEST) : $(wildcard $(srcdir)/po/ui-*.po) $(wildcard $(srcdir)/po/help-*.po) $(shell find $(srcdir)/l10n -name '*.*') $(srcdir)/util/create-l10n-all-js.py
 	find $(srcdir)/po -name 'ui-*.po' -exec $(srcdir)/util/po2json.py {} -o {}.json \;
 	find $(srcdir)/po -name 'help-*.po' -exec $(srcdir)/util/po2json.py {} -o {}.json \;
-	@mkdir -p $(dir $@)
-	python3 $(srcdir)/util/create-l10n-all-js.py >$@
+	@mkdir -p $(dir $(L10N_ALL_JS))
+	@mkdir -p $(L10N_CHUNKS_DIR)
+	python3 $(srcdir)/util/create-l10n-all-js.py --chunks-dir $(L10N_CHUNKS_DIR) >$(L10N_ALL_JS)
 	find $(srcdir)/po -name 'ui-*.po.json' -delete
 	find $(srcdir)/po -name 'help-*.po.json' -delete
 endif
