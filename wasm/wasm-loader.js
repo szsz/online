@@ -522,10 +522,21 @@
 
     // Installer for the docready: text-frame parser. Runs idempotently;
     // can be called from multiple call sites (cold-load init below, the
-    // switch-flow's existing __switchMsgHooked block) — first one to find
-    // TheFakeWebSocket wins. Uses a polling installer (50 ms × 600) only
-    // because the WS is wired late by the WASM runtime; the actual hook
-    // is event-driven once installed.
+    // switch-flow's existing __switchMsgHooked block).
+    //
+    // Defended against re-assignment: COOL's browser/src/app/Socket.ts
+    // calls `this.socket.onmessage = this._slurpMessage.bind(this)` at
+    // line 292, which OVERWRITES any prior `onmessage` we installed.
+    // Plain wrap-then-assign loses the hook the moment Socket connects.
+    // Instead we install an accessor pair on `onmessage`: the setter
+    // re-wraps every newly-assigned handler with our docready: detector
+    // before storing it; the getter returns the wrapped version. Any
+    // future code that does `fws.onmessage = X` transparently gets
+    // `wrap(X)` instead — our docready: parsing chain is unbreakable.
+    //
+    // Uses a polling installer (50 ms × 600) only to wait for the
+    // FakeWebSocket itself to come into existence; the actual hook
+    // is purely event-driven once defineProperty lands.
     window.__docReadyHookInstalled = window.__docReadyHookInstalled || false;
     function installDocReadyHook() {
         if (window.__docReadyHookInstalled) return;
@@ -539,23 +550,40 @@
             clearInterval(iv);
             if (window.__docReadyHookInstalled) return;
             window.__docReadyHookInstalled = true;
-            var origOnMsg = fws.onmessage;
-            fws.onmessage = function (ev) {
-                var txt = (typeof ev.data === 'string' ? ev.data : '');
-                if (txt.indexOf('docready:') === 0) {
-                    // Parse "docready: viewid=N type=X path=Y"
-                    var m = /\btype=(\S+)/.exec(txt);
-                    var p = /\bpath=(\S+)/.exec(txt);
-                    var fired = fireDocReady({
-                        source: 'kit-' + (p ? p[1] : '?'),
-                        type: m ? m[1] : null,
-                    });
-                    if (fired) recordReadyArrival('kit');
-                }
-                if (typeof origOnMsg === 'function')
-                    return origOnMsg.apply(this, arguments);
-            };
-            mark('docready-hook:installed');
+            function wrapOnMessage(handler) {
+                return function (ev) {
+                    var txt = (typeof ev.data === 'string' ? ev.data : '');
+                    if (txt.indexOf('docready:') === 0) {
+                        // Parse "docready: viewid=N type=X path=Y"
+                        var m = /\btype=(\S+)/.exec(txt);
+                        var p = /\bpath=(\S+)/.exec(txt);
+                        var fired = fireDocReady({
+                            source: 'kit-' + (p ? p[1] : '?'),
+                            type: m ? m[1] : null,
+                        });
+                        if (fired) recordReadyArrival('kit');
+                    }
+                    if (typeof handler === 'function')
+                        return handler.apply(this, arguments);
+                };
+            }
+            var wrapped = wrapOnMessage(fws.onmessage);
+            try {
+                Object.defineProperty(fws, 'onmessage', {
+                    get: function () { return wrapped; },
+                    set: function (newHandler) { wrapped = wrapOnMessage(newHandler); },
+                    configurable: true,
+                    enumerable: true,
+                });
+                mark('docready-hook:installed', 'accessor');
+            } catch (e) {
+                // Defineproperty failed (some emscripten builds use a
+                // sealed object). Fall back to plain wrap — vulnerable
+                // to overwrite but at least catches any frame that
+                // arrives BEFORE Socket.ts:292 fires.
+                fws.onmessage = wrapped;
+                mark('docready-hook:installed', 'fallback err=' + e.message);
+            }
         }, 50);
     }
     // Kick off the cold-load installer immediately. Switch-flow path
