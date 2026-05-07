@@ -279,11 +279,16 @@ function baseName(filename) {
             await clickSidebarFile(page, next.fileId);
 
             // Wait for the editor iframe to reflect the new doctype.
-            // 180 s base budget scaled by env.scaleTimeout — under JOBS=2
-            // contention or background load, cold-load of an unseen doc-type
-            // (typically the first impress / pptx) can take 60–120 s on the
-            // dev box, and "stuck" only really starts past ~3 min.
-            const status = await waitForDoctype(page, next, env.scaleTimeout(180000));
+            // Doctype-specific budget — impress cold-load on Azure under
+            // contention (JOBS=2) routinely runs 240-360 s, exceeding
+            // the 180 s base used for writer/calc. Step 4 (calc→impress
+            // first impress encounter) timed out at 360 s in
+            // local-2026-05-07-27 while every subsequent step completed
+            // in under 1 s. Impress gets a 360 s base (= 720 s under
+            // JOBS=2) — 2× the observed worst-case; writer/calc stay at
+            // 180 s since they cold-load in 30-60 s.
+            const baseBudgetMs = next.type === 'impress' ? 360000 : 180000;
+            const status = await waitForDoctype(page, next, env.scaleTimeout(baseBudgetMs));
             const dt = Date.now() - tCell;
 
             // Check the title bar, with its own settle window — the title
