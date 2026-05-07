@@ -68,7 +68,7 @@ const httpGet = fetchUrl;
     check('viewer / reachable', viewer.status === 200);
     check('viewer arms __crossTypeWatchdog',
           viewer.body.includes('__crossTypeWatchdog') &&
-          viewer.body.includes('30000'));
+          viewer.body.includes('180000'));
     check('viewer latches __warmRestoreFailedThisSession on watchdog fire',
           viewer.body.includes('__warmRestoreFailedThisSession = true'));
     check('viewer applies planc=0 when warm-restore latched',
