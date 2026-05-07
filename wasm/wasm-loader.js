@@ -522,21 +522,26 @@
 
     // Installer for the docready: text-frame parser. Runs idempotently;
     // can be called from multiple call sites (cold-load init below, the
-    // switch-flow's existing __switchMsgHooked block).
+    // switch-flow's existing __switchMsgHooked block) — first one to find
+    // TheFakeWebSocket wins. Uses a polling installer (50 ms × 600) only
+    // because the WS is wired late by the WASM runtime; the actual hook
+    // is event-driven once installed.
     //
-    // Defended against re-assignment: COOL's browser/src/app/Socket.ts
-    // calls `this.socket.onmessage = this._slurpMessage.bind(this)` at
-    // line 292, which OVERWRITES any prior `onmessage` we installed.
-    // Plain wrap-then-assign loses the hook the moment Socket connects.
-    // Instead we install an accessor pair on `onmessage`: the setter
-    // re-wraps every newly-assigned handler with our docready: detector
-    // before storing it; the getter returns the wrapped version. Any
-    // future code that does `fws.onmessage = X` transparently gets
-    // `wrap(X)` instead — our docready: parsing chain is unbreakable.
-    //
-    // Uses a polling installer (50 ms × 600) only to wait for the
-    // FakeWebSocket itself to come into existence; the actual hook
-    // is purely event-driven once defineProperty lands.
+    // KNOWN LIMITATION (logged for the next iteration to address):
+    // Plain wrap-then-assign loses the hook the moment COOL's
+    // browser/src/app/Socket.ts:292 runs `this.socket.onmessage =
+    // this._slurpMessage.bind(this)` after Socket connects. So this
+    // hook only sees frames that arrive BEFORE Socket connects (rare
+    // — kit emits docready: AFTER doc loads which is well after
+    // Socket connects). A previous attempt to fix this with
+    // Object.defineProperty(fws, 'onmessage', { get, set }) broke
+    // COOL's normal message processing across 27+ test surfaces
+    // (build local-2026-05-07-28: 31p/50f vs 77p/4f baseline) and
+    // was reverted. The structural fix is to install the parser at a
+    // different layer (e.g. patch send2JS in wasm/wasmapp.cpp to
+    // dispatch a separate docready: handler before forwarding to
+    // TheFakeWebSocket.onmessage). Tracked in the dev-iterate
+    // backlog as "iter 2 redo: kit-side dispatch fork for docready:".
     window.__docReadyHookInstalled = window.__docReadyHookInstalled || false;
     function installDocReadyHook() {
         if (window.__docReadyHookInstalled) return;
@@ -550,40 +555,23 @@
             clearInterval(iv);
             if (window.__docReadyHookInstalled) return;
             window.__docReadyHookInstalled = true;
-            function wrapOnMessage(handler) {
-                return function (ev) {
-                    var txt = (typeof ev.data === 'string' ? ev.data : '');
-                    if (txt.indexOf('docready:') === 0) {
-                        // Parse "docready: viewid=N type=X path=Y"
-                        var m = /\btype=(\S+)/.exec(txt);
-                        var p = /\bpath=(\S+)/.exec(txt);
-                        var fired = fireDocReady({
-                            source: 'kit-' + (p ? p[1] : '?'),
-                            type: m ? m[1] : null,
-                        });
-                        if (fired) recordReadyArrival('kit');
-                    }
-                    if (typeof handler === 'function')
-                        return handler.apply(this, arguments);
-                };
-            }
-            var wrapped = wrapOnMessage(fws.onmessage);
-            try {
-                Object.defineProperty(fws, 'onmessage', {
-                    get: function () { return wrapped; },
-                    set: function (newHandler) { wrapped = wrapOnMessage(newHandler); },
-                    configurable: true,
-                    enumerable: true,
-                });
-                mark('docready-hook:installed', 'accessor');
-            } catch (e) {
-                // Defineproperty failed (some emscripten builds use a
-                // sealed object). Fall back to plain wrap — vulnerable
-                // to overwrite but at least catches any frame that
-                // arrives BEFORE Socket.ts:292 fires.
-                fws.onmessage = wrapped;
-                mark('docready-hook:installed', 'fallback err=' + e.message);
-            }
+            var origOnMsg = fws.onmessage;
+            fws.onmessage = function (ev) {
+                var txt = (typeof ev.data === 'string' ? ev.data : '');
+                if (txt.indexOf('docready:') === 0) {
+                    // Parse "docready: viewid=N type=X path=Y"
+                    var m = /\btype=(\S+)/.exec(txt);
+                    var p = /\bpath=(\S+)/.exec(txt);
+                    var fired = fireDocReady({
+                        source: 'kit-' + (p ? p[1] : '?'),
+                        type: m ? m[1] : null,
+                    });
+                    if (fired) recordReadyArrival('kit');
+                }
+                if (typeof origOnMsg === 'function')
+                    return origOnMsg.apply(this, arguments);
+            };
+            mark('docready-hook:installed');
         }, 50);
     }
     // Kick off the cold-load installer immediately. Switch-flow path
