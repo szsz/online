@@ -113,6 +113,17 @@
             // Primary tag (covers "de-AT" → "de", "fr-CA" → "fr")
             const primary = tag.split('-')[0];
             if (AVAILABLE.indexOf(primary) >= 0) return primary;
+            // English doesn't have a code in AVAILABLE — the empty-
+            // LOCALIZATIONS path is the English UI. If a user's
+            // PRIMARY navigator.languages entry is some flavor of
+            // English (en-US, en-CA, en, …), respect it as English
+            // rather than continuing to the next preference. Without
+            // this, a user with ['en-US', 'de'] (English speaker
+            // with German fallback) would silently get the German
+            // UI because en-US doesn't exact-match and primary
+            // 'en' isn't in AVAILABLE — the loop would advance to
+            // 'de' and return that.
+            if (primary === 'en') return 'en';
         }
         return 'en';
     }

@@ -263,29 +263,71 @@ function rewriteCoolHtml(dir, assetHashMap) {
     // (soffice.data{.js.metadata}); and (b) wasm-loader.js's
     // document.write that bootstraps online.js. Include the FULL hash
     // map so both consumers can resolve any asset name.
-    const alreadyInjected = html.includes('window.__assetMap');
-    if (!alreadyInjected) {
-        const inject = buildPreloadHints(assetHashMap)
-            + buildLocateFileShim(assetHashMap) + WASM_LOADER_INJECT_STATIC;
+    // Inject (or RE-inject) the preload hints, locateFile + LANG-init
+    // shim, and the wasm-loader/relay-adapter script tags as ONE
+    // block bracketed by HTML markers. We always re-emit the full
+    // block rather than partially patching the existing one — the
+    // partial-patch path used to update only the __assetMap value
+    // and re-emit preload hints, leaving the rest of the shim body
+    // untouched. That made additions to the shim template (e.g. iter
+    // 76878b9069's window.LANG initializer) silently skip on every
+    // subsequent deploy that ran cache-bust against an already-
+    // injected cool.html — the editor shipped without the LANG init
+    // for weeks because the shim's first version got frozen.
+    //
+    // The <!-- markers --> let future runs find begin/end
+    // deterministically regardless of what cache-bust prepended in
+    // the past (older runs without preload hints, future runs with
+    // additional script tags, etc.). The markers go inside the
+    // generated block so they roll forward together.
+    const INJECT_BEGIN = '<!-- COOL_CACHE_BUST_INJECT_BEGIN -->';
+    const INJECT_END   = '<!-- COOL_CACHE_BUST_INJECT_END -->';
+    const inject = INJECT_BEGIN + '\n'
+        + buildPreloadHints(assetHashMap)
+        + buildLocateFileShim(assetHashMap)
+        + WASM_LOADER_INJECT_STATIC
+        + INJECT_END + '\n';
+
+    const beginIdx = html.indexOf(INJECT_BEGIN);
+    const endIdx   = html.indexOf(INJECT_END);
+    if (beginIdx >= 0 && endIdx > beginIdx) {
+        // Both markers present — replace the bracketed block.
+        html = html.slice(0, beginIdx) + inject
+             + html.slice(endIdx + INJECT_END.length).replace(/^\s*\n/, '');
+        console.log('  cool.html: replaced previous inject block (bracketed by markers)');
+    } else if (html.includes('window.__assetMap')) {
+        // Legacy un-bracketed inject from an older cache-bust-build.js.
+        // Strip everything from the first <link rel="preload"> (or the
+        // locateFile shim's opening <script> if no preload hints) through
+        // the relay-adapter <script> tag, then emit the fresh bracketed
+        // block in its place. Greedy match is safe because the inject
+        // block is the only place these tags appear in cool.html.
+        const startTry = [
+            html.indexOf('<link rel="preload"'),
+            html.indexOf('<script>\n(function(){\n  window.__assetMap'),
+        ].filter(i => i >= 0);
+        const stripStart = startTry.length ? Math.min(...startTry) : -1;
+        // Find the LAST relay-adapter <script>...</script> in the
+        // inject block. The block ends with the relay-adapter tag.
+        const relayMatch = html.match(/<script[^>]*src="relay-adapter[^"]*"[^>]*>\s*<\/script>/);
+        const stripEnd = relayMatch
+            ? (html.indexOf(relayMatch[0]) + relayMatch[0].length)
+            : -1;
+        if (stripStart >= 0 && stripEnd > stripStart) {
+            html = html.slice(0, stripStart) + inject
+                 + html.slice(stripEnd).replace(/^\s*\n/, '');
+            console.log('  cool.html: migrated legacy inject block to bracketed form');
+        } else {
+            console.log('  cool.html: WARN: __assetMap present but legacy strip markers not found; skipping re-inject (run with a fresh cool.html to re-bracket)');
+        }
+    } else {
+        // Fresh cool.html — first-time inject.
         const anchor = '<input type="hidden" id="init-mobile-app-os-type" value="EMSCRIPTEN" />';
         if (html.includes(anchor)) {
             html = html.replace(anchor, anchor + '\n' + inject);
         } else {
             html = html.replace('</body>', inject + '</body>');
         }
-    } else {
-        console.log('  cool.html: inject already present, refreshing __assetMap + preload hints');
-        html = html.replace(
-            /window\.__assetMap\s*=\s*\{[^}]*\};/,
-            'window.__assetMap = ' + JSON.stringify(assetHashMap) + ';');
-        // Refresh preload hints (URLs may have rolled). Drop any prior
-        // preload block then re-emit the current set just before the
-        // first locateFile shim.
-        html = html.replace(
-            /(?:<link rel="preload"[^>]+>\s*\n?)+/g, '');
-        html = html.replace('<script>\n(function(){\n  window.__assetMap',
-            buildPreloadHints(assetHashMap) +
-            '<script>\n(function(){\n  window.__assetMap');
     }
 
     // Rewrite refs to the current hashed names. We have to handle two
