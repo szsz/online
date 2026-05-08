@@ -275,6 +275,45 @@
         });
     };
 
+    // ── BCP 47 locale → manifest-lang resolver ──────────────────
+    // Callable from anywhere in the editor (StatusBar's
+    // LanguageStatus handler, kit-side language-tag events, the
+    // viewer-side document-language probe). Maps a runtime locale
+    // tag like "fr-FR" / "de-DE" / "pt-BR" / "zh-Hans-CN" to whatever
+    // the manifest actually ships, then dispatches via the
+    // idempotent loadDictionary above. Returns a resolved promise
+    // (with { skipped: 'no-manifest-match' }) when the locale has
+    // no shipping dict — so callers can `.catch(()=>{})` blindly.
+    //
+    // Resolution order (mirrors pickLang's primary-preload logic):
+    //   1. Exact lowercase match against manifest.lang
+    //      ("fr_fr" → "fr_FR" if shipped — note manifest already
+    //      lowercases its `lang` keys at build time).
+    //   2. Primary subtag exact match (drop region):
+    //      "en-us" → primary "en" → exact "en" in manifest.
+    //   3. Primary subtag prefix match:
+    //      "fr-CA" → primary "fr" → manifest "fr_FR" via
+    //      indexOf(primary + '_') === 0.
+    //   4. None of the above → resolve { skipped }.
+    globalThis.loadDictionaryForLocale = function(bcp47) {
+        if (!state.manifest) {
+            return Promise.reject(new Error('manifest not loaded yet'));
+        }
+        var lc = String(bcp47 || '').toLowerCase().replace(/_/g, '-');
+        if (!lc) return Promise.resolve({ lang: '', skipped: 'empty-locale' });
+        var exact = state.manifest.find(function(e) { return e.lang.toLowerCase() === lc; });
+        if (exact) return globalThis.loadDictionary(exact.lang);
+        var primary = lc.split('-')[0];
+        var primaryExact = state.manifest.find(function(e) { return e.lang.toLowerCase() === primary; });
+        if (primaryExact) return globalThis.loadDictionary(primaryExact.lang);
+        var prefix = state.manifest.find(function(e) {
+            var ml = e.lang.toLowerCase();
+            return ml.indexOf(primary + '_') === 0 || ml.indexOf(primary + '-') === 0;
+        });
+        if (prefix) return globalThis.loadDictionary(prefix.lang);
+        return Promise.resolve({ lang: bcp47, skipped: 'no-manifest-match' });
+    };
+
     // Debug surface.
     globalThis.__dictLoader = state;
 })();
