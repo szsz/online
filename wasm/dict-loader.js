@@ -174,6 +174,14 @@
         manifest: null,
         primaryLang: null,
         primaryWritten: false,
+        // Tracks every language whose tar has been fetched + unpacked
+        // into Module.FS, primary or reactive. loadDictionary() reads
+        // this to skip a redundant fetch when a viewer or kit-side
+        // event-driven path requests the same lang twice (mixed-
+        // language docs trigger a load per paragraph locale; without
+        // dedup we'd re-fetch the same ~2-5 MB bundle on every
+        // language-tag swap).
+        loaded: Object.create(null),
     };
 
     // Hook strategy: poll until `globalThis.Module.addRunDependency` is
@@ -217,6 +225,7 @@
                 log('preloading', lang, 'for navigator.language=' + navigator.language);
                 return fetchAndInstall(lang).then(function() {
                     state.primaryWritten = true;
+                    state.loaded[lang] = true;
                     log('primary ready in', (performance.now() - t0).toFixed(0) + 'ms');
                 }).then(done);
             })
@@ -250,10 +259,18 @@
         if (!state.manifest) {
             return Promise.reject(new Error('manifest not loaded yet'));
         }
-        if (lang === state.primaryLang && state.primaryWritten) {
+        // Idempotent: any language we've already written to FS short-
+        // circuits to a resolved cached promise. Tracked via
+        // state.loaded (populated by both the primary preload and
+        // reactive loads below). Without this check, a viewer or
+        // kit-side event handler that fires loadDictionary() on every
+        // paragraph-language event would re-fetch the same 2-5 MB
+        // bundle each time.
+        if (state.loaded[lang]) {
             return Promise.resolve({ lang: lang, cached: true });
         }
         return fetchAndInstall(lang).then(function() {
+            state.loaded[lang] = true;
             return { lang: lang };
         });
     };
