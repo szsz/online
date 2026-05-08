@@ -1285,6 +1285,35 @@ void Document::trimAfterInactivity()
         }
         return;
     }
+#ifdef LOK_CALLBACK_DOCUMENT_READY
+    // task #116 / iter 40 — when LO core emits the new
+    // LOK_CALLBACK_DOCUMENT_READY enum (reserved by libreoffice-
+    // core-wasm PR #4 at value 75), forward it to JS via the same
+    // `docready:` text-frame shape ChildSession.cpp emits at three
+    // sites today. wasm-loader.js's fireDocReady hook is
+    // idempotent — duplicate fires (kit-side text frame + this
+    // callback once LO wires emit) are safely deduped.
+    //
+    // Guarded by #ifdef so this compiles against an old LO build
+    // that hasn't ratified the enum yet (the validate-lo-build CI
+    // step pins LO_BUILD_ID, but local-deploy can use older LO
+    // artefacts). The actual emit lands in a follow-up LO PR;
+    // until then, this branch is unreachable.
+    else if (type == LOK_CALLBACK_DOCUMENT_READY)
+    {
+        Document* document = descriptor->getDoc();
+        if (document)
+        {
+            std::shared_ptr<ChildSession> session = document->findSessionByViewId(descriptor->getViewId());
+            if (session)
+            {
+                session->sendTextFrame("docready: viewid=" + std::to_string(descriptor->getViewId())
+                                       + " path=lok-callback");
+            }
+        }
+        return;
+    }
+#endif
 
     // merge various callback types together if possible
     if (type == LOK_CALLBACK_INVALIDATE_TILES)

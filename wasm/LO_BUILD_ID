@@ -12,6 +12,10 @@
 #
 # History:
 #   2026-04-26-3   first successful LO CI build
-#   2026-05-03-18  current pin — git_sha b8763b46 ("WASM: weak stub for
+#   2026-05-03-18  git_sha b8763b46 ("WASM: weak stub for
 #                  wasm_quiesce_wake_main in standalone soffice.js")
-2026-05-03-18
+#   2026-05-08-20  current pin — git_sha dd239876 ("WASM: reserve
+#                  LOK_CALLBACK_DOCUMENT_READY=75 protocol number").
+#                  Reserves the enum value Online's kit/Kit.cpp now
+#                  forwards (#ifdef-guarded; emit is a follow-up LO PR).
+2026-05-08-20
