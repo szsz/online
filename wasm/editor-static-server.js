@@ -72,10 +72,45 @@ setInterval(() => {
 // HASHED_RE (<base>.<8 hex>.<ext>) gets served immutable.
 const HASHED_RE = /\.[0-9a-f]{8}\.(?:js|css|wasm|data|metadata)$/;
 
+// ── Per-deploy folder prefix ────────────────────────────────────
+// Mirrors editor-server.js. Each editor build deploys into
+// $PUB/<APP_BUILD_ID>/. URLs shaped `/<id>/...` route file lookups into
+// that subfolder; unprefixed URLs route via the "current" pointer
+// (resolved at request time from $PUB/current-deploy.txt, which the
+// deploy step writes). Server-side endpoints (/wasm/, /reports/,
+// /clipboard) stay flat at $PUB/$DOCS — they're not per-deploy.
+//
+// We resolve from a file (not env) so a CI deploy can flip the pointer
+// without restarting the server. The file is small (one line), and
+// fs.statSync is cheap (~µs); we mtime-cache the parsed id to avoid
+// reparsing on every request. The DEFAULT_DEPLOY_ID env var, if set,
+// is used as a bootstrap fallback before the pointer file exists.
+const DEPLOY_ID_RE = /^\/(\d{4}-\d{2}-\d{2}-\d{6})(?:\/|$)/;
+const POINTER_FILE = path.join(PUB, 'current-deploy.txt');
+const _pointerCache = { mtimeMs: 0, id: '' };
+function readDefaultDeployId() {
+    try {
+        const stat = fs.statSync(POINTER_FILE);
+        if (_pointerCache.mtimeMs !== stat.mtimeMs) {
+            const raw = fs.readFileSync(POINTER_FILE, 'utf8').trim();
+            _pointerCache.mtimeMs = stat.mtimeMs;
+            _pointerCache.id = /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(raw) ? raw : '';
+        }
+        return _pointerCache.id;
+    } catch (_) {
+        // Pointer file missing: bootstrap from env (e.g. when the
+        // server was started before the first per-deploy ran).
+        const env = (process.env.DEFAULT_DEPLOY_ID || '').trim();
+        return /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(env) ? env : '';
+    }
+}
+
 // Iter 58: in-memory cache for cool.html. Read once, hold the bytes,
 // invalidate on mtime change. Every iframe load hits this path so even
 // the small readFileSync (~30 KB) shows up under load.
-const _coolCache = { mtimeMs: 0, body: null, etag: null };
+// Per-deploy mode: multiple cool.html files at different paths, so the
+// cache is keyed on the resolved filepath.
+const _coolCache = new Map(); // filepath -> { mtimeMs, body, etag }
 
 // SIGHUP is no-op now (used to trigger runtime rehashing). Kept as a
 // handler so the default SIGHUP-kills-process behaviour doesn't tear
@@ -136,6 +171,22 @@ function handler(req, res) {
 
     const parsed = url.parse(req.url);
     let pathname = decodeURIComponent(parsed.pathname);
+
+    // Per-deploy: if the URL starts with /<id>/, strip the prefix and
+    // route file lookups into $PUB/<id>/. If no prefix but a default
+    // deploy id is configured (via $PUB/current-deploy.txt written by
+    // the deploy step), use that. Server-side endpoints below (/wasm/,
+    // /reports/, /clipboard) continue to use PUB/DOCS — they are not
+    // per-deploy and ignore effectivePub.
+    let effectivePub = PUB;
+    const __prefixMatch = pathname.match(DEPLOY_ID_RE);
+    if (__prefixMatch) {
+        effectivePub = path.join(PUB, __prefixMatch[1]);
+        pathname = pathname.slice(__prefixMatch[0].length - 1) || '/';
+    } else {
+        const defaultId = readDefaultDeployId();
+        if (defaultId) effectivePub = path.join(PUB, defaultId);
+    }
 
     // /collabora-online-mobile/cool/clipboard — COOL's Clipboard.js in
     // WASM mode POSTs clipboard data here so the upload→paste cycle works
@@ -210,10 +261,24 @@ function handler(req, res) {
         return;
     }
 
-    // Default: serve from PUB (and special-case `/` → editor.html).
+    // Per-deploy build-info.json — for the regression test that probes
+    // ${EDITOR}/<id>/build-info.json. Lives at the root of each <id>/
+    // folder (effectivePub). In flat mode (no deploy-id prefix and no
+    // default), the file doesn't exist and 404 falls through naturally.
+    if (pathname === '/build-info.json') {
+        const bi = path.join(effectivePub, 'build-info.json');
+        if (fs.existsSync(bi)) {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+            res.end(fs.readFileSync(bi));
+            return;
+        }
+        // fall through to generic 404
+    }
+
+    // Default: serve from effectivePub (and special-case `/` → editor.html).
     if (pathname === '/') pathname = '/editor.html';
     if (pathname === '/editor.html') {
-        const p = path.join(PUB, 'browser/editor.html');
+        const p = path.join(effectivePub, 'browser/editor.html');
         if (fs.existsSync(p)) {
             res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
             res.end(fs.readFileSync(p));
@@ -233,34 +298,38 @@ function handler(req, res) {
     // a full-body 200 even though the browser already had it. Mirrors
     // editor-server.js iter 53 (Azure side).
     if (pathname.endsWith('/cool.html')) {
-        const filepath = path.join(PUB, pathname);
+        const filepath = path.join(effectivePub, pathname);
         if (fs.existsSync(filepath)) {
             const stat = fs.statSync(filepath);
-            if (_coolCache.mtimeMs !== stat.mtimeMs || !_coolCache.body) {
-                _coolCache.body = fs.readFileSync(filepath);
-                _coolCache.mtimeMs = stat.mtimeMs;
-                _coolCache.etag = '"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"';
+            let entry = _coolCache.get(filepath);
+            if (!entry || entry.mtimeMs !== stat.mtimeMs) {
+                entry = {
+                    body: fs.readFileSync(filepath),
+                    mtimeMs: stat.mtimeMs,
+                    etag: '"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"',
+                };
+                _coolCache.set(filepath, entry);
             }
             const headers = {
                 'Content-Type': 'text/html; charset=utf-8',
                 'Cache-Control': 'no-cache',
-                'ETag': _coolCache.etag,
+                'ETag': entry.etag,
                 'Last-Modified': new Date(stat.mtimeMs).toUTCString(),
             };
             const ims = req.headers['if-modified-since'];
             const imsHit = ims && new Date(ims).getTime() >= Math.floor(stat.mtimeMs / 1000) * 1000;
-            if (req.headers['if-none-match'] === _coolCache.etag || imsHit) {
+            if (req.headers['if-none-match'] === entry.etag || imsHit) {
                 res.writeHead(304, headers);
                 res.end();
                 return;
             }
             res.writeHead(200, headers);
-            res.end(_coolCache.body);
+            res.end(entry.body);
             return;
         }
     }
 
-    const filepath = path.join(PUB, pathname);
+    const filepath = path.join(effectivePub, pathname);
     if (!fs.existsSync(filepath) || !fs.statSync(filepath).isFile()) {
         res.writeHead(404); res.end('Not found: ' + pathname); return;
     }

@@ -48,6 +48,11 @@ done < "$ENV_FILE"
 : "${RELAY_URL:?RELAY_URL must be set in $ENV_FILE}"
 export VIEWER_URL="$FILE_STORAGE_URL"
 export TEST_TARGET="local-host"
+# Per-deploy folder id — surfaces to test-env.js as env.EDITOR_DEPLOY_ID.
+# test-regression-editor-deploy-folder.js uses it to construct the
+# explicit /<id>/ probe URL. Other tests stay on flat URLs which
+# editor-static-server.js transparently routes via DEFAULT_DEPLOY_ID.
+export EDITOR_DEPLOY_ID="$APP_BID"
 # JOBS_SCALE=1 — no contention on the local host; tests run as fast
 # as the deployed code allows. (Set higher manually if running parallel
 # CI jobs hit the same box.)
