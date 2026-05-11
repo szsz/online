@@ -96,12 +96,25 @@ if (DOWNLOAD_BUDGET_MS > 0 && !process.env.__DOWNLOAD_BUDGET_ANNOUNCED) {
     console.log(`[test-env] DOWNLOAD_BUDGET_MS=${DOWNLOAD_BUDGET_MS} — added to every patience budget for slow-remote download wait`);
 }
 
+// Per-deploy editor folder id. Each editor build deploys to
+// ${EDITOR_URL}/<EDITOR_DEPLOY_ID>/. The CI deploy step exports this
+// (resolved from APP_BUILD_ID) into the test process's env. When unset
+// (local dev with a flat editor, or pre-Phase-2 deploys), tests should
+// fall through to the legacy non-prefixed URLs — i.e.
+//   `${EDITOR_URL}${EDITOR_DEPLOY_PREFIX}/browser/cool.html`
+// where EDITOR_DEPLOY_PREFIX is '' (empty) for flat and
+// '/2026-05-11-085500' for per-deploy.
+const EDITOR_DEPLOY_ID = (process.env.EDITOR_DEPLOY_ID || '').trim();
+const EDITOR_DEPLOY_PREFIX = EDITOR_DEPLOY_ID ? '/' + EDITOR_DEPLOY_ID : '';
+
 module.exports = {
     EDITOR_URL: process.env.EDITOR_URL,
     FILE_STORAGE_URL: process.env.FILE_STORAGE_URL,
     RELAY_URL: process.env.RELAY_URL,
     RELAY_HTTP_URL: RELAY_HTTP,
     VIEWER_URL: process.env.VIEWER_URL,
+    EDITOR_DEPLOY_ID,
+    EDITOR_DEPLOY_PREFIX,
     JOBS_SCALE,
     scaleTimeout,
 };

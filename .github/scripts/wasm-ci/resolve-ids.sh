@@ -15,7 +15,16 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 ensure_storage_key
 
-APP_BUILD_ID="$(date -u +%Y-%m-%d)-${GH_RUN_NUMBER}"
+# APP_BUILD_ID is the unique key for this deploy. Format: YYYY-MM-DD-HHMMSS
+# (UTC, second resolution). Unique by construction — CI runs that happen
+# to overlap within the same second would collide, but the wasm-ci-local
+# workflow's concurrency group + the host-level flock in build-online.sh
+# already serialise builds on this host. Each editor deploy lives at
+# ${EDITOR_STATIC}/<APP_BUILD_ID>/, and the viewer's pointer file
+# (wasm/viewer-config.json, NOT in git) names the id the viewer should
+# iframe into. GH_RUN_NUMBER is still passed in by the workflow but no
+# longer participates in the id — sortable + human-readable wins.
+APP_BUILD_ID="$(date -u +%Y-%m-%d-%H%M%S)"
 
 LO_BID="${LO_BUILD_ID_OVERRIDE:-}"
 if [[ -z "$LO_BID" ]]; then

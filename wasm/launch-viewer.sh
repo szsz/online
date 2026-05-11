@@ -60,6 +60,41 @@ for var in FILE_STORAGE_URL EDITOR_URL RELAY_URL; do
     fi
 done
 
+# The viewer iframes into ${EDITOR_URL}/<editor_deploy_id>/cool.html. The
+# id comes from VIEWER_CONFIG_FILE (a small JSON on this host, NOT in
+# git). An operator updates it via wasm/promote-editor.sh when ready to
+# flip the viewer to a freshly-deployed editor. Refuse to start without
+# the file — running with a missing pointer would silently fall through
+# to legacy flat URLs and confuse the rollout.
+#
+# Exception: if VIEWER_CONFIG_FILE is explicitly unset/empty in the
+# calling environment AND .env, we tolerate that as "I'm in local dev,
+# editor is flat, no pointer needed". Production callers MUST set it in
+# .env so this check fires.
+if [[ -n "${VIEWER_CONFIG_FILE:-}" ]]; then
+    # Expand ~ to $HOME (Node's expandHome handles this too, but the
+    # existence check below needs the absolute path).
+    case "$VIEWER_CONFIG_FILE" in
+        '~/'*) VIEWER_CONFIG_FILE="$HOME/${VIEWER_CONFIG_FILE#~/}" ;;
+        '~')   VIEWER_CONFIG_FILE="$HOME" ;;
+    esac
+    if [[ ! -f "$VIEWER_CONFIG_FILE" ]]; then
+        echo "ERROR: VIEWER_CONFIG_FILE=$VIEWER_CONFIG_FILE does not exist." >&2
+        echo "       Create it with the current editor deploy id, e.g.:" >&2
+        echo "         echo '{\"editor_deploy_id\":\"\"}' > $VIEWER_CONFIG_FILE" >&2
+        echo "       Then update it with the real id via:" >&2
+        echo "         bash wasm/promote-editor.sh <YYYY-MM-DD-HHMMSS>" >&2
+        exit 1
+    fi
+    # Sanity-parse the JSON so we fail-fast on a typo'd file rather than
+    # letting the viewer serve broken config until the operator notices.
+    if ! python3 -c "import json,sys; json.load(open('$VIEWER_CONFIG_FILE'))" 2>/dev/null; then
+        echo "ERROR: VIEWER_CONFIG_FILE=$VIEWER_CONFIG_FILE is not valid JSON." >&2
+        exit 1
+    fi
+    export VIEWER_CONFIG_FILE
+fi
+
 # Bridge the dev-box MI gap: this VM's Managed Identity has Contributor
 # on coolwasmfiles (control-plane → can list account keys) but NOT
 # Storage Blob Data Contributor (data-plane → blob writes 401). So

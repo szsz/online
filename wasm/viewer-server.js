@@ -56,6 +56,37 @@ const ALLOW_ANY = ALLOWED_ORIGINS.length === 1 && ALLOWED_ORIGINS[0] === '*';
 const VIEWER_PUBLIC = process.env.VIEWER_PUBLIC
     || path.join(__dirname, 'viewer-public');
 
+// ── Viewer → editor pointer ────────────────────────────────────────
+// Each editor deploy lives at ${EDITOR_URL}/<editor_deploy_id>/. This
+// viewer reads VIEWER_CONFIG_FILE to learn which deploy to iframe into.
+// The file is JSON: { "editor_deploy_id": "2026-05-11-085500" }.
+// fs.watchFile picks up operator-initiated pointer flips (via
+// wasm/promote-editor.sh) without a server restart.
+//
+// In flat-editor mode (local dev), editor_deploy_id is empty/missing
+// and the viewer falls back to legacy non-prefixed iframe URLs.
+function expandHome(p) {
+    if (!p) return p;
+    if (p === '~' || p.startsWith('~/')) return path.join(process.env.HOME || '', p.slice(1));
+    return p;
+}
+const VIEWER_CONFIG_FILE = expandHome(process.env.VIEWER_CONFIG_FILE || '');
+function readViewerConfig() {
+    if (!VIEWER_CONFIG_FILE) return { editor_deploy_id: '' };
+    try {
+        const raw = fs.readFileSync(VIEWER_CONFIG_FILE, 'utf8');
+        const parsed = JSON.parse(raw);
+        return { editor_deploy_id: String(parsed.editor_deploy_id || '') };
+    } catch (e) {
+        // Missing-or-invalid file is non-fatal at request time; we log
+        // and return empty so the viewer keeps working in legacy mode.
+        // launch-viewer.sh is the right place to fail-fast on missing
+        // config before the server even starts.
+        console.warn('[viewer-config] cannot read ' + VIEWER_CONFIG_FILE + ': ' + e.message);
+        return { editor_deploy_id: '' };
+    }
+}
+
 const app = express();
 
 // ── Cross-origin isolation ──────────────────────────────────────
@@ -156,22 +187,40 @@ for (const p of ['/help', '/help.html']) {
 // ── GET /config.js — inject deployment URLs into the viewer ────
 // The viewer's index.html does <script src="/config.js"></script>
 // before its own JS runs, so window.__CONFIG.EDITOR_URL / .RELAY_URL
-// are set before any code reads them.
+// / .EDITOR_DEPLOY_ID are set before any code reads them.
 //
-// Iter 54: the config payload is fixed for the lifetime of the
-// viewer process (set at startup from .env). Send a stable ETag
-// based on the payload hash so revisits 304 instead of re-downloading
-// the (~120 byte) script. Tiny wire saving but freezes a step that
-// runs before the page's own JS — saves a millisecond on every
-// navigation. Cache-Control stays no-cache so a process restart
-// (env change) is picked up via the conditional GET.
-const _configPayload = 'window.__CONFIG = ' + JSON.stringify({
-    EDITOR_URL,
-    RELAY_URL,
-    VIEWER_URL,
-}) + ';';
-const _configETag = '"' + require('crypto').createHash('sha256')
-    .update(_configPayload).digest('hex').substring(0, 16) + '"';
+// EDITOR_URL/RELAY_URL/VIEWER_URL are fixed for the process lifetime
+// (from .env). EDITOR_DEPLOY_ID is sourced from VIEWER_CONFIG_FILE and
+// rebuilt when the file changes — so an operator-initiated pointer flip
+// via wasm/promote-editor.sh takes effect on the next /config.js GET.
+let _configPayload, _configETag;
+function rebuildConfigPayload() {
+    const vc = readViewerConfig();
+    _configPayload = 'window.__CONFIG = ' + JSON.stringify({
+        EDITOR_URL,
+        RELAY_URL,
+        VIEWER_URL,
+        EDITOR_DEPLOY_ID: vc.editor_deploy_id,
+    }) + ';';
+    _configETag = '"' + crypto.createHash('sha256')
+        .update(_configPayload).digest('hex').substring(0, 16) + '"';
+    console.log('[viewer-config] EDITOR_DEPLOY_ID='
+                + (vc.editor_deploy_id || '(flat / unset)'));
+}
+rebuildConfigPayload();
+
+// Watch the config file for operator updates. fs.watchFile (poll-based)
+// is more reliable than fs.watch (inotify) — editors that rename-on-save
+// confuse inotify but the 2s poll catches every change. The interval is
+// long enough that the watch itself costs ~nothing and short enough that
+// a manual promote-editor.sh edit reaches the viewer within a couple
+// seconds.
+if (VIEWER_CONFIG_FILE && fs.existsSync(VIEWER_CONFIG_FILE)) {
+    fs.watchFile(VIEWER_CONFIG_FILE, { interval: 2000 }, () => {
+        rebuildConfigPayload();
+    });
+}
+
 app.get('/config.js', (req, res) => {
     res.setHeader('Content-Type', 'application/javascript');
     res.setHeader('Cache-Control', 'no-cache');
@@ -185,10 +234,12 @@ app.get('/config.js', (req, res) => {
 
 // ── GET /config — same data as JSON, used by editor.html ───────
 app.get('/config', (req, res) => {
+    const vc = readViewerConfig();
     res.json({
         editorUrl: EDITOR_URL,
         relayUrl: RELAY_URL,
         viewerUrl: VIEWER_URL,
+        editorDeployId: vc.editor_deploy_id,
     });
 });
 
