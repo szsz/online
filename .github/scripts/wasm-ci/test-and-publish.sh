@@ -261,6 +261,13 @@ elif [[ "$TEST_TARGET" == "azure-deploy" ]]; then
     export FILE_STORAGE_URL="${VIEWER_URL:?VIEWER_URL must be set in ~/ENV/online-staging-deploy.env}"
     export EDITOR_URL="${EDITOR_URL:?EDITOR_URL must be set in ~/ENV/online-staging-deploy.env}"
     export RELAY_URL="${RELAY_URL:?RELAY_URL must be set in ~/ENV/online-staging-deploy.env}"
+    # Per-deploy folder id: the just-deployed editor lives at
+    # ${EDITOR}/<APP_BUILD_ID>/. Surface it to test-env.js so tests
+    # that need the explicit prefix (test-regression-editor-deploy-
+    # folder.js) construct the right URL. Tests using legacy flat
+    # URLs continue to work via editor-server's DEFAULT_DEPLOY_ID
+    # app-settings fallback.
+    export EDITOR_DEPLOY_ID="$APP_BID"
     export TEST_TARGET="azure-deploy"
 else
     echo "ERROR: unknown TEST_TARGET=$TEST_TARGET (expected local | azure-deploy)" >&2

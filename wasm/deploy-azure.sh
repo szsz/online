@@ -197,16 +197,25 @@ configure_settings() {
         --web-sockets-enabled true \
         > /dev/null
 
-    # Editor settings
+    # Editor settings. DEFAULT_DEPLOY_ID points the editor-server at the
+    # just-deployed <id>/ folder so legacy unprefixed URLs (`/browser/
+    # cool.html`, `/online.wasm`) transparently resolve into that folder.
+    # Explicit `/<id>/...` URLs still take precedence — used by the viewer
+    # iframe to pin to a specific build via window.__CONFIG.EDITOR_DEPLOY_ID.
     echo "  Editor ($EDITOR_APP_NAME)..."
+    local EDITOR_SETTINGS_ARGS=(
+        FILE_STORAGE_URL="$VIEWER_URL"
+        RELAY_URL="$RELAY_URL"
+        ALLOWED_ORIGINS="$EDITOR_ALLOWED"
+        WEBSITE_NODE_DEFAULT_VERSION="~24"
+    )
+    if [[ -n "${APP_BUILD_ID:-}" ]]; then
+        EDITOR_SETTINGS_ARGS+=("DEFAULT_DEPLOY_ID=$APP_BUILD_ID")
+    fi
     az webapp config appsettings set \
         --resource-group "$RESOURCE_GROUP" \
         --name "$EDITOR_APP_NAME" \
-        --settings \
-            FILE_STORAGE_URL="$VIEWER_URL" \
-            RELAY_URL="$RELAY_URL" \
-            ALLOWED_ORIGINS="$EDITOR_ALLOWED" \
-            WEBSITE_NODE_DEFAULT_VERSION="~24" \
+        --settings "${EDITOR_SETTINGS_ARGS[@]}" \
         > /dev/null
 
     echo ""
@@ -227,6 +236,12 @@ deploy_app() {
     local DEPLOY_DIR=$2
     local SMOKE_PATH=${3:-/}            # path to GET for smoke test (default: /)
     local SMOKE_CONTAINS=${4:-}         # optional body substring to require
+    # --clean flag for `az webapp deploy`. When "true" (default), wwwroot
+    # is wiped before the zip extracts — right for single-folder apps
+    # (viewer, relay). The editor passes "false" to preserve previous
+    # per-deploy <id>/ folders that in-flight viewer iframes may still
+    # reference.
+    local CLEAN_FLAG=${5:-true}
     local ZIP_PATH="${DEPLOY_DIR}.zip"
 
     echo "  Zipping $DEPLOY_DIR..."
@@ -249,14 +264,14 @@ deploy_app() {
     # With ~15 stale 266 MB online.wasm copies we filled the 10 GB
     # plan-shared SMB volume, after which kudu silently 400s every
     # publish (empty body) — see incident on 2026-05-05.
-    echo "  Deploying to $APP_NAME..."
+    echo "  Deploying to $APP_NAME (--clean $CLEAN_FLAG)..."
     local DEPLOY_OK=0 try=0
     for try in 1 2 3; do
         if az webapp deploy \
                 --resource-group "$RESOURCE_GROUP" \
                 --name "$APP_NAME" \
                 --type zip \
-                --clean true \
+                --clean "$CLEAN_FLAG" \
                 --src-path "$ZIP_PATH"; then
             DEPLOY_OK=1
             break
@@ -397,6 +412,29 @@ if $DO_EDITOR; then
     rm -rf "$EDIR"
     mkdir -p "$EDIR"
 
+    # Per-deploy folder mode: when APP_BUILD_ID is set (CI path), all
+    # build artifacts live under $EDIR/$APP_BUILD_ID/ so multiple deploys
+    # coexist on the same wwwroot. server.js + node_modules + package.json
+    # stay at $EDIR/ root — they get overwritten by each deploy when the
+    # zip extracts on top of wwwroot (--clean=false). Older <id>/ folders
+    # accumulate; --clean=false preserves them so in-flight viewer tabs
+    # pointing at a previous id keep working.
+    #
+    # When APP_BUILD_ID is unset (ad-hoc human-driven deploy), fall
+    # through to legacy flat layout — server.js + artifacts all at $EDIR/.
+    # The editor-server.js handles both via its per-deploy middleware
+    # plus DEFAULT_DEPLOY_ID env-var fallback.
+    if [[ -n "${APP_BUILD_ID:-}" ]]; then
+        EDIR_CONTENT="$EDIR/$APP_BUILD_ID"
+        EDITOR_CLEAN_FLAG="false"
+        echo "  Per-deploy mode: build artifacts under $APP_BUILD_ID/"
+        mkdir -p "$EDIR_CONTENT"
+    else
+        EDIR_CONTENT="$EDIR"
+        EDITOR_CLEAN_FLAG="true"
+        echo "  Flat-deploy mode: APP_BUILD_ID unset (ad-hoc deploy)"
+    fi
+
     # Server + package.json. No `compression` dep — the editor serves
     # pre-compressed .br files (written below) instead of paying the
     # CPU cost of runtime compression.
@@ -431,8 +469,8 @@ EJSON
     # Browser dist (cool.html, bundle.js, CSS, images, l10n)
     if [[ -d "$BUILD_DIST" ]]; then
         echo "  Copying browser/dist/ from $BUILD_DIST ..."
-        mkdir -p "$EDIR/browser/dist"
-        cp -r "$BUILD_DIST/." "$EDIR/browser/dist/"
+        mkdir -p "$EDIR_CONTENT/browser/dist"
+        cp -r "$BUILD_DIST/." "$EDIR_CONTENT/browser/dist/"
     else
         echo "  ERROR: browser/dist/ not found (tried $BUILD_ROOT/browser/dist and $REPO_ROOT/browser/dist)"
         echo "         Build the editor first: bash wasm/build-wasm.sh"
@@ -458,15 +496,15 @@ EJSON
     # forcing Azure to ship the uncompressed 265 MB / 93 MB body on
     # every cold load. The fix: treat a `.br` file as kept iff its
     # source (filename minus `.br`) is in KEPT.
-    echo "  Pruning stale hashed assets in $EDIR/browser/dist/..."
+    echo "  Pruning stale hashed assets in $EDIR_CONTENT/browser/dist/..."
     KEPT="$(grep -hoE '"online\.[0-9a-f]{8}\.(js|wasm|worker\.js)"|"soffice\.[0-9a-f]{8}\.data"|"soffice\.data\.js\.[0-9a-f]{8}\.metadata"' \
-            "$EDIR/browser/dist/cool.html" "$EDIR/browser/dist/"bundle.*.js 2>/dev/null \
+            "$EDIR_CONTENT/browser/dist/cool.html" "$EDIR_CONTENT/browser/dist/"bundle.*.js 2>/dev/null \
             | tr -d '"' | sort -u || true)"
     PRUNED=0
     shopt -s nullglob
-    for f in "$EDIR/browser/dist/"online.*.{js,js.br,wasm,wasm.br,worker.js,worker.js.br} \
-             "$EDIR/browser/dist/"soffice.*.{data,data.br} \
-             "$EDIR/browser/dist/"soffice.data.js.*.{metadata,metadata.br}; do
+    for f in "$EDIR_CONTENT/browser/dist/"online.*.{js,js.br,wasm,wasm.br,worker.js,worker.js.br} \
+             "$EDIR_CONTENT/browser/dist/"soffice.*.{data,data.br} \
+             "$EDIR_CONTENT/browser/dist/"soffice.data.js.*.{metadata,metadata.br}; do
         base="$(basename "$f")"
         # Skip the unhashed canonical names (online.js / online.wasm /
         # soffice.data, plus their .br sidecars) — those are kept
@@ -548,16 +586,16 @@ EJSON
     for f in online.js online.wasm online.data online.worker.js soffice.data soffice.data.js.metadata emscripten-module.js; do
         src="$(find_artifact "$f" || true)"
         if [[ -n "$src" ]]; then
-            cp "$src" "$EDIR/$f"
-            cp "$src" "$EDIR/browser/dist/$f"
+            cp "$src" "$EDIR_CONTENT/$f"
+            cp "$src" "$EDIR_CONTENT/browser/dist/$f"
             # Carry brotli sidecar from the build tree if it exists
             # (build-wasm.sh / build-online.sh emit .br at quality 11
             # alongside each source file). precompress-br.js below is
             # idempotent — sees the .br is newer than the source and
             # skips the ~15-min recompression of online.wasm.
             if [[ -f "$src.br" ]]; then
-                cp "$src.br" "$EDIR/$f.br"
-                cp "$src.br" "$EDIR/browser/dist/$f.br"
+                cp "$src.br" "$EDIR_CONTENT/$f.br"
+                cp "$src.br" "$EDIR_CONTENT/browser/dist/$f.br"
             fi
         else
             # online.data is only present for --preload-file builds; absence
@@ -577,8 +615,8 @@ EJSON
     # /browser/ static route.
     for f in relay-adapter.js wasm-loader.js sw.js dict-loader.js; do
         if [[ -f "$SCRIPT_DIR/$f" ]]; then
-            cp "$SCRIPT_DIR/$f" "$EDIR/"
-            cp "$SCRIPT_DIR/$f" "$EDIR/browser/dist/"
+            cp "$SCRIPT_DIR/$f" "$EDIR_CONTENT/"
+            cp "$SCRIPT_DIR/$f" "$EDIR_CONTENT/browser/dist/"
         else
             case "$f" in
                 dict-loader.js) echo "    NOTE: $f not found — spellcheck lazy-load disabled" ;;
@@ -593,14 +631,30 @@ EJSON
     # origin. Each <lang>.tar.gz is fetched on demand by the client.
     DICTS_SRC="$SCRIPT_DIR/online-build/dicts"
     if [[ -d "$DICTS_SRC" ]] && ls "$DICTS_SRC"/*.tar.gz >/dev/null 2>&1; then
-        mkdir -p "$EDIR/dicts"
-        cp -f "$DICTS_SRC"/*.tar.gz "$EDIR/dicts/"
-        cp -f "$DICTS_SRC/manifest.json" "$EDIR/dicts/"
-        DICT_COUNT=$(ls "$EDIR/dicts"/*.tar.gz | wc -l)
-        echo "  Bundled $DICT_COUNT language dict bundles ($(du -sh "$EDIR/dicts" | cut -f1))"
+        mkdir -p "$EDIR_CONTENT/dicts"
+        cp -f "$DICTS_SRC"/*.tar.gz "$EDIR_CONTENT/dicts/"
+        cp -f "$DICTS_SRC/manifest.json" "$EDIR_CONTENT/dicts/"
+        DICT_COUNT=$(ls "$EDIR_CONTENT/dicts"/*.tar.gz | wc -l)
+        echo "  Bundled $DICT_COUNT language dict bundles ($(du -sh "$EDIR_CONTENT/dicts" | cut -f1))"
     else
         echo "  NOTE: no dict bundles — run 'bash wasm/build-dicts.sh' first (spellcheck will be disabled)"
     fi
+
+    # Per-deploy metadata file. The regression test for per-deploy
+    # folders probes this URL: ${EDITOR}/<id>/build-info.json must be
+    # reachable, parse as JSON, and have a matching id. Also useful
+    # forensics — point to the git sha + UTC timestamp when this build
+    # shipped. In flat mode (APP_BUILD_ID unset), this still gets written
+    # but at $EDIR_CONTENT/build-info.json (= $EDIR/build-info.json),
+    # which is harmless.
+    cat > "$EDIR_CONTENT/build-info.json" <<EOF
+{
+  "id": "${APP_BUILD_ID:-flat}",
+  "git_sha": "${GIT_SHA:-}",
+  "lo_build_id": "${LO_BUILD_ID:-}",
+  "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
 
 
     # Substitute the build fingerprint in wasm-loader.js AND sw.js.
@@ -612,11 +666,11 @@ EJSON
     # placeholders with an identifier of THIS online.wasm — otherwise
     # sw.js falls back to the dev-tree 'cool-editor-dev' name and never
     # rolls between deploys.
-    if [[ -f "$EDIR/online.wasm" ]]; then
-        FINGERPRINT=$(md5sum "$EDIR/online.wasm" | cut -c1-16)
+    if [[ -f "$EDIR_CONTENT/online.wasm" ]]; then
+        FINGERPRINT=$(md5sum "$EDIR_CONTENT/online.wasm" | cut -c1-16)
         echo "  Build fingerprint: $FINGERPRINT"
-        for p in "$EDIR/wasm-loader.js" "$EDIR/browser/dist/wasm-loader.js" \
-                 "$EDIR/sw.js" "$EDIR/browser/dist/sw.js"; do
+        for p in "$EDIR_CONTENT/wasm-loader.js" "$EDIR_CONTENT/browser/dist/wasm-loader.js" \
+                 "$EDIR_CONTENT/sw.js" "$EDIR_CONTENT/browser/dist/sw.js"; do
             [[ -f "$p" ]] && sed -i "s|__WASM_BUILD_FINGERPRINT__|$FINGERPRINT|g" "$p"
         done
     fi
@@ -632,7 +686,12 @@ EJSON
     # shim ahead of online.js). Runs AFTER brotli so the .br sidecars
     # are renamed in lockstep.
 
-    deploy_app "$EDITOR_APP_NAME" "$EDIR" "/"
+    # Editor deploys with --clean=false when APP_BUILD_ID is set so the
+    # zip's <id>/ folder is added on top of existing wwwroot, preserving
+    # older <id>/ folders that in-flight viewer tabs may still reference.
+    # Flat-mode editor deploys keep --clean=true (legacy behavior). The
+    # 5th arg to deploy_app is the --clean flag.
+    deploy_app "$EDITOR_APP_NAME" "$EDIR" "/" "" "$EDITOR_CLEAN_FLAG"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────
