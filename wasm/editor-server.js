@@ -36,7 +36,14 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 // When req.url has no prefix (local dev with a flat editor layout, or
 // hand-typed root-level URLs), req.deployId stays undefined and the
 // helpers fall back to the flat BROWSER_DIST / WASM_DIR / DICTS_DIR.
-const DEPLOY_ID_RE = /^\/(\d{4}-\d{2}-\d{2}-\d{6})(?:\/|$)/;
+// Match per-deploy folder prefix. Two id flavours:
+//   YYYY-MM-DD-HHMMSS              — Azure / production deploy
+//   local-YYYY-MM-DD-HHMMSS         — wasm-ci-local deploys; the local-
+//                                     prefix sorts them under a separate
+//                                     namespace at coolwasmfiles.
+// Both must round-trip through the prefix-stripping middleware.
+const DEPLOY_ID_RE = /^\/((?:local-)?\d{4}-\d{2}-\d{2}-\d{6})(?:\/|$)/;
+const DEPLOY_ID_BARE_RE = /^(?:local-)?\d{4}-\d{2}-\d{2}-\d{6}$/;
 function browserDistFor(req) {
     return req.deployId
         ? path.join(__dirname, req.deployId, 'browser', 'dist')
@@ -86,12 +93,12 @@ const app = express();
 // COOP-COEP / brotli all see the rewritten req.path and treat the
 // per-deploy variant identically to the flat-layout request.
 const DEFAULT_DEPLOY_ID = (process.env.DEFAULT_DEPLOY_ID || '').trim();
-if (DEFAULT_DEPLOY_ID && !/^\d{4}-\d{2}-\d{2}-\d{6}$/.test(DEFAULT_DEPLOY_ID)) {
+if (DEFAULT_DEPLOY_ID && !DEPLOY_ID_BARE_RE.test(DEFAULT_DEPLOY_ID)) {
     console.warn('[editor-server] DEFAULT_DEPLOY_ID=' + DEFAULT_DEPLOY_ID
-                + ' does not match YYYY-MM-DD-HHMMSS — ignoring');
+                + ' does not match [local-]YYYY-MM-DD-HHMMSS — ignoring');
 }
 const DEFAULT_DEPLOY_ID_VALID =
-    DEFAULT_DEPLOY_ID && /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(DEFAULT_DEPLOY_ID);
+    DEFAULT_DEPLOY_ID && DEPLOY_ID_BARE_RE.test(DEFAULT_DEPLOY_ID);
 app.use((req, res, next) => {
     const m = req.url.match(DEPLOY_ID_RE);
     if (m) {

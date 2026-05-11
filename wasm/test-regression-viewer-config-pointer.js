@@ -90,8 +90,11 @@ function check(label, cond, ev) {
           `typeof=${typeof id} value=${JSON.stringify(id)}`);
 
     if (id) {
-        check('EDITOR_DEPLOY_ID matches YYYY-MM-DD-HHMMSS format',
-              /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(id),
+        // Two flavours: YYYY-MM-DD-HHMMSS (Azure) or
+        // local-YYYY-MM-DD-HHMMSS (wasm-ci-local). The local- prefix
+        // sorts local-CI builds in their own namespace at coolwasmfiles.
+        check('EDITOR_DEPLOY_ID matches [local-]YYYY-MM-DD-HHMMSS format',
+              /^(local-)?\d{4}-\d{2}-\d{2}-\d{6}$/.test(id),
               id);
     } else {
         console.log('  · EDITOR_DEPLOY_ID is empty (flat-editor mode)');

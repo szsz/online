@@ -83,8 +83,8 @@ if ! $FLAT && [[ -z "$NEW_ID" ]]; then
     exit 2
 fi
 
-if [[ -n "$NEW_ID" ]] && ! [[ "$NEW_ID" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$ ]]; then
-    echo "ERROR: id format must be YYYY-MM-DD-HHMMSS, got: $NEW_ID" >&2
+if [[ -n "$NEW_ID" ]] && ! [[ "$NEW_ID" =~ ^(local-)?[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$ ]]; then
+    echo "ERROR: id format must be [local-]YYYY-MM-DD-HHMMSS, got: $NEW_ID" >&2
     exit 2
 fi
 

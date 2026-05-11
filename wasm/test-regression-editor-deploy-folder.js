@@ -57,9 +57,11 @@ function check(label, cond, ev) {
         process.exit(0);
     }
 
-    // Sanity: id format must match what resolve-ids.sh emits.
-    check('EDITOR_DEPLOY_ID matches YYYY-MM-DD-HHMMSS',
-          /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(DEPLOY_ID),
+    // Sanity: id format must match what resolve-ids.sh emits. Two
+    // flavours: YYYY-MM-DD-HHMMSS (Azure) or local-YYYY-MM-DD-HHMMSS
+    // (wasm-ci-local, prefixed by deploy-local.sh).
+    check('EDITOR_DEPLOY_ID matches [local-]YYYY-MM-DD-HHMMSS',
+          /^(local-)?\d{4}-\d{2}-\d{2}-\d{6}$/.test(DEPLOY_ID),
           DEPLOY_ID);
 
     // 1. build-info.json reachable + matches.

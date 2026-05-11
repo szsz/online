@@ -85,7 +85,14 @@ const HASHED_RE = /\.[0-9a-f]{8}\.(?:js|css|wasm|data|metadata)$/;
 // fs.statSync is cheap (~µs); we mtime-cache the parsed id to avoid
 // reparsing on every request. The DEFAULT_DEPLOY_ID env var, if set,
 // is used as a bootstrap fallback before the pointer file exists.
-const DEPLOY_ID_RE = /^\/(\d{4}-\d{2}-\d{2}-\d{6})(?:\/|$)/;
+// Match per-deploy folder prefix. Two id flavours:
+//   YYYY-MM-DD-HHMMSS              — Azure / production deploy
+//   local-YYYY-MM-DD-HHMMSS         — wasm-ci-local deploys; the local-
+//                                     prefix sorts them under a separate
+//                                     namespace at coolwasmfiles.
+// Both round-trip through the prefix-stripping middleware below.
+const DEPLOY_ID_RE = /^\/((?:local-)?\d{4}-\d{2}-\d{2}-\d{6})(?:\/|$)/;
+const DEPLOY_ID_BARE_RE = /^(?:local-)?\d{4}-\d{2}-\d{2}-\d{6}$/;
 const POINTER_FILE = path.join(PUB, 'current-deploy.txt');
 const _pointerCache = { mtimeMs: 0, id: '' };
 function readDefaultDeployId() {
@@ -94,14 +101,14 @@ function readDefaultDeployId() {
         if (_pointerCache.mtimeMs !== stat.mtimeMs) {
             const raw = fs.readFileSync(POINTER_FILE, 'utf8').trim();
             _pointerCache.mtimeMs = stat.mtimeMs;
-            _pointerCache.id = /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(raw) ? raw : '';
+            _pointerCache.id = DEPLOY_ID_BARE_RE.test(raw) ? raw : '';
         }
         return _pointerCache.id;
     } catch (_) {
         // Pointer file missing: bootstrap from env (e.g. when the
         // server was started before the first per-deploy ran).
         const env = (process.env.DEFAULT_DEPLOY_ID || '').trim();
-        return /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(env) ? env : '';
+        return DEPLOY_ID_BARE_RE.test(env) ? env : '';
     }
 }
 
