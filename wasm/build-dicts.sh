@@ -74,6 +74,25 @@ fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# GitHub API auth: unauthenticated is 60 req/hr (the script makes one
+# directory listing per language + a few file downloads, the latter via
+# raw.githubusercontent which is uncounted). A fresh CI runner without
+# the dicts-src cache populated hits ~25 API calls — usually fits in
+# 60/hr, but a same-runner re-build in the same hour can exhaust the
+# quota and break the build with `WARN: $lang not found upstream`. The
+# WARN path is fatal-ish: that language silently drops from the deploy
+# manifest, and the regression test for dict coverage then fails.
+#
+# Authenticated is 5000 req/hr. Honour GH_TOKEN or GITHUB_TOKEN if set
+# (CI sets one of these from `secrets.GITHUB_TOKEN`); fall back to
+# unauthenticated for local runs.
+CURL_AUTH_HEADERS=()
+GH_AUTH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [[ -n "$GH_AUTH_TOKEN" ]]; then
+    CURL_AUTH_HEADERS=(-H "Authorization: Bearer $GH_AUTH_TOKEN")
+    echo "  (using authenticated GitHub API — 5000 req/hr)"
+fi
+
 # Parse GitHub-API JSON response → names. Prefer jq, fall back to python3.
 api_names() {
     if have jq; then
@@ -85,7 +104,7 @@ api_names() {
 
 if $LIST_ONLY; then
     echo "Available top-level language directories in LibreOffice/dictionaries:"
-    curl -sL --fail -m 30 "$REPO_API/" | \
+    curl -sL --fail -m 30 "${CURL_AUTH_HEADERS[@]}" "$REPO_API/" | \
         (have jq && jq -r '.[] | select(.type=="dir") | .name' \
                 || python3 -c 'import json,sys; [print(d["name"]) for d in json.load(sys.stdin) if d["type"]=="dir"]') \
         | column
@@ -111,7 +130,7 @@ for lang in "${LANGS[@]}"; do
     if [[ ! -d "$src_dir" ]]; then
         mkdir -p "$src_dir"
         echo "  Listing upstream…"
-        api_json="$(curl -sL --fail -m 30 "$REPO_API/$lang")" || {
+        api_json="$(curl -sL --fail -m 30 "${CURL_AUTH_HEADERS[@]}" "$REPO_API/$lang")" || {
             echo "  WARN: $lang not found upstream, skipping"
             rm -rf "$src_dir"
             continue

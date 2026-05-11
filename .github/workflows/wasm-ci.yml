@@ -169,6 +169,26 @@ jobs:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
         run: bash .github/scripts/wasm-ci/build-online.sh
 
+      # Build per-language hunspell dict bundles. Writes to
+      # $CI_STATE_DIR/online-build/dicts/ (which deploy-azure.sh
+      # reads from). Cached dicts-src in the same dir survive
+      # across runs — first run hits GitHub API ~25 times, later
+      # runs are near-instant. Without this step, /dicts/manifest.json
+      # 404s on Azure and the Group N spellcheck regression tests
+      # (regression-dict-manifest-coverage, regression-dict-multi-lang,
+      # regression-dict-locale-resolve, regression-mixed-lang-spellcheck)
+      # all fail.
+      - name: Build spellcheck dicts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Symlink wasm/online-build into the persistent state dir
+          # so build-dicts.sh writes where deploy-azure.sh reads.
+          rm -rf "$GITHUB_WORKSPACE/wasm/online-build"
+          ln -s "$CI_STATE_DIR/online-build" "$GITHUB_WORKSPACE/wasm/online-build"
+          bash "$GITHUB_WORKSPACE/wasm/build-dicts.sh"
+
       - name: Deploy to Azure App Services
         env:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
