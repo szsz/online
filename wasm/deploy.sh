@@ -18,7 +18,22 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_DIR/wasm/online-build}"
 PUB="${PUB:-/tmp/static-deploy/public}"
-BROWSER_DIR="$PUB/browser"
+
+# ── Per-deploy folder mode ────────────────────────────────────────
+# When APP_BUILD_ID is set (CI), stage files under $PUB/$APP_BUILD_ID/
+# so multiple deploys coexist on the same PUB and editor-static-server
+# routes /<id>/browser/... into that subfolder. When unset (ad-hoc
+# human-driven deploy on a workstation), fall through to legacy flat
+# layout at $PUB/browser/. editor-static-server.js handles both via its
+# per-deploy middleware plus DEFAULT_DEPLOY_ID env-var fallback.
+if [ -n "${APP_BUILD_ID:-}" ]; then
+    EFFECTIVE_PUB="$PUB/$APP_BUILD_ID"
+    DEPLOY_MODE="per-deploy ($APP_BUILD_ID)"
+else
+    EFFECTIVE_PUB="$PUB"
+    DEPLOY_MODE="flat (no APP_BUILD_ID)"
+fi
+BROWSER_DIR="$EFFECTIVE_PUB/browser"
 
 # ── Deploy lock ──
 LOCK_FILE="${LOCK_FILE:-/tmp/online-deploy.lock}"
@@ -60,11 +75,11 @@ if ! grep -q '__assetMap' "$BUILD_DIR/browser/dist/cool.html"; then
 fi
 
 FINGERPRINT="$(md5sum "$BUILD_DIR/wasm/online.wasm" | cut -c1-16)"
-echo "=== Deploying WASM editor (fingerprint=$FINGERPRINT) ==="
+echo "=== Deploying WASM editor (fingerprint=$FINGERPRINT, mode=$DEPLOY_MODE) ==="
 
 # ── Copy build tree to live serving dir ──
 # Atomic-ish: stage to a tmp dir alongside, then mv into place.
-mkdir -p "$BROWSER_DIR" "$PUB"
+mkdir -p "$BROWSER_DIR" "$EFFECTIVE_PUB" "$PUB"
 STAGE="$(mktemp -d "$BROWSER_DIR/.deploy-XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -109,17 +124,52 @@ if [ -f "$SCRIPT_DIR/viewer-public/index.html" ]; then
 fi
 
 # ── Spellcheck dicts (built separately by wasm/build-dicts.sh) ──
+# In per-deploy mode the dicts live inside the <id>/ folder; in flat mode
+# they stay at $PUB/dicts/. dict-loader.js resolves /dicts/ relative to
+# its own script URL, so the path resolves correctly in both layouts.
 DICTS_SRC="$BUILD_DIR/dicts"
+DICTS_DST="$EFFECTIVE_PUB/dicts"
 if [ -d "$DICTS_SRC" ] && ls "$DICTS_SRC"/*.tar.gz >/dev/null 2>&1; then
-    mkdir -p "$PUB/dicts"
-    cp -f "$DICTS_SRC"/*.tar.gz "$PUB/dicts/" 2>/dev/null || true
-    cp -f "$DICTS_SRC/manifest.json" "$PUB/dicts/manifest.json"
-    chmod -R a+r "$PUB/dicts"
-    DICT_COUNT=$(ls "$PUB/dicts"/*.tar.gz 2>/dev/null | wc -l)
-    DICT_SIZE=$(du -sh "$PUB/dicts" 2>/dev/null | cut -f1)
-    echo "  Deployed $DICT_COUNT language dict bundles ($DICT_SIZE)"
+    mkdir -p "$DICTS_DST"
+    cp -f "$DICTS_SRC"/*.tar.gz "$DICTS_DST/" 2>/dev/null || true
+    cp -f "$DICTS_SRC/manifest.json" "$DICTS_DST/manifest.json"
+    chmod -R a+r "$DICTS_DST"
+    DICT_COUNT=$(ls "$DICTS_DST"/*.tar.gz 2>/dev/null | wc -l)
+    DICT_SIZE=$(du -sh "$DICTS_DST" 2>/dev/null | cut -f1)
+    echo "  Deployed $DICT_COUNT language dict bundles to $DICTS_DST ($DICT_SIZE)"
 else
     echo "  No dict bundles — run 'bash wasm/build-dicts.sh' to produce them"
+fi
+
+# ── Per-deploy build-info.json ────────────────────────────────────
+# Written for both flat and per-deploy modes (in flat it lands at $PUB/
+# build-info.json which is harmless). The new regression test for
+# per-deploy folders probes /<id>/build-info.json and asserts its id
+# field matches EDITOR_DEPLOY_ID.
+cat > "$EFFECTIVE_PUB/build-info.json" <<EOF
+{
+  "id": "${APP_BUILD_ID:-flat}",
+  "git_sha": "${GIT_SHA:-}",
+  "lo_build_id": "${LO_BUILD_ID:-}",
+  "fingerprint": "$FINGERPRINT",
+  "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+# ── Per-deploy pointer file ───────────────────────────────────────
+# editor-static-server.js reads $PUB/current-deploy.txt to know which
+# /<id>/ folder to route unprefixed URLs into. Writing this file is
+# what activates the new deploy for legacy flat-URL clients (the
+# explicit-prefix path via window.__CONFIG.EDITOR_DEPLOY_ID kicks in
+# separately when the operator runs wasm/promote-editor.sh).
+#
+# Atomic write (mktemp + mv on same filesystem) so the server's
+# mtime-cached read never sees a half-written id.
+if [ -n "${APP_BUILD_ID:-}" ]; then
+    POINTER_TMP="$(mktemp "$PUB/current-deploy.txt.XXXXXX")"
+    printf '%s\n' "$APP_BUILD_ID" > "$POINTER_TMP"
+    mv "$POINTER_TMP" "$PUB/current-deploy.txt"
+    echo "  Wrote $PUB/current-deploy.txt = $APP_BUILD_ID"
 fi
 
 # ── Kit-side files served at /wasm/<name> (uploaded user docs) ──

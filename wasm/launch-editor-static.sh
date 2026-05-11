@@ -46,4 +46,12 @@ fi
 export HTTP_PORT HTTPS_PORT FILE_STORAGE_URL
 export SSL_CERT="$EDITOR_SSL_CERT"
 export SSL_KEY="$EDITOR_SSL_KEY"
+# DEFAULT_DEPLOY_ID: per-deploy folder fallback. When set, unprefixed
+# URLs (`/browser/cool.html`, `/online.wasm`) route into $PUB/<id>/...
+# transparently. Explicit `/<id>/...` URLs always take precedence.
+# When unset, the server keeps legacy flat behaviour (files at $PUB/).
+# The CI deploy step (deploy-local.sh) writes the just-deployed id into
+# the runner's .env so a relaunch picks it up; an operator-driven launch
+# typically leaves it unset.
+export DEFAULT_DEPLOY_ID="${DEFAULT_DEPLOY_ID:-}"
 exec node "$SCRIPT_DIR/editor-static-server.js"

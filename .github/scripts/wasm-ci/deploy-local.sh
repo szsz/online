@@ -77,12 +77,23 @@ echo "--- Local deploy: BUILD_DIR=$BUILD_DIR  PUB=$PUB ---"
 # /browser/cool.html 404s and downstream tests fail with TLS / 404 errors.
 #
 # Same fix as test-and-publish.sh's Phase 1 staging.
-mkdir -p "$PUB/browser"
-cp -a "$BUILD_DIR/browser/dist/." "$PUB/browser/"
+# Per-deploy folder: when APP_BUILD_ID is set, stage build artefacts
+# under $PUB/$APP_BUILD_ID/browser/. wasm/deploy.sh's own logic also
+# routes through that path; both must agree on which dir to use.
+# When APP_BUILD_ID is unset (legacy ad-hoc deploy), fall through to
+# the flat $PUB/browser/.
+if [[ -n "${APP_BUILD_ID:-}" ]]; then
+    EFFECTIVE_PUB="$PUB/$APP_BUILD_ID"
+else
+    EFFECTIVE_PUB="$PUB"
+fi
+mkdir -p "$EFFECTIVE_PUB/browser"
+cp -a "$BUILD_DIR/browser/dist/." "$EFFECTIVE_PUB/browser/"
 
 # wasm/deploy.sh uses a flock at /tmp/online-deploy.lock per PUB tree.
 # Override per-stack so the CI deploy doesn't block the ad-hoc deploy.
 LOCK_FILE="${LOCK_FILE:-${PUB%/public}.lock}" \
+    APP_BUILD_ID="${APP_BUILD_ID:-}" \
     bash "$WORKSPACE/wasm/deploy.sh"
 
 # Smoke through the SNI router. Fail-loud on any backend that doesn't
@@ -95,7 +106,17 @@ SMOKE_FAILED=0
 # RELAY_URL is wss://...; the relay itself answers HTTP on /healthz.
 RELAY_HEALTHZ="${RELAY_URL/wss:/https:}"
 RELAY_HEALTHZ="${RELAY_HEALTHZ/ws:/http:}/healthz"
-for url in "$FILE_STORAGE_URL/" "$EDITOR_URL/browser/cool.html" "$RELAY_HEALTHZ"; do
+# Editor smoke URL depends on per-deploy mode. If APP_BUILD_ID is set,
+# editor-static-server has DEFAULT_DEPLOY_ID set to the same id and
+# transparently routes /browser/cool.html into <id>/browser/. We can
+# probe either the flat or the explicit-prefix URL; the explicit one
+# directly validates the per-deploy structure landed on disk.
+if [[ -n "${APP_BUILD_ID:-}" ]]; then
+    EDITOR_COOL_URL="$EDITOR_URL/$APP_BUILD_ID/browser/cool.html"
+else
+    EDITOR_COOL_URL="$EDITOR_URL/browser/cool.html"
+fi
+for url in "$FILE_STORAGE_URL/" "$EDITOR_COOL_URL" "$RELAY_HEALTHZ"; do
     code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)"
     printf '  %-60s %s\n' "$url" "$code"
     case "$code" in
