@@ -231,6 +231,21 @@ const RELAY  = window.__CONFIG.RELAY_URL;
 // upload checkpoint saves (the cross-origin iframe can't read parent.origin
 // and the referrer is suppressed by referrerpolicy="no-referrer").
 const FILE_STORAGE_URL = window.__CONFIG.VIEWER_URL || window.location.origin;
+
+// Per-deploy editor folder. Each editor deploy lives at
+// ${EDITOR}/<EDITOR_DEPLOY_ID>/ so multiple deploys can co-exist on the
+// same origin without filename hashing. EDITOR_BASE is the prefix every
+// cool.html / browser-static iframe URL is built off of; when
+// EDITOR_DEPLOY_ID is unset (local dev with a flat editor) it falls back
+// to EDITOR for legacy flat URLs.
+//
+// The /wasm/<fileId> POST endpoint and other server-side handlers are
+// NOT per-deploy — they stay at EDITOR root. Only static assets that
+// vary per build live under the prefix.
+const EDITOR_DEPLOY_ID = (window.__CONFIG.EDITOR_DEPLOY_ID || '').trim();
+const EDITOR_BASE = EDITOR_DEPLOY_ID
+    ? EDITOR + '/' + EDITOR_DEPLOY_ID
+    : EDITOR;
 const BLANK_FILENAME = '__prewarm_blank.docx';
 
 // UI language: resolve once at viewer load (browser-detect →
@@ -802,7 +817,7 @@ async function startPrewarm() {
         if (__vp === '0' || __vp === 'off') __viewerPlanC = '&planc=0';
         else if (__vp === '1' || __vp === 'on') __viewerPlanC = '&planc=1';
     } catch (e) { /* ignore */ }
-    iframe.src = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
+    iframe.src = EDITOR_BASE + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                + '&access_token=test'
                + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                + '&UserName=' + encodeURIComponent(MY_USER_NAME)
@@ -1236,7 +1251,7 @@ async function openFile(name, opts) {
         } else {
             // No parked iframe for this doctype — fresh cold reload
             // (the original code path).
-            const coolUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
+            const coolUrl = EDITOR_BASE + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
                           + '&access_token=test'
                           + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
                           + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
