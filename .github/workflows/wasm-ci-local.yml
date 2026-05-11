@@ -132,6 +132,20 @@ jobs:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
         run: bash .github/scripts/wasm-ci/build-online.sh
 
+      # Build per-language hunspell dict bundles before deploy so
+      # /dicts/manifest.json is present on the local CI editor. Without
+      # this, the Group N spellcheck regression tests fail with 404 on
+      # /dicts/. Same step as wasm-ci.yml; cached dicts-src in the
+      # persistent state dir makes re-runs near-instant.
+      - name: Build spellcheck dicts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/wasm/online-build"
+          ln -s "$CI_STATE_DIR/online-build" "$GITHUB_WORKSPACE/wasm/online-build"
+          bash "$GITHUB_WORKSPACE/wasm/build-dicts.sh"
+
       - name: Deploy locally (config from ~/ENV/online-ci.env on the runner host)
         env:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
@@ -157,7 +171,18 @@ jobs:
           set -euo pipefail
           GH_TOKEN="$(node "$GITHUB_WORKSPACE/wasm/tools/gh-app/token.js")"
           export GH_TOKEN
-          gh pr merge "$PR_NUMBER" --rebase --auto --delete-branch
+          # Use --admin (not --auto). Two concurrent PRs both green-
+          # passing build-deploy at nearly the same time end up with
+          # the second one behind dev once the first merges; `gh pr
+          # merge --auto` then tries to enable repo-level auto-merge
+          # (which is OFF here), failing with "Auto merge is not
+          # allowed for this repository". The gh-app installation
+          # token used here has admin scope on this repo, so --admin
+          # bypasses the queue path and merges immediately once the
+          # required checks pass on the head SHA. Tests are
+          # informational at this step (per the workflow comment
+          # above), so admin-merge is the intended path.
+          gh pr merge "$PR_NUMBER" --rebase --delete-branch --admin
 
       - name: Run test suite (profile=${{ github.event.inputs.test_profile || 'all' }})
         # Tests are informational on PR — they don't gate auto-merge
