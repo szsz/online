@@ -24,6 +24,38 @@ const UPLOAD_DIR   = path.join(__dirname, 'uploads');
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+// ── Per-deploy folder prefix ────────────────────────────────────────
+// Each editor build deploys into ${wwwroot}/<APP_BUILD_ID>/ so multiple
+// deploys coexist on the same origin without filename hashing. URLs
+// arrive shaped like `/<id>/browser/cool.html` or `/<id>/online.wasm`;
+// the middleware below detects the prefix, stashes the id on req, and
+// rewrites req.url so downstream route handlers see the unprefixed
+// path. The file-path helpers (browserDistFor / wasmDirFor / dictsDirFor)
+// then route file lookups into the matching <id>/ subfolder.
+//
+// When req.url has no prefix (local dev with a flat editor layout, or
+// hand-typed root-level URLs), req.deployId stays undefined and the
+// helpers fall back to the flat BROWSER_DIST / WASM_DIR / DICTS_DIR.
+const DEPLOY_ID_RE = /^\/(\d{4}-\d{2}-\d{2}-\d{6})(?:\/|$)/;
+function browserDistFor(req) {
+    return req.deployId
+        ? path.join(__dirname, req.deployId, 'browser', 'dist')
+        : BROWSER_DIST;
+}
+function wasmDirFor(req) {
+    return req.deployId ? path.join(__dirname, req.deployId) : WASM_DIR;
+}
+function dictsDirFor(req) {
+    // DICTS_DIR is declared further down (path varies by layout); but
+    // by deploy-time the dicts live at <id>/dicts/ for per-deploy or
+    // ./dicts/ for flat. Resolve both here so we don't bind at module-
+    // load time.
+    if (req.deployId) return path.join(__dirname, req.deployId, 'dicts');
+    return fs.existsSync(path.join(__dirname, 'dicts'))
+        ? path.join(__dirname, 'dicts')
+        : path.join(__dirname, '..', 'dicts');
+}
+
 // Content-hashed asset filenames are baked in at build time by
 // wasm/tools/cache-bust-build.js — that step renames each long-cacheable
 // asset to <base>.<hash>.<ext>, renames its .br sidecar alongside, and
@@ -34,6 +66,50 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const HASHED_RE = /\.[0-9a-f]{8}\.(?:js|css|wasm|data|metadata)$/;
 
 const app = express();
+
+// ── Per-deploy prefix stripper ──────────────────────────────────
+// Detect /<APP_BUILD_ID>/ at the start of req.url; set req.deployId
+// and rewrite req.url so all downstream middleware and route handlers
+// see the unprefixed path. File-path helpers above use req.deployId to
+// route reads into the matching <id>/ subfolder.
+//
+// When no explicit prefix is present but DEFAULT_DEPLOY_ID env is set
+// (the CI deploy populates it with the just-deployed id), fall back to
+// it — so legacy unprefixed URLs (`/browser/cool.html`, `/online.wasm`)
+// still resolve into the current deploy's subfolder. This is what lets
+// the existing test suite keep hitting flat URLs without per-test
+// migration: the editor transparently routes to the latest deploy.
+// Explicit `/<id>/...` URLs always win — the viewer's iframe URL uses
+// the explicit form via `window.__CONFIG.EDITOR_DEPLOY_ID`.
+//
+// MUST run before every other middleware so cache-headers / CORS /
+// COOP-COEP / brotli all see the rewritten req.path and treat the
+// per-deploy variant identically to the flat-layout request.
+const DEFAULT_DEPLOY_ID = (process.env.DEFAULT_DEPLOY_ID || '').trim();
+if (DEFAULT_DEPLOY_ID && !/^\d{4}-\d{2}-\d{2}-\d{6}$/.test(DEFAULT_DEPLOY_ID)) {
+    console.warn('[editor-server] DEFAULT_DEPLOY_ID=' + DEFAULT_DEPLOY_ID
+                + ' does not match YYYY-MM-DD-HHMMSS — ignoring');
+}
+const DEFAULT_DEPLOY_ID_VALID =
+    DEFAULT_DEPLOY_ID && /^\d{4}-\d{2}-\d{2}-\d{6}$/.test(DEFAULT_DEPLOY_ID);
+app.use((req, res, next) => {
+    const m = req.url.match(DEPLOY_ID_RE);
+    if (m) {
+        req.deployId = m[1];
+        // Strip the prefix but keep a leading slash so downstream route
+        // patterns like '/browser/cool.html' still match. "/<id>/foo"
+        // becomes "/foo"; bare "/<id>" becomes "/".
+        const remainder = req.url.slice(m[0].length - 1);
+        req.url = remainder || '/';
+    } else if (DEFAULT_DEPLOY_ID_VALID) {
+        // Unprefixed URL + a configured default: route through the
+        // default's folder without modifying req.url (caller didn't
+        // ask for a prefix, so we don't add one to req.url either —
+        // the file lookup is done via wasmDirFor / browserDistFor).
+        req.deployId = DEFAULT_DEPLOY_ID;
+    }
+    next();
+});
 
 // Cache headers (runs before the brotli chooser so the chosen response
 // carries cache info):
@@ -101,6 +177,19 @@ app.use((req, res, next) => {
 // Favicon — return empty 204 to silence the 404 in logs.
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 
+// Per-deploy build-info.json — small JSON written by the deploy step
+// alongside each <id>/ folder. `${EDITOR}/<id>/build-info.json` is what
+// the per-deploy-folder regression test probes to confirm a deploy
+// happened and to read its metadata (id, git sha, deploy timestamp).
+// In flat mode (no prefix) the file doesn't exist; 404 is correct.
+app.get('/build-info.json', (req, res) => {
+    const f = path.join(wasmDirFor(req), 'build-info.json');
+    if (!fs.existsSync(f)) return res.status(404).type('text/plain').send('build-info.json not found');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(f);
+});
+
 // ── Brotli chooser ──────────────────────────────────────────────
 // Deploy-time pre-compression (wasm/tools/precompress-br.js) writes a
 // <file>.br next to each large asset. If the client sends
@@ -138,10 +227,10 @@ app.use((req, res, next) => {
     // symlink chasing.
     const candidates = [];
     if (urlPath.startsWith('/browser/')) {
-        candidates.push(path.join(BROWSER_DIST, urlPath.slice('/browser/'.length) + '.br'));
+        candidates.push(path.join(browserDistFor(req), urlPath.slice('/browser/'.length) + '.br'));
     } else {
-        candidates.push(path.join(WASM_DIR, urlPath + '.br'));
-        candidates.push(path.join(BROWSER_DIST, urlPath + '.br'));
+        candidates.push(path.join(wasmDirFor(req), urlPath + '.br'));
+        candidates.push(path.join(browserDistFor(req), urlPath + '.br'));
     }
     for (const f of candidates) {
         if (fs.existsSync(f)) {
@@ -183,12 +272,15 @@ app.get('/wasm/:name', (req, res) => {
 });
 
 // ── Static: WASM artifacts at root level ────────────────────────
+// In per-deploy mode (req.deployId set by the prefix-stripper above),
+// each of these resolves under wasmDirFor(req) which routes into the
+// matching <id>/ subfolder.
 const wasmFiles = ['online.wasm', 'online.data', 'online.js', 'online.worker.js',
                    'soffice.data', 'soffice.data.js.metadata',
                    'relay-adapter.js', 'wasm-loader.js'];
 for (const f of wasmFiles) {
     app.get('/' + f, (req, res) => {
-        const filePath = path.join(WASM_DIR, f);
+        const filePath = path.join(wasmDirFor(req), f);
         if (!fs.existsSync(filePath)) return res.status(404).send(f + ' not found');
         res.sendFile(filePath);
     });
@@ -211,9 +303,12 @@ for (const f of wasmFiles) {
 // response to be as cheap as possible since the *next* page-load JS
 // is what we want occupying the CPU. Cache invalidates when the file
 // mtime rolls (each deploy bumps it).
-const _coolCache = { mtimeMs: 0, body: null };
+// Cache the no-token-substitution body per cool.html source path so
+// per-deploy folders each get their own cache entry. The key is the
+// absolute file path (works for both flat and per-deploy layouts).
+const _coolCache = new Map(); // path -> { mtimeMs, body }
 function serveCoolHtml(req, res) {
-    const coolHtml = path.join(BROWSER_DIST, 'cool.html');
+    const coolHtml = path.join(browserDistFor(req), 'cool.html');
     if (!fs.existsSync(coolHtml)) return res.status(404).send('cool.html not built');
 
     const accessToken = req.body?.access_token || req.query?.access_token || '';
@@ -226,7 +321,8 @@ function serveCoolHtml(req, res) {
 
     if (noSubs) {
         const stat = fs.statSync(coolHtml);
-        if (_coolCache.mtimeMs !== stat.mtimeMs || !_coolCache.body) {
+        let entry = _coolCache.get(coolHtml);
+        if (!entry || entry.mtimeMs !== stat.mtimeMs) {
             let html = fs.readFileSync(coolHtml, 'utf8');
             // Empty-token substitution variant — bake the static result.
             html = html
@@ -238,11 +334,11 @@ function serveCoolHtml(req, res) {
                 .split('%BRANDING_THEME%').join('')
                 .split('%LOGO_URL%').join('')
                 .split('%PRODUCT_BRANDING_NAME%').join('Collabora Online');
-            _coolCache.mtimeMs = stat.mtimeMs;
-            _coolCache.body = html;
+            entry = { mtimeMs: stat.mtimeMs, body: html };
+            _coolCache.set(coolHtml, entry);
         }
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        return res.send(_coolCache.body);
+        return res.send(entry.body);
     }
 
     // Token-bearing request — full substitution (rare path, e.g. when
@@ -271,19 +367,37 @@ app.post('/browser/cool.html', serveCoolHtml);
 // fallthrough: true (default) means missing files fall through to our
 // final 404 handler which returns plain text (not HTML).
 //
+// In per-deploy mode the underlying static root varies by req.deployId
+// (`browserDistFor(req)`). We cache one express.static handler per
+// (deploy-id || flat) so the handler config doesn't get re-created on
+// every request, but each deploy lives in its own self-contained tree.
+// The cache key is the deploy-id (empty string for flat). Map entries
+// are tiny (a closure + a few options), so unbounded growth as new
+// deploys appear is acceptable.
+//
 // serve-static overwrites Cache-Control via its `maxAge` option *after*
 // our cache-control middleware runs, so the long-cache decision needs
 // to be re-applied here via setHeaders. Hashed names (bundle.<hash>.js
 // etc.) and *.wasm/*.data/*.js.metadata get max-age=1y immutable; the
 // rest fall back to the regular 1h shelf life.
-app.use('/browser', express.static(BROWSER_DIST, {
-    maxAge: '1h',
-    setHeaders: (res, filepath) => {
-        if (HASHED_RE.test(filepath) || /\.(wasm|data|js\.metadata)$/.test(filepath)) {
-            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        }
-    },
-}));
+const _browserStaticCache = new Map();
+function browserStaticFor(req) {
+    const key = req.deployId || '';
+    let handler = _browserStaticCache.get(key);
+    if (!handler) {
+        handler = express.static(browserDistFor(req), {
+            maxAge: '1h',
+            setHeaders: (res, filepath) => {
+                if (HASHED_RE.test(filepath) || /\.(wasm|data|js\.metadata)$/.test(filepath)) {
+                    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                }
+            },
+        });
+        _browserStaticCache.set(key, handler);
+    }
+    return handler;
+}
+app.use('/browser', (req, res, next) => browserStaticFor(req)(req, res, next));
 
 // ── Static: /dicts/<lang>.tar.gz + /dicts/manifest.json ──────────
 // Lazy-loaded spellcheck dictionaries. dict-loader.js on the client
@@ -291,20 +405,30 @@ app.use('/browser', express.static(BROWSER_DIST, {
 // on the editor origin. Cached aggressively — each bundle is effectively
 // immutable (filename carries no hash, but the server-side manifest
 // can be refreshed on a rebuild).
-const DICTS_DIR = fs.existsSync(path.join(__dirname, 'dicts'))
-    ? path.join(__dirname, 'dicts')
-    : path.join(__dirname, '..', 'dicts');
-app.use('/dicts', express.static(DICTS_DIR, {
-    maxAge: '7d',
-    setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.tar.gz')) {
-            res.setHeader('Content-Type', 'application/gzip');
-        } else if (filePath.endsWith('.json')) {
-            res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Cache-Control', 'no-cache'); // manifest may rotate
-        }
-    },
-}));
+//
+// Like /browser/ above, per-deploy mode routes the dicts root via
+// `dictsDirFor(req)` and we cache one handler per deploy-id key.
+const _dictsStaticCache = new Map();
+function dictsStaticFor(req) {
+    const key = req.deployId || '';
+    let handler = _dictsStaticCache.get(key);
+    if (!handler) {
+        handler = express.static(dictsDirFor(req), {
+            maxAge: '7d',
+            setHeaders: (res, filePath) => {
+                if (filePath.endsWith('.tar.gz')) {
+                    res.setHeader('Content-Type', 'application/gzip');
+                } else if (filePath.endsWith('.json')) {
+                    res.setHeader('Content-Type', 'application/json');
+                    res.setHeader('Cache-Control', 'no-cache'); // manifest may rotate
+                }
+            },
+        });
+        _dictsStaticCache.set(key, handler);
+    }
+    return handler;
+}
+app.use('/dicts', (req, res, next) => dictsStaticFor(req)(req, res, next));
 
 // 404 for anything under /browser/ that didn't match a file above.
 // Plain text so browser doesn't try to interpret as CSS/JS.
