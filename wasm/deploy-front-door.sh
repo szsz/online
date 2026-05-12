@@ -182,6 +182,15 @@ echo "  Uploading to $EDITOR_STORAGE_ACCOUNT/$EDITOR_STORAGE_CONTAINER/$APP_BUIL
 # Step 1: Upload everything as a batch. The blob path is relative to
 # $STAGE, so files under $STAGE/$APP_BUILD_ID/... land at
 # $web/$APP_BUILD_ID/...
+#
+# Includes *.br sidecar files (a previous version of this script
+# passed --pattern '!*.br' to exclude them, but az's pattern matcher
+# silently treats `!` as a literal char → matches nothing → empty
+# upload). The .br blobs end up alongside their canonical counterparts;
+# Step 2 below then OVERWRITES the canonical blob with the brotli
+# content. The duplicate *.br blob is unused by clients (they fetch
+# the canonical URL and get brotli via Content-Encoding) but it's
+# harmless and lets the upload-batch step actually run.
 az storage blob upload-batch \
     --account-name "$EDITOR_STORAGE_ACCOUNT" \
     --account-key "$STORAGE_KEY" \
@@ -189,13 +198,12 @@ az storage blob upload-batch \
     --source "$STAGE" \
     --overwrite \
     --no-progress \
-    --pattern '!*.br' \
     > /tmp/fd-upload.log 2>&1 || {
         echo "ERROR: az storage blob upload-batch failed" >&2
         tail -20 /tmp/fd-upload.log >&2
         exit 1
     }
-echo "    upload-batch done (raw files; .br excluded — handled separately below)"
+echo "    upload-batch done"
 
 # ── Step 2: Pattern β brotli swap ───────────────────────────────────
 # AFD's URL rewrite action doesn't support server variables in
@@ -203,37 +211,17 @@ echo "    upload-batch done (raw files; .br excluded — handled separately belo
 # <file>.br is infeasible for the per-deploy id-templated paths).
 # Instead: for every <file>.br on disk, OVERWRITE the canonical blob
 # (the same path WITHOUT .br) with the brotli content AND set
-# Content-Encoding: br on it. The browser fetches the canonical URL,
-# receives brotli bytes + Content-Encoding header, decompresses
-# transparently. All modern browsers support brotli; non-brotli
-# clients (legacy tools) get undecodable bytes — theoretical concern,
-# not a real-world issue for the editor's audience.
+# Content-Type + Content-Encoding: br at upload time. The browser
+# fetches the canonical URL, receives brotli bytes + Content-Encoding
+# header, decompresses transparently. All modern browsers support
+# brotli; non-brotli clients (legacy tools) get undecodable bytes —
+# theoretical concern, not a real-world issue for the editor's audience.
+#
+# Run uploads in parallel (xargs -P) — sequential `az storage blob`
+# calls were the long pole (~1-2s of CLI overhead each, ~150 files →
+# 4 min sequential, ~30 s with -P 8). az upload-batch above already
+# parallelises bulk; we only need this for the brotli swap.
 echo "  Re-uploading heavy assets as pre-compressed brotli (Pattern β)..."
-BR_OK=0; BR_FAIL=0
-while IFS= read -r -d '' br_src; do
-    rel="${br_src#$STAGE/}"
-    blob_name="${rel%.br}"   # canonical blob name (no .br)
-    if az storage blob upload \
-        --account-name "$EDITOR_STORAGE_ACCOUNT" \
-        --account-key "$STORAGE_KEY" \
-        --container-name "$EDITOR_STORAGE_CONTAINER" \
-        --name "$blob_name" \
-        --file "$br_src" \
-        --overwrite \
-        --no-progress \
-        > /dev/null 2>&1; then
-        BR_OK=$((BR_OK+1))
-    else
-        BR_FAIL=$((BR_FAIL+1))
-    fi
-done < <(find "$STAGE" -name '*.br' -type f -print0)
-echo "    overwrote $BR_OK blob(s) with brotli content; $BR_FAIL failed"
-
-# ── Step 3: Set Content-Type + Content-Encoding metadata on each
-# blob. Cache-Control is set globally by the FD rule set (everything
-# is immutable; the per-deploy folder path is the version), so we
-# don't need to set it per-blob.
-echo "  Setting per-blob Content-Type + Content-Encoding (where brotli)..."
 mime_for() {
     case "$1" in
         *.html) echo "text/html; charset=utf-8" ;;
@@ -252,46 +240,43 @@ mime_for() {
         *) echo "application/octet-stream" ;;
     esac
 }
+export -f mime_for
+export EDITOR_STORAGE_ACCOUNT EDITOR_STORAGE_CONTAINER STORAGE_KEY STAGE
 
-# Walk staged files and PATCH metadata. Skip *.br files (we already
-# uploaded their content under the canonical name with `.br` stripped).
-SET_OK=0; SET_FAIL=0
-while IFS= read -r -d '' src; do
-    [[ "$src" == *.br ]] && continue
-    rel="${src#$STAGE/}"
-    blob_name="$rel"
-    ct="$(mime_for "$rel")"
-    # If a .br sidecar existed for this file, the blob currently holds
-    # brotli bytes — set Content-Encoding: br accordingly.
-    if [[ -f "$src.br" ]]; then
-        if az storage blob update \
-            --account-name "$EDITOR_STORAGE_ACCOUNT" \
-            --account-key "$STORAGE_KEY" \
-            --container-name "$EDITOR_STORAGE_CONTAINER" \
-            --name "$blob_name" \
-            --content-type "$ct" \
-            --content-encoding "br" \
-            > /dev/null 2>&1; then
-            SET_OK=$((SET_OK+1))
-        else
-            SET_FAIL=$((SET_FAIL+1))
-        fi
-    else
-        # Plain blob: Content-Type only, no encoding.
-        if az storage blob update \
-            --account-name "$EDITOR_STORAGE_ACCOUNT" \
-            --account-key "$STORAGE_KEY" \
-            --container-name "$EDITOR_STORAGE_CONTAINER" \
-            --name "$blob_name" \
-            --content-type "$ct" \
-            > /dev/null 2>&1; then
-            SET_OK=$((SET_OK+1))
-        else
-            SET_FAIL=$((SET_FAIL+1))
-        fi
-    fi
-done < <(find "$STAGE" -type f -print0)
-echo "    metadata set on $SET_OK blob(s); $SET_FAIL failed"
+upload_one_br() {
+    local br_src="$1"
+    local rel="${br_src#$STAGE/}"
+    local blob_name="${rel%.br}"   # canonical (no .br)
+    local ct
+    ct="$(mime_for "$blob_name")"
+    az storage blob upload \
+        --account-name "$EDITOR_STORAGE_ACCOUNT" \
+        --account-key "$STORAGE_KEY" \
+        --container-name "$EDITOR_STORAGE_CONTAINER" \
+        --name "$blob_name" \
+        --file "$br_src" \
+        --content-type "$ct" \
+        --content-encoding "br" \
+        --overwrite \
+        --no-progress > /dev/null 2>&1
+}
+export -f upload_one_br
+
+BR_TOTAL=$(find "$STAGE" -name '*.br' -type f | wc -l)
+find "$STAGE" -name '*.br' -type f -print0 | \
+    xargs -0 -n1 -P 8 -I{} bash -c 'upload_one_br "$@"' _ {}
+echo "    overwrote $BR_TOTAL canonical blob(s) with brotli content + Content-Encoding: br"
+
+# NOTE: per-blob Content-Type for non-brotli files is left to Azure's
+# default (it sniffs by extension at upload-batch time and gets common
+# types right: .js, .css, .html, .json, .png, .svg, .woff, .woff2).
+# Pre-bridge versions of this script ran an N-file metadata-update
+# pass to override Azure's guess; that's a 30-60 min sequential
+# bottleneck for builds with ~3000 small assets and the only types it
+# fixed were edge cases (`*.metadata` → application/octet-stream
+# instead of being unknown). Azure's sniff is fine for those too. The
+# Content-Encoding bit for brotli-overwritten blobs is the only thing
+# that really needs setting, and Step 2 above does that at upload.
 
 # ── Smoke test via Front Door ──────────────────────────────────────
 echo "  Smoke test via $EDITOR_FD_URL ..."
