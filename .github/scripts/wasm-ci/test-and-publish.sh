@@ -104,7 +104,7 @@ CI_SKIP_TESTS=(
     # each entry should be removed as its test gets rewritten.
     3browser caching 2browser fonts formats latejoin
     pptx-coedit prewarm snapshot-stale
-    regression-delete-key-coedit regression-image-insert
+    regression-delete-key-coedit
     regression-paste-coedit regression-sab-context
     regression-user-save-checkpoint
 )
