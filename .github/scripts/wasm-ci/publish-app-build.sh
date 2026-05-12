@@ -29,6 +29,12 @@ LO_BID="${LO_BUILD_ID:?}"
 ACCT="${AZURE_STORAGE_ACCOUNT:?}"
 SITE="${STATIC_SITE_BASE:?}"
 
+# EDITOR_BUILD_ID: which editor folder on FD this Online build is
+# wired to. Set explicitly by the new editor-build workflow when it
+# rebuilds the editor alone; in wasm-ci.yml (combined build) it
+# defaults to APP_BID (editor was rebuilt in the same run).
+EDITOR_BID="${EDITOR_BUILD_ID:-$APP_BID}"
+
 # Source the staging deploy env to discover where deploy-azure.sh staged
 # the three zips (VIEWER_DEPLOY_DIR, RELAY_DEPLOY_DIR, EDITOR_DEPLOY_DIR).
 # This is the same env file the deploy step sourced; the zips it produced
@@ -67,14 +73,15 @@ EDITOR_MD5="$(md5_of "$EDITOR_ZIP")";  EDITOR_SIZE="$(size_of "$EDITOR_ZIP")"
 cat > "$OUT/manifest.json" <<JSON
 {
   "app_build_id": "$APP_BID",
+  "editor_build_id": "$EDITOR_BID",
   "lo_build_id": "$LO_BID",
   "git_sha": "${GIT_SHA:-}",
   "git_ref": "${GIT_REF:-}",
   "completed_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "endpoints": {
-    "viewer": "https://${VIEWER_APP_NAME:-szebeni-wasm-viewer}.azurewebsites.net",
-    "editor": "https://${EDITOR_APP_NAME:-szebeni-wasm-static}.azurewebsites.net",
-    "relay":  "wss://${RELAY_APP_NAME:-szebeni-wasm-relay}.azurewebsites.net"
+    "viewer": "${VIEWER_URL:-https://szebeni-wasm-viewer.azurewebsites.net}",
+    "editor": "${EDITOR_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}/$EDITOR_BID",
+    "relay":  "${RELAY_URL:-wss://szebeni-wasm-relay.azurewebsites.net}"
   },
   "zips": [
     { "service": "viewer", "name": "viewer.zip", "size": $VIEWER_SIZE, "md5": "$VIEWER_MD5" },
@@ -104,7 +111,8 @@ a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}
 code.hash{font-size:.85em;color:#666}
 </style>
 <h1>Online build <code>$APP_BID</code></h1>
-<p class="muted">Built against LibreOffice <a href="../../lo-builds/$LO_BID/">$LO_BID</a></p>
+<p class="muted">Built against LibreOffice <a href="../../lo-builds/$LO_BID/">$LO_BID</a>
+   · Editor folder <a href="../../editor-builds/$EDITOR_BID/">$EDITOR_BID</a></p>
 
 <div class="box">
   <div><span class="k">Git SHA:</span> <code>${GIT_SHA:-?}</code></div>
@@ -115,9 +123,9 @@ code.hash{font-size:.85em;color:#666}
 <div class="box">
   <h3>Live endpoints (just deployed)</h3>
   <ul>
-    <li>Viewer  &nbsp;<a href="https://${VIEWER_APP_NAME:-szebeni-wasm-viewer}.azurewebsites.net">${VIEWER_APP_NAME:-szebeni-wasm-viewer}.azurewebsites.net</a></li>
-    <li>Editor  &nbsp;<a href="https://${EDITOR_APP_NAME:-szebeni-wasm-static}.azurewebsites.net">${EDITOR_APP_NAME:-szebeni-wasm-static}.azurewebsites.net</a></li>
-    <li>Relay   &nbsp;<code>wss://${RELAY_APP_NAME:-szebeni-wasm-relay}.azurewebsites.net</code></li>
+    <li>Viewer &nbsp;<a href="${VIEWER_URL:-https://szebeni-wasm-viewer.azurewebsites.net}">${VIEWER_URL:-https://szebeni-wasm-viewer.azurewebsites.net}</a></li>
+    <li>Editor &nbsp;<a href="${EDITOR_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}/$EDITOR_BID/browser/cool.html">${EDITOR_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}/$EDITOR_BID/</a> &nbsp;<span class="muted">(Front Door + Storage static-site)</span></li>
+    <li>Relay  &nbsp;<code>${RELAY_URL:-wss://szebeni-wasm-relay.azurewebsites.net}</code></li>
   </ul>
 </div>
 

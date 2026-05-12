@@ -43,7 +43,7 @@ a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}
 .muted{color:#666}.ok{color:#2e7d32}.bad{color:#c62828}</style>
 <h1>$title</h1>
 <p><a href="/">← root</a></p>
-<table><thead><tr><th>Build ID</th><th>When (UTC)</th><th>Branch</th><th>Commit</th><th>Tests</th><th>Notes</th></tr></thead><tbody>
+<table><thead><tr><th>Build ID</th><th>When (UTC)</th><th>Branch</th><th>Commit</th><th>Tests</th><th>Editor</th><th>Notes</th></tr></thead><tbody>
 HTML
         local manifests
         manifests="$(list_prefix "$prefix")"
@@ -66,12 +66,16 @@ HTML
                 sha="$(jq -r '.git_sha // .git_short_sha // ""' "$tmp" 2>/dev/null)"
                 sha_short="${sha:0:12}"
                 if [[ "$prefix" == "app-builds/" || "$prefix" == "local-builds/" ]]; then
-                    local rc lo p_pass p_fail tests_cell profile
+                    local rc lo p_pass p_fail tests_cell profile editor_bid editor_cell
                     rc="$(jq -r '.test_report.exit_code // empty' "$tmp" 2>/dev/null)"
                     lo="$(jq -r '.lo_build_id // ""' "$tmp" 2>/dev/null)"
                     p_pass="$(jq -r '.test_report.pass_count // empty' "$tmp" 2>/dev/null)"
                     p_fail="$(jq -r '.test_report.fail_count // empty' "$tmp" 2>/dev/null)"
                     profile="$(jq -r '.test_profile // ""' "$tmp" 2>/dev/null)"
+                    # editor_build_id added 2026-05-12 (SW-bridge cutover).
+                    # Older manifests don't have it — fall back to the
+                    # build's own id (combined-build era assumption).
+                    editor_bid="$(jq -r '.editor_build_id // .app_build_id // ""' "$tmp" 2>/dev/null)"
                     if [[ -z "$rc" ]]; then
                         tests_cell="<span class=\"muted\">no tests yet</span>"
                     elif [[ -n "$p_pass" && -n "$p_fail" ]]; then
@@ -81,10 +85,20 @@ HTML
                     else
                         tests_cell="<a class=\"bad\" href=\"$id/tests/\">failed (rc=$rc)</a>"
                     fi
+                    if [[ -n "$editor_bid" && "$editor_bid" != "$id" ]]; then
+                        editor_cell="<a href=\"../editor-builds/$editor_bid/\">$editor_bid</a>"
+                    elif [[ -n "$editor_bid" ]]; then
+                        # editor_build_id == this build's id → editor was
+                        # rebuilt in the same run. Show "(this build)"
+                        # rather than the id again.
+                        editor_cell="<span class=\"muted\">(this build)</span>"
+                    else
+                        editor_cell="<span class=\"muted\">—</span>"
+                    fi
                     notes="LO=$lo"
                     [[ -n "$profile" ]] && notes="$notes · profile=$profile"
-                    printf '<tr><td><a href="%s/">%s</a></td><td class="muted">%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td>%s</td></tr>\n' \
-                        "$id" "$id" "$when" "$branch" "$sha_short" "$tests_cell" "$notes"
+                    printf '<tr><td><a href="%s/">%s</a></td><td class="muted">%s</td><td>%s</td><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td></tr>\n' \
+                        "$id" "$id" "$when" "$branch" "$sha_short" "$tests_cell" "$editor_cell" "$notes"
                 else
                     # lo-builds: branch + commit + size from git_short_sha + a generic notes column
                     notes="$(jq -r '.lo_core_tar_size_human // ""' "$tmp" 2>/dev/null)"
@@ -98,9 +112,10 @@ HTML
     } > "$out"
 }
 
-gen_section "lo-builds/"    "LibreOffice WASM builds"    "$WORK/lo-builds.html"
-gen_section "app-builds/"   "Online (cool-wasm) builds"  "$WORK/app-builds.html"
-gen_section "local-builds/" "Local CI runs (ci-viewer.szebeni.hu)" "$WORK/local-builds.html"
+gen_section "lo-builds/"     "LibreOffice WASM builds"      "$WORK/lo-builds.html"
+gen_section "app-builds/"    "Online (cool-wasm) builds"    "$WORK/app-builds.html"
+gen_section "editor-builds/" "Editor (FD static) builds"    "$WORK/editor-builds.html"
+gen_section "local-builds/"  "Local CI runs (ci-viewer.szebeni.hu)" "$WORK/local-builds.html"
 
 # ── root index ──────────────────────────────────────────────────
 cat > "$WORK/root.html" <<HTML
@@ -117,7 +132,11 @@ a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}
 </div>
 <div class="box">
   <h3><a href="app-builds/">Online (cool-wasm) builds</a></h3>
-  <p>Outputs of the <code>szsz/online</code> dev branch CI — each links its test report.</p>
+  <p>Outputs of the <code>szsz/online</code> dev branch CI — each links its test report and the editor folder it was tested against.</p>
+</div>
+<div class="box">
+  <h3><a href="editor-builds/">Editor (FD static) builds</a></h3>
+  <p>Editor-only builds deployed to Azure Front Door + Storage (<code>wasmeditor</code>). Each lives at <code>$EDITOR_FD_URL/&lt;id&gt;/</code> and is what the viewer iframes. Triggered by editor-side file changes on dev or <code>workflow_dispatch</code> for any commit.</p>
 </div>
 <div class="box">
   <h3><a href="local-builds/">Local CI runs (ci-viewer.szebeni.hu)</a></h3>
@@ -134,9 +153,10 @@ upload() {
         --overwrite --no-progress >/dev/null
 }
 
-upload "$WORK/lo-builds.html"    "lo-builds/index.html"
-upload "$WORK/app-builds.html"   "app-builds/index.html"
-upload "$WORK/local-builds.html" "local-builds/index.html"
-upload "$WORK/root.html"         "index.html"
+upload "$WORK/lo-builds.html"     "lo-builds/index.html"
+upload "$WORK/app-builds.html"    "app-builds/index.html"
+upload "$WORK/editor-builds.html" "editor-builds/index.html"
+upload "$WORK/local-builds.html"  "local-builds/index.html"
+upload "$WORK/root.html"          "index.html"
 
 echo "Indexes refreshed: $SITE/"
