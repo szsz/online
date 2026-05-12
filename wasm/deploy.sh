@@ -123,6 +123,15 @@ if [ -f "$SCRIPT_DIR/viewer-public/index.html" ]; then
     echo "  Deployed viewer index.html"
 fi
 
+# ── Bridge SW — at editor PUB root (NOT per-deploy folder) ──
+# Scope `/` lets it intercept /wasm/<id> + /api/blobs/ + /api/v2/file/
+# + /api/files/ on the editor origin and route them to the viewer via
+# postMessage. One copy across all deploys.
+if [ -f "$SCRIPT_DIR/sw-bridge.js" ]; then
+    cp "$SCRIPT_DIR/sw-bridge.js" "$PUB/sw-bridge.js"
+    echo "  Deployed sw-bridge.js to $PUB/"
+fi
+
 # ── Spellcheck dicts (built separately by wasm/build-dicts.sh) ──
 # In per-deploy mode the dicts live inside the <id>/ folder; in flat mode
 # they stay at $PUB/dicts/. dict-loader.js resolves /dicts/ relative to

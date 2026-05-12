@@ -117,6 +117,19 @@ for f in relay-adapter.js wasm-loader.js sw.js dict-loader.js; do
     fi
 done
 
+# Bridge SW — MUST live at the editor origin's ROOT path (not inside
+# the per-deploy folder) so its default scope is `/` and it can
+# intercept fetches that Kit makes to /wasm/<id>, /api/blobs/<hash>,
+# /api/v2/file/<id>, /api/files/<name>. Without this the bridge would
+# only cover /<APP_BUILD_ID>/* paths and Kit's root-level fetches
+# would miss it.
+#
+# Doesn't need build-fingerprint substitution (no caching, no
+# versioning). One copy lives across all deploys.
+if [[ -f "$SCRIPT_DIR/sw-bridge.js" ]]; then
+    cp "$SCRIPT_DIR/sw-bridge.js" "$STAGE/sw-bridge.js"
+fi
+
 # Dict bundles. Each gets uploaded with Content-Encoding: gzip metadata
 # below so Front Door passes them through without double-compressing.
 DICTS_SRC="$SCRIPT_DIR/online-build/dicts"

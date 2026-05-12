@@ -130,6 +130,15 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
     if (req.path.endsWith('/sw.js') || req.path === '/sw.js') {
         res.setHeader('Cache-Control', 'no-cache');
+    } else if (req.path === '/sw-bridge.js') {
+        // sw-bridge.js MUST be served from the editor origin's root
+        // path with scope `/` so it can intercept fetches Kit makes
+        // to /wasm/<id>, /api/blobs/, /api/v2/file/, /api/files/.
+        // The Allowed header gives it root scope even when served
+        // from non-root paths (defense in depth — the file should
+        // also literally live at root).
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Service-Worker-Allowed', '/');
     } else if (/\.html$/.test(req.path) || req.path === '/') {
         res.setHeader('Cache-Control', 'no-cache');
     } else if (req.deployId) {
@@ -281,6 +290,18 @@ app.get('/wasm/:name', (req, res) => {
     const fileName = req.params.name.split('?')[0];
     const filePath = path.join(UPLOAD_DIR, fileName);
     if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+    res.sendFile(filePath);
+});
+
+// ── /sw-bridge.js — root-scope SW that intercepts /wasm/ + /api/*
+// fetches and bridges them to window.parent via postMessage. Lives
+// OUTSIDE the per-deploy folder so its scope covers the whole origin.
+app.get('/sw-bridge.js', (req, res) => {
+    // Look in the deploy root (not deployId-prefixed) — sw-bridge.js
+    // is a single global file, one copy across all deploys.
+    const filePath = path.join(__dirname, 'sw-bridge.js');
+    if (!fs.existsSync(filePath)) return res.status(404).send('sw-bridge.js not found');
+    res.setHeader('Content-Type', 'application/javascript');
     res.sendFile(filePath);
 });
 

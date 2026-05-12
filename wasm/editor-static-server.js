@@ -349,10 +349,17 @@ function handler(req, res) {
     const etag = '"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"';
     headers['ETag'] = etag;
     headers['Last-Modified'] = stat.mtime.toUTCString();
-    if (pathname.endsWith('.html') || pathname.endsWith('/sw.js')) {
+    if (pathname.endsWith('.html')
+        || pathname.endsWith('/sw.js')
+        || pathname.endsWith('/sw-bridge.js')) {
         // SW must always revalidate so a code update rolls out within
         // 24h max instead of being pinned by the immutable rule below.
+        // sw-bridge.js also gets the Service-Worker-Allowed header in
+        // case it's served from a non-root path (gives it `/` scope).
         headers['Cache-Control'] = 'no-cache';
+        if (pathname.endsWith('/sw-bridge.js')) {
+            headers['Service-Worker-Allowed'] = '/';
+        }
     } else if (effectivePub !== PUB) {
         // Per-deploy folder is in play (req routed through <id>/ via
         // either explicit prefix or current-deploy.txt pointer). The
