@@ -1,28 +1,28 @@
 const __cl = require('./lib/inject-checklist');
-// Regression test: a user-initiated save (.uno:Save / Ctrl+S) must
+// Regression test: a user-initiated save (Ctrl+S) must:
 //   1. produce a fresh checkpoint on the relay
-//   2. upload the saved file to /api/files/<name> on the storage server
+//   2. upload the saved file to viewer storage (/api/v2/file/<fileId>)
 //
-// Method:
-//   - Open one browser, type some text so the doc is dirty.
-//   - Capture the relay's stored checkpointHash and the storage's
-//     X-Content-Hash for /api/files/<name> BEFORE the save.
-//   - Press Ctrl+S (real keyboard).
-//   - Wait. After the save+upload completes, both should reflect the
-//     new content (and the two hashes should match each other).
+// Migrated to the viewer flow:
+//   - uploads via uploadV2
+//   - opens via openSecretInBrowser
+//   - reads back saved ciphertext via downloadV2 to check the size and
+//     updatedAt advanced after Ctrl+S
+//   - probes the relay's /room/<room>/file endpoint to confirm a
+//     checkpoint is registered after user save (room key is the encrypted
+//     name; viewer's relayRoom() derives it from the same docName the
+//     test uploaded)
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
+const { uploadV2, downloadV2 } = require('./lib/v2-upload');
+const { openSecretInBrowser } = require('./lib/open-via-viewer');
 const { pickLib } = require('./lib/fetch-url');
 
-const BASE = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
-// wss → https, ws → http — match the relay's actual transport so the
-// HTTP probe doesn't blow up with EPROTO under Phase 1's plain-WS local
-// setup.
 const RELAY_HTTP = RELAY_BASE.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
-const TIMEOUT = 300000;
+const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-user-save';
 
 const T0 = Date.now();
@@ -35,14 +35,13 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
-function httpGet(urlStr, opts) {
+function httpGet(urlStr) {
     return new Promise((resolve, reject) => {
         const u = new URL(urlStr);
         const lib = pickLib(urlStr);
         const req = lib.request({
             hostname: u.hostname, port: u.port, path: u.pathname,
-            method: opts && opts.method || 'GET',
-            rejectUnauthorized: false,
+            method: 'GET', rejectUnauthorized: false,
         }, (res) => {
             const chunks = [];
             res.on('data', c => chunks.push(c));
@@ -70,71 +69,50 @@ async function clickCanvas(page) {
 
     const STAMP = Date.now();
     const NAME = 'usersave-' + STAMP + '.txt';
-    const ROOM = 'usersave-' + STAMP;
     const INITIAL = 'Hello';
     const TYPED = 'XYZ';
-    const FINAL_CHARS = INITIAL.length + TYPED.length;   // 8
 
     try {
-        // Upload initial content via /api/files (storage) — so a reload
-        // path or a new joiner could fetch it. Also POST it to /wasm/<name>
-        // so cool.html can load it directly.
-        const up = await browser.newPage();
-        await up.goto(VIEWER + '/');
-        await up.evaluate(async (n, c) => {
-            await fetch('/api/files/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([c]),
-            });
-        }, NAME, INITIAL);
-        await up.evaluate(async (base, n, c) => {
-            await fetch(base + '/wasm/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([c]),
-            });
-        }, BASE, NAME, INITIAL);
-        await up.close();
-        log(`Uploaded initial "${INITIAL}" → /api/files/${NAME} + /wasm/${NAME}`);
+        const up = await uploadV2(VIEWER, NAME, Buffer.from(INITIAL, 'utf8'));
+        log(`Uploaded "${INITIAL}" via v2 → fileId ${up.fileId.substring(0,8)}…`);
 
-        // ── Capture initial state ────────────────────────────────────
-        const initialFile = await httpGet(VIEWER + '/api/files/' + encodeURIComponent(NAME));
-        const initialHash = (initialFile.headers['x-content-hash'] || '').toString();
-        log(`Initial /api/files hash: ${initialHash || '(legacy / none)'}`);
+        // Viewer's openFileBySecret stages the file under fileId, and
+        // viewer.relayRoom(name) is called with fileId — so the relay
+        // room key is the opaque fileId, not the plaintext name. The
+        // 64-hex fileId is URL-safe, so no encoding needed.
+        const ROOM_URL = RELAY_HTTP + '/room/' + up.fileId + '/file';
 
-        // Initial relay state — should be 404 (no checkpoint registered yet).
-        const initialRelay = await httpGet(RELAY_HTTP + '/room/' + encodeURIComponent(ROOM) + '/file');
-        log(`Initial relay /room/.../file status: ${initialRelay.status} ` +
-            `body: ${initialRelay.body.toString().substring(0, 120)}`);
+        // Initial relay state — should be 404 (no checkpoint yet).
+        const initialRelay = await httpGet(ROOM_URL);
+        log(`Initial relay status: ${initialRelay.status}`);
         check('Relay has no checkpoint before any save', initialRelay.status === 404);
 
-        // ── Open the editor ──────────────────────────────────────────
-        const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
-        const fileStorageUrl = encodeURIComponent(VIEWER);
-        const coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(NAME)}` +
-                        `&relay=${relay}&access_token=test&fileStorageUrl=${fileStorageUrl}`;
+        // Initial storage state — capture size + updatedAt baseline.
+        const initialDl = await downloadV2(VIEWER, up.secret);
+        log(`Initial storage size: ${initialDl.size}B, updatedAt: ${initialDl.updatedAt}`);
 
-        const page = await browser.newPage();
-        await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-        await page.waitForFunction(() =>
+        const { page, editorFrame } = await openSecretInBrowser(
+            browser, VIEWER, up.b64urlSecret,
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+              isolatedContext: true });
+        await editorFrame.waitForFunction(() =>
             document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
             { timeout: TIMEOUT });
         log('Editor loaded');
-        await sleep(8000);                             // settle, initial save
+        await sleep(8000);
 
-        // After activation the FIRST-client save runs automatically; that
-        // also produces a checkpoint. We want to test the USER save in
-        // isolation, so capture the post-activate state and then make
-        // a user edit + user save.
+        // After activation the FIRST-client save runs automatically; capture
+        // the post-activate baseline so we measure only the user save delta.
         await sleep(2000);
-        const afterActivate = await httpGet(RELAY_HTTP + '/room/' + encodeURIComponent(ROOM) + '/file');
-        const postActivateRelayHash = afterActivate.status === 200
-            ? JSON.parse(afterActivate.body.toString()).hash : null;
+        const afterActivateRelay = await httpGet(ROOM_URL);
+        const postActivateRelayHash = afterActivateRelay.status === 200
+            ? JSON.parse(afterActivateRelay.body.toString()).hash : null;
         log(`After activation, relay hash: ${(postActivateRelayHash||'').substring(0, 16)}…`);
-        const postActivateStorage = await httpGet(VIEWER + '/api/files/' + encodeURIComponent(NAME));
-        const postActivateStorageHash = (postActivateStorage.headers['x-content-hash']||'').toString();
-        log(`After activation, /api/files hash: ${postActivateStorageHash.substring(0, 16)}…`);
+        const postActivateDl = await downloadV2(VIEWER, up.secret);
+        log(`After activation, storage size: ${postActivateDl.size}B, updatedAt: ${postActivateDl.updatedAt}`);
 
         // ── Type some text ───────────────────────────────────────────
         log('\n--- Typing "' + TYPED + '" ---');
-        // Click canvas to focus, then Ctrl+End to land at end before typing.
         await clickCanvas(page);
         await page.keyboard.down('Control');
         await page.keyboard.press('End');
@@ -145,48 +123,49 @@ async function clickCanvas(page) {
             await sleep(400);
         }
         await sleep(2000);
-        const wcAfterType = await page.evaluate(() =>
+        const wcAfterType = await editorFrame.evaluate(() =>
             document.querySelector('#StateWordCount')?.textContent || '');
         log(`After typing: "${wcAfterType.trim()}"`);
 
         // ── User save (Ctrl+S) ──────────────────────────────────────
         log('\n--- Dispatching Ctrl+S (real keyboard) ---');
-        const saveTime = Date.now();
         await page.keyboard.down('Control');
         await page.keyboard.press('s');
         await page.keyboard.up('Control');
 
-        // Wait for the save+upload pipeline to flush. saveAndUploadCheckpoint
-        // has a built-in 1.5 s delay before reading /wasm + uploading; give
-        // generous total budget.
-        await sleep(8000);
+        await sleep(10000);
 
         // ── Verify storage updated ───────────────────────────────────
-        const afterStorage = await httpGet(VIEWER + '/api/files/' + encodeURIComponent(NAME));
-        const afterStorageHash = (afterStorage.headers['x-content-hash']||'').toString();
-        const afterStorageSize = afterStorage.body.length;
-        log(`Post-save /api/files hash: ${afterStorageHash.substring(0, 16)}… (${afterStorageSize}B)`);
+        const afterDl = await downloadV2(VIEWER, up.secret);
+        log(`Post-save storage size: ${afterDl.size}B, updatedAt: ${afterDl.updatedAt}`);
 
-        check('Storage hash present after user save', !!afterStorageHash);
-        check('Storage hash CHANGED from post-activate baseline (new content uploaded)',
-              afterStorageHash && afterStorageHash !== postActivateStorageHash,
-              'before=' + (postActivateStorageHash||'').substring(0, 12) +
-              ' after=' + afterStorageHash.substring(0, 12));
+        check('Storage updatedAt advanced after user save',
+              afterDl.updatedAt > postActivateDl.updatedAt,
+              `before=${postActivateDl.updatedAt} after=${afterDl.updatedAt}`);
+        // Ciphertext is non-deterministic (AES-GCM with random IV), but
+        // total size includes IV+tag+plaintext-length, so a larger plaintext
+        // produces a larger ciphertext.
+        check('Storage size grew after user save (typed text round-tripped)',
+              afterDl.size > postActivateDl.size,
+              `before=${postActivateDl.size} after=${afterDl.size}`);
+
+        // Plaintext decrypt: the saved file should contain the typed text.
+        const savedPlain = afterDl.bytes.toString('utf8');
+        check('Saved plaintext contains the typed text',
+              savedPlain.includes(TYPED),
+              'first 80 chars: ' + savedPlain.substring(0, 80));
 
         // ── Verify relay checkpoint updated ──────────────────────────
-        const afterRelay = await httpGet(RELAY_HTTP + '/room/' + encodeURIComponent(ROOM) + '/file');
+        const afterRelay = await httpGet(ROOM_URL);
         const afterRelayHash = afterRelay.status === 200
             ? JSON.parse(afterRelay.body.toString()).hash : null;
         log(`Post-save relay hash: ${(afterRelayHash||'').substring(0, 16)}…`);
-        check('Relay has a checkpoint after user save', afterRelay.status === 200 && !!afterRelayHash);
+        check('Relay has a checkpoint after user save',
+              afterRelay.status === 200 && !!afterRelayHash);
         check('Relay checkpoint hash CHANGED from post-activate baseline',
               afterRelayHash && afterRelayHash !== postActivateRelayHash,
               'before=' + (postActivateRelayHash||'').substring(0, 12) +
               ' after=' + (afterRelayHash||'').substring(0, 12));
-        check('Relay checkpoint hash MATCHES storage hash (same content)',
-              afterRelayHash === afterStorageHash,
-              'relay=' + (afterRelayHash||'').substring(0, 16) +
-              ' storage=' + afterStorageHash.substring(0, 16));
 
         log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
     } catch (e) {
