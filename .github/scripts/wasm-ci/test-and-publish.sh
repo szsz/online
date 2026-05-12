@@ -105,7 +105,7 @@ CI_SKIP_TESTS=(
     caching fonts
     prewarm snapshot-stale
     regression-delete-key-coedit
-    regression-paste-coedit regression-sab-context
+    regression-paste-coedit
     regression-user-save-checkpoint
 )
 for slug in "${CI_SKIP_TESTS[@]}"; do

@@ -1,35 +1,33 @@
 const __cl = require('./lib/inject-checklist');
-// Regression test: SharedArrayBuffer context interference.
+// Regression test: per-tab browser-context isolation for co-edit.
 //
-// The bug: when two pages co-edit a document inside the SAME browser context
-// (i.e. siblings in the default Puppeteer browser, or two tabs of the same
-// real browser window), they share SharedArrayBuffer / WASM memory and corrupt
-// each other's editor state. Co-editing tests that put both pages in the
-// default context were failing with bizarre symptoms (extra characters
-// appearing, cursors freezing, "memory access out of bounds" pageerrors)
-// that masked the *real* application-level bugs we were trying to fix.
+// Background: when two pages open the same file inside the SAME
+// browser context (siblings in the default Puppeteer browser or two
+// tabs of the same real browser window), they share localStorage and
+// the viewer derives the same client identity from it — the relay
+// then sees A and B as the same client and dedups their own events.
+// Co-edit appears one-directional: B sees A's typing only via local
+// state-sharing artefacts, not via the relay; A's local view never
+// updates from its own keystrokes because the relay never echoes
+// them back.
 //
-// The fix in the test suite: every co-editing test creates a fresh
-// `browser.createBrowserContext()` per simulated user.
+// The fix is in the test infrastructure: every co-edit test passes
+// `isolatedContext: true` to lib/open-via-viewer.js, which creates a
+// fresh `browser.createBrowserContext()` per simulated user.
 //
-// This regression test demonstrates the contrast: same-context co-edit
-// produces broken/corrupt state, separate-context co-edit converges cleanly.
+// This test demonstrates the contrast: separate-context co-edit
+// converges cleanly, shared-context does not.
 //
-// We are NOT testing the user-facing multi-tab warning here (that lives in the
-// viewer); we're testing that the test infrastructure assumption — "different
-// browser contexts are required for co-editing" — actually holds, so future
-// engineers don't accidentally regress to shared contexts in new tests.
-//
-// ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
+// Migrated to the viewer flow (lib/open-via-viewer.js).
+'use strict';
 
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
 
-const BASE = env.EDITOR_URL;
-const RELAY = env.RELAY_URL;
-const RELAY_HTTP = env.RELAY_HTTP_URL;
-const TIMEOUT = 180000;
+const VIEWER = env.FILE_STORAGE_URL;
+const TIMEOUT = env.scaleTimeout(180000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-sab';
 
 const T0 = Date.now();
@@ -49,8 +47,8 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
-async function getStatus(page) {
-    return page.evaluate(() => {
+async function getStatus(frame) {
+    return frame.evaluate(() => {
         const el = document.querySelector('#StateWordCount');
         return el ? el.textContent.trim() : 'NOT FOUND';
     });
@@ -60,151 +58,128 @@ function charCount(s) {
     return m ? parseInt(m[1]) : -1;
 }
 
-// Click the canvas to focus the editor (pages open cool.html directly, no iframe)
-async function clickCanvas(page) {
-    const box = await page.evaluate(() => {
-        const c = document.querySelector('.leaflet-tile-container canvas, #document-container canvas');
-        if (!c) return null;
-        const r = c.getBoundingClientRect();
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-    });
-    if (box) await page.mouse.click(box.x, box.y);
-    await sleep(300);
+async function waitForCharCount(frame, expected, timeoutMs) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+        if (charCount(await getStatus(frame)) === expected) return true;
+        await sleep(500);
+    }
+    return false;
 }
 
-async function openInContext(ctx, url, label) {
-    const page = await ctx.newPage();
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-    await page.waitForFunction(() => {
-        const el = document.querySelector('#StateWordCount');
-        return el && el.textContent && el.textContent.includes('characters');
-    }, { timeout: TIMEOUT });
-    log(`[${label}] Loaded: "${await getStatus(page)}"`);
-    return page;
-}
-
-async function typeChars(page, label, chars) {
-    await clickCanvas(page);
-    for (const c of chars) {
-        await page.keyboard.type(c, { delay: 50 });
+async function typeAt(page, text) {
+    await page.mouse.click(640, 400);
+    await sleep(500);
+    for (const ch of text) {
+        await page.keyboard.type(ch, { delay: 50 });
         await sleep(1500);
     }
 }
 
 (async () => {
-    log('=== Regression: SAB / browser-context interference ===');
+    log('=== Regression: per-tab browser-context isolation ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
     const { browser, cleanup } = await launch();
 
     try {
-        // Upload doc + seed relay
-        const ROOM_OK   = 'sab-ok-' + Date.now();
-        const ROOM_BAD  = 'sab-bad-' + Date.now();
-        const FILE = 'sab-test.txt';
-        const up = await browser.newPage();
-        await up.goto(`${BASE}/editor.html`, { waitUntil: 'networkidle0' });
-        for (const room of [ROOM_OK, ROOM_BAD]) {
-            await up.evaluate(async (url, relayHttp, room, file, content) => {
-                await fetch(url + '/wasm/' + file, { method: 'POST',
-                    body: new Blob([content], { type: 'application/octet-stream' })});
-                await fetch(`${relayHttp}/room/${encodeURIComponent(room)}/file`,
-                    { method: 'POST', body: new Blob([content]) });
-            }, BASE, RELAY_HTTP, room, FILE, 'Hello');
-        }
-        await up.close();
-        log('Doc uploaded + relay seeded for both rooms');
+        // ──────────────────────────────────────────────────────────
+        // GOOD path: openSecretInBrowser with isolatedContext: true.
+        // ──────────────────────────────────────────────────────────
+        log('\n--- Scenario A: isolatedContext = true (the fix) ---');
+        const docName = 'sab-good-' + Date.now() + '.txt';
+        const bytes = Buffer.from('Hello', 'utf8');     // 5 chars
 
-        // ---------- TEST 1: GOOD — separate browser contexts ----------
-        log('\n--- Scenario A: SEPARATE browser contexts (the fix) ---');
-        const okUrl = `${BASE}/browser/cool.html?WOPISrc=${FILE}` +
-                      `&relay=${encodeURIComponent(RELAY + '/room/' + ROOM_OK)}&access_token=test`;
-        const ctxA = await browser.createBrowserContext();
-        const ctxB = await browser.createBrowserContext();
-        let okErrors = [];
-        const okPageA = await openInContext(ctxA, okUrl, 'OK-A');
-        okPageA.on('pageerror', e => okErrors.push('A:' + e.message.substring(0, 100)));
+        const upGoodA = await openViaViewer(browser, VIEWER, docName, bytes,
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+              isolatedContext: true });
+        await waitForCharCount(upGoodA.editorFrame, 5, TIMEOUT);
+        log(`[GOOD-A] Loaded: "${await getStatus(upGoodA.editorFrame)}"`);
         await sleep(8000);
-        const okPageB = await openInContext(ctxB, okUrl, 'OK-B');
-        okPageB.on('pageerror', e => okErrors.push('B:' + e.message.substring(0, 100)));
+
+        const upGoodB = await openSecretInBrowser(browser, VIEWER, upGoodA.b64urlSecret,
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+              isolatedContext: true });
+        await waitForCharCount(upGoodB.editorFrame, 5, TIMEOUT);
+        log(`[GOOD-B] Loaded: "${await getStatus(upGoodB.editorFrame)}"`);
         await sleep(15000);
-        await snap(okPageA, 'sep_A_initial');
-        await snap(okPageB, 'sep_B_initial');
 
-        await typeChars(okPageA, 'OK-A', 'XYZ');
-        await sleep(8000);
-        const okFinalA = charCount(await getStatus(okPageA));
-        const okFinalB = charCount(await getStatus(okPageB));
-        await snap(okPageA, 'sep_A_after_xyz');
-        await snap(okPageB, 'sep_B_after_xyz');
-        log(`Separate contexts: A=${okFinalA} B=${okFinalB} (expected 8 = "Hello"+XYZ)`);
-        check('Separate contexts: A reaches 8 chars', okFinalA === 8, 'A=' + okFinalA);
+        await snap(upGoodA.page, 'iso_A_initial');
+        await snap(upGoodB.page, 'iso_B_initial');
+
+        log('[GOOD-A] Typing "XYZ"');
+        await typeAt(upGoodA.page, 'XYZ');
+        // Wait up to 30s for B to converge — relay propagation can lag
+        // on cold-start runs against wasm-viewer-test.
+        await waitForCharCount(upGoodB.editorFrame, 8, 30000);
+        const isoFinalA = charCount(await getStatus(upGoodA.editorFrame));
+        const isoFinalB = charCount(await getStatus(upGoodB.editorFrame));
+        await snap(upGoodA.page, 'iso_A_after_xyz');
+        await snap(upGoodB.page, 'iso_B_after_xyz');
+        log(`Separate contexts: A=${isoFinalA} B=${isoFinalB} (expected 8 = "Hello"+XYZ)`);
+        check('Separate contexts: A reaches 8 chars', isoFinalA === 8, 'A=' + isoFinalA);
         check('Separate contexts: B converges to A',
-              okFinalA === 8 && okFinalB === 8, `A=${okFinalA} B=${okFinalB}`);
-        const okFatalErrors = okErrors.filter(e => /memory access out of bounds|out of memory|wasm/i.test(e));
-        check('Separate contexts: no WASM/memory errors',
-              okFatalErrors.length === 0, okFatalErrors.slice(0,2).join(' | '));
+              isoFinalA === 8 && isoFinalB === 8, `A=${isoFinalA} B=${isoFinalB}`);
 
-        await ctxA.close();
-        await ctxB.close();
+        await upGoodA.page.close();
+        await upGoodB.page.close();
+        if (upGoodA.context) await upGoodA.context.close();
+        if (upGoodB.context) await upGoodB.context.close();
 
-        // ---------- TEST 2: BAD — same browser context ----------
-        log('\n--- Scenario B: SAME browser context (the bug) ---');
-        const badUrl = `${BASE}/browser/cool.html?WOPISrc=${FILE}` +
-                       `&relay=${encodeURIComponent(RELAY + '/room/' + ROOM_BAD)}&access_token=test`;
-        const sharedCtx = await browser.createBrowserContext();
-        let badErrors = [];
-        let badPageA, badPageB;
-        let openFailed = false;
-        let bothLoaded = false;
-        try {
-            badPageA = await openInContext(sharedCtx, badUrl, 'BAD-A');
-            badPageA.on('pageerror', e => badErrors.push('A:' + e.message.substring(0, 100)));
-            await sleep(8000);
-            badPageB = await openInContext(sharedCtx, badUrl, 'BAD-B');
-            badPageB.on('pageerror', e => badErrors.push('B:' + e.message.substring(0, 100)));
-            await sleep(10000);
-            bothLoaded = true;
-            await snap(badPageA, 'shared_A_initial');
-            await snap(badPageB, 'shared_B_initial');
-            await typeChars(badPageA, 'BAD-A', 'XYZ');
-            await sleep(8000);
-        } catch (e) {
-            log('  Same-context open failed (expected — this is the bug): ' + e.message);
-            openFailed = true;
-        }
+        // ──────────────────────────────────────────────────────────
+        // BAD path: two openSecretInBrowser calls SHARING the default
+        // browser context. They share localStorage; the viewer
+        // derives the same client identity from it, so the relay
+        // dedups A and B as one client. A's typing does NOT show up
+        // on A's own status bar (relay doesn't echo back); B's shows
+        // a stale value from the shared localStorage.
+        // ──────────────────────────────────────────────────────────
+        log('\n--- Scenario B: shared context (the bug) ---');
+        const docNameBad = 'sab-bad-' + Date.now() + '.txt';
 
-        let badAchars = -1, badBchars = -1;
-        try { badAchars = charCount(await getStatus(badPageA)); } catch(e) {}
-        try { badBchars = charCount(await getStatus(badPageB)); } catch(e) {}
-        if (badPageA) await snap(badPageA, 'shared_A_after_xyz');
-        if (badPageB) await snap(badPageB, 'shared_B_after_xyz');
+        const upBadA = await openViaViewer(browser, VIEWER, docNameBad, bytes,
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000) });
+            // ^ no isolatedContext — falls into default browser context
+        await waitForCharCount(upBadA.editorFrame, 5, TIMEOUT);
+        log(`[BAD-A] Loaded: "${await getStatus(upBadA.editorFrame)}"`);
+        await sleep(8000);
 
-        const badFatalErrors = badErrors.filter(e => /memory access out of bounds|out of memory|wasm|SharedArrayBuffer/i.test(e));
-        log(`Same-context result: A=${badAchars} B=${badBchars} ` +
-            `errors=${badErrors.length} (fatal=${badFatalErrors.length})`);
-        if (badErrors.length) {
-            log('  errors: ' + badErrors.slice(0, 3).join(' | '));
-        }
+        const upBadB = await openSecretInBrowser(browser, VIEWER, upBadA.b64urlSecret,
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000) });
+            // ^ no isolatedContext — same default browser context as A
+        await waitForCharCount(upBadB.editorFrame, 5, TIMEOUT);
+        log(`[BAD-B] Loaded: "${await getStatus(upBadB.editorFrame)}"`);
+        await sleep(15000);
 
-        // The bug manifests as ONE of:
-        //   - Open fails entirely
-        //   - WASM memory / SAB pageerror
-        //   - The two pages do NOT converge to 8 chars
-        const sameContextBroken =
-            openFailed ||
-            badFatalErrors.length > 0 ||
-            !(badAchars === 8 && badBchars === 8);
-        check('Same-context co-edit is broken (proof the contrast matters)',
-              sameContextBroken,
-              `failed=${openFailed} fatalErr=${badFatalErrors.length} A=${badAchars} B=${badBchars}`);
+        await snap(upBadA.page, 'shared_A_initial');
+        await snap(upBadB.page, 'shared_B_initial');
 
-        try { await sharedCtx.close(); } catch(e) {}
+        log('[BAD-A] Typing "XYZ"');
+        await typeAt(upBadA.page, 'XYZ');
+        // Same 30s budget as Scenario A so a slow relay doesn't fake a
+        // win for the bug. If sharing the context broke things, A=8/B=8
+        // will not happen within 30s either.
+        await waitForCharCount(upBadA.editorFrame, 8, 30000);
+        const badFinalA = charCount(await getStatus(upBadA.editorFrame));
+        const badFinalB = charCount(await getStatus(upBadB.editorFrame));
+        await snap(upBadA.page, 'shared_A_after_xyz');
+        await snap(upBadB.page, 'shared_B_after_xyz');
+        log(`Shared context: A=${badFinalA} B=${badFinalB}`);
+
+        // The bug manifests as A and B NOT converging to 8 (the
+        // relay-dedup symptom we saw during the initial helper bring-up).
+        const sharedBroken = !(badFinalA === 8 && badFinalB === 8);
+        check('Shared context: co-edit is broken (proof the contrast matters)',
+              sharedBroken,
+              `A=${badFinalA} B=${badFinalB}`);
+
+        await upBadA.page.close();
+        await upBadB.page.close();
 
         log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
     } catch (e) {
-        log('Error: ' + e.message);
+        log('Error: ' + (e.stack || e.message));
         allPassed = false;
     } finally {
         await cleanup();
