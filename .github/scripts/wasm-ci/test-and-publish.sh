@@ -103,7 +103,7 @@ CI_SKIP_TESTS=(
     # Migrating to the viewer flow (lib/open-via-viewer.js) one by one;
     # each entry should be removed as its test gets rewritten.
     3browser caching 2browser fonts formats latejoin
-    pptx-coedit pptx prewarm snapshot-stale
+    pptx-coedit prewarm snapshot-stale
     regression-delete-key-coedit regression-image-insert
     regression-insert-table regression-mouse-select-copypaste
     regression-paste-coedit regression-sab-context
