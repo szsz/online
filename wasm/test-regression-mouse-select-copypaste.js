@@ -8,14 +8,15 @@ const __cl = require('./lib/inject-checklist');
 //   4. A triple-clicks to select a line (mouse with count=3), copies, pastes
 //   5. Both browsers converge
 //
-// ALL input via real keyboard/mouse.
+// Migrated to the viewer flow (lib/open-via-viewer.js).
 
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
 
-const BASE = env.EDITOR_URL;
-const RELAY_BASE = env.RELAY_URL;
+const VIEWER = env.FILE_STORAGE_URL;
+const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-mouse-select-copypaste';
 
 let allPassed = true;
@@ -26,6 +27,30 @@ function check(label, cond, ev) {
 }
 function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? parseInt(m[1]) : -1; }
 
+async function grantClipboard(page) {
+    const cdp = await page.createCDPSession();
+    await cdp.send('Browser.grantPermissions', {
+        permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
+    });
+}
+
+async function getStatus(frame) {
+    return frame.evaluate(() => {
+        const el = document.querySelector('#StateWordCount');
+        return el ? el.textContent.trim() : 'NOT FOUND';
+    });
+}
+
+async function waitForCharCount(frame, timeoutMs) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+        const cc = charCount(await getStatus(frame));
+        if (cc > 0) return cc;
+        await sleep(500);
+    }
+    return -1;
+}
+
 (async () => {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
@@ -34,96 +59,50 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     let stepNum = 0;
     async function snap(page, name) {
         stepNum++;
-        await page.screenshot({ path: `${SHOT_DIR}/${String(stepNum).padStart(2,'0')}_${name}.png` });
+        try { await page.screenshot({ path: `${SHOT_DIR}/${String(stepNum).padStart(2,'0')}_${name}.png` }); } catch(e) {}
     }
 
     try {
-        // Upload test doc
-        const up = await browser.newPage();
-        await up.goto(BASE, { waitUntil: 'networkidle0' });
-        await up.evaluate(async (url) => {
-            await fetch(url + '/wasm/mousesel.txt', {
-                method: 'POST',
-                body: new Blob(['Hello World'], { type: 'application/octet-stream' }),
-            });
-        }, BASE);
-        await up.close();
-        console.log('[setup] Uploaded "Hello World"\n');
+        const docName = 'mousesel-' + Date.now() + '.txt';
+        const bytes = Buffer.from('Hello World', 'utf8');
 
-        const ROOM = 'mousesel-' + Date.now();
-        const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
-        const coolUrl = `${BASE}/browser/cool.html?WOPISrc=mousesel.txt&relay=${relay}&access_token=test`;
+        console.log('[A] Opening...');
+        const { page: pageA, editorFrame: frameA, b64urlSecret } =
+            await openViaViewer(browser, VIEWER, docName, bytes,
+                { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+                  isolatedContext: true });
+        await grantClipboard(pageA);
+        await waitForCharCount(frameA, TIMEOUT);
+        console.log(`[A] Loaded: "${await getStatus(frameA)}"`);
+        await sleep(10000);
 
-        async function getStatus(page) {
-            return page.evaluate(() => {
-                const el = document.querySelector('#StateWordCount');
-                return el ? el.textContent.trim() : 'NOT FOUND';
-            });
-        }
+        console.log('[B] Opening...');
+        const { page: pageB, editorFrame: frameB } =
+            await openSecretInBrowser(browser, VIEWER, b64urlSecret,
+                { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+                  isolatedContext: true });
+        await grantClipboard(pageB);
+        await waitForCharCount(frameB, TIMEOUT);
+        console.log(`[B] Loaded: "${await getStatus(frameB)}"`);
+        await sleep(15000);
 
-        async function openDoc(label) {
-            const ctx = await browser.createBrowserContext();
-            const page = await ctx.newPage();
-            const cdp = await page.createCDPSession();
-            await cdp.send('Browser.grantPermissions', {
-                permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
-            });
-            await page.evaluateOnNewDocument(() => {
-                window._logs = [];
-                const orig = console.log;
-                console.log = function() {
-                    window._logs.push(Array.from(arguments).join(' '));
-                    orig.apply(console, arguments);
-                };
-            });
-            console.log(`[${label}] Opening...`);
-            await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(300000) });
-            await page.waitForFunction(() => {
-                const el = document.querySelector('#StateWordCount');
-                return el && el.textContent && el.textContent.includes('characters');
-            }, { timeout: env.scaleTimeout(300000) });
-            console.log(`[${label}] Loaded: "${await getStatus(page)}"`);
-            return page;
-        }
+        const cc0a = charCount(await getStatus(frameA));
+        const cc0b = charCount(await getStatus(frameB));
+        console.log('Initial: A=' + cc0a + ' B=' + cc0b);
+        check('Initial: both see 11 chars', cc0a === 11 && cc0b === 11);
 
         async function clickCanvas(page) {
             await page.mouse.click(640, 400);
             await sleep(500);
         }
 
-        async function waitForReady(page, label, count) {
-            const t0 = Date.now();
-            const budget = env.scaleTimeout(180000);
-            while (Date.now() - t0 < budget) {
-                const logs = await page.evaluate(() =>
-                    window._logs ? window._logs.filter(l => l.includes(') ready')) : []);
-                if (logs.length >= count) return true;
-                await sleep(2000);
-            }
-            return false;
-        }
-
-        // Open both browsers
-        const pageA = await openDoc('A');
-        await sleep(10000);
-        const pageB = await openDoc('B');
-        await sleep(15000);
-
-        await waitForReady(pageA, 'A', 1);
-        await waitForReady(pageB, 'B', 1);
-
-        const cc0 = charCount(await getStatus(pageA));
-        console.log('Initial: ' + cc0 + ' chars');
-        check('Initial: both see 11 chars',
-            charCount(await getStatus(pageA)) === 11 && charCount(await getStatus(pageB)) === 11);
-
         // ═══ STEP 1: A types "TEST " at the beginning ═══
         console.log('\n--- Step 1: A types "TEST " ---');
         await clickCanvas(pageA);
         await pageA.keyboard.type('TEST ', { delay: 60 });
         await sleep(5000);
-        const ccA1 = charCount(await getStatus(pageA));
-        const ccB1 = charCount(await getStatus(pageB));
+        const ccA1 = charCount(await getStatus(frameA));
+        const ccB1 = charCount(await getStatus(frameB));
         console.log('  A=' + ccA1 + ' B=' + ccB1);
         check('Step 1: A typed +5', ccA1 === 16);
         check('Step 1: B sees A typing', ccB1 === 16, 'B=' + ccB1);
@@ -139,20 +118,18 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await pageA.keyboard.press('c');
         await pageA.keyboard.up('Control');
         await sleep(3000);
-        // Deselect and move to end
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(300);
         await pageA.keyboard.press('End');
         await sleep(500);
-        // Paste
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const ccA2 = charCount(await getStatus(pageA));
-        const ccB2 = charCount(await getStatus(pageB));
+        const ccA2 = charCount(await getStatus(frameA));
+        const ccB2 = charCount(await getStatus(frameB));
         console.log('  A=' + ccA2 + ' B=' + ccB2);
         check('Step 2: A pasted (doubled)', ccA2 === 32, 'A=' + ccA2);
         check('Step 2: B sees paste', ccB2 === 32, 'B=' + ccB2);
@@ -169,11 +146,9 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         console.log('\n--- Step 4: A double-clicks to select a word ---');
         await pageA.mouse.click(300, 300, { clickCount: 2 });
         await sleep(2000);
-        // Check A's status shows "Selected:" (word selected)
-        const selA = await getStatus(pageA);
+        const selA = await getStatus(frameA);
         console.log('  A status after double-click: "' + selA + '"');
-        const hasSelected = selA.includes('Selected') || selA.includes('word');
-        check('Step 4: A has selection', true); // double-click always selects something
+        check('Step 4: A has selection', true);
         await snap(pageA, 'A_after_doubleclick');
 
         // ═══ STEP 5: A copies selection → moves to end → pastes ═══
@@ -186,13 +161,13 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(500);
-        const ccPrePaste = charCount(await getStatus(pageA));
+        const ccPrePaste = charCount(await getStatus(frameA));
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const ccA5 = charCount(await getStatus(pageA));
-        const ccB5 = charCount(await getStatus(pageB));
+        const ccA5 = charCount(await getStatus(frameA));
+        const ccB5 = charCount(await getStatus(frameB));
         console.log('  A=' + ccA5 + ' B=' + ccB5 + ' (pre-paste was ' + ccPrePaste + ')');
         check('Step 5: A pasted word (delta > 0)', ccA5 > ccPrePaste,
             'delta=' + (ccA5 - ccPrePaste));
@@ -210,8 +185,8 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await sleep(500);
         await pageB.keyboard.type('END', { delay: 60 });
         await sleep(5000);
-        const ccA6 = charCount(await getStatus(pageA));
-        const ccB6 = charCount(await getStatus(pageB));
+        const ccA6 = charCount(await getStatus(frameA));
+        const ccB6 = charCount(await getStatus(frameB));
         console.log('  A=' + ccA6 + ' B=' + ccB6);
         check('Step 6: B typed +3', ccB6 === ccA5 + 3, 'B=' + ccB6 + ' expected=' + (ccA5 + 3));
         check('Step 6: A sees B typing', Math.abs(ccA6 - ccB6) <= 1,

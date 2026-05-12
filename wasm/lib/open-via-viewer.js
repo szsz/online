@@ -46,33 +46,34 @@
 
 const { uploadV2 } = require('./v2-upload');
 
-async function openViaViewer(browser, viewerUrl, name, bytes, opts) {
+// Open an additional browser page on an existing uploaded file (same
+// fileId / b64urlSecret). Lets multi-browser co-edit tests stage the
+// file once and join the room from N tabs.
+//
+// Pass `opts.isolatedContext = true` for co-edit tests so each tab gets
+// its own browser context (separate localStorage / sessionStorage /
+// IndexedDB). Without isolation, two pages on the same browser share
+// state — including any viewer-derived per-tab client id — and the
+// relay sees them as one client. Returns `context` so callers can
+// close it when they close the page.
+async function openSecretInBrowser(browser, viewerUrl, b64urlSecret, opts) {
     opts = opts || {};
 
-    // 1. Upload v2-encrypted ciphertext to viewer storage. The
-    //    returned b64urlSecret is what we put in the URL fragment;
-    //    the viewer derives the per-file content + name keys from
-    //    it and decrypts locally.
-    const up = await uploadV2(viewerUrl, name, bytes);
-
-    // 2. Open the page. Allow the caller to attach console handlers
-    //    before navigation by passing opts.onPage(page).
-    const page = await browser.newPage();
+    let context = null;
+    let page;
+    if (opts.isolatedContext) {
+        context = await browser.createBrowserContext();
+        page = await context.newPage();
+    } else {
+        page = await browser.newPage();
+    }
     if (opts.viewport) await page.setViewport(opts.viewport);
     if (opts.defaultTimeout) page.setDefaultTimeout(opts.defaultTimeout);
     if (typeof opts.onPage === 'function') opts.onPage(page);
 
-    // 3. Navigate to the viewer's deep-link. The viewer's
-    //    openFileBySecret runs, decrypts, stages plaintext in
-    //    EditorBridge, builds the iframe URL (with
-    //    ?fileStorageUrl + EDITOR_DEPLOY_ID baked in), and iframes
-    //    cool.html. `opts.urlSuffix` (e.g. '&planc=1', '&singleuser')
-    //    is appended after the hash so anything reading
-    //    window.location.search before the iframe init still sees
-    //    a clean URL.
     let url = viewerUrl.replace(/\/+$/, '')
         + '/' + (opts.viewerPath || '')
-        + '#file=' + up.b64urlSecret
+        + '#file=' + b64urlSecret
         + (opts.urlSuffix || '');
     if (opts.singleUser) url = url.replace('/#', '/?singleuser#');
 
@@ -81,10 +82,6 @@ async function openViaViewer(browser, viewerUrl, name, bytes, opts) {
         timeout: opts.gotoTimeout || 60000,
     });
 
-    // 4. Wait for the editor iframe to attach and load cool.html.
-    //    The viewer kicks off iframe creation a fraction of a second
-    //    after the page settles (it has to decrypt + stage first);
-    //    polling for the right frame is the simplest way.
     const iframeT0 = Date.now();
     const iframeTimeout = opts.iframeTimeout || 60000;
     let editorFrame = null;
@@ -96,14 +93,23 @@ async function openViaViewer(browser, viewerUrl, name, bytes, opts) {
         await new Promise(r => setTimeout(r, 200));
     }
     if (!editorFrame) {
-        throw new Error('openViaViewer: editor iframe never loaded '
+        throw new Error('openSecretInBrowser: editor iframe never loaded '
             + 'within ' + iframeTimeout + 'ms — viewer probably '
             + 'failed to decrypt or stage the file (check page console)');
     }
 
+    return { page, editorFrame, context };
+}
+
+async function openViaViewer(browser, viewerUrl, name, bytes, opts) {
+    opts = opts || {};
+    const up = await uploadV2(viewerUrl, name, bytes);
+    const { page, editorFrame, context } =
+        await openSecretInBrowser(browser, viewerUrl, up.b64urlSecret, opts);
     return {
         page,
         editorFrame,
+        context,
         fileId: up.fileId,
         b64urlSecret: up.b64urlSecret,
         secret: up.secret,
@@ -111,4 +117,4 @@ async function openViaViewer(browser, viewerUrl, name, bytes, opts) {
     };
 }
 
-module.exports = { openViaViewer };
+module.exports = { openViaViewer, openSecretInBrowser };

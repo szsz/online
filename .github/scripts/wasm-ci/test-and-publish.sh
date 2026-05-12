@@ -105,7 +105,6 @@ CI_SKIP_TESTS=(
     3browser caching 2browser fonts formats latejoin
     pptx-coedit prewarm snapshot-stale
     regression-delete-key-coedit regression-image-insert
-    regression-insert-table regression-mouse-select-copypaste
     regression-paste-coedit regression-sab-context
     regression-user-save-checkpoint
 )

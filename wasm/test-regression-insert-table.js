@@ -1,5 +1,5 @@
 const __cl = require('./lib/inject-checklist');
-// Regression: inserting a table into an empty Writer document crashes
+// Regression: inserting a table into an empty Writer document crashed
 // Kit with:
 //   RuntimeError: memory access out of bounds
 //     SvxAutoFormatData::SvxAutoFormatData(SvxAutoFormatData const&)
@@ -9,26 +9,24 @@ const __cl = require('./lib/inject-checklist');
 // Fix is LO Core (C++) — this test is the locked-down reproducer that
 // fails today and flips green when the fix lands.
 //
-// The test goes DIRECT to cool.html (bypassing the viewer + v2) so the
-// same-origin constraint on postMessage / TheFakeWebSocket is
-// satisfied. The bug is about Kit's C++ copy-ctor for
-// SvxAutoFormatData — not about the viewer / relay / v2 layers.
+// Migrated to the viewer flow (lib/open-via-viewer.js).
 
 'use strict';
 
-const puppeteer = require('puppeteer');
+const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { openViaViewer } = require('./lib/open-via-viewer');
 
-const EDITOR = env.EDITOR_URL;
+const VIEWER = env.FILE_STORAGE_URL;
+const TIMEOUT = env.scaleTimeout(180000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-insert-table';
 const DOC_NAME = 'inserttable-' + Date.now() + '.docx';
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
 
 const T0 = Date.now();
 function log(m) { console.log('[' + ((Date.now()-T0)/1000).toFixed(1) + 's] ' + m); }
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 let snapN = 0;
 async function snap(page, name) {
@@ -43,10 +41,10 @@ function check(label, cond, ev) {
     else { log('  ✗ FAIL: ' + label + (ev ? ' [' + ev + ']' : '')); allPassed = false; }
 }
 
-async function waitForLoaded(page, timeoutMs) {
+async function waitForLoaded(frame, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-        const ready = await page.evaluate(() => {
+        const ready = await frame.evaluate(() => {
             const wc = document.querySelector('#StateWordCount');
             return wc && wc.textContent && /\d+\s+characters/i.test(wc.textContent)
                 ? wc.textContent.trim() : null;
@@ -57,8 +55,8 @@ async function waitForLoaded(page, timeoutMs) {
     return null;
 }
 
-async function getCharCount(page) {
-    const txt = await page.evaluate(() =>
+async function getCharCount(frame) {
+    const txt = await frame.evaluate(() =>
         document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
     const m = (txt || '').match(/(\d+)\s+characters/i);
     return m ? parseInt(m[1]) : -1;
@@ -71,64 +69,49 @@ async function getCharCount(page) {
 
     if (!fs.existsSync(FIXTURE)) { log('ERROR: fixture missing'); process.exit(1); }
 
-    const browser = await puppeteer.launch({
-        headless: 'new', protocolTimeout: 600000,
-        args: ['--no-sandbox', '--ignore-certificate-errors',
-               '--enable-features=SharedArrayBuffer'],
-    });
+    const { browser, cleanup } = await launch();
     const oobErrors = [];
     const autoformatErrors = [];
 
     try {
-        // Stage the file at the editor's /wasm/<name> so Kit can open it.
-        const up = await browser.newPage();
-        await up.goto(EDITOR + '/', { waitUntil: 'domcontentloaded' }).catch(() => {});
         const docBytes = fs.readFileSync(FIXTURE);
-        await up.evaluate(async (url, name, arr) => {
-            await fetch(url + '/wasm/' + encodeURIComponent(name), {
-                method: 'POST', body: new Blob([new Uint8Array(arr)]),
+
+        const { page, editorFrame } = await openViaViewer(
+            browser, VIEWER, DOC_NAME, docBytes,
+            { iframeTimeout: TIMEOUT,
+              gotoTimeout: 30000,
+              viewport: { width: 1280, height: 900 },
+              onPage: p => {
+                  p.on('pageerror', e => {
+                      const m = (e.message || '') + ' ' + (e.stack || '');
+                      if (m.includes('memory access out of bounds')) oobErrors.push(m.substring(0, 500));
+                      if (m.includes('AutoFormat') || m.includes('SvxAutoFormatData')) autoformatErrors.push(m.substring(0, 500));
+                  });
+                  p.on('console', msg => {
+                      const t = msg.text();
+                      if (t.includes('memory access out of bounds')) oobErrors.push(t.substring(0, 500));
+                      if (t.includes('SvxAutoFormatData') || t.includes('SwTableAutoFormat')) autoformatErrors.push(t.substring(0, 500));
+                  });
+              },
             });
-        }, EDITOR, DOC_NAME, Array.from(docBytes));
-        await up.close();
-        log('Uploaded ' + DOC_NAME);
 
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 900 });
-
-        page.on('pageerror', e => {
-            const m = (e.message || '') + ' ' + (e.stack || '');
-            if (m.includes('memory access out of bounds')) oobErrors.push(m.substring(0, 500));
-            if (m.includes('AutoFormat') || m.includes('SvxAutoFormatData')) autoformatErrors.push(m.substring(0, 500));
-        });
-        page.on('console', msg => {
-            const t = msg.text();
-            if (t.includes('memory access out of bounds')) oobErrors.push(t.substring(0, 500));
-            if (t.includes('SvxAutoFormatData') || t.includes('SwTableAutoFormat')) autoformatErrors.push(t.substring(0, 500));
-        });
-
-        const url = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(DOC_NAME) + '&access_token=test';
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
-
-        const ready = await waitForLoaded(page, env.scaleTimeout(180000));
+        const ready = await waitForLoaded(editorFrame, TIMEOUT);
         check('Doc loaded', !!ready, 'status=' + ready);
         if (!ready) {
             log('Aborting: doc never loaded');
             process.exit(1);
         }
-        const initChars = await getCharCount(page);
+        const initChars = await getCharCount(editorFrame);
         log('Initial: ' + initChars + ' chars');
         await snap(page, 'loaded');
 
-        // Focus the canvas so the UNO command lands.
-        const canvas = await page.$('canvas');
-        if (canvas) {
-            const b = await canvas.boundingBox();
-            if (b) await page.mouse.click(b.x + b.width / 2, b.y + 100);
-        }
+        // Focus the canvas so the UNO command lands. The viewer iframes
+        // the editor fullscreen — page coords work.
+        await page.mouse.click(640, 400);
         await sleep(600);
 
         log('Dispatching .uno:InsertTable (2 cols × 2 rows)…');
-        const dispatched = await page.evaluate(() => {
+        const dispatched = await editorFrame.evaluate(() => {
             try {
                 if (typeof TheFakeWebSocket === 'undefined' || !TheFakeWebSocket.send) {
                     return 'no-fake-ws';
@@ -155,37 +138,18 @@ async function getCharCount(page) {
               autoformatErrors.length === 0,
               autoformatErrors.length + ' AF: ' + ((autoformatErrors[0] || '').substring(0, 240)));
 
-        const afterChars = await getCharCount(page);
+        const afterChars = await getCharCount(editorFrame);
         log('After: ' + afterChars + ' chars');
-        // Table inserts with pTAFormatIn=nullptr (our WASM patch) so cells
-        // are empty paragraphs — no text added, char count unchanged.
-        // What matters is that the command completed without crashing and
-        // the char count didn't regress (a crash would drop it to -1 /
-        // reading the status bar would fail).
         check('InsertTable completed (char count preserved, no crash)',
               afterChars >= initChars,
               'before=' + initChars + ' after=' + afterChars);
-
-        // Verify the table actually got inserted by checking the canvas
-        // for table-related DOM state. A 2×2 table adds 3 paragraph stops
-        // (one per cell), which bumps the page's structure even if not
-        // the char count.
-        const tableInserted = await page.evaluate(() => {
-            const tbl = document.querySelector('.leaflet-table-marker') ||
-                        document.querySelector('[class*="table-column"]') ||
-                        document.querySelector('[data-uno*="Table"]');
-            // Fallback: check DocumentRepair fires (modification happened)
-            const sb = document.querySelector('#StateWordCount')?.textContent || '';
-            return { hasTableMarker: !!tbl, wordCount: sb };
-        }).catch(() => ({ hasTableMarker: false, wordCount: '(err)' }));
-        log('Post-insert DOM probe: ' + JSON.stringify(tableInserted));
 
         log('\n' + (allPassed ? '✓ ALL TESTS PASSED' : '✗ SOME TESTS FAILED'));
     } catch(e) {
         log('Error: ' + (e.stack || e.message));
         allPassed = false;
     } finally {
-        await browser.close();
+        await cleanup();
         log('Done.');
         process.exit(allPassed ? 0 : 1);
     }
