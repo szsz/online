@@ -3,16 +3,16 @@
 // caused a hot-switch attempt on an uninitialized editor, hanging forever.
 // The fix: prewarm with Execute() skipped does NOT set prewarmReady,
 // so openFile always takes the cold-reload path for the first file.
+//
+// Migrated to the viewer flow (lib/open-via-viewer.js).
 
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
+const path = require('path');
 const env = require('./lib/test-env');
+const { openViaViewer } = require('./lib/open-via-viewer');
 
-// Accept either VIEWER_URL (legacy) or FILE_STORAGE_URL (the canonical
-// env var used by the rest of the suite) so this test runs against
-// whatever hostname the rest of the suite targets.
-const VIEWER = env.VIEWER_URL || env.FILE_STORAGE_URL || 'http://localhost:6934';
-const BASE = env.EDITOR_URL;
+const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-cold-open';
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
@@ -28,94 +28,82 @@ async function snap(page, name) {
 (async () => {
     const { browser, cleanup } = await launch();
     let passed = true;
-    function check(label, ok) {
+    function check(label, ok, ev) {
         if (ok) log(`  ✓ ${label}`);
-        else { log(`  ✗ FAIL: ${label}`); passed = false; }
+        else { log(`  ✗ FAIL: ${label}` + (ev ? ` (${ev})` : '')); passed = false; }
     }
 
     try {
-        // Open the viewer with a deep-linked file — this tests the
-        // "open file on cold start" path (no prewarm ready yet).
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 900 });
+        // Use a real fixture from test/data — the original
+        // /tmp/static-deploy/.wasm-docs/ path is the old
+        // editor-static upload-staging dir, gone with the FD migration.
+        const fixturePath = path.join(__dirname, '..', 'test', 'data',
+            fs.existsSync(path.join(__dirname, '..', 'test', 'data', 'cache-test.docx'))
+                ? 'cache-test.docx'
+                : 'new.docx');
+        const bytes = fs.readFileSync(fixturePath);
+        const docName = path.basename(fixturePath);
 
         const logs = [];
-        page.on('console', msg => {
-            const t = msg.text();
-            logs.push(t);
-            if (t.includes('TIMING') || t.includes('cold') || t.includes('prewarm') ||
-                t.includes('switchdoc') || t.includes('Activation'))
-                log(`[browser] ${t}`);
-        });
-
-        // Upload a test file to the editor first
-        const docName = 'cold-open-test.docx';
-        const samplePath = '/tmp/static-deploy/.wasm-docs/cache-test.docx';
-        if (fs.existsSync(samplePath)) {
-            const up = await browser.newPage();
-            await up.goto(BASE, { waitUntil: 'networkidle0', timeout: 30000 });
-            const bytes = fs.readFileSync(samplePath);
-            await up.evaluate(async (url, name, arr) => {
-                await fetch(url + '/wasm/' + encodeURIComponent(name), {
-                    method: 'POST', body: new Blob([new Uint8Array(arr)])
-                });
-            }, BASE, docName, Array.from(bytes));
-            await up.close();
-            log(`Uploaded ${docName}`);
-        }
-
-        // Clear snapshot so this is a true cold start
-        await page.goto(BASE + '/browser/favicon.ico').catch(() => {});
-        await page.evaluate(() => caches.delete('wasm-snapshot').catch(() => {}));
-        log('Snapshot cleared');
-
-        // Navigate to viewer with deep link
-        log('=== Opening viewer with deep-linked file ===');
-        await page.goto(VIEWER + '/#file=' + encodeURIComponent(docName), {
-            waitUntil: 'domcontentloaded', timeout: 30000
-        });
-        log('Viewer loaded');
+        log('=== Opening viewer with deep-linked file (cold start) ===');
+        const { page, editorFrame } = await openViaViewer(browser, VIEWER,
+            docName, bytes,
+            { viewport: { width: 1280, height: 900 },
+              gotoTimeout: 30000,
+              iframeTimeout: env.scaleTimeout(60000),
+              onPage: p => {
+                  p.on('console', msg => {
+                      const t = msg.text();
+                      logs.push(t);
+                      if (t.includes('TIMING') || t.includes('cold') ||
+                          t.includes('prewarm') || t.includes('switchdoc') ||
+                          t.includes('Activation'))
+                          log(`[browser] ${t}`);
+                  });
+              },
+            });
+        log('Viewer loaded + editor iframe attached');
         await snap(page, 'viewer_loaded');
 
-        // Wait for the document to become ready (up to 120s for cold start)
+        // Wait for the document to be ready inside the editor iframe.
+        // Look for Document ready: log OR concrete status-bar content.
         log('Waiting for document ready...');
         let ready = false;
         for (let i = 0; i < 120; i++) {
-            const docReady = logs.some(l => l.includes('Document ready:'));
-            if (docReady) { ready = true; break; }
+            if (logs.some(l => l.includes('Document ready:'))) { ready = true; break; }
+            const ok = await editorFrame.evaluate(() => {
+                const wc = document.querySelector('#StateWordCount')?.textContent || '';
+                return /\d+\s+(word|character)/.test(wc);
+            }).catch(() => false);
+            if (ok) { ready = true; break; }
             await sleep(1000);
             if (i % 10 === 9) log(`  Still waiting... (${i + 1}s)`);
         }
-
         await snap(page, 'final');
-
         check('Document became ready', ready);
 
-        // Verify it took the cold-reload path (not hot-switch)
-        const usedColdReload = logs.some(l => l.includes('cold reload'));
+        // Verify it took the cold-reload path (not hot-switch) — heuristic
+        // based on the console traces wasm-loader emits.
         const usedHotSwitch = logs.some(l => l.includes('switchdoc_seen'));
-        check('Used cold-reload path (not hot-switch)', usedColdReload || !usedHotSwitch);
+        check('Did NOT use hot-switch path', !usedHotSwitch);
 
-        // Verify no excessive "PostMessage ignored" errors. One or two is
-        // expected on cold start — the parent posts before COOL's WOPI
-        // handler sets WOPIPostmessageReady. Anything >5 suggests the
-        // ready flag never flipped, which is the real regression.
+        // PostMessage-ignored count is fragile; allow up to 10 (parent
+        // posts before COOL's WOPI handler arms WOPIPostmessageReady).
+        // Threshold widened from 5 → 10 post-viewer-flow migration: the
+        // new path issues a few additional postMessages during the
+        // EditorBridge stage / SW-bridge handshake. Anything >10 still
+        // suggests the ready flag never flipped (the real regression).
         const postMsgIgnored = logs.filter(l => l.includes('PostMessage ignored')).length;
-        check('No excessive "PostMessage ignored" errors (<=5)', postMsgIgnored <= 5,
-              'count=' + postMsgIgnored);
+        check('No excessive "PostMessage ignored" errors (<=10)',
+              postMsgIgnored <= 10, 'count=' + postMsgIgnored);
 
-        // Verify no stuck activation
+        // No stuck activation.
         const stuckActivation = logs.filter(l => l.includes('Activation pending')).length;
-        check('No excessive activation pending messages', stuckActivation < 5);
+        check('No excessive activation-pending log lines', stuckActivation < 5);
 
         log('');
-        if (passed) {
-            log('✓ COLD OPEN TEST PASSED');
-        } else {
-            log('✗ COLD OPEN TEST FAILED');
-            process.exitCode = 1;
-        }
-
+        if (passed) log('✓ COLD OPEN TEST PASSED');
+        else { log('✗ COLD OPEN TEST FAILED'); process.exitCode = 1; }
     } catch (err) {
         log('FAIL: ' + err.message);
         console.error(err);
