@@ -25,6 +25,8 @@ on:
       - 'common/**'
       - 'browser/**'
       - '.github/workflows/wasm-ci-local.yml'
+      - '.github/workflows/wasm-ci.yml'
+      - '.github/workflows/editor-build.yml'
       - '.github/scripts/wasm-ci/**'
   workflow_dispatch:
     inputs:
