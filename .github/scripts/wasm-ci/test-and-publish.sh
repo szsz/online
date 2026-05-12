@@ -103,7 +103,7 @@ CI_SKIP_TESTS=(
     # Migrating to the viewer flow (lib/open-via-viewer.js) one by one;
     # each entry should be removed as its test gets rewritten.
     fonts
-    prewarm snapshot-stale
+    prewarm
     regression-delete-key-coedit
     regression-paste-coedit
 )
