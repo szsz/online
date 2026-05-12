@@ -129,10 +129,20 @@ for f in online.js online.wasm online.data online.worker.js \
 done
 
 # Loader scripts (relay-adapter.js, wasm-loader.js, sw.js, dict-loader.js).
+# Overwrite whatever the WASM build emitted to BUILD_DIST with the
+# current source — these files are pure JS that we keep authoritative
+# in wasm/, and the build artifacts can lag behind a fresh edit.
+#
+# Also DELETE any *.br sidecar that came from BUILD_DIST. Without this,
+# Step 2's brotli swap below would upload the STALE *.br over the
+# canonical blob, undoing the source override. The loader scripts are
+# small (~few KB each); no meaningful loss serving them raw.
 for f in relay-adapter.js wasm-loader.js sw.js dict-loader.js; do
     if [[ -f "$SCRIPT_DIR/$f" ]]; then
         cp "$SCRIPT_DIR/$f" "$EDIR_CONTENT/"
         cp "$SCRIPT_DIR/$f" "$EDIR_CONTENT/browser/dist/"
+        rm -f "$EDIR_CONTENT/$f.br" \
+              "$EDIR_CONTENT/browser/dist/$f.br"
     fi
 done
 
@@ -159,6 +169,28 @@ if [[ -d "$DICTS_SRC" ]] && ls "$DICTS_SRC"/*.tar.gz >/dev/null 2>&1; then
     echo "  Bundled $(ls "$EDIR_CONTENT/dicts"/*.tar.gz | wc -l) dicts"
 else
     echo "  NOTE: no dict bundles"
+fi
+
+# Substitute cool.html template placeholders. The pre-FD editor-
+# server.js did this at request time (`%ACCESS_TOKEN%`, `%LOGO_URL%`
+# etc.); FD static storage can't, so we bake the defaults in at deploy
+# time. The default values match what editor-server.js returned for a
+# no-body GET (which is what the viewer iframe always sends).
+COOL_HTML="$EDIR_CONTENT/browser/dist/cool.html"
+if [[ -f "$COOL_HTML" ]]; then
+    sed -i \
+        -e 's/%ACCESS_TOKEN_TTL%/0/g' \
+        -e 's/%ACCESS_TOKEN%//g' \
+        -e 's/%ACCESS_HEADER%//g' \
+        -e 's/%NO_AUTH_HEADER%//g' \
+        -e 's/%UI_RTL_SETTINGS%//g' \
+        -e 's/%BRANDING_THEME%//g' \
+        -e 's/%LOGO_URL%//g' \
+        -e 's/%PRODUCT_BRANDING_NAME%/Collabora Online/g' \
+        "$COOL_HTML"
+    # Drop the brotli sidecar — its bytes are now stale.
+    rm -f "$COOL_HTML.br"
+    echo "  Substituted cool.html placeholders"
 fi
 
 # Substitute build fingerprint in wasm-loader.js + sw.js.

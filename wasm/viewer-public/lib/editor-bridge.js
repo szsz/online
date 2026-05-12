@@ -121,10 +121,14 @@
                 return reply(source, sourceOrigin, msg.id, 404, null);
             }
 
-            // /api/blobs/, /api/files/, /api/v2/file/ — proxy own-origin.
+            // /api/* — proxy own-origin. /api/keys/ is handled here too;
+            // relay-adapter probes it at startup to discover the v2
+            // encryption key version. Pre-bridge it 404'd on the editor
+            // origin and relay-adapter fell back to "run unencrypted".
             if (p.indexOf('/api/blobs/') === 0 ||
                 p.indexOf('/api/files/') === 0 ||
-                p.indexOf('/api/v2/file/') === 0) {
+                p.indexOf('/api/v2/file/') === 0 ||
+                p.indexOf('/api/keys/') === 0) {
                 var r = await proxyOwnOrigin(p + search, msg.method, msg.body);
                 return reply(source, sourceOrigin, msg.id, r.status, r.body, r.headers);
             }

@@ -155,23 +155,19 @@
     }, 500);
 
     // ───── SERVICE WORKER REGISTRATION ─────
-    // Two SWs run on the editor origin:
+    // ONE Service Worker at /sw-bridge.js with scope `/`. Handles both:
+    //   (a) bridging Kit's /wasm/<id> + /api/* fetches to the viewer
+    //       via postMessage (the editor origin is static FD; no
+    //       dynamic endpoint to actually serve those URLs);
+    //   (b) Cache Storage for heavy assets (online.wasm, soffice.data
+    //       etc.) so HTTP-cache eviction doesn't trigger a 280 MB
+    //       re-download on revisit.
     //
-    //   1. /<APP_BUILD_ID>/sw.js (scope /<APP_BUILD_ID>/browser/) — heavy
-    //      asset cache (online.wasm, soffice.data, bundle.js). Cache
-    //      Storage backstop against HTTP-cache eviction.
-    //
-    //   2. /sw-bridge.js  (scope /) — postMessage bridge for the
-    //      dynamic-file paths (/wasm/<id>, /api/blobs/, /api/v2/file/,
-    //      /api/files/). The editor origin is fully static post-FD
-    //      migration; Kit's fetches to those paths get intercepted by
-    //      this SW and routed to window.parent (the viewer) for fulfilment.
-    //      Without this SW, /wasm/<id> 404s on FD and Kit never gets the
-    //      document bytes.
-    //
-    // We register BOTH in parallel and gate Kit's boot on the bridge SW
-    // being active + controlling this page (window.__swBridgeReady) so
-    // we never race Kit's first /wasm/ fetch past an un-activated SW.
+    // Why one and not two: when a per-deploy /<id>/browser/dist/sw.js
+    // (scope /<id>/browser/dist/) ALSO got registered, the most-
+    // specific scope won and the broader-scope bridge SW never fired.
+    // Folding both responsibilities into /sw-bridge.js avoids that
+    // class of bug entirely.
     window.__swBridgeReady = new Promise(function(resolve, reject) {
         if (!('serviceWorker' in navigator)) {
             mark('sw-bridge:unavailable', 'no navigator.serviceWorker');
@@ -253,23 +249,24 @@
         });
     }
 
-    // ───── ASSET-CACHE SW (heavy WASM files) ─────
-    // Independent of the bridge SW; same flow as before. Lives in the
-    // per-deploy folder so each build gets its own CACHE_NAME via the
-    // build-fingerprint substitution.
+    // ───── UNREGISTER LEGACY PER-DEPLOY SW ─────
+    // Older builds registered /<APP_BUILD_ID>/browser/dist/sw.js.
+    // It still shadowed sw-bridge.js for the iframe (more specific
+    // scope) until we unregistered it. Sweep any stale registrations
+    // whose scriptURL matches sw.js so the page's controller becomes
+    // /sw-bridge.js on the next page load.
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('sw.js').then(function(reg) {
-            mark('sw:registered', 'scope=' + reg.scope);
-            if (!navigator.serviceWorker.controller && reg.active) {
-                mark('sw:no_controller_first_visit');
-            }
-        }).catch(function(err) {
-            // SW is a defense-in-depth optimisation; failing to register
-            // is non-fatal (we still have HTTP cache headers as the
-            // primary mechanism).
-            mark('sw:register_failed', err.message);
-        });
-        window.__swPrecacheDone = null;
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+            regs.forEach(function(r) {
+                var s = (r.active && r.active.scriptURL) ||
+                        (r.installing && r.installing.scriptURL) ||
+                        (r.waiting && r.waiting.scriptURL) || '';
+                if (s && /\/sw\.js(\?|$)/.test(s)) {
+                    mark('sw:unregister_legacy', s);
+                    r.unregister();
+                }
+            });
+        }).catch(function(){});
     }
 
     // ───── EARLY SNAPSHOT CHECK ─────

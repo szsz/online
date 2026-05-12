@@ -1,43 +1,67 @@
-// sw-bridge.js — editor-origin Service Worker that intercepts file
-// fetches Kit makes and routes them to the viewer (parent window) via
-// postMessage, instead of going to the network.
+// sw-bridge.js — editor-origin Service Worker. Does TWO things:
 //
-// Why this exists:
-//   The editor is a fully-static site behind Front Door. Kit (LO core
-//   in WASM) needs to load the user's document via an HTTP GET to
-//   /wasm/<fileId>. Pre-migration, that endpoint lived on a Node
-//   server (editor-server.js); post-migration, no editor-origin HTTP
-//   handler exists. So we trap Kit's fetches here in the SW and ask
-//   the viewer (which holds the plaintext bytes in memory after
-//   decrypting) to provide them via postMessage.
+//   1. **postMessage bridge** for the dynamic-file paths Kit fetches
+//      that the FD static site can't serve (/wasm/<id>, /api/blobs/,
+//      /api/v2/file/, /api/files/, /api/keys/). Routes them to
+//      window.parent (the viewer) via postMessage; the viewer
+//      responds with bytes from its in-memory cache or by proxying
+//      same-origin to its own dynamic endpoints.
 //
-// Scope: this file MUST be served from the editor origin's ROOT path
-// (/sw-bridge.js) so its default scope is `/` and covers every URL
-// path Kit might fetch, including /wasm/<id> and the late-join
-// /api/blobs/<hash> + /api/v2/file/<id> + /api/files/<name>.
+//   2. **Cache Storage for heavy assets** (online.wasm, soffice.data,
+//      bundle.js, etc.). Independent of the HTTP cache so a busy
+//      browser eviction doesn't trigger a 280 MB re-download on
+//      every revisit.
 //
-// Coexists with the per-deploy asset SW at /<APP_BUILD_ID>/sw.js
-// (scope /<APP_BUILD_ID>/browser/), which handles online.wasm /
-// soffice.data caching. Different scopes → no conflict; each
-// fetch hits the SW with the most-specific scope first.
+// Scope = `/` (the file is served from /sw-bridge.js on the editor
+// origin). EVERY in-scope request hits this SW's fetch handler:
+//   - BRIDGE_PREFIXES → bridge to parent
+//   - HEAVY_PATTERNS  → cache-first
+//   - anything else   → passthrough (return; default browser fetch)
 //
-// Protocol with the iframe page (relay-adapter.js / wasm-loader.js
-// host the bridge JS that talks to window.parent):
+// Why ONE SW instead of two: when both a /sw-bridge.js (scope /) and
+// a /<id>/browser/dist/sw.js (scope /<id>/browser/dist/) were
+// registered, the most-specific scope wins and only one of them
+// becomes the page's controller. Fetches went to whichever scope
+// was deeper, and the broader one never fired. Folding both jobs
+// into one SW at scope / makes that impossible.
+//
+// Protocol with the iframe page (wasm-loader.js relays SW ↔ parent):
 //   SW → page  postMessage {type:'sw-bridge-request', id, url, method, body}
 //   page → SW  postMessage {type:'sw-bridge-response', id, status, headers, body}
-// The page is responsible for relaying to/from window.parent (viewer).
 
 'use strict';
 
-// Paths the SW bridges to the parent. Any same-origin request whose
-// pathname starts with one of these prefixes goes through the bridge;
-// everything else passes through to network unchanged.
+const BUILD_FINGERPRINT = '__WASM_BUILD_FINGERPRINT__';
+const CACHE_NAME = (BUILD_FINGERPRINT === '__WASM_BUILD' + '_FINGERPRINT__')
+    ? 'cool-editor-dev'
+    : 'cool-editor-' + BUILD_FINGERPRINT;
+
+// Bridged paths — routed through the iframe page to window.parent.
 //
 // /wasm/        the per-file plaintext blackboard during edit session
 // /api/blobs/   content-addressable blobs used by the relay checkpoint
 // /api/v2/file/ encrypted at-rest storage (parent decrypts before reply)
 // /api/files/   legacy v1 storage path (still in test fixtures)
-const BRIDGE_PREFIXES = ['/wasm/', '/api/blobs/', '/api/v2/file/', '/api/files/'];
+// /api/keys/    encryption-key endpoint relay-adapter probes at start-up
+const BRIDGE_PREFIXES = ['/wasm/', '/api/blobs/', '/api/v2/file/', '/api/files/', '/api/keys/'];
+
+// Heavy assets — cache-first to survive HTTP-cache eviction. Matches
+// both the unhashed canonical names (post-Phase-3 strip) and the
+// legacy hashed siblings that some older clients might still request.
+const HEAVY_PATTERNS = [
+    /\/online(\.[a-f0-9]+)?\.wasm(\?|$)/,
+    /\/online(\.[a-f0-9]+)?\.js(\?|$)/,
+    /\/online\.worker\.js(\?|$)/,
+    /\/soffice(\.[a-f0-9]+)?\.data(\?|$)/,
+    /\/soffice\.data\.js(\.[a-f0-9]+)?\.metadata(\?|$)/,
+    /\/bundle(\.[a-f0-9]+)?\.js(\?|$)/,
+    /\/bundle(\.[a-f0-9]+)?\.css(\?|$)/,
+    /\/global(\.[a-f0-9]+)?\.js(\?|$)/,
+];
+
+function isHeavy(url) {
+    return HEAVY_PATTERNS.some(re => re.test(url));
+}
 
 self.addEventListener('install', () => {
     // Take over immediately on first install so the FIRST tab can use
@@ -47,7 +71,17 @@ self.addEventListener('install', () => {
 });
 
 self.addEventListener('activate', (event) => {
-    event.waitUntil(self.clients.claim());
+    event.waitUntil((async () => {
+        // Claim clients FIRST so newly-arriving fetches go through us.
+        // Then GC old build caches in the background — fingerprint-suffixed
+        // CACHE_NAMEs make every fresh deploy land in its own namespace,
+        // so deleting any cache whose name isn't ours is safe.
+        const claimP = self.clients.claim();
+        const gcP = caches.keys().then((names) =>
+            Promise.all(names.filter(n => n !== CACHE_NAME)
+                             .map(n => caches.delete(n))));
+        await Promise.all([claimP, gcP]);
+    })());
 });
 
 self.addEventListener('fetch', (event) => {
@@ -55,9 +89,29 @@ self.addEventListener('fetch', (event) => {
     let url;
     try { url = new URL(req.url); } catch (_) { return; }
     if (url.origin !== self.location.origin) return;       // cross-origin → passthrough
-    if (!BRIDGE_PREFIXES.some(p => url.pathname.startsWith(p))) return;
-    event.respondWith(bridge(req));
+
+    if (BRIDGE_PREFIXES.some(p => url.pathname.startsWith(p))) {
+        event.respondWith(bridge(req));
+        return;
+    }
+    if (req.method === 'GET' && isHeavy(req.url)) {
+        event.respondWith(heavyCacheFirst(req));
+        return;
+    }
+    // Everything else: default browser fetch.
 });
+
+async function heavyCacheFirst(req) {
+    const cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match(req.url);
+    if (cached) return cached;
+    const fresh = await fetch(req);
+    if (fresh.ok && fresh.status === 200) {
+        try { await cache.put(req.url, fresh.clone()); }
+        catch (e) { /* quota exceeded, keep going */ }
+    }
+    return fresh;
+}
 
 // Pending requests, keyed by uuid — promise resolved when the page
 // posts back the matching sw-bridge-response.
