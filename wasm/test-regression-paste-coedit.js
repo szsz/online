@@ -3,20 +3,27 @@ const __cl = require('./lib/inject-checklist');
 //
 // Tests:
 //   1. Paste rich text (bold+italic HTML) from "external app" -> both browsers
+//   1b. Paste exact "ABC" — exactly 3 chars added
 //   2. Paste image from "external app" -> embedded in saved docx
+//      (verified via v2 downloadV2 + ciphertext size delta)
 //   3. Internal copy (Ctrl+C) -> system clipboard has content
 //   4. Internal cut+paste cycle -> content preserved
 //   5. Verify NO metadata/headers leak into pasted content
-//   6. Final convergence: both browsers same char count
+//   6. Internal copy+paste AFTER external paste (regression for
+//      _suppressNextPaste)
+//   7. Double-paste guard: internal copy then external Ctrl+V should
+//      paste ONLY the new content, not also the internal clipboard.
+//   8. External image paste AFTER internal text copy.
 //
-// ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
+// Migrated to the viewer flow (lib/open-via-viewer.js).
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
+const { downloadV2 } = require('./lib/v2-upload');
 
-const BASE = env.EDITOR_URL;
-const RELAY_BASE = env.RELAY_URL;
+const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-paste-coedit';
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
@@ -39,15 +46,30 @@ function check(label, cond, ev) {
 }
 
 function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? parseInt(m[1]) : -1; }
-async function getWc(page) {
-    return page.evaluate(() =>
+async function getWc(frame) {
+    return frame.evaluate(() =>
         document.querySelector('#StateWordCount')?.textContent?.trim() || '');
 }
 
-// Click the editor canvas to focus it before any keyboard input
+async function waitForCC(frame, target, timeoutMs) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+        if (charCount(await getWc(frame)) === target) return true;
+        await sleep(500);
+    }
+    return false;
+}
+
 async function clickCanvas(page) {
     await page.mouse.click(640, 400);
     await sleep(500);
+}
+
+async function grantClipboard(page) {
+    const cdp = await page.createCDPSession();
+    await cdp.send('Browser.grantPermissions', {
+        permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
+    }).catch(() => {});
 }
 
 (async () => {
@@ -59,65 +81,49 @@ async function clickCanvas(page) {
     const { browser, cleanup } = await launch();
 
     const NAME = 'paste-full-' + Date.now() + '.docx';
-    const ROOM = 'paste-full-' + Date.now();
-    const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
-    const fileStorageUrl = encodeURIComponent(env.FILE_STORAGE_URL);
-    const coolUrl = `${BASE}/browser/cool.html?WOPISrc=${encodeURIComponent(NAME)}&relay=${relay}&access_token=test&fileStorageUrl=${fileStorageUrl}`;
 
     try {
-        // Upload docx
         const fixtureBytes = fs.readFileSync(FIXTURE);
-        const up = await browser.newPage();
-        await up.goto(BASE, { waitUntil: 'domcontentloaded' });
-        await up.evaluate(async (base, n, a) => {
-            await fetch(base + '/wasm/' + encodeURIComponent(n), {
-                method: 'POST', body: new Blob([new Uint8Array(a)]),
-            });
-        }, BASE, NAME, Array.from(fixtureBytes));
-        await up.close();
-        log(`Uploaded ${NAME}`);
+        log(`Fixture: ${fixtureBytes.length} bytes`);
 
-        // Grant clipboard permissions via CDP for both browsers
-        async function openWithClipboard(label) {
-            const ctx = await browser.createBrowserContext();
-            const page = await ctx.newPage();
-            const cdp = await page.createCDPSession();
-            try {
-                await cdp.send('Browser.grantPermissions', {
-                    permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
-                });
-            } catch(e) {}
-            await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-            await page.waitForFunction(() =>
-                document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
-                { timeout: TIMEOUT });
-            log(`[${label}] Loaded: "${await getWc(page)}"`);
-            return { page, cdp };
-        }
-
-        const { page: pageA, cdp: cdpA } = await openWithClipboard('A');
+        const upA = await openViaViewer(browser, VIEWER, NAME, fixtureBytes,
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+              isolatedContext: true });
+        const pageA = upA.page, frameA = upA.editorFrame;
+        await grantClipboard(pageA);
+        await frameA.waitForFunction(() =>
+            document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
+            { timeout: TIMEOUT });
+        log(`[A] Loaded`);
         await sleep(8000);
-        const { page: pageB, cdp: cdpB } = await openWithClipboard('B');
+
+        const upB = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+              isolatedContext: true });
+        const pageB = upB.page, frameB = upB.editorFrame;
+        await grantClipboard(pageB);
+        await frameB.waitForFunction(() =>
+            document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
+            { timeout: TIMEOUT });
+        log(`[B] Loaded`);
         await sleep(15000);
 
         await snap(pageA, 'before_A');
         await snap(pageB, 'before_B');
-        const initA = charCount(await getWc(pageA));
-        const initB = charCount(await getWc(pageB));
+        const initA = charCount(await getWc(frameA));
+        const initB = charCount(await getWc(frameB));
         log(`Initial: A=${initA} B=${initB}`);
         check('Both browsers loaded same docx', initA > 0 && initA === initB);
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 1: Paste RICH TEXT from "external app" (clipboard write + Ctrl+V)
+        // TEST 1: Paste RICH TEXT from external app
         // ══════════════════════════════════════════════════════════════
-        log('\n--- TEST 1: Paste rich text (bold + italic) from external app ---');
+        log('\n--- TEST 1: Paste rich text (bold + italic) ---');
         await clickCanvas(pageA);
-        // Ctrl+End to go to end of document
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(500);
-        // Set clipboard to rich HTML, then paste
         await pageA.evaluate(async (html, plain) => {
             var items = {};
             if (html) items['text/html'] = new Blob([html], { type: 'text/html' });
@@ -131,35 +137,30 @@ async function clickCanvas(page) {
         await pageA.keyboard.up('Control');
         await sleep(8000);
         await snap(pageA, 'after_richtext_A');
+        const afterRichA = charCount(await getWc(frameA));
+        // Wait up to 30s for B to converge — relay propagation can lag
+        // on cold-start runs against wasm-viewer-test.
+        await waitForCC(frameB, afterRichA, 30000);
         await snap(pageB, 'after_richtext_B');
-        const afterRichA = charCount(await getWc(pageA));
-        const afterRichB = charCount(await getWc(pageB));
+        const afterRichB = charCount(await getWc(frameB));
         log(`After rich paste: A=${afterRichA} B=${afterRichB}`);
         check('TEST1: A char count increased after rich paste', afterRichA > initA);
         check('TEST1: B char count increased (propagated)', afterRichB > initB);
         check('TEST1: A and B converge', afterRichA === afterRichB);
-
-        // Verify no metadata leaked: check visible text doesn't contain
-        // "text/plain", "text/html", "mimetype", or hex size prefixes
-        const visibleTextA = await pageA.evaluate(() => {
-            var wc = document.querySelector('#StateWordCount')?.textContent || '';
-            return wc;
-        });
-        check('TEST1: No metadata leak (word count reasonable)',
+        check('TEST1: No metadata leak (added ~30 chars)',
               afterRichA < initA + 50,
               'chars=' + afterRichA + ' (init was ' + initA + ', added ~30 expected)');
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 1b: Paste exact "ABC" and verify EXACTLY 3 chars added
+        // TEST 1b: Paste exact "ABC"
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 1b: Paste exactly "ABC" ---');
-        const beforeABC = charCount(await getWc(pageA));
+        const beforeABC = charCount(await getWc(frameA));
         await clickCanvas(pageA);
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(500);
-        // Set clipboard to "ABC", then paste
         await pageA.evaluate(async (html, plain) => {
             var items = {};
             if (html) items['text/html'] = new Blob([html], { type: 'text/html' });
@@ -172,8 +173,9 @@ async function clickCanvas(page) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const afterABC_A = charCount(await getWc(pageA));
-        const afterABC_B = charCount(await getWc(pageB));
+        const afterABC_A = charCount(await getWc(frameA));
+        await waitForCC(frameB, afterABC_A, 30000);
+        const afterABC_B = charCount(await getWc(frameB));
         log(`Paste ABC: A=${afterABC_A} B=${afterABC_B} (was ${beforeABC})`);
         check('TEST1b: A gained exactly 3 chars (ABC)',
               afterABC_A === beforeABC + 3,
@@ -183,20 +185,17 @@ async function clickCanvas(page) {
               'delta=' + (afterABC_B - beforeABC));
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 2: Paste IMAGE from "external app"
+        // TEST 2: Paste IMAGE from external app
         // ══════════════════════════════════════════════════════════════
-        log('\n--- TEST 2: Paste image (PNG) from external app ---');
-        // Save baseline before image
-        await pageA.evaluate(() => {
-            if (globalThis.postMobileMessage)
-                globalThis.postMobileMessage('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
-        });
-        await sleep(4000);
-        const preImgSize = await pageA.evaluate(async (base, n) => {
-            return (await (await fetch(base + '/wasm/' + encodeURIComponent(n))).arrayBuffer()).byteLength;
-        }, BASE, NAME);
+        log('\n--- TEST 2: Paste image (PNG) ---');
+        // Force a save first so we have a stable baseline ciphertext size.
+        await pageA.keyboard.down('Control');
+        await pageA.keyboard.press('s');
+        await pageA.keyboard.up('Control');
+        await sleep(8000);
+        const beforeImgDl = await downloadV2(VIEWER, upA.secret);
+        log(`Pre-image storage size: ${beforeImgDl.size}B`);
 
-        // Escape any selection, go to end
         await clickCanvas(pageA);
         await pageA.keyboard.press('Escape');
         await sleep(500);
@@ -219,31 +218,29 @@ async function clickCanvas(page) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(5000);
-        // Save after image
-        await pageA.evaluate(() => {
-            if (globalThis.postMobileMessage)
-                globalThis.postMobileMessage('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
-        });
-        let postImgSize = preImgSize;
+        // Save with Ctrl+S
+        await pageA.keyboard.down('Control');
+        await pageA.keyboard.press('s');
+        await pageA.keyboard.up('Control');
+        // Wait for save round-trip + check that storage grew.
+        let postImgSize = beforeImgDl.size;
         for (let i = 0; i < 15; i++) {
             await sleep(1000);
-            postImgSize = await pageA.evaluate(async (base, n) => {
-                return (await (await fetch(base + '/wasm/' + encodeURIComponent(n))).arrayBuffer()).byteLength;
-            }, BASE, NAME);
-            if (postImgSize > preImgSize + 50) break;
+            const dl = await downloadV2(VIEWER, upA.secret).catch(() => null);
+            if (dl) postImgSize = dl.size;
+            if (postImgSize > beforeImgDl.size + 50) break;
         }
         await snap(pageA, 'after_image_A');
         await snap(pageB, 'after_image_B');
-        log(`Image: pre=${preImgSize} post=${postImgSize} delta=${postImgSize-preImgSize}`);
-        check('TEST2: Docx grew after image paste (embedded)', postImgSize > preImgSize);
+        log(`Image: pre=${beforeImgDl.size} post=${postImgSize} delta=${postImgSize - beforeImgDl.size}`);
+        check('TEST2: Docx grew after image paste (embedded)',
+              postImgSize > beforeImgDl.size,
+              `pre=${beforeImgDl.size} post=${postImgSize}`);
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 3: Internal COPY (Ctrl+C -> system clipboard)
+        // TEST 3: Internal COPY → check clip._selectionContent
         // ══════════════════════════════════════════════════════════════
-        log('\n--- TEST 3: Internal Ctrl+C -> system clipboard ---');
-        // Select TEXT only (not the image -- SelectAll + image = "complex"
-        // selection which needs a server download COOL can't do in WASM).
-        // Go to start, select a few words via Ctrl+Shift+Right.
+        log('\n--- TEST 3: Internal Ctrl+C → gettextselection ---');
         await clickCanvas(pageA);
         await pageA.keyboard.press('Escape');
         await sleep(500);
@@ -251,7 +248,6 @@ async function clickCanvas(page) {
         await pageA.keyboard.press('Home');
         await pageA.keyboard.up('Control');
         await sleep(500);
-        // Select 3 words
         for (let w = 0; w < 3; w++) {
             await pageA.keyboard.down('Control');
             await pageA.keyboard.down('Shift');
@@ -261,15 +257,14 @@ async function clickCanvas(page) {
             await sleep(300);
         }
         await sleep(2000);
-        // Request selection from Kit -- must go via postMobileMessage since
-        // it's a query (not relayed). Give Kit time to respond.
-        await pageA.evaluate(() => {
+        // Query selection content via the iframe's app.map._clip
+        await frameA.evaluate(() => {
             globalThis._deliveringToKit = true;
             try { globalThis.postMobileMessage('gettextselection mimetype=text/html'); }
             finally { globalThis._deliveringToKit = false; }
         });
         await sleep(5000);
-        const selContent = await pageA.evaluate(() => {
+        const selContent = await frameA.evaluate(() => {
             var clip = window.app && window.app.map && window.app.map._clip;
             return {
                 content: clip ? (clip._selectionContent || '').substring(0, 300) : null,
@@ -277,7 +272,6 @@ async function clickCanvas(page) {
             };
         });
         log(`Selection: type=${selContent.type}, len=${(selContent.content||'').length}`);
-        if (selContent.content) log(`  preview: "${selContent.content.substring(0, 80)}"`);
         check('TEST3: gettextselection returns HTML content',
               selContent.content && selContent.content.length > 20,
               'len=' + (selContent.content||'').length);
@@ -286,71 +280,56 @@ async function clickCanvas(page) {
               (selContent.content||'').substring(0, 40));
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 4: Internal CUT + PASTE cycle
+        // TEST 4: Internal CUT + PASTE
+        // (headless Chromium + Xvfb limitation acknowledged — real
+        // Ctrl+X often won't fire trusted cut; we use execCommand +
+        // .uno:Cut fallback and tolerate "cut did not remove" as a
+        // headless artefact rather than a regression.)
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 4: Select word -> Cut -> Paste back ---');
-        // Deselect first
         await clickCanvas(pageA);
         await pageA.keyboard.press('Home');
         await sleep(500);
-        const beforeCut = charCount(await getWc(pageA));
-        // Select first word
+        const beforeCut = charCount(await getWc(frameA));
         await pageA.keyboard.down('Control');
         await pageA.keyboard.down('Shift');
         await pageA.keyboard.press('ArrowRight');
         await pageA.keyboard.up('Shift');
         await pageA.keyboard.up('Control');
         await sleep(500);
-        // Cut — execCommand('cut') fires a trusted cut event, which
-        // runs wasm-loader's document.oncut → .uno:Cut. Puppeteer's
-        // keyboard.press('x') with Ctrl doesn't reliably fire a native
-        // cut on headless Chromium + Xvfb, and a dispatchEvent-forged
-        // ClipboardEvent is untrusted so some browsers reject it.
-        const frA = await pageA.frames().find(f => f.url().includes('cool.html'));
-        await frA.evaluate(() => {
-            // Try execCommand first (browser-backed, fires oncut).
+        await frameA.evaluate(() => {
             try { document.execCommand('cut'); } catch(e) {}
-            // Belt-and-braces: send .uno:Cut directly through COOL's
-            // uno dispatcher, in case execCommand was swallowed.
             try {
                 const map = window.app && window.app.map;
-                if (map && typeof map.sendUnoCommand === 'function') {
+                if (map && typeof map.sendUnoCommand === 'function')
                     map.sendUnoCommand('.uno:Cut');
-                }
             } catch(e) {}
         });
-        let afterCut = charCount(await getWc(pageA));
+        let afterCut = charCount(await getWc(frameA));
         const cutDeadline = Date.now() + 30000;
         while (afterCut >= beforeCut && Date.now() < cutDeadline) {
             await sleep(500);
-            afterCut = charCount(await getWc(pageA));
+            afterCut = charCount(await getWc(frameA));
         }
         log(`Cut: ${beforeCut} -> ${afterCut}`);
-        // NOTE: on headless Chromium + Xvfb neither a synthetic
-        // ClipboardEvent('cut') nor execCommand('cut') nor
-        // map.sendUnoCommand('.uno:Cut') reliably deletes the selection
-        // in LO-WASM. The user-facing Ctrl+X works in real Chrome.
-        // Document this limitation rather than fail the whole test.
         if (afterCut >= beforeCut) {
-            log('  (note) Cut did not remove content — known headless limitation, not a regression');
+            log('  (note) Cut did not remove content — headless limitation, not a regression');
         } else {
             check('TEST4: Cut removed content', true);
         }
-        // Paste back
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(3000);
-        const afterPasteBack = charCount(await getWc(pageA));
+        const afterPasteBack = charCount(await getWc(frameA));
         log(`Paste back: ${afterCut} -> ${afterPasteBack}`);
         check('TEST4: Paste restored content', afterPasteBack >= afterCut);
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 5: Final convergence + no metadata check
+        // TEST 5: Final convergence
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 5: Final convergence ---');
         await sleep(5000);
-        // Deselect on both
         for (const p of [pageA, pageB]) {
             await clickCanvas(p);
             await p.keyboard.press('Escape');
@@ -363,23 +342,19 @@ async function clickCanvas(page) {
         await sleep(2000);
         await snap(pageA, 'final_A');
         await snap(pageB, 'final_B');
-        const finalA = await getWc(pageA);
-        const finalB = await getWc(pageB);
+        const finalA = await getWc(frameA);
+        const finalB = await getWc(frameB);
         const fA = charCount(finalA);
         const fB = charCount(finalB);
         log(`Final: A="${finalA}" B="${finalB}"`);
         check('TEST5: Both browsers have content', fA > 0 && fB > 0);
-        check('TEST5: Final A status not "Selected:"',
-              !finalA.startsWith('Selected:'), finalA);
-        check('TEST5: Final B status not "Selected:"',
-              !finalB.startsWith('Selected:'), finalB);
+        check('TEST5: Final A status not "Selected:"', !finalA.startsWith('Selected:'), finalA);
+        check('TEST5: Final B status not "Selected:"', !finalB.startsWith('Selected:'), finalB);
 
         // ══════════════════════════════════════════════════════════════
         // TEST 6: Internal copy+paste AFTER external paste
-        // (Bug: _suppressNextPaste was blocking all internal pastes)
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 6: Internal copy+paste after external paste ---');
-        // Select first word, copy
         await clickCanvas(pageA);
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('Home');
@@ -391,37 +366,30 @@ async function clickCanvas(page) {
         await pageA.keyboard.up('Shift');
         await pageA.keyboard.up('Control');
         await sleep(500);
-        // Copy
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('c');
         await pageA.keyboard.up('Control');
         await sleep(2000);
-        // Deselect, go to end
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(1000);
-        const beforeIntPaste = charCount(await getWc(pageA));
-        // Internal paste
+        const beforeIntPaste = charCount(await getWc(frameA));
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(5000);
-        const afterIntPaste = charCount(await getWc(pageA));
+        const afterIntPaste = charCount(await getWc(frameA));
         const intDelta = afterIntPaste - beforeIntPaste;
         log(`Internal paste: ${beforeIntPaste} -> ${afterIntPaste} (delta=${intDelta})`);
-        check('TEST6: Internal paste works after external paste (delta > 0)',
+        check('TEST6: Internal paste works after external paste',
               intDelta > 0,
               'delta=' + intDelta + (intDelta === 0 ? ' -- paste was blocked!' : ''));
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 7: Double-paste guard -- internal copy then external Ctrl+V
-        // After internal copy, Kit has the selection on its clipboard.
-        // Then external paste (Ctrl+V with new content) should produce
-        // ONLY the new content, not also the internal clipboard.
+        // TEST 7: Double-paste guard
         // ══════════════════════════════════════════════════════════════
-        log('\n--- TEST 7: Double-paste guard (internal copy -> external Ctrl+V) ---');
-        // Type "MARKER" at end
+        log('\n--- TEST 7: Double-paste guard ---');
         await clickCanvas(pageA);
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('End');
@@ -429,7 +397,6 @@ async function clickCanvas(page) {
         await sleep(500);
         await pageA.keyboard.type('MARKER', { delay: 50 });
         await sleep(3000);
-        // Select "MARKER" and copy internally
         for (let i = 0; i < 6; i++) {
             await pageA.keyboard.down('Shift');
             await pageA.keyboard.press('ArrowLeft');
@@ -441,13 +408,11 @@ async function clickCanvas(page) {
         await pageA.keyboard.press('c');
         await pageA.keyboard.up('Control');
         await sleep(2000);
-        // Deselect, go to end
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(1000);
-        const beforeDbl = charCount(await getWc(pageA));
-        // Now paste "NEW" via clipboard (simulating external paste after internal copy)
+        const beforeDbl = charCount(await getWc(frameA));
         await pageA.evaluate(async (html, plain) => {
             var items = {};
             if (html) items['text/html'] = new Blob([html], { type: 'text/html' });
@@ -460,19 +425,18 @@ async function clickCanvas(page) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const afterDbl = charCount(await getWc(pageA));
+        const afterDbl = charCount(await getWc(frameA));
         const dblDelta = afterDbl - beforeDbl;
         log(`Double-paste test: ${beforeDbl} -> ${afterDbl} (delta=${dblDelta})`);
-        check('TEST7: Only "NEW" pasted, not also "MARKER" (delta=3, not 9)',
+        check('TEST7: Only "NEW" pasted, not also "MARKER" (delta=3)',
               dblDelta === 3,
               'delta=' + dblDelta + (dblDelta === 9 ? ' -- DOUBLE PASTE BUG' : ''));
 
         // ══════════════════════════════════════════════════════════════
-        // TEST 8: External IMAGE paste after internal copy (double-paste)
+        // TEST 8: External image paste after internal text copy
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 8: External image paste after internal text copy ---');
-        const before8 = charCount(await getWc(pageA));
-        // Set clipboard to an image (simulating external image copy)
+        const before8 = charCount(await getWc(frameA));
         await pageA.evaluate(async (b64) => {
             var raw = atob(b64);
             var bytes = new Uint8Array(raw.length);
@@ -487,7 +451,7 @@ async function clickCanvas(page) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const after8 = charCount(await getWc(pageA));
+        const after8 = charCount(await getWc(frameA));
         const delta8 = after8 - before8;
         log(`Image paste after copy: ${before8} -> ${after8} (delta=${delta8})`);
         check('TEST8: No text double-paste with external image (delta <= 2)',
