@@ -99,8 +99,15 @@ async function openAndMeasure(label, page, url) {
     for (const fr of page.frames()) {
         try {
             const rs = await fr.evaluate(() => {
+                // Asset filenames used to be hashed (online.<hash>.wasm) when
+                // every deploy shared the same /browser/ prefix on the editor
+                // App Service. Per-deploy folders made the hash redundant —
+                // the EDITOR_BUILD_ID in the path IS the cache key. Accept
+                // both forms so the test stays valid across the cutover.
                 return performance.getEntriesByType('resource')
-                    .filter(e => /online\.[0-9a-f]+\.wasm|soffice\.[0-9a-f]+\.data|soffice\.data\.js\.[0-9a-f]+\.metadata/.test(e.name))
+                    .filter(e => /online(\.[0-9a-f]+)?\.wasm(\?|$)/.test(e.name)
+                              || /soffice(\.[0-9a-f]+)?\.data(\?|$)/.test(e.name)
+                              || /soffice\.data\.js(\.[0-9a-f]+)?\.metadata(\?|$)/.test(e.name))
                     .map(e => ({
                         name: e.name.split('/').pop(),
                         transferSize: e.transferSize,
@@ -174,12 +181,12 @@ function findRs(r, re) { return flatRs(r).find(x => re.test(x.name)); }
         await incognito.close();
 
         // ── Assertions ───────────────────────────────────────────────────
-        const t1Wasm = findRs(r1, /online\.[0-9a-f]+\.wasm/);
-        const t1Data = findRs(r1, /soffice\.[0-9a-f]+\.data$/);
-        const t1Meta = findRs(r1, /soffice\.data\.js\.[0-9a-f]+\.metadata/);
-        const t2Wasm = findRs(r2, /online\.[0-9a-f]+\.wasm/);
-        const t2Data = findRs(r2, /soffice\.[0-9a-f]+\.data$/);
-        const t2Meta = findRs(r2, /soffice\.data\.js\.[0-9a-f]+\.metadata/);
+        const t1Wasm = findRs(r1, /online(\.[0-9a-f]+)?\.wasm$/);
+        const t1Data = findRs(r1, /soffice(\.[0-9a-f]+)?\.data$/);
+        const t1Meta = findRs(r1, /soffice\.data\.js(\.[0-9a-f]+)?\.metadata$/);
+        const t2Wasm = findRs(r2, /online(\.[0-9a-f]+)?\.wasm$/);
+        const t2Data = findRs(r2, /soffice(\.[0-9a-f]+)?\.data$/);
+        const t2Meta = findRs(r2, /soffice\.data\.js(\.[0-9a-f]+)?\.metadata$/);
 
         log('\n=== Resource timing summary ===');
         const fmt = (r, n) => r
