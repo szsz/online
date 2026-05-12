@@ -2,13 +2,15 @@ const __cl = require('./lib/inject-checklist');
 // Co-editing test: 2 browsers typing via real keyboard, verify convergence.
 // ALL input via keyboard/mouse — no TheFakeWebSocket.send() calls.
 // Expected: "ABCHello WorldXYZ" = 17 chars, identical on both browsers.
+//
+// Migrated to the viewer flow (lib/open-via-viewer.js).
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
 
-const BASE = env.EDITOR_URL;
-const RELAY_BASE = env.RELAY_URL;
-const TIMEOUT = 300000;
+const VIEWER = env.FILE_STORAGE_URL;
+const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots';
 
 let shotNum = 0;
@@ -16,38 +18,28 @@ async function snap(page, name) {
     fs.mkdirSync(SHOT_DIR, { recursive: true });
     await sleep(500);
     const filename = `${String(++shotNum).padStart(2, '0')}_${name}.png`;
-    await page.screenshot({ path: `${SHOT_DIR}/${filename}` });
+    try { await page.screenshot({ path: `${SHOT_DIR}/${filename}` }); } catch(e) {}
     console.log(`  [snap] ${filename}`);
 }
 
-// DOM read only — extract word count text
-async function getStatus(page) {
-    return page.evaluate(() => {
+async function getStatus(frame) {
+    return frame.evaluate(() => {
         const el = document.querySelector('#StateWordCount');
         return el ? el.textContent.trim() : 'NOT FOUND';
     });
 }
 
 function charCount(status) {
-    const m = status.match(/(\d+) characters/);
+    const m = (status||'').match(/(\d+) characters/);
     return m ? parseInt(m[1]) : -1;
 }
 
-async function waitForReady(page, label, count) {
-    console.log(`[${label}] Waiting for ${count} remote client(s)...`);
+async function waitForCharCount(frame, expected, timeoutMs) {
     const t0 = Date.now();
-    while (Date.now() - t0 < 180000) {
-        const logs = await page.evaluate(() => window._logs ? window._logs.filter(l =>
-            l.includes(') ready')
-        ) : []);
-        if (logs.length >= count) {
-            console.log(`[${label}] ${count} client(s) ready (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-            return true;
-        }
-        await sleep(2000);
-        process.stdout.write('.');
+    while (Date.now() - t0 < timeoutMs) {
+        if (charCount(await getStatus(frame)) === expected) return true;
+        await sleep(500);
     }
-    console.log(`\n[${label}] Timeout`);
     return false;
 }
 
@@ -67,64 +59,37 @@ async function waitForReady(page, label, count) {
     }
 
     try {
-        // Upload test document
-        const up = await browser.newPage();
-        await up.goto(BASE, { waitUntil: 'networkidle0' });
-        await up.evaluate(async (url) => {
-            await fetch(url + '/wasm/cotest.txt', {
-                method: 'POST',
-                body: new Blob(['Hello World'], { type: 'application/octet-stream' }),
-            });
-        }, BASE);
-        await up.close();
-        console.log('[setup] Uploaded "Hello World"\n');
+        const docName = 'cotest-' + Date.now() + '.txt';
+        const bytes = Buffer.from('Hello World', 'utf8');
 
-        const ROOM = 'cotest-' + Date.now();
-        const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
-        const coolUrl = `${BASE}/browser/cool.html?WOPISrc=cotest.txt&relay=${relay}&access_token=test`;
-
-        async function openDoc(label) {
-            const ctx = await browser.createBrowserContext();
-            const page = await ctx.newPage();
-            await page.evaluateOnNewDocument(() => {
-                window._logs = [];
-                const orig = console.log;
-                console.log = function() {
-                    window._logs.push(Array.from(arguments).join(' '));
-                    orig.apply(console, arguments);
-                };
-            });
-            console.log(`[${label}] Opening...`);
-            await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-            await page.waitForFunction(() => {
-                const el = document.querySelector('#StateWordCount');
-                return el && el.textContent && el.textContent.includes('characters');
-            }, { timeout: TIMEOUT });
-            console.log(`[${label}] Loaded: "${await getStatus(page)}"`);
-            return page;
-        }
-
-        // Click the editor canvas to focus it
-        async function clickCanvas(page) {
-            await page.mouse.click(640, 400);
-            await sleep(500);
-        }
-
-        const pageA = await openDoc('A');
+        console.log('[A] Opening...');
+        const { page: pageA, editorFrame: frameA, b64urlSecret } =
+            await openViaViewer(browser, VIEWER, docName, bytes,
+                { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+                  isolatedContext: true });
+        await waitForCharCount(frameA, 11, TIMEOUT);
+        console.log(`[A] Loaded: "${await getStatus(frameA)}"`);
         await sleep(10000);
-        const pageB = await openDoc('B');
+
+        console.log('[B] Opening...');
+        const { page: pageB, editorFrame: frameB } =
+            await openSecretInBrowser(browser, VIEWER, b64urlSecret,
+                { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+                  isolatedContext: true });
+        await waitForCharCount(frameB, 11, TIMEOUT);
+        console.log(`[B] Loaded: "${await getStatus(frameB)}"`);
         await sleep(15000);
 
         await snap(pageA, 'A_initial');
         await snap(pageB, 'B_initial');
         check('Initial: both 11 chars',
-            charCount(await getStatus(pageA)) === 11 &&
-            charCount(await getStatus(pageB)) === 11);
+            charCount(await getStatus(frameA)) === 11 &&
+            charCount(await getStatus(frameB)) === 11);
 
-        console.log('\n--- Waiting for remote clients ---');
-        const readyA = await waitForReady(pageA, 'A', 1);
-        const readyB = await waitForReady(pageB, 'B', 1);
-        if (!readyA || !readyB) throw new Error('Not ready');
+        async function clickCanvas(page) {
+            await page.mouse.click(640, 400);
+            await sleep(500);
+        }
 
         console.log('\n=== Typing ===\n');
         await sleep(2000);
@@ -138,8 +103,8 @@ async function waitForReady(page, label, count) {
             await sleep(8000);
             await snap(pageA, `A_after_${ch}`);
             await snap(pageB, `B_after_${ch}`);
-            const sA = await getStatus(pageA);
-            const sB = await getStatus(pageB);
+            const sA = await getStatus(frameA);
+            const sB = await getStatus(frameB);
             check(`After "${ch}": B=${charCount(sB)} (expected ${expected})`,
                 charCount(sB) === expected);
             console.log(`  A="${sA}"  B="${sB}"`);
@@ -148,8 +113,8 @@ async function waitForReady(page, label, count) {
         // Wait for convergence
         console.log('\n[wait] 10s for A to converge...');
         await sleep(10000);
-        let convA = await getStatus(pageA);
-        let convB = await getStatus(pageB);
+        let convA = await getStatus(frameA);
+        let convB = await getStatus(frameB);
         console.log(`[converge] A="${convA}" B="${convB}"`);
         check('Both at 14 after ABC', charCount(convA) === 14 && charCount(convB) === 14);
 
@@ -168,8 +133,8 @@ async function waitForReady(page, label, count) {
             await sleep(8000);
             await snap(pageA, `A_after_${ch}`);
             await snap(pageB, `B_after_${ch}`);
-            const sA = await getStatus(pageA);
-            const sB = await getStatus(pageB);
+            const sA = await getStatus(frameA);
+            const sB = await getStatus(frameB);
             check(`After "${ch}": A=${charCount(sA)} (expected ${expected})`,
                 charCount(sA) === expected);
             console.log(`  A="${sA}"  B="${sB}"`);
@@ -180,8 +145,8 @@ async function waitForReady(page, label, count) {
         await sleep(10000);
         await snap(pageA, 'A_final');
         await snap(pageB, 'B_final');
-        const fA = await getStatus(pageA);
-        const fB = await getStatus(pageB);
+        const fA = await getStatus(frameA);
+        const fB = await getStatus(frameB);
         console.log(`\n[final] A="${fA}"  B="${fB}"`);
         check('Final: both 17 chars', charCount(fA) === 17 && charCount(fB) === 17);
 
