@@ -106,7 +106,6 @@ CI_SKIP_TESTS=(
     prewarm snapshot-stale
     regression-delete-key-coedit
     regression-paste-coedit
-    regression-user-save-checkpoint
 )
 for slug in "${CI_SKIP_TESTS[@]}"; do
     if grep -q "^[[:space:]]*\"$slug|" "$WORKSPACE/wasm/run-all-tests.sh"; then
