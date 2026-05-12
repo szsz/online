@@ -9,6 +9,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-formats';
@@ -103,7 +104,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
         await fetch(url + '/wasm/' + encodeURIComponent(name), {
             method: 'POST', body: new Blob([new Uint8Array(arr)])
         });
-    }, BASE, docName, Array.from(docBytes));
+    }, WASM_BASE, docName, Array.from(docBytes));
     await up.close();
     log(`Uploaded ${docName} (${docBytes.length} bytes)`);
 

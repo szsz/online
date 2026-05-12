@@ -22,6 +22,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const EDITOR = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-insert-table';
 const DOC_NAME = 'inserttable-' + Date.now() + '.docx';
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
@@ -88,7 +89,7 @@ async function getCharCount(page) {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {
                 method: 'POST', body: new Blob([new Uint8Array(arr)]),
             });
-        }, EDITOR, DOC_NAME, Array.from(docBytes));
+        }, WASM_BASE, DOC_NAME, Array.from(docBytes));
         await up.close();
         log('Uploaded ' + DOC_NAME);
 

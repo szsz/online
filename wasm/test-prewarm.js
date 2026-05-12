@@ -23,6 +23,7 @@ const { uploadV2 } = require('./lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const EDITOR = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const PREWARM_TIMEOUT = 180000;
 // 180s: cold open on Azure after a fresh deploy can take 90+s
 // (App Service warm-up + WASM init + doc load). 90s was just barely
@@ -122,12 +123,11 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
         const bytes = fs.readFileSync(DOC_PATH);
         const upMain = await uploadV2(VIEWER, DOC_NAME, bytes);
         // Cold-open tests (below) bypass the viewer and open cool.html
-        // directly at WOPISrc=<fileId>. The editor fetches /wasm/<fileId>
-        // at boot; uploadV2 only populated /api/v2/file/<fileId>, so we
-        // also pre-stage the plaintext bytes under the fileId at the
-        // editor's staging endpoint — mirroring what the viewer's
-        // openFileBySecret would have done.
-        await fetch(EDITOR + '/wasm/' + upMain.fileId, {
+        // directly at WOPISrc=<fileId>. Kit (inside the WASM iframe)
+        // fetches /wasm/<fileId> at boot via the viewer (resolveFileStorage-
+        // Base()); uploadV2 only populated /api/v2/file/<fileId>, so we
+        // also pre-stage the plaintext bytes at viewer's /wasm/ staging.
+        await fetch(WASM_BASE + '/wasm/' + upMain.fileId, {
             method: 'POST', body: bytes,
         });
         log(`  Uploaded ${DOC_NAME} → ${upMain.fileId.substring(0,8)}… (${(bytes.length/1024).toFixed(0)}KB) [viewer+editor]`);

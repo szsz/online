@@ -7,6 +7,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
@@ -44,7 +45,7 @@ const TEST_FILES = [
                 await fetch(url + '/wasm/' + encodeURIComponent(name), {
                     method: 'POST', body: new Blob([new Uint8Array(arr)])
                 });
-            }, BASE, tf.name, Array.from(bytes));
+            }, WASM_BASE, tf.name, Array.from(bytes));
             await up.close();
         }
 

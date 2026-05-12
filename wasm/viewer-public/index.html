@@ -830,8 +830,8 @@ async function startPrewarm() {
         const resp = await fetch('/blank.docx');
         if (resp.ok) {
             const buf = await resp.arrayBuffer();
-            await fetch(EDITOR + '/wasm/' + encodeURIComponent(BLANK_FILENAME), {
-                method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+            await fetch('/wasm/' + encodeURIComponent(BLANK_FILENAME), {
+                method: 'POST', body: new Uint8Array(buf),
             });
         }
     } catch (e) {
@@ -1025,8 +1025,8 @@ async function openFileBySecret(secretB64, callerOpts) {
     RecentFiles.remember({ secret: secretB64, fileId, cachedName });
     // Hand plaintext to the editor under the opaque fileId — LO sees it
     // as a filename, the server/editor never learned the real name.
-    await fetch(EDITOR + '/wasm/' + fileId, {
-        method: 'POST', body: plainBytes, mode: 'cors',
+    await fetch('/wasm/' + fileId, {
+        method: 'POST', body: plainBytes,
     });
     // Use the fileId as WOPISrc; the editor chrome title can be set
     // by wasm-loader from a postMessage once we wire that up.
@@ -1145,8 +1145,8 @@ async function openFile(name, opts) {
         const buf = await filePromise;
         updateShieldProgress('Opening document…', 50, 'Transferring to editor');
         if (buf) {
-            await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-                method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+            await fetch('/wasm/' + encodeURIComponent(name), {
+                method: 'POST', body: new Uint8Array(buf),
             });
             try { iframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
         }
@@ -1229,8 +1229,8 @@ async function openFile(name, opts) {
                 updateShieldProgress('Opening document…', 50,
                     'Transferring to editor');
                 if (buf) {
-                    await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-                        method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+                    await fetch('/wasm/' + encodeURIComponent(name), {
+                        method: 'POST', body: new Uint8Array(buf),
                     });
                     try { reviveIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
                 }
@@ -1348,8 +1348,8 @@ async function openFile(name, opts) {
 
             filePromise.then(buf => {
                 if (!buf) return;
-                return fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-                    method: 'POST', body: new Uint8Array(buf), mode: 'cors',
+                return fetch('/wasm/' + encodeURIComponent(name), {
+                    method: 'POST', body: new Uint8Array(buf),
                 }).then(() => {
                     try { newIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
                     viewerLog('File transferred to editor');

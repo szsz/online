@@ -9,6 +9,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-singleuser';
 // Scaled patience for waitFor* calls. JOBS_SCALE>1 widens it under
 // contention; bare runs see the prior 180s ceiling.
@@ -33,7 +34,7 @@ async function uploadFile(page, name, filePath) {
         await fetch(url + '/wasm/' + encodeURIComponent(n), {
             method: 'POST', body: new Blob([new Uint8Array(arr)])
         });
-    }, BASE, name, Array.from(bytes));
+    }, WASM_BASE, name, Array.from(bytes));
     log(`Uploaded ${name} (${bytes.length} bytes)`);
     return bytes.length;
 }

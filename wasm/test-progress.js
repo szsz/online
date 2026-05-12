@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const env = require('./lib/test-env');
 const EDITOR = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const SHOT = '/tmp/static-deploy/public/shots-progress';
 fs.mkdirSync(SHOT, { recursive: true });
 
@@ -14,7 +15,7 @@ fs.mkdirSync(SHOT, { recursive: true });
     await page.goto(EDITOR, { waitUntil: 'domcontentloaded' });
     await page.evaluate(async (u) => {
         await fetch(u + '/wasm/progress-test.txt', { method: 'POST', body: new Blob(['hi']) });
-    }, EDITOR);
+    }, WASM_BASE);
     await page.close();
 
     const p = await ctx.newPage();

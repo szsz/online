@@ -442,7 +442,7 @@
         // /wasm/<wopiSrc>; `locator` is the URL late joiners will
         // fetch those bytes from. Late joiners just echo back the
         // `hash` they computed.
-        var wasmUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+        var wasmUrl = resolveFileStorageBase() + '/wasm/' + encodeURIComponent(wopiSrc);
         function sendReady(hash) {
             lastKnownHash = hash || lastKnownHash;
             var payloadObj = {};
@@ -1085,8 +1085,8 @@
             var saveAtSeq = lastSeq;
             // Module-scope wopiSrc — see prewarm-blank guard above for
             // why we DON'T re-read params.get('WOPISrc') here.
-            // 1. Download saved file from editor's temp storage
-            var editorFileUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+            // 1. Download saved file from viewer's /wasm/ temp storage
+            var editorFileUrl = resolveFileStorageBase() + '/wasm/' + encodeURIComponent(wopiSrc);
             origFetch(editorFileUrl).then(function(r) {
                 return r.arrayBuffer();
             }).then(function(buf) {
@@ -1418,7 +1418,7 @@
                     // the blob endpoint is unavailable (older deploys).
                     joinFileSeq = info.seq;
                     var wopiSrc = params.get('WOPISrc') || '';
-                    var editorWopiUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+                    var editorWopiUrl = resolveFileStorageBase() + '/wasm/' + encodeURIComponent(wopiSrc);
                     console.log('[relay] Join-response: hash=' + (info.hash||'').substring(0, 16) +
                                 '… locator=' + (info.locator || '(none)') + ' seq=' + info.seq +
                                 ' cursors=' + (info.cursorCount || 0) + ' msgs=' + (info.msgCount || 0));

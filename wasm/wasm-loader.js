@@ -618,7 +618,13 @@
         // shield far earlier than waiting for #StateWordCount metadata.
         canvasBaseline = snapshotCanvas();
         try {
-            var cmd = 'switchdocument url=' + window.location.origin + '/wasm/' + encodeURIComponent(filename);
+            // /wasm/<name> lives on the viewer (post-FD migration the editor
+            // is fully static). The viewer passes ?fileStorageUrl=<origin>
+            // when it builds the iframe URL; fall back to self-origin only
+            // for standalone harness usage where /wasm/ isn't fetched anyway.
+            var __fsBase = params.get('fileStorageUrl') || window.location.origin;
+            if (__fsBase.charAt(__fsBase.length - 1) === '/') __fsBase = __fsBase.slice(0, -1);
+            var cmd = 'switchdocument url=' + __fsBase + '/wasm/' + encodeURIComponent(filename);
             // Intercept incoming messages from the WASM/C++ side to log exact
             // arrival times of status:, loaded:, invalidatetiles, and tiles.
             // This tells us how long each phase of the C++ switchdocument takes.

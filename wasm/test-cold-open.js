@@ -13,6 +13,7 @@ const env = require('./lib/test-env');
 // whatever hostname the rest of the suite targets.
 const VIEWER = env.VIEWER_URL || env.FILE_STORAGE_URL || 'http://localhost:6934';
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-cold-open';
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
@@ -59,7 +60,7 @@ async function snap(page, name) {
                 await fetch(url + '/wasm/' + encodeURIComponent(name), {
                     method: 'POST', body: new Blob([new Uint8Array(arr)])
                 });
-            }, BASE, docName, Array.from(bytes));
+            }, WASM_BASE, docName, Array.from(bytes));
             await up.close();
             log(`Uploaded ${docName}`);
         }

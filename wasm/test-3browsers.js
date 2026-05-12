@@ -9,6 +9,7 @@ const fs = require('fs');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 300000;
@@ -92,7 +93,7 @@ async function waitForAnyCharCount(pages, expected, timeout) {
         await up.evaluate(async (url) => {
             const body = new Blob(['Hello World'], { type: 'application/octet-stream' });
             await fetch(url + '/wasm/test3.txt', { method: 'POST', body });
-        }, BASE);
+        }, WASM_BASE);
         await up.close();
         console.log('[setup] Uploaded "Hello World" to /wasm/ (first client will register relay checkpoint)\n');
         let relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);

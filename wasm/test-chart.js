@@ -7,6 +7,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-chart';
 
@@ -53,7 +54,7 @@ async function clickCanvas(page) {
                 await fetch(url + '/wasm/' + encodeURIComponent(n), {
                     method: 'POST', body: new Blob([new Uint8Array(arr)])
                 });
-            }, BASE, name, Array.from(buf));
+            }, WASM_BASE, name, Array.from(buf));
             log(`Uploaded ${name}`);
         }
         await up.close();

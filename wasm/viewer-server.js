@@ -631,6 +631,56 @@ app.get('/blank.docx', async (req, res) => {
     res.status(404).send('blank.docx not available (neither in storage nor bundled)');
 });
 
+// ── /wasm/:name — temp plaintext transit between viewer and editor ──
+// The viewer POSTs decrypted plaintext here; the editor iframe (now
+// cross-origin, hosted on Front Door static) fetches it via Kit's
+// switchdocument URL. Used to live on editor-server.js; moved here so
+// the editor can be a fully static site.
+//
+// Lifecycle: POST writes the file; the editor reads it once on doc-open
+// (and later on checkpoint save). A janitor sweeps anything older than
+// 2h every 30min so the dir doesn't grow unbounded. Filenames are opaque
+// (v2 fileId or BLANK_FILENAME); name collisions across users are not
+// security-relevant since v2 fileIds are unguessable.
+const WASM_UPLOAD_DIR = process.env.WASM_UPLOAD_DIR
+    || path.join(__dirname, 'uploads');
+if (!fs.existsSync(WASM_UPLOAD_DIR)) fs.mkdirSync(WASM_UPLOAD_DIR, { recursive: true });
+
+setInterval(() => {
+    const cutoff = Date.now() - 2 * 3600 * 1000;
+    try {
+        for (const f of fs.readdirSync(WASM_UPLOAD_DIR)) {
+            const p = path.join(WASM_UPLOAD_DIR, f);
+            try {
+                if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+            } catch (_) { /* race with another sweep / open writer */ }
+        }
+    } catch (_) { /* dir disappeared */ }
+}, 30 * 60 * 1000).unref();
+
+app.post('/wasm/:name', (req, res) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+        const data = Buffer.concat(chunks);
+        const fileName = req.params.name.split('?')[0];
+        const filePath = path.join(WASM_UPLOAD_DIR, fileName);
+        fs.writeFileSync(filePath, data);
+        res.json({ name: fileName, size: data.length });
+    });
+});
+
+// CORP:cross-origin — the editor iframe (COEP:require-corp) loads this
+// file cross-origin via Kit's switchdocument URL. Without CORP the
+// browser blocks the response with ERR_BLOCKED_BY_RESPONSE.NotSameOrigin.
+app.get('/wasm/:name', (req, res) => {
+    const fileName = req.params.name.split('?')[0];
+    const filePath = path.join(WASM_UPLOAD_DIR, fileName);
+    if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.sendFile(filePath);
+});
+
 const server = useSSL
     ? https.createServer({ cert: fs.readFileSync(SSL_CERT), key: fs.readFileSync(SSL_KEY) }, app)
     : http.createServer(app);

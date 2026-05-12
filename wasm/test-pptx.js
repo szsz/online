@@ -11,6 +11,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx';
 const DOC_NAME = 'testdoc.pptx';
@@ -114,7 +115,7 @@ async function waitForImpress(page, label, timeout) {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {
                 method: 'POST', body: new Blob([new Uint8Array(arr)])
             });
-        }, BASE, DOC_NAME, Array.from(bytes));
+        }, WASM_BASE, DOC_NAME, Array.from(bytes));
         await up.close();
         log('Uploaded ' + DOC_NAME);
 

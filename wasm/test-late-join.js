@@ -12,6 +12,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = env.scaleTimeout(300000);
@@ -158,7 +159,7 @@ async function waitForChars(pages, expected, timeout) {
                 method: 'POST',
                 body: new Blob([new Uint8Array(arr)])
             });
-        }, BASE, DOC_NAME, Array.from(docBytes));
+        }, WASM_BASE, DOC_NAME, Array.from(docBytes));
         await up.close();
         log('Uploaded to editor /wasm/ (relay checkpoint will be registered by first client)');
 

@@ -27,6 +27,7 @@ const fs = require('fs');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY = env.RELAY_URL;
 const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 180000;
@@ -111,7 +112,7 @@ async function typeChars(page, label, chars) {
                     body: new Blob([content], { type: 'application/octet-stream' })});
                 await fetch(`${relayHttp}/room/${encodeURIComponent(room)}/file`,
                     { method: 'POST', body: new Blob([content]) });
-            }, BASE, RELAY_HTTP, room, FILE, 'Hello');
+            }, WASM_BASE, RELAY_HTTP, room, FILE, 'Hello');
         }
         await up.close();
         log('Doc uploaded + relay seeded for both rooms');

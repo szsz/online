@@ -4,6 +4,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const EDITOR = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -37,7 +38,7 @@ async function waitForDoc(frame, timeout) {
         await up.evaluate(async (u, arr1, arr2) => {
             await fetch(u + '/wasm/doc1.docx', { method: 'POST', body: new Blob([new Uint8Array(arr1)]) });
             await fetch(u + '/wasm/doc2.odt', { method: 'POST', body: new Blob([new Uint8Array(arr2)]) });
-        }, EDITOR, Array.from(doc1), Array.from(doc2));
+        }, WASM_BASE, Array.from(doc1), Array.from(doc2));
         await up.close();
         console.log('Uploaded both docs');
 
@@ -63,13 +64,16 @@ async function waitForDoc(frame, timeout) {
         coolLogs.length = 0;
         console.log('--- Sending switchdocument ---');
         const tSwitch = Date.now();
-        await page.evaluate(() => {
+        await page.evaluate((fsBase) => {
             if (typeof postMobileMessage === 'function') {
-                postMobileMessage('switchdocument url=' + window.location.origin + '/wasm/doc2.odt');
+                // Kit fetches /wasm/<name> from the file-storage origin
+                // (viewer) post-FD migration; mirror what wasm-loader.js's
+                // switchdocument bridge resolves to.
+                postMobileMessage('switchdocument url=' + fsBase + '/wasm/doc2.odt');
             } else {
                 console.log('postMobileMessage not available!');
             }
-        });
+        }, WASM_BASE);
 
         // Wait and capture what happens
         for (let i = 0; i < 60; i++) {

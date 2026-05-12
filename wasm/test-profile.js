@@ -10,6 +10,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const EDITOR = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const VIEWER = env.FILE_STORAGE_URL;
 const DOC_NAME = 'profile-doc.docx';
 const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'test document.docx');
@@ -178,7 +179,7 @@ async function profileLoad(browser, label, url, useCdp) {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {
                 method: 'POST', body: new Blob([new Uint8Array(arr)]),
             });
-        }, EDITOR, DOC_NAME, Array.from(bytes));
+        }, WASM_BASE, DOC_NAME, Array.from(bytes));
         await up.close();
 
         const editorUrl = EDITOR + '/browser/cool.html?WOPISrc=' + encodeURIComponent(DOC_NAME) + '&access_token=test';

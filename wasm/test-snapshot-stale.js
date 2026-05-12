@@ -11,6 +11,7 @@ const { launch, sleep } = require('./lib/browser');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }
 
@@ -39,7 +40,7 @@ async function uploadFixture(browser, name, fixtureSrc) {
         await fetch(url + '/wasm/' + encodeURIComponent(n), {
             method: 'POST', body: new Blob([new Uint8Array(arr)])
         });
-    }, BASE, name, Array.from(bytes));
+    }, WASM_BASE, name, Array.from(bytes));
     await up.close();
     log(`Uploaded ${name} (${bytes.length} bytes)`);
 }

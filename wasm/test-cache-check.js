@@ -4,6 +4,7 @@ const puppeteer = require('puppeteer');
 const env = require('./lib/test-env');
 
 const EDITOR = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const DOC = 'cache-test.txt';
 
 (async () => {
@@ -53,7 +54,7 @@ const DOC = 'cache-test.txt';
             await page.goto(EDITOR, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
             await page.evaluate(async (u, n) => {
                 await fetch(u + '/wasm/' + encodeURIComponent(n), { method: 'POST', body: new Blob(['hello']) });
-            }, EDITOR, DOC);
+            }, WASM_BASE, DOC);
         }
 
         const t0 = Date.now();

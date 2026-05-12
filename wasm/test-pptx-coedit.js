@@ -8,6 +8,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 // Iter 212: scale TIMEOUT for JOBS=4 contention. The bare 300s (5 min)
 // was sufficient solo but pptx cold-load + 2-browser activation
@@ -86,7 +87,7 @@ async function waitForImpress(page, label) {
             await fetch(url + '/wasm/' + encodeURIComponent(name), {
                 method: 'POST', body: new Blob([new Uint8Array(arr)])
             });
-        }, BASE, DOC_NAME, Array.from(bytes));
+        }, WASM_BASE, DOC_NAME, Array.from(bytes));
         await up.close();
         log('Uploaded ' + DOC_NAME);
 

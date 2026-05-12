@@ -10,6 +10,7 @@ const fs = require('fs');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-delete-key';
@@ -74,7 +75,7 @@ async function clickCanvas(page) {
                 method: 'POST',
                 body: new Blob(['Hello World'], { type: 'application/octet-stream' }),
             });
-        }, BASE);
+        }, WASM_BASE);
         await up.close();
         log('Uploaded "Hello World" (11 chars)');
 

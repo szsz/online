@@ -16,6 +16,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-paste-coedit';
@@ -73,7 +74,7 @@ async function clickCanvas(page) {
             await fetch(base + '/wasm/' + encodeURIComponent(n), {
                 method: 'POST', body: new Blob([new Uint8Array(a)]),
             });
-        }, BASE, NAME, Array.from(fixtureBytes));
+        }, WASM_BASE, NAME, Array.from(fixtureBytes));
         await up.close();
         log(`Uploaded ${NAME}`);
 
@@ -194,7 +195,7 @@ async function clickCanvas(page) {
         await sleep(4000);
         const preImgSize = await pageA.evaluate(async (base, n) => {
             return (await (await fetch(base + '/wasm/' + encodeURIComponent(n))).arrayBuffer()).byteLength;
-        }, BASE, NAME);
+        }, WASM_BASE, NAME);
 
         // Escape any selection, go to end
         await clickCanvas(pageA);
@@ -229,7 +230,7 @@ async function clickCanvas(page) {
             await sleep(1000);
             postImgSize = await pageA.evaluate(async (base, n) => {
                 return (await (await fetch(base + '/wasm/' + encodeURIComponent(n))).arrayBuffer()).byteLength;
-            }, BASE, NAME);
+            }, WASM_BASE, NAME);
             if (postImgSize > preImgSize + 50) break;
         }
         await snap(pageA, 'after_image_A');

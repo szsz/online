@@ -14,6 +14,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 300000;
@@ -63,7 +64,7 @@ async function uploadFile(browser, name, filePath, room) {
     await up.evaluate(async (url, n, arr) => {
         const body = new Blob([new Uint8Array(arr)]);
         await fetch(url + '/wasm/' + encodeURIComponent(n), { method: 'POST', body });
-    }, BASE, name, Array.from(bytes));
+    }, WASM_BASE, name, Array.from(bytes));
     await up.close();
     log(`  Uploaded ${name} (${(bytes.length/1024).toFixed(0)}KB)`);
 }

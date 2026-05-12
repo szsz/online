@@ -7,6 +7,7 @@ const fs = require('fs');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots';
@@ -75,7 +76,7 @@ async function waitForReady(page, label, count) {
                 method: 'POST',
                 body: new Blob(['Hello World'], { type: 'application/octet-stream' }),
             });
-        }, BASE);
+        }, WASM_BASE);
         await up.close();
         console.log('[setup] Uploaded "Hello World"\n');
 

@@ -18,6 +18,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 300000;
@@ -148,7 +149,7 @@ async function clickCanvas(page) {
         await fetch(url + '/wasm/' + encodeURIComponent(name), {
             method: 'POST', body: new Blob([new Uint8Array(arr)])
         });
-    }, BASE, DOC_NAME, Array.from(docBytes));
+    }, WASM_BASE, DOC_NAME, Array.from(docBytes));
     await up.close();
     log('Uploaded to /wasm/ (first client will register relay checkpoint)');
 

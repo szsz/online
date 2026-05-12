@@ -17,6 +17,7 @@ const { uploadV2 } = require('./lib/v2-upload');
 const { fetchUrl, headUrl } = require('./lib/fetch-url');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-caching';
 
@@ -71,7 +72,7 @@ async function uploadFile(browser, name, filePath) {
     await upPage.evaluate(async (editorUrl, n, arr) => {
         const blob = new Blob([new Uint8Array(arr)]);
         await fetch(editorUrl + '/wasm/' + encodeURIComponent(n), { method: 'POST', body: blob });
-    }, BASE, name, Array.from(docBytes));
+    }, WASM_BASE, name, Array.from(docBytes));
     await upPage.close();
     log(`Uploaded ${name} (${(docBytes.length/1024).toFixed(0)}KB) → v2 id ${up.fileId.substring(0,8)}…`);
 }

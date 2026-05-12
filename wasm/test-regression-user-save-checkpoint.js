@@ -16,6 +16,7 @@ const env = require('./lib/test-env');
 const { pickLib } = require('./lib/fetch-url');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const VIEWER = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 // wss → https, ws → http — match the relay's actual transport so the
@@ -90,7 +91,7 @@ async function clickCanvas(page) {
             await fetch(base + '/wasm/' + encodeURIComponent(n), {
                 method: 'POST', body: new Blob([c]),
             });
-        }, BASE, NAME, INITIAL);
+        }, WASM_BASE, NAME, INITIAL);
         await up.close();
         log(`Uploaded initial "${INITIAL}" → /api/files/${NAME} + /wasm/${NAME}`);
 

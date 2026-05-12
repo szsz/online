@@ -8,6 +8,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
 const NAME = 'coedit-diag-' + Date.now() + '.docx';
@@ -36,7 +37,7 @@ function chars(s) { const m = s && s.match(/(\d+) characters/); return m ? +m[1]
             await fetch(base + '/wasm/' + encodeURIComponent(n), {
                 method: 'POST', body: new Blob([new Uint8Array(a)]),
             });
-        }, BASE, NAME, Array.from(fixtureBytes));
+        }, WASM_BASE, NAME, Array.from(fixtureBytes));
         await up.close();
         log(`Uploaded ${NAME}`);
 

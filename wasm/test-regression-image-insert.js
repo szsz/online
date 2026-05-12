@@ -18,6 +18,7 @@ const path = require('path');
 const env = require('./lib/test-env');
 
 const BASE = env.EDITOR_URL;
+const WASM_BASE = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-image-insert';
@@ -64,7 +65,7 @@ async function clickCanvas(page) {
             await fetch(base + '/wasm/' + encodeURIComponent(n), {
                 method: 'POST', body: new Blob([new Uint8Array(a)]),
             });
-        }, BASE, NAME, Array.from(fixtureBytes));
+        }, WASM_BASE, NAME, Array.from(fixtureBytes));
         await up.close();
         log(`Uploaded ${NAME} (${(fixtureBytes.length/1024).toFixed(1)} KB .docx)`);
 
@@ -95,7 +96,7 @@ async function clickCanvas(page) {
             const r = await fetch(base + '/wasm/' + encodeURIComponent(n));
             const buf = await r.arrayBuffer();
             return buf.byteLength;
-        }, BASE, NAME);
+        }, WASM_BASE, NAME);
         log(`Initial doc size: ${initialSize} bytes`);
 
         // -- Insert image via postMobileMessage('insertfile …') --
@@ -172,7 +173,7 @@ async function clickCanvas(page) {
                 if (txt.indexOf('\xff\xd8\xff') >= 0) return { size: buf.byteLength, kind: 'jpeg-magic' };
                 if (txt.indexOf('<svg') >= 0) return { size: buf.byteLength, kind: 'svg' };
                 return { size: buf.byteLength, kind: null };
-            }, BASE, NAME);
+            }, WASM_BASE, NAME);
             savedSize = got.size;
             mediaKind = got.kind;
             if (mediaKind) break;
