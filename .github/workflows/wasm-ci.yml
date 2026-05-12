@@ -194,6 +194,25 @@ jobs:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
         run: bash .github/scripts/wasm-ci/deploy.sh
 
+      # ── Editor → Front Door + Storage static-site path ─────────────
+      # Each editor build lands at $EDITOR_FD_URL/<APP_BUILD_ID>/. The
+      # viewer's host-side viewer-config.json pointer flip (operator-
+      # triggered via promote-editor.sh) decides which <id>/ folder
+      # the viewer iframes into. App-Service deploy above still runs
+      # in parallel for the transition; will be removed once the
+      # SW-bridge cutover is verified stable on FD.
+      #
+      # Required env on the runner ($HOME/ENV/online-front-door-deploy.env):
+      #   EDITOR_STORAGE_ACCOUNT, EDITOR_STORAGE_CONTAINER, EDITOR_FD_URL
+      #   AZURE_FD_PROFILE, AZURE_FD_RG, AZURE_FD_ENDPOINT (optional —
+      #   step skips rule apply with a warning if missing).
+      - name: Deploy editor to Front Door + apply rules
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.event.inputs.online_sha || github.sha }}
+        run: bash .github/scripts/wasm-ci/deploy-front-door.sh
+
       - name: Publish build artefacts + index
         env:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}

@@ -625,6 +625,14 @@ EJSON
         fi
     done
 
+    # Bridge SW — lives at the editor ROOT (NOT in $EDIR_CONTENT, which
+    # is per-deploy). Scope `/` is what lets it intercept /wasm/<id> and
+    # the /api/* paths regardless of deploy folder. editor-server.js
+    # serves it explicitly + sets Service-Worker-Allowed: /.
+    if [[ -f "$SCRIPT_DIR/sw-bridge.js" ]]; then
+        cp "$SCRIPT_DIR/sw-bridge.js" "$EDIR/sw-bridge.js"
+    fi
+
     # Lazy-load spellcheck dictionaries — produced by wasm/build-dicts.sh.
     # We deploy them under <app>/dicts/ so dict-loader.js (which resolves
     # /dicts/ relative to its own script URL) finds them on the editor

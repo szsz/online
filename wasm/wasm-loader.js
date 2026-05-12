@@ -155,24 +155,111 @@
     }, 500);
 
     // ───── SERVICE WORKER REGISTRATION ─────
-    // Register sw.js to lock the heavy WASM assets into Cache Storage.
-    // Why this is at the top of wasm-loader rather than inline in cool.html:
-    // wasm-loader runs the moment cool.html starts, so the SW is installed
-    // before any of online.wasm / soffice.data starts streaming. The first
-    // visit still goes to network (SW only takes effect on the SECOND
-    // navigation by default; we use clients.claim() in sw.js to take over
-    // sooner where possible). Subsequent visits hit the SW cache regardless
-    // of HTTP-cache pressure — see test-regression-wasm-cache-pressure.js.
+    // Two SWs run on the editor origin:
+    //
+    //   1. /<APP_BUILD_ID>/sw.js (scope /<APP_BUILD_ID>/browser/) — heavy
+    //      asset cache (online.wasm, soffice.data, bundle.js). Cache
+    //      Storage backstop against HTTP-cache eviction.
+    //
+    //   2. /sw-bridge.js  (scope /) — postMessage bridge for the
+    //      dynamic-file paths (/wasm/<id>, /api/blobs/, /api/v2/file/,
+    //      /api/files/). The editor origin is fully static post-FD
+    //      migration; Kit's fetches to those paths get intercepted by
+    //      this SW and routed to window.parent (the viewer) for fulfilment.
+    //      Without this SW, /wasm/<id> 404s on FD and Kit never gets the
+    //      document bytes.
+    //
+    // We register BOTH in parallel and gate Kit's boot on the bridge SW
+    // being active + controlling this page (window.__swBridgeReady) so
+    // we never race Kit's first /wasm/ fetch past an un-activated SW.
+    window.__swBridgeReady = new Promise(function(resolve, reject) {
+        if (!('serviceWorker' in navigator)) {
+            mark('sw-bridge:unavailable', 'no navigator.serviceWorker');
+            return reject(new Error('serviceWorker unavailable'));
+        }
+        navigator.serviceWorker.register('/sw-bridge.js', { scope: '/' })
+            .then(function(reg) {
+                mark('sw-bridge:registered', 'scope=' + reg.scope);
+                function ready() {
+                    mark('sw-bridge:ready', 'controller=' + !!navigator.serviceWorker.controller);
+                    resolve(reg);
+                }
+                if (navigator.serviceWorker.controller) return ready();
+                navigator.serviceWorker.addEventListener('controllerchange', ready, { once: true });
+            })
+            .catch(function(err) {
+                mark('sw-bridge:register_failed', err.message);
+                reject(err);
+            });
+    });
+
+    // ───── PARENT ↔ SW BRIDGE RELAY ─────
+    // The bridge SW (sw-bridge.js) catches a fetch and posts to this
+    // page (we're its controlled client). We forward to window.parent
+    // (the viewer). The viewer's reply lands on our `message` listener
+    // and we forward it back to the SW.
+    //
+    // Origin checks: the viewer's origin is known via ?fileStorageUrl
+    // (set by the viewer when it built the iframe URL) or document.
+    // referrer. We trust postMessages only from that origin.
+    var __viewerOrigin = (function() {
+        var p = params.get('fileStorageUrl');
+        if (p) { try { return new URL(p).origin; } catch (_) {} }
+        if (document.referrer) { try { return new URL(document.referrer).origin; } catch (_) {} }
+        try { return window.parent.location.origin; } catch (_) {}
+        return null;
+    })();
+    mark('sw-bridge:viewerOrigin', __viewerOrigin || '(unknown)');
+
     if ('serviceWorker' in navigator) {
-        // Scope is /browser/ (the directory the SW lives in). That's
-        // exactly where online.wasm + soffice.data live, so the scope
-        // covers all heavy assets. Use a relative path so it works
-        // regardless of which (sub-)origin we're served from.
+        // SW → page → parent
+        navigator.serviceWorker.addEventListener('message', function(ev) {
+            var msg = ev.data;
+            if (!msg) return;
+            if (msg.type === 'sw-bridge-request') {
+                if (!__viewerOrigin || window.parent === window) {
+                    // Standalone visit (no viewer parent): reply
+                    // immediately with a "go to network" signal so the
+                    // SW falls through without burning its 15s timeout.
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'sw-bridge-response',
+                            id: msg.id,
+                            status: 0,            // sentinel: "no bridge available"
+                            headers: {},
+                            body: null,
+                        });
+                    }
+                    return;
+                }
+                var transfer = msg.body ? [msg.body] : [];
+                window.parent.postMessage(msg, __viewerOrigin, transfer);
+            } else if (msg.type === 'precache:done') {
+                window.__swPrecacheDone = msg;
+                mark('sw:precache_done',
+                    'cached=' + msg.cached + ' fetched=' + msg.fetched +
+                    ' failed=' + msg.failed);
+            }
+        });
+
+        // parent → page → SW
+        window.addEventListener('message', function(ev) {
+            if (__viewerOrigin && ev.origin !== __viewerOrigin) return;
+            var msg = ev.data;
+            if (!msg || msg.type !== 'sw-bridge-response') return;
+            if (!navigator.serviceWorker.controller) return;
+            var transfer = msg.body ? [msg.body] : [];
+            navigator.serviceWorker.controller.postMessage(msg, transfer);
+        });
+    }
+
+    // ───── ASSET-CACHE SW (heavy WASM files) ─────
+    // Independent of the bridge SW; same flow as before. Lives in the
+    // per-deploy folder so each build gets its own CACHE_NAME via the
+    // build-fingerprint substitution.
+    if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('sw.js').then(function(reg) {
             mark('sw:registered', 'scope=' + reg.scope);
-            // If the page loaded before the SW could take control, ask
-            // the new worker to claim immediately. This affects the very
-            // first visit; subsequent visits are already controlled.
             if (!navigator.serviceWorker.controller && reg.active) {
                 mark('sw:no_controller_first_visit');
             }
@@ -182,20 +269,7 @@
             // primary mechanism).
             mark('sw:register_failed', err.message);
         });
-        // Iter 192: surface the SW's precache-done signal so tests (and
-        // callers wanting to know when Cache Storage is warm) have an
-        // observable flag. window.__swPrecacheDone reflects the latest
-        // {urls, cached, fetched, failed} report from sw.js.
         window.__swPrecacheDone = null;
-        navigator.serviceWorker.addEventListener('message', function(ev) {
-            if (!ev.data || ev.data.type !== 'precache:done') return;
-            window.__swPrecacheDone = ev.data;
-            mark('sw:precache_done',
-                'cached=' + ev.data.cached + ' fetched=' + ev.data.fetched +
-                ' failed=' + ev.data.failed);
-        });
-    } else {
-        mark('sw:unavailable', 'navigator.serviceWorker missing');
     }
 
     // ───── EARLY SNAPSHOT CHECK ─────

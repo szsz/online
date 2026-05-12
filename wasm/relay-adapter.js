@@ -1199,56 +1199,24 @@
         }, 1500);
     }
 
-    // Resolve the file storage URL for a given WOPISrc.
+    // Build editor-origin URLs for the /api/files/, /api/blobs/, and
+    // /api/v2/file/ paths. These are intercepted by sw-bridge.js
+    // (scope /) on the editor origin and routed via postMessage to the
+    // parent (viewer) — the viewer responds with bytes from its own
+    // same-origin storage. We never cross origins on the network.
     //
-    // The viewer's /api/files/ endpoint is the source-of-truth file store.
-    // We need this URL so saved checkpoints can be uploaded back here (so
-    // late-joiners see the latest content). Resolution order:
-    //   1. fileStorageUrl query param — set by the viewer when it builds the
-    //      iframe URL. The robust path; works regardless of referrer policy
-    //      or cross-origin restrictions.
-    //   2. parent.location.origin — works only when same-origin.
-    //   3. document.referrer — set unless `referrerpolicy="no-referrer"`.
-    //   4. Fallback: the editor's own /wasm/ endpoint. This is wrong for
-    //      the source-of-truth (the viewer never sees it) but at least
-    //      stores the bytes so the editor can re-load them. Late-join
-    //      sync into the viewer's storage will be broken in this mode.
+    // Pre-SW-bridge this used a resolveFileStorageBase() helper that
+    // probed `?fileStorageUrl`, `window.parent.location.origin`, and
+    // `document.referrer` to find the viewer's origin. That dance is
+    // gone — `window.location.origin` (the editor) is enough; the SW
+    // handles the rest.
     function getFileStorageUrl(wopiSrc) {
-        return resolveFileStorageBase() + '/api/files/' + encodeURIComponent(wopiSrc);
+        return window.location.origin + '/api/files/' + encodeURIComponent(wopiSrc);
     }
 
-    // Build the URL for a content-addressable blob. Returns null if we
-    // can't resolve the file-storage origin AND the caller should fall
-    // back to /api/files/<name>.
     function getBlobUrl(hash) {
         if (!hash) return null;
-        var base = resolveFileStorageBase();
-        if (!base) return null;
-        return base + '/api/blobs/' + encodeURIComponent(hash);
-    }
-
-    // Resolve the base URL of the viewer (which serves both /api/files/
-    // and /api/blobs/). Same resolution order as the old getFileStorageUrl.
-    function resolveFileStorageBase() {
-        var explicit = params.get('fileStorageUrl');
-        if (explicit) {
-            if (explicit.charAt(explicit.length - 1) === '/') explicit = explicit.slice(0, -1);
-            return explicit;
-        }
-        try {
-            if (window.parent !== window) {
-                var origin = window.parent.location.origin;
-                if (origin && origin !== 'null') return origin;
-            }
-        } catch(e) {}
-        if (document.referrer) {
-            try { return new URL(document.referrer).origin; } catch(e) {}
-        }
-        // Last resort: the editor's own origin. /api/blobs/ doesn't live
-        // there, so getBlobUrl will return a 404 and the late-joiner code
-        // will fall back to /wasm/ via the source list.
-        console.warn('[relay] resolveFileStorageBase: no fileStorageUrl param, no same-origin parent, no referrer');
-        return window.location.origin;
+        return window.location.origin + '/api/blobs/' + encodeURIComponent(hash);
     }
 
     // --- Process a sequenced UI message ---

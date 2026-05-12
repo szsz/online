@@ -107,6 +107,7 @@ h3 { margin: 5px 0; }
 <script src="lib/file-crypto.js"></script>
 <script src="lib/recent-files.js"></script>
 <script src="lib/ui-lang.js"></script>
+<script src="lib/editor-bridge.js"></script>
 <div id="sidebar-hover-zone"></div>
 <div id="files">
     <h3>Files</h3>
@@ -825,17 +826,16 @@ async function startPrewarm() {
                + UI_LANG_PARAM
                + __viewerPlanC;
 
-    // Upload blank doc in parallel — arrives before Kit needs it
+    // Stage blank doc in the bridge cache — Kit reaches it via
+    // /wasm/<BLANK_FILENAME> through the SW bridge once it boots.
     try {
         const resp = await fetch('/blank.docx');
         if (resp.ok) {
             const buf = await resp.arrayBuffer();
-            await fetch(EDITOR + '/wasm/' + encodeURIComponent(BLANK_FILENAME), {
-                method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-            });
+            EditorBridge.stage(BLANK_FILENAME, buf);
         }
     } catch (e) {
-        console.log('[viewer] Blank doc upload failed (non-critical): ' + e.message);
+        console.log('[viewer] Blank doc stage failed (non-critical): ' + e.message);
     }
 }
 
@@ -1023,11 +1023,14 @@ async function openFileBySecret(secretB64, callerOpts) {
         } catch(e) { console.warn('[v2] decryptName failed', e); }
     }
     RecentFiles.remember({ secret: secretB64, fileId, cachedName });
-    // Hand plaintext to the editor under the opaque fileId — LO sees it
-    // as a filename, the server/editor never learned the real name.
-    await fetch(EDITOR + '/wasm/' + fileId, {
-        method: 'POST', body: plainBytes, mode: 'cors',
-    });
+    // Stage plaintext in the in-memory bridge cache under the opaque
+    // fileId. When the editor iframe (cross-origin) boots and Kit
+    // fetches /wasm/<fileId>, the editor's bridge SW catches the fetch
+    // and posts to us via sw-bridge-request; editor-bridge.js replies
+    // with these bytes. The plaintext never leaves the browser.
+    EditorBridge.stage(fileId,
+        plainBytes.buffer.slice(plainBytes.byteOffset, plainBytes.byteOffset + plainBytes.byteLength),
+        { fileId: fileId, secretB64: secretB64, cachedName: cachedName });
     // Use the fileId as WOPISrc; the editor chrome title can be set
     // by wasm-loader from a postMessage once we wire that up.
     currentFile = fileId;
@@ -1140,14 +1143,14 @@ async function openFile(name, opts) {
 
     if (willHotSwitch) {
         // HOT SWITCH — same document type, reuse the live WASM.
-        // Need file uploaded BEFORE switchdocument fires.
+        // Stage the new file in the bridge cache so Kit picks it up
+        // through the SW when wasm-loader sends `switchdocument` and
+        // Kit re-fetches /wasm/<name>.
         updateShieldProgress('Opening document…', 30, 'Downloading ' + name);
         const buf = await filePromise;
         updateShieldProgress('Opening document…', 50, 'Transferring to editor');
         if (buf) {
-            await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-                method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-            });
+            EditorBridge.stage(name, buf);
             try { iframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
         }
         if (!SINGLE_USER) {
@@ -1229,9 +1232,7 @@ async function openFile(name, opts) {
                 updateShieldProgress('Opening document…', 50,
                     'Transferring to editor');
                 if (buf) {
-                    await fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-                        method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-                    });
+                    EditorBridge.stage(name, buf);
                     try { reviveIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
                 }
                 if (!SINGLE_USER) {
@@ -1348,12 +1349,9 @@ async function openFile(name, opts) {
 
             filePromise.then(buf => {
                 if (!buf) return;
-                return fetch(EDITOR + '/wasm/' + encodeURIComponent(name), {
-                    method: 'POST', body: new Uint8Array(buf), mode: 'cors',
-                }).then(() => {
-                    try { newIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
-                    viewerLog('File transferred to editor');
-                });
+                EditorBridge.stage(name, buf);
+                try { newIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+                viewerLog('File staged for editor');
             }).catch(e => { setStatus('Error downloading: ' + e.message); });
         }
     }
