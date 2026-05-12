@@ -67,6 +67,8 @@ function readRepo(rel) {
             body.includes("'/api/v2/file/'"));
         check('sw-bridge.js: BRIDGE_PREFIXES contains /api/files/',
             body.includes("'/api/files/'"));
+        check('sw-bridge.js: BRIDGE_PREFIXES contains /api/keys/',
+            body.includes("'/api/keys/'"));
         check("sw-bridge.js: addEventListener('fetch')",
             /addEventListener\(['"]fetch['"]/.test(body));
         check("sw-bridge.js: addEventListener('message')",

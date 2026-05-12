@@ -163,10 +163,13 @@ configure_settings() {
     [[ -n "${EDITOR_EXTRA_ORIGINS:-}" ]] && EDITOR_ALLOWED="$EDITOR_ALLOWED,$EDITOR_EXTRA_ORIGINS"
 
     # Viewer settings — uses Azure Blob storage backend in App Services.
-    # Auth via the App Service's MSI (DefaultAzureCredential). The
-    # viewer's identity must hold "Storage Blob Data Contributor" on
-    # $DOC_STORAGE_ACCOUNT. NO key is set in App Settings; if a stale
-    # DOC_STORAGE_KEY exists from a prior deploy, it is removed below.
+    # Auth: prefer the App Service's MSI (DefaultAzureCredential) — set
+    # the MSI's "Storage Blob Data Contributor" on $DOC_STORAGE_ACCOUNT
+    # and leave DOC_STORAGE_KEY unset. For tiers where granting that
+    # data-plane role is blocked (test / internal — RBAC scoped to
+    # control-plane only), mint a shared-key from the storage account
+    # and set it as DOC_STORAGE_KEY on the viewer App Setting; the
+    # storage backend's third auth mode picks it up.
     echo "  Viewer ($VIEWER_APP_NAME)..."
     # EDITOR_DEPLOY_ID — when the editor is a Front Door static site
     # (no editor App Service), the iframe URL needs the explicit
@@ -195,18 +198,21 @@ configure_settings() {
     if [[ -n "$EFFECTIVE_EDITOR_ID" ]]; then
         VIEWER_SETTINGS_ARGS+=("EDITOR_DEPLOY_ID=$EFFECTIVE_EDITOR_ID")
     fi
+    # If the deploy env carries DOC_STORAGE_KEY (test/internal tiers
+    # where data-plane RBAC isn't grantable), pass it through so the
+    # viewer uses shared-key auth instead of MSI/DefaultAzureCredential.
+    # Otherwise we leave any existing App Setting alone (i.e. DON'T
+    # delete it on each deploy — there's no way to re-grant it from
+    # this script alone, and silently wiping the only thing letting
+    # the viewer reach storage would brick the tier).
+    if [[ -n "${DOC_STORAGE_KEY:-}" ]]; then
+        VIEWER_SETTINGS_ARGS+=("DOC_STORAGE_KEY=$DOC_STORAGE_KEY")
+    fi
     az webapp config appsettings set \
         --resource-group "$RESOURCE_GROUP" \
         --name "$VIEWER_APP_NAME" \
         --settings "${VIEWER_SETTINGS_ARGS[@]}" \
         > /dev/null
-    # Strip a leftover DOC_STORAGE_KEY app setting if present (safe no-op
-    # when absent; the --setting-names form ignores missing keys).
-    az webapp config appsettings delete \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$VIEWER_APP_NAME" \
-        --setting-names DOC_STORAGE_KEY \
-        > /dev/null 2>&1 || true
 
     # Relay settings
     echo "  Relay ($RELAY_APP_NAME)..."
