@@ -179,31 +179,55 @@ fi
 
 echo "  Uploading to $EDITOR_STORAGE_ACCOUNT/$EDITOR_STORAGE_CONTAINER/$APP_BUILD_ID/..."
 
-# Step 1: Upload everything as a batch. The blob path is relative to
-# $STAGE, so files under $STAGE/$APP_BUILD_ID/... land at
-# $web/$APP_BUILD_ID/...
+# Step 1: Bulk upload everything (raw + .br sidecars) via azcopy.
+# `az storage blob upload-batch` runs effectively single-threaded
+# (~0.3-1 file/sec — sequential HTTP per blob). For ~3000-file
+# editor builds that's 30+ min per deploy. azcopy uses native
+# parallelism (~100 concurrent transfers by default) and gets the
+# same upload to ~30s.
 #
-# Includes *.br sidecar files (a previous version of this script
-# passed --pattern '!*.br' to exclude them, but az's pattern matcher
-# silently treats `!` as a literal char → matches nothing → empty
-# upload). The .br blobs end up alongside their canonical counterparts;
-# Step 2 below then OVERWRITES the canonical blob with the brotli
-# content. The duplicate *.br blob is unused by clients (they fetch
-# the canonical URL and get brotli via Content-Encoding) but it's
-# harmless and lets the upload-batch step actually run.
-az storage blob upload-batch \
+# Auth: short-lived account-scoped SAS minted from the account key
+# we already have. azcopy will SAS the destination URL directly,
+# avoiding any login-cache state on the runner.
+SAS_EXPIRY="$(date -u -d '+30 min' +%Y-%m-%dT%H:%MZ)"
+SAS_TOKEN="$(az storage account generate-sas \
     --account-name "$EDITOR_STORAGE_ACCOUNT" \
     --account-key "$STORAGE_KEY" \
-    --destination "$EDITOR_STORAGE_CONTAINER" \
-    --source "$STAGE" \
-    --overwrite \
-    --no-progress \
-    > /tmp/fd-upload.log 2>&1 || {
-        echo "ERROR: az storage blob upload-batch failed" >&2
-        tail -20 /tmp/fd-upload.log >&2
-        exit 1
-    }
-echo "    upload-batch done"
+    --permissions cwdl \
+    --services b \
+    --resource-types co \
+    --expiry "$SAS_EXPIRY" \
+    -o tsv 2>/dev/null)"
+if [[ -z "$SAS_TOKEN" ]]; then
+    echo "ERROR: failed to mint SAS token for upload" >&2
+    exit 1
+fi
+
+# azcopy needs a destination URL. The container is `$web` (literal,
+# dollar-sign included) — must be URL-encoded as %24web.
+DEST_URL="https://${EDITOR_STORAGE_ACCOUNT}.blob.core.windows.net/%24web?${SAS_TOKEN}"
+
+if ! command -v azcopy >/dev/null 2>&1; then
+    echo "ERROR: azcopy not on PATH. Install with:" >&2
+    echo "  curl -sL https://aka.ms/downloadazcopy-v10-linux | tar xz -C /tmp" >&2
+    echo "  sudo cp /tmp/azcopy_linux_amd64_*/azcopy /usr/local/bin/" >&2
+    exit 1
+fi
+
+# `--from-to LocalBlob --recursive` mirrors the local $STAGE tree
+# into the container. Files at $STAGE/$APP_BUILD_ID/... land at
+# $web/$APP_BUILD_ID/... and $STAGE/sw-bridge.js (which the script
+# stages at the root) lands at $web/sw-bridge.js.
+AZCOPY_JOB_PLAN_LOCATION=/tmp/azcopy-plans \
+AZCOPY_LOG_LOCATION=/tmp/azcopy-logs \
+    azcopy copy "$STAGE/*" "$DEST_URL" \
+        --recursive --overwrite=true --output-level=essential \
+        --log-level=ERROR > /tmp/fd-upload.log 2>&1 || {
+            echo "ERROR: azcopy upload failed" >&2
+            tail -30 /tmp/fd-upload.log >&2
+            exit 1
+        }
+echo "    upload done ($(grep -oE 'Number of File Transfers: [0-9]+' /tmp/fd-upload.log | head -1 || echo '?') files)"
 
 # ── Step 2: Pattern β brotli swap ───────────────────────────────────
 # AFD's URL rewrite action doesn't support server variables in

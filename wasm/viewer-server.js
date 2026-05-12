@@ -71,8 +71,14 @@ function expandHome(p) {
     return p;
 }
 const VIEWER_CONFIG_FILE = expandHome(process.env.VIEWER_CONFIG_FILE || '');
+// Env-var fallback when running on App Service (no persistent file
+// system for VIEWER_CONFIG_FILE). Set this as an App Setting and
+// re-deploy / restart to roll the viewer to a new editor folder.
+const EDITOR_DEPLOY_ID_ENV = (process.env.EDITOR_DEPLOY_ID || '').trim();
 function readViewerConfig() {
-    if (!VIEWER_CONFIG_FILE) return { editor_deploy_id: '' };
+    if (!VIEWER_CONFIG_FILE) {
+        return { editor_deploy_id: EDITOR_DEPLOY_ID_ENV };
+    }
     try {
         const raw = fs.readFileSync(VIEWER_CONFIG_FILE, 'utf8');
         const parsed = JSON.parse(raw);

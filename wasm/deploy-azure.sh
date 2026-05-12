@@ -2,12 +2,20 @@
 # deploy-azure.sh — Deploy COOL WASM co-editing to Azure App Services.
 #
 # Usage:
-#   bash wasm/deploy-azure.sh                  # deploy all three services
+#   bash wasm/deploy-azure.sh                  # deploy viewer + relay
 #   bash wasm/deploy-azure.sh --create         # first time: create App Services
 #   bash wasm/deploy-azure.sh --viewer         # deploy viewer only
 #   bash wasm/deploy-azure.sh --relay          # deploy relay only
-#   bash wasm/deploy-azure.sh --editor         # deploy editor only
 #   bash wasm/deploy-azure.sh --settings       # update app settings only
+#
+# History
+# -------
+# The editor used to ship as a third App Service (szebeni-wasm-static
+# etc.). As of 2026-05-12 it lives on Azure Front Door + Storage as a
+# pure static site (see wasm/deploy-front-door.sh); the
+# /wasm/<id> + /api/* paths that the editor used to fetch via HTTP
+# are now intercepted by /sw-bridge.js and routed to the viewer via
+# postMessage. This script no longer touches any editor App Service.
 #
 # Authentication
 # --------------
@@ -41,8 +49,11 @@ echo "deploy-azure: using ENV_FILE=$ENV_FILE"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
-# Validate required vars
-for var in RESOURCE_GROUP APP_SERVICE_PLAN VIEWER_APP_NAME RELAY_APP_NAME EDITOR_APP_NAME \
+# Validate required vars. EDITOR_APP_NAME used to live here; the
+# editor lives on Front Door + Storage now (see wasm/deploy-front-door.sh),
+# so its App Service is gone. EDITOR_URL is still required because the
+# viewer needs to know where to iframe.
+for var in RESOURCE_GROUP APP_SERVICE_PLAN VIEWER_APP_NAME RELAY_APP_NAME \
            VIEWER_URL RELAY_URL EDITOR_URL DOC_STORAGE_ACCOUNT DOC_STORAGE_CONTAINER; do
     if [[ -z "${!var:-}" ]]; then
         echo "ERROR: $var is not set in $ENV_FILE"
@@ -68,7 +79,6 @@ fi
 DO_CREATE=false
 DO_VIEWER=false
 DO_RELAY=false
-DO_EDITOR=false
 DO_SETTINGS=false
 DO_ALL=true
 
@@ -77,7 +87,7 @@ for arg in "$@"; do
         --create)   DO_CREATE=true ;;
         --viewer)   DO_VIEWER=true; DO_ALL=false ;;
         --relay)    DO_RELAY=true; DO_ALL=false ;;
-        --editor)   DO_EDITOR=true; DO_ALL=false ;;
+        --editor)   echo "NOTE: --editor is a no-op; the editor lives on Front Door (see wasm/deploy-front-door.sh)"; DO_ALL=false ;;
         --settings) DO_SETTINGS=true; DO_ALL=false ;;
         *) echo "Unknown flag: $arg"; exit 1 ;;
     esac
@@ -86,7 +96,6 @@ done
 if $DO_ALL; then
     DO_VIEWER=true
     DO_RELAY=true
-    DO_EDITOR=true
 fi
 
 # ── Create App Services ─────────────────────────────────────────
@@ -105,7 +114,7 @@ if $DO_CREATE; then
         *) echo "  Plan tier OK: $PLAN_SKU" ;;
     esac
 
-    for APP in "$VIEWER_APP_NAME" "$RELAY_APP_NAME" "$EDITOR_APP_NAME"; do
+    for APP in "$VIEWER_APP_NAME" "$RELAY_APP_NAME"; do
         echo "  Creating $APP..."
         # Capture stderr so we can distinguish "already exists" (benign) from
         # real errors (quota exceeded, name taken, auth, etc.).
@@ -159,18 +168,30 @@ configure_settings() {
     # $DOC_STORAGE_ACCOUNT. NO key is set in App Settings; if a stale
     # DOC_STORAGE_KEY exists from a prior deploy, it is removed below.
     echo "  Viewer ($VIEWER_APP_NAME)..."
+    # EDITOR_DEPLOY_ID — when the editor is a Front Door static site
+    # (no editor App Service), the iframe URL needs the explicit
+    # /<id>/browser/cool.html path. viewer-server.js's
+    # readViewerConfig() falls back to this App Setting when no
+    # VIEWER_CONFIG_FILE is set. APP_BUILD_ID is exported by the CI
+    # caller for fresh deploys; for ad-hoc rolls, set it in the env
+    # file or skip (viewer reverts to flat-iframe legacy mode).
+    local VIEWER_SETTINGS_ARGS=(
+        STORAGE_BACKEND="azure"
+        FILE_STORAGE_URL="$VIEWER_URL"
+        EDITOR_URL="$EDITOR_URL"
+        RELAY_URL="$RELAY_URL"
+        DOC_STORAGE_ACCOUNT="$DOC_STORAGE_ACCOUNT"
+        DOC_STORAGE_CONTAINER="$DOC_STORAGE_CONTAINER"
+        ALLOWED_ORIGINS="$VIEWER_ALLOWED"
+        WEBSITE_NODE_DEFAULT_VERSION="~24"
+    )
+    if [[ -n "${APP_BUILD_ID:-}" ]]; then
+        VIEWER_SETTINGS_ARGS+=("EDITOR_DEPLOY_ID=$APP_BUILD_ID")
+    fi
     az webapp config appsettings set \
         --resource-group "$RESOURCE_GROUP" \
         --name "$VIEWER_APP_NAME" \
-        --settings \
-            STORAGE_BACKEND="azure" \
-            FILE_STORAGE_URL="$VIEWER_URL" \
-            EDITOR_URL="$EDITOR_URL" \
-            RELAY_URL="$RELAY_URL" \
-            DOC_STORAGE_ACCOUNT="$DOC_STORAGE_ACCOUNT" \
-            DOC_STORAGE_CONTAINER="$DOC_STORAGE_CONTAINER" \
-            ALLOWED_ORIGINS="$VIEWER_ALLOWED" \
-            WEBSITE_NODE_DEFAULT_VERSION="~24" \
+        --settings "${VIEWER_SETTINGS_ARGS[@]}" \
         > /dev/null
     # Strip a leftover DOC_STORAGE_KEY app setting if present (safe no-op
     # when absent; the --setting-names form ignores missing keys).
@@ -195,27 +216,6 @@ configure_settings() {
         --resource-group "$RESOURCE_GROUP" \
         --name "$RELAY_APP_NAME" \
         --web-sockets-enabled true \
-        > /dev/null
-
-    # Editor settings. DEFAULT_DEPLOY_ID points the editor-server at the
-    # just-deployed <id>/ folder so legacy unprefixed URLs (`/browser/
-    # cool.html`, `/online.wasm`) transparently resolve into that folder.
-    # Explicit `/<id>/...` URLs still take precedence — used by the viewer
-    # iframe to pin to a specific build via window.__CONFIG.EDITOR_DEPLOY_ID.
-    echo "  Editor ($EDITOR_APP_NAME)..."
-    local EDITOR_SETTINGS_ARGS=(
-        FILE_STORAGE_URL="$VIEWER_URL"
-        RELAY_URL="$RELAY_URL"
-        ALLOWED_ORIGINS="$EDITOR_ALLOWED"
-        WEBSITE_NODE_DEFAULT_VERSION="~24"
-    )
-    if [[ -n "${APP_BUILD_ID:-}" ]]; then
-        EDITOR_SETTINGS_ARGS+=("DEFAULT_DEPLOY_ID=$APP_BUILD_ID")
-    fi
-    az webapp config appsettings set \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$EDITOR_APP_NAME" \
-        --settings "${EDITOR_SETTINGS_ARGS[@]}" \
         > /dev/null
 
     echo ""
@@ -405,302 +405,6 @@ RJSON
     deploy_app "$RELAY_APP_NAME" "$RDIR" "/"
 fi
 
-# ── Deploy Editor ────────────────────────────────────────────────
-if $DO_EDITOR; then
-    echo "=== Staging Editor ==="
-    EDIR="${EDITOR_DEPLOY_DIR}"
-    rm -rf "$EDIR"
-    mkdir -p "$EDIR"
-
-    # Per-deploy folder mode: when APP_BUILD_ID is set (CI path), all
-    # build artifacts live under $EDIR/$APP_BUILD_ID/ so multiple deploys
-    # coexist on the same wwwroot. server.js + node_modules + package.json
-    # stay at $EDIR/ root — they get overwritten by each deploy when the
-    # zip extracts on top of wwwroot (--clean=false). Older <id>/ folders
-    # accumulate; --clean=false preserves them so in-flight viewer tabs
-    # pointing at a previous id keep working.
-    #
-    # When APP_BUILD_ID is unset (ad-hoc human-driven deploy), fall
-    # through to legacy flat layout — server.js + artifacts all at $EDIR/.
-    # The editor-server.js handles both via its per-deploy middleware
-    # plus DEFAULT_DEPLOY_ID env-var fallback.
-    if [[ -n "${APP_BUILD_ID:-}" ]]; then
-        EDIR_CONTENT="$EDIR/$APP_BUILD_ID"
-        EDITOR_CLEAN_FLAG="false"
-        echo "  Per-deploy mode: build artifacts under $APP_BUILD_ID/"
-        mkdir -p "$EDIR_CONTENT"
-    else
-        EDIR_CONTENT="$EDIR"
-        EDITOR_CLEAN_FLAG="true"
-        echo "  Flat-deploy mode: APP_BUILD_ID unset (ad-hoc deploy)"
-    fi
-
-    # Server + package.json. No `compression` dep — the editor serves
-    # pre-compressed .br files (written below) instead of paying the
-    # CPU cost of runtime compression.
-    cp "$SCRIPT_DIR/editor-server.js" "$EDIR/server.js"
-    # Iter 97: Express 5 — match the source declaration so wildcard
-    # path-to-regexp v8 routes (e.g. /api/files/*name) register.
-    cat > "$EDIR/package.json" <<'EJSON'
-{
-  "name": "cool-wasm-editor",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": { "start": "node server.js" },
-  "dependencies": {
-    "express": "^5.2.1"
-  }
-}
-EJSON
-
-    # Locate build artifacts. The WASM build produces two parallel trees:
-    #   wasm/online-build/wasm/         → online.wasm, online.worker.js
-    #   wasm/online-build/browser/dist/ → cool.html, bundle.js, online.js,
-    #                                     online.wasm, soffice.data, …
-    # (the legacy `browser/dist` at the repo root is not produced by this
-    #  build; keep it as a fallback for old setups).
-    BUILD_ROOT="$SCRIPT_DIR/online-build"
-    BUILD_WASM="$BUILD_ROOT/wasm"
-    BUILD_DIST="$BUILD_ROOT/browser/dist"
-    if [[ ! -d "$BUILD_DIST" ]]; then
-        BUILD_DIST="$REPO_ROOT/browser/dist"
-    fi
-
-    # Browser dist (cool.html, bundle.js, CSS, images, l10n)
-    if [[ -d "$BUILD_DIST" ]]; then
-        echo "  Copying browser/dist/ from $BUILD_DIST ..."
-        mkdir -p "$EDIR_CONTENT/browser/dist"
-        cp -r "$BUILD_DIST/." "$EDIR_CONTENT/browser/dist/"
-    else
-        echo "  ERROR: browser/dist/ not found (tried $BUILD_ROOT/browser/dist and $REPO_ROOT/browser/dist)"
-        echo "         Build the editor first: bash wasm/build-wasm.sh"
-        exit 1
-    fi
-
-    # Prune stale hashed assets from the staging dir. cool.html /
-    # bundle.<hash>.js reference exactly one hash per asset family
-    # (online.<hash>.{js,wasm}, soffice.<hash>.data, …). The build dir
-    # accumulates a new hash per cache-bust iteration but never GCs
-    # old ones. Without this prune step the editor zip grew to ~1.94 GB
-    # and the kudu wwwroot's 10 GB plan-shared SMB volume filled after
-    # ~3-4 deploys, after which kudu silently 400'd every /api/publish
-    # (see incident on 2026-05-06). Extracting the kept-set from the
-    # just-staged cool.html + bundle.*.js gives us a deterministic
-    # source of truth.
-    #
-    # `.br` siblings are NEVER referenced by HTML — server.js's brotli
-    # chooser serves them transparently when Accept-Encoding: br is
-    # present, so cool.html only mentions e.g. "online.<hash>.wasm",
-    # not "online.<hash>.wasm.br". A naive prune that compared file
-    # names directly against KEPT deleted every hashed `.br` sidecar,
-    # forcing Azure to ship the uncompressed 265 MB / 93 MB body on
-    # every cold load. The fix: treat a `.br` file as kept iff its
-    # source (filename minus `.br`) is in KEPT.
-    echo "  Pruning stale hashed assets in $EDIR_CONTENT/browser/dist/..."
-    KEPT="$(grep -hoE '"online\.[0-9a-f]{8}\.(js|wasm|worker\.js)"|"soffice\.[0-9a-f]{8}\.data"|"soffice\.data\.js\.[0-9a-f]{8}\.metadata"' \
-            "$EDIR_CONTENT/browser/dist/cool.html" "$EDIR_CONTENT/browser/dist/"bundle.*.js 2>/dev/null \
-            | tr -d '"' | sort -u || true)"
-    PRUNED=0
-    shopt -s nullglob
-    for f in "$EDIR_CONTENT/browser/dist/"online.*.{js,js.br,wasm,wasm.br,worker.js,worker.js.br} \
-             "$EDIR_CONTENT/browser/dist/"soffice.*.{data,data.br} \
-             "$EDIR_CONTENT/browser/dist/"soffice.data.js.*.{metadata,metadata.br}; do
-        base="$(basename "$f")"
-        # Skip the unhashed canonical names (online.js / online.wasm /
-        # soffice.data, plus their .br sidecars) — those are kept
-        # regardless and overwritten by the WASM-artifact copy step below.
-        case "$base" in
-            online.js|online.js.br|online.wasm|online.wasm.br|\
-            online.worker.js|online.worker.js.br|\
-            soffice.data|soffice.data.br|\
-            soffice.data.js.metadata|soffice.data.js.metadata.br) continue ;;
-        esac
-        # `.br` sidecars are kept iff the source asset is kept. cool.html
-        # only references the source name; the brotli chooser uses the
-        # .br as a transparent encoding alternative.
-        src="${base%.br}"
-        if [[ "$src" != "$base" ]]; then
-            if grep -qFx "$src" <<<"$KEPT"; then continue; fi
-        elif grep -qFx "$base" <<<"$KEPT"; then
-            continue
-        fi
-        rm -f "$f"
-        PRUNED=$((PRUNED+1))
-    done
-    shopt -u nullglob
-    echo "  Pruned $PRUNED stale hashed asset(s); kept $(printf '%s\n' "$KEPT" | wc -l) referenced"
-
-    # WASM artifacts — copied to BOTH root (for direct /online.wasm access)
-    # and browser/dist/ (since cool.html loads online.js from /browser/,
-    # which then spawns /browser/online.worker.js relative to itself).
-    #
-    # Artifact pairing: online.js + online.wasm are produced together; the JS
-    # embeds data-section sizes the engine validates against the .wasm bytes.
-    # Mixing a fresh online.js with a stale online.wasm (e.g. from a parallel
-    # link target) will decode fine but fail to instantiate with
-    # 'CompileError: section extends past end'. Pick ONE source directory
-    # that has both, then copy both from there — never mix sources.
-    echo "  Picking paired online.{js,wasm}..."
-    PAIRED_DIR=""
-    for d in "$BUILD_DIST" "$BUILD_WASM"; do
-        if [[ -f "$d/online.js" && -f "$d/online.wasm" ]]; then
-            PAIRED_DIR="$d"; break
-        fi
-    done
-    if [[ -z "$PAIRED_DIR" ]]; then
-        echo "  ERROR: no directory contains BOTH online.js and online.wasm."
-        echo "         Checked: $BUILD_DIST  $BUILD_WASM"
-        echo "         Build the editor first: bash wasm/build-wasm.sh"
-        exit 1
-    fi
-    # Warn loudly if the other tree has a different online.wasm — that means
-    # the build system has two link targets in flight, and whichever one we
-    # didn't pick will silently become wrong on the next rebuild.
-    OTHER_DIR=""
-    [[ "$PAIRED_DIR" == "$BUILD_DIST" ]] && OTHER_DIR="$BUILD_WASM" || OTHER_DIR="$BUILD_DIST"
-    if [[ -f "$OTHER_DIR/online.wasm" ]] && \
-       ! cmp -s "$PAIRED_DIR/online.wasm" "$OTHER_DIR/online.wasm"; then
-        echo "  WARNING: $OTHER_DIR/online.wasm differs from the one picked."
-        echo "           If a later step reads from $OTHER_DIR it will mismatch."
-        echo "             picked:   $(md5sum "$PAIRED_DIR/online.wasm" | cut -c1-16)  $PAIRED_DIR/online.wasm"
-        echo "             discard:  $(md5sum "$OTHER_DIR/online.wasm"  | cut -c1-16)  $OTHER_DIR/online.wasm"
-    fi
-    echo "  Paired artefacts source: $PAIRED_DIR"
-    echo "    online.js    md5(head)=$(head -c 65536 "$PAIRED_DIR/online.js" | md5sum | cut -c1-16)"
-    echo "    online.wasm  md5=$(md5sum "$PAIRED_DIR/online.wasm" | cut -c1-16)"
-
-    echo "  Copying WASM artifacts..."
-    find_artifact() {
-        local name=$1
-        # online.js + online.wasm MUST come from the paired dir (never mix).
-        if [[ "$name" == "online.js" || "$name" == "online.wasm" ]]; then
-            [[ -f "$PAIRED_DIR/$name" ]] && { echo "$PAIRED_DIR/$name"; return 0; }
-            return 1
-        fi
-        # Everything else: prefer the paired dir, fall back to the other.
-        for d in "$PAIRED_DIR" "$OTHER_DIR"; do
-            [[ -f "$d/$name" ]] && { echo "$d/$name"; return 0; }
-        done
-        return 1
-    }
-    for f in online.js online.wasm online.data online.worker.js soffice.data soffice.data.js.metadata emscripten-module.js; do
-        src="$(find_artifact "$f" || true)"
-        if [[ -n "$src" ]]; then
-            cp "$src" "$EDIR_CONTENT/$f"
-            cp "$src" "$EDIR_CONTENT/browser/dist/$f"
-            # Carry brotli sidecar from the build tree if it exists
-            # (build-wasm.sh / build-online.sh emit .br at quality 11
-            # alongside each source file). precompress-br.js below is
-            # idempotent — sees the .br is newer than the source and
-            # skips the ~15-min recompression of online.wasm.
-            if [[ -f "$src.br" ]]; then
-                cp "$src.br" "$EDIR_CONTENT/$f.br"
-                cp "$src.br" "$EDIR_CONTENT/browser/dist/$f.br"
-            fi
-        else
-            # online.data is only present for --preload-file builds; absence
-            # is not fatal for the --package build variant.
-            case "$f" in
-                online.data) ;;
-                *) echo "    WARNING: $f not found in $BUILD_WASM or $BUILD_DIST" ;;
-            esac
-        fi
-    done
-
-
-    # Relay adapter, wasm-loader, and the Service Worker — copied to both
-    # the editor root (for any legacy /relay-adapter.js references) AND
-    # under browser/dist/ so cool.html's relative `<script src="…">` and
-    # `navigator.serviceWorker.register('sw.js')` resolve via the
-    # /browser/ static route.
-    for f in relay-adapter.js wasm-loader.js sw.js dict-loader.js; do
-        if [[ -f "$SCRIPT_DIR/$f" ]]; then
-            cp "$SCRIPT_DIR/$f" "$EDIR_CONTENT/"
-            cp "$SCRIPT_DIR/$f" "$EDIR_CONTENT/browser/dist/"
-        else
-            case "$f" in
-                dict-loader.js) echo "    NOTE: $f not found — spellcheck lazy-load disabled" ;;
-                *) echo "    WARNING: $f not found — viewer hot-switch / SW cache will fail without it" ;;
-            esac
-        fi
-    done
-
-    # Bridge SW — lives at the editor ROOT (NOT in $EDIR_CONTENT, which
-    # is per-deploy). Scope `/` is what lets it intercept /wasm/<id> and
-    # the /api/* paths regardless of deploy folder. editor-server.js
-    # serves it explicitly + sets Service-Worker-Allowed: /.
-    if [[ -f "$SCRIPT_DIR/sw-bridge.js" ]]; then
-        cp "$SCRIPT_DIR/sw-bridge.js" "$EDIR/sw-bridge.js"
-    fi
-
-    # Lazy-load spellcheck dictionaries — produced by wasm/build-dicts.sh.
-    # We deploy them under <app>/dicts/ so dict-loader.js (which resolves
-    # /dicts/ relative to its own script URL) finds them on the editor
-    # origin. Each <lang>.tar.gz is fetched on demand by the client.
-    DICTS_SRC="$SCRIPT_DIR/online-build/dicts"
-    if [[ -d "$DICTS_SRC" ]] && ls "$DICTS_SRC"/*.tar.gz >/dev/null 2>&1; then
-        mkdir -p "$EDIR_CONTENT/dicts"
-        cp -f "$DICTS_SRC"/*.tar.gz "$EDIR_CONTENT/dicts/"
-        cp -f "$DICTS_SRC/manifest.json" "$EDIR_CONTENT/dicts/"
-        DICT_COUNT=$(ls "$EDIR_CONTENT/dicts"/*.tar.gz | wc -l)
-        echo "  Bundled $DICT_COUNT language dict bundles ($(du -sh "$EDIR_CONTENT/dicts" | cut -f1))"
-    else
-        echo "  NOTE: no dict bundles — run 'bash wasm/build-dicts.sh' first (spellcheck will be disabled)"
-    fi
-
-    # Per-deploy metadata file. The regression test for per-deploy
-    # folders probes this URL: ${EDITOR}/<id>/build-info.json must be
-    # reachable, parse as JSON, and have a matching id. Also useful
-    # forensics — point to the git sha + UTC timestamp when this build
-    # shipped. In flat mode (APP_BUILD_ID unset), this still gets written
-    # but at $EDIR_CONTENT/build-info.json (= $EDIR/build-info.json),
-    # which is harmless.
-    cat > "$EDIR_CONTENT/build-info.json" <<EOF
-{
-  "id": "${APP_BUILD_ID:-flat}",
-  "git_sha": "${GIT_SHA:-}",
-  "lo_build_id": "${LO_BUILD_ID:-}",
-  "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOF
-
-
-    # Substitute the build fingerprint in wasm-loader.js AND sw.js.
-    # Snapshots saved by an old build are discarded on restore when the
-    # fingerprint differs from the running binary, and the Service
-    # Worker's CACHE_NAME embeds it so a fresh deploy lands in a new
-    # Cache Storage namespace and the previous build's heavy assets are
-    # GC'd by the activate handler. Every deploy must rewrite both
-    # placeholders with an identifier of THIS online.wasm — otherwise
-    # sw.js falls back to the dev-tree 'cool-editor-dev' name and never
-    # rolls between deploys.
-    if [[ -f "$EDIR_CONTENT/online.wasm" ]]; then
-        FINGERPRINT=$(md5sum "$EDIR_CONTENT/online.wasm" | cut -c1-16)
-        echo "  Build fingerprint: $FINGERPRINT"
-        for p in "$EDIR_CONTENT/wasm-loader.js" "$EDIR_CONTENT/browser/dist/wasm-loader.js" \
-                 "$EDIR_CONTENT/sw.js" "$EDIR_CONTENT/browser/dist/sw.js"; do
-            [[ -f "$p" ]] && sed -i "s|__WASM_BUILD_FINGERPRINT__|$FINGERPRINT|g" "$p"
-        done
-    fi
-
-    # Install dependencies
-    echo "  Installing npm dependencies..."
-    (cd "$EDIR" && npm install --production --silent)
-
-
-    # Bake content hashes into asset filenames + cool.html. Renames each
-    # long-cacheable asset to <base>.<hash>.<ext>, moves the .br sidecar
-    # alongside, and rewrites cool.html (asset refs + Module.locateFile
-    # shim ahead of online.js). Runs AFTER brotli so the .br sidecars
-    # are renamed in lockstep.
-
-    # Editor deploys with --clean=false when APP_BUILD_ID is set so the
-    # zip's <id>/ folder is added on top of existing wwwroot, preserving
-    # older <id>/ folders that in-flight viewer tabs may still reference.
-    # Flat-mode editor deploys keep --clean=true (legacy behavior). The
-    # 5th arg to deploy_app is the --clean flag.
-    deploy_app "$EDITOR_APP_NAME" "$EDIR" "/" "" "$EDITOR_CLEAN_FLAG"
-fi
 
 # ── Summary ──────────────────────────────────────────────────────
 echo "=========================================="
@@ -708,7 +412,7 @@ echo "Deployment complete!"
 echo ""
 echo "  Viewer: $VIEWER_URL"
 echo "  Relay:  $RELAY_URL"
-echo "  Editor: $EDITOR_URL"
+echo "  Editor: $EDITOR_URL (Front Door — deployed by wasm/deploy-front-door.sh, not this script)"
 echo ""
 echo "Open the viewer URL to start co-editing."
 echo "=========================================="
