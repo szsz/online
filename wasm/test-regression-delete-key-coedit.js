@@ -5,12 +5,13 @@ const __cl = require('./lib/inject-checklist');
 // the other browser.
 //
 // ALL input via real keyboard/mouse — no TheFakeWebSocket.send() calls.
+// Migrated to the viewer flow (lib/open-via-viewer.js).
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
 
-const BASE = env.EDITOR_URL;
-const RELAY_BASE = env.RELAY_URL;
+const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-delete-key';
 
@@ -33,8 +34,8 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
-async function getStatus(page) {
-    return page.evaluate(() => {
+async function getStatus(frame) {
+    return frame.evaluate(() => {
         const el = document.querySelector('#StateWordCount');
         return el ? el.textContent.trim() : '';
     });
@@ -43,10 +44,10 @@ function charCount(status) {
     const m = status && status.match(/(\d+) characters/);
     return m ? parseInt(m[1]) : -1;
 }
-async function waitForCharCount(page, expected, timeoutMs) {
+async function waitForCharCount(frame, expected, timeoutMs) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
-        if (charCount(await getStatus(page)) === expected) return Date.now() - t0;
+        if (charCount(await getStatus(frame)) === expected) return Date.now() - t0;
         await sleep(250);
     }
     return -1;
@@ -66,42 +67,31 @@ async function clickCanvas(page) {
     const { browser, cleanup } = await launch();
 
     try {
-        // Upload "Hello World" — 11 chars.
-        const up = await browser.newPage();
-        await up.goto(BASE, { waitUntil: 'domcontentloaded' });
-        await up.evaluate(async (base) => {
-            await fetch(base + '/wasm/delkey.txt', {
-                method: 'POST',
-                body: new Blob(['Hello World'], { type: 'application/octet-stream' }),
-            });
-        }, BASE);
-        await up.close();
-        log('Uploaded "Hello World" (11 chars)');
+        const docName = 'delkey-' + Date.now() + '.txt';
+        const bytes = Buffer.from('Hello World', 'utf8');     // 11 chars
 
-        const ROOM = 'delkey-' + Date.now();
-        const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);
-        const coolUrl = `${BASE}/browser/cool.html?WOPISrc=delkey.txt&relay=${relay}&access_token=test`;
+        log('[A] Opening...');
+        const { page: pageA, editorFrame: frameA, b64urlSecret } =
+            await openViaViewer(browser, VIEWER, docName, bytes,
+                { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+                  isolatedContext: true });
+        await waitForCharCount(frameA, 11, TIMEOUT);
+        log(`[A] Loaded: "${await getStatus(frameA)}"`);
+        await sleep(8000);
 
-        async function openDoc(label) {
-            const ctx = await browser.createBrowserContext();
-            const page = await ctx.newPage();
-            await page.goto(coolUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
-            await page.waitForFunction(() =>
-                document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
-                { timeout: TIMEOUT });
-            log(`[${label}] Loaded: "${await getStatus(page)}"`);
-            return page;
-        }
-
-        const pageA = await openDoc('A');
-        await sleep(8000);                  // settle, initial save
-        const pageB = await openDoc('B');
-        await sleep(15000);                 // B late-joins, replays log
+        log('[B] Opening...');
+        const { page: pageB, editorFrame: frameB } =
+            await openSecretInBrowser(browser, VIEWER, b64urlSecret,
+                { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+                  isolatedContext: true });
+        await waitForCharCount(frameB, 11, TIMEOUT);
+        log(`[B] Loaded: "${await getStatus(frameB)}"`);
+        await sleep(15000);
 
         await snap(pageA, 'A_initial');
         await snap(pageB, 'B_initial');
-        const initA = charCount(await getStatus(pageA));
-        const initB = charCount(await getStatus(pageB));
+        const initA = charCount(await getStatus(frameA));
+        const initB = charCount(await getStatus(frameB));
         log(`Initial: A=${initA} B=${initB}`);
         check('Both browsers see "Hello World" (11 chars)',
               initA === 11 && initB === 11);
@@ -131,15 +121,14 @@ async function clickCanvas(page) {
         log('A: pressed Delete key');
 
         // ── Wait for the delete to propagate to B ───────────────────
-        // Doc was 11 chars, deleting 1 → 10 chars on both sides.
         const target = 10;
         log(`Waiting for B to drop to ${target} chars...`);
-        const tookB = await waitForCharCount(pageB, target, 30000);
-        const tookA = await waitForCharCount(pageA, target, 30000);
+        const tookB = await waitForCharCount(frameB, target, 30000);
+        const tookA = await waitForCharCount(frameA, target, 30000);
         await snap(pageA, 'A_after_delete');
         await snap(pageB, 'B_after_delete');
-        const finalA = charCount(await getStatus(pageA));
-        const finalB = charCount(await getStatus(pageB));
+        const finalA = charCount(await getStatus(frameA));
+        const finalB = charCount(await getStatus(frameB));
         log(`Final: A=${finalA} (took ${tookA}ms), B=${finalB} (took ${tookB}ms)`);
 
         check('A reflects the deletion locally (10 chars left)',
