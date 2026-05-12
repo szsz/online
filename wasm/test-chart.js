@@ -1,13 +1,15 @@
 const __cl = require('./lib/inject-checklist');
 // Test: Documents with embedded charts
-// Verifies chart rendering in both Writer (docx) and Calc (xlsx)
+// Verifies chart rendering in both Writer (docx) and Calc (xlsx).
+// Migrated to the viewer flow (lib/open-via-viewer.js).
 const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
+const { openViaViewer } = require('./lib/open-via-viewer');
 
-const BASE = env.EDITOR_URL;
-const TIMEOUT = 300000;
+const VIEWER = env.FILE_STORAGE_URL;
+const TIMEOUT = env.scaleTimeout(180000);
 const SHOT_DIR = '/tmp/static-deploy/public/shots-chart';
 
 const T0 = Date.now();
@@ -33,125 +35,72 @@ async function clickCanvas(page) {
     await sleep(300);
 }
 
+async function runOne(browser, doctype, name, typeText, readyCheck) {
+    const filePath = path.resolve(__dirname, '../test/data', name);
+    if (!fs.existsSync(filePath)) { log(`SKIP: ${name} not found`); return; }
+    const bytes = fs.readFileSync(filePath);
+
+    log(`\n--- ${doctype} chart (${name}) ---`);
+    const t0 = Date.now();
+    let page, editorFrame;
+    try {
+        ({ page, editorFrame } = await openViaViewer(browser, VIEWER, name, bytes, {
+            iframeTimeout: TIMEOUT,
+            gotoTimeout: 30000,
+            onPage: p => p.on('console', m => {
+                const t = m.text();
+                if (t.includes('wasm-loader')) log('  ' + t);
+            }),
+        }));
+        await editorFrame.waitForFunction(readyCheck, { timeout: TIMEOUT });
+        const loadTime = ((Date.now() - t0) / 1000).toFixed(1);
+        log(`${doctype} loaded in ${loadTime}s`);
+        check(`${doctype} ${name} loaded`, true);
+
+        // Wait for chart tiles to paint.
+        await sleep(15000);
+        await snap(page, `${doctype}_chart_loaded`);
+
+        // Scroll down to see chart area.
+        await clickCanvas(page);
+        await page.keyboard.press('PageDown');
+        await sleep(5000);
+        await snap(page, `${doctype}_chart_scrolled`);
+
+        // Type to confirm editing works after chart rendering.
+        await clickCanvas(page);
+        await page.keyboard.type(typeText, { delay: 50 });
+        await sleep(3000);
+        await snap(page, `${doctype}_chart_after_typing`);
+
+        if (doctype === 'Writer') {
+            const wc = await editorFrame.evaluate(
+                () => document.querySelector('#StateWordCount')?.textContent);
+            log(`Word count after typing: ${wc}`);
+            check(`Typing in chart ${name} works`, wc && wc.includes('word'));
+        } else {
+            check(`Typing in chart ${name} works`, true);
+        }
+    } catch (e) {
+        log(`${doctype} chart FAIL: ${e.message}`);
+        check(`${doctype} ${name} loaded`, false);
+        if (page) await snap(page, `${doctype}_chart_fail`);
+    }
+    if (page) await page.close();
+}
+
 (async () => {
     log('=== Chart Rendering Test ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
     const { browser, cleanup } = await launch();
-
     try {
-        // Upload test files
-        const up = await browser.newPage();
-        await up.goto(BASE, { waitUntil: 'networkidle0' });
-
-        for (const name of ['chart-test.docx', 'chart-test.xlsx']) {
-            const filePath = path.resolve(__dirname, '../test/data', name);
-            if (!fs.existsSync(filePath)) { log(`SKIP: ${name} not found`); continue; }
-            const buf = fs.readFileSync(filePath);
-            await up.evaluate(async (url, n, arr) => {
-                await fetch(url + '/wasm/' + encodeURIComponent(n), {
-                    method: 'POST', body: new Blob([new Uint8Array(arr)])
-                });
-            }, BASE, name, Array.from(buf));
-            log(`Uploaded ${name}`);
-        }
-        await up.close();
-
-        // --- Test 1: Writer with chart docx ---
-        log('\n--- Test 1: Writer chart document ---');
-        const pageW = await browser.newPage();
-        pageW.on('console', m => {
-            const t = m.text();
-            if (t.includes('wasm-loader')) log('  ' + t);
-        });
-        const t0 = Date.now();
-        await pageW.goto(`${BASE}/browser/cool.html?WOPISrc=chart-test.docx&access_token=test`, {
-            waitUntil: 'domcontentloaded', timeout: TIMEOUT
-        });
-        try {
-            await pageW.waitForFunction(
-                () => document.querySelector('#StateWordCount')?.textContent?.includes('word'),
-                { timeout: 180000 }
-            );
-            const loadTime = ((Date.now() - t0) / 1000).toFixed(1);
-            log(`Writer loaded in ${loadTime}s`);
-            check('Writer docx with chart loaded', true);
-
-            // Wait for chart to render (tiles take time)
-            await sleep(15000);
-            await snap(pageW, 'writer_chart_loaded');
-
-            // Scroll down to see the chart area — PageDown
-            await clickCanvas(pageW);
-            await pageW.keyboard.press('PageDown');
-            await sleep(5000);
-            await snap(pageW, 'writer_chart_scrolled');
-
-            // Type some text to verify editing
-            await clickCanvas(pageW);
-            await pageW.keyboard.type('CHART', { delay: 50 });
-            await sleep(3000);
-            await snap(pageW, 'writer_chart_after_typing');
-
-            const wc = await pageW.evaluate(() => document.querySelector('#StateWordCount')?.textContent);
-            log(`Word count after typing: ${wc}`);
-            check('Typing in chart docx works', wc && wc.includes('word'));
-
-        } catch (e) {
-            log('Writer chart FAIL: ' + e.message);
-            check('Writer docx with chart loaded', false);
-            await snap(pageW, 'writer_chart_fail');
-        }
-        await pageW.close();
-
-        // --- Test 2: Calc with chart xlsx ---
-        log('\n--- Test 2: Calc chart spreadsheet ---');
-        const pageC = await browser.newPage();
-        pageC.on('console', m => {
-            const t = m.text();
-            if (t.includes('wasm-loader')) log('  ' + t);
-        });
-        const t1 = Date.now();
-        await pageC.goto(`${BASE}/browser/cool.html?WOPISrc=chart-test.xlsx&access_token=test`, {
-            waitUntil: 'domcontentloaded', timeout: TIMEOUT
-        });
-        try {
-            await pageC.waitForFunction(
-                () => document.querySelector('#StatusDocPos')?.textContent?.includes('Sheet'),
-                { timeout: 180000 }
-            );
-            const loadTime = ((Date.now() - t1) / 1000).toFixed(1);
-            log(`Calc loaded in ${loadTime}s`);
-            check('Calc xlsx with chart loaded', true);
-
-            // Wait for chart to render
-            await sleep(15000);
-            await snap(pageC, 'calc_chart_loaded');
-
-            // Scroll down to see chart — PageDown
-            await clickCanvas(pageC);
-            await pageC.keyboard.press('PageDown');
-            await sleep(5000);
-            await snap(pageC, 'calc_chart_scrolled');
-
-            // Click on cell and type
-            await pageC.mouse.click(640, 400);
-            await sleep(1000);
-            await pageC.keyboard.type('999', { delay: 50 });
-            await sleep(3000);
-            await snap(pageC, 'calc_chart_after_typing');
-            check('Typing in chart xlsx works', true);
-
-        } catch (e) {
-            log('Calc chart FAIL: ' + e.message);
-            check('Calc xlsx with chart loaded', false);
-            await snap(pageC, 'calc_chart_fail');
-        }
-        await pageC.close();
-
+        await runOne(browser, 'Writer', 'chart-test.docx', 'CHART',
+            () => document.querySelector('#StateWordCount')?.textContent?.includes('word'));
+        await runOne(browser, 'Calc',   'chart-test.xlsx', '999',
+            () => document.querySelector('#StatusDocPos')?.textContent?.includes('Sheet'));
         log('\n' + (allPassed ? '✓ ALL CHART TESTS PASSED' : '✗ SOME CHART TESTS FAILED'));
-
     } catch (e) {
         log('Error: ' + e.message);
         allPassed = false;
