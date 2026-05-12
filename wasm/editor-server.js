@@ -130,18 +130,24 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
     if (req.path.endsWith('/sw.js') || req.path === '/sw.js') {
         res.setHeader('Cache-Control', 'no-cache');
-    } else if (HASHED_RE.test(req.path)) {
-        // Content-hashed asset: hash changes when content changes,
-        // so the URL itself is a version. Cache forever.
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    } else if (/\.(wasm|data|js\.metadata)$/.test(req.path)) {
-        // Belt-and-braces: any unhashed wasm/data/metadata still gets
-        // immutable headers. Build-time hashing should rename them, so
-        // this branch is only hit by old-cool.html clients pointing at
-        // the unhashed name during a deploy window.
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     } else if (/\.html$/.test(req.path) || req.path === '/') {
         res.setHeader('Cache-Control', 'no-cache');
+    } else if (req.deployId) {
+        // Per-deploy folder: the URL path includes the build-id, so
+        // every asset under <id>/ is content-addressed by construction.
+        // Mark immutable regardless of filename — this is what makes
+        // unhashed names safe to cache forever (the per-deploy migration
+        // replaced filename hashing with path versioning).
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else if (HASHED_RE.test(req.path)) {
+        // Legacy: content-hashed asset name from pre-per-deploy era.
+        // Still served immutable if a stale cool.html happens to
+        // reference one (cache-bust-build.js no longer emits these).
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else if (/\.(wasm|data|js\.metadata)$/.test(req.path)) {
+        // Belt-and-braces for unhashed wasm/data/metadata when no
+        // per-deploy prefix is in play (local dev with flat editor).
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     }
     next();
 });

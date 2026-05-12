@@ -1,86 +1,66 @@
 #!/usr/bin/env node
-// cache-bust-build.js — bake content hashes into asset filenames + cool.html
-// at build/deploy time, so the served bundle is fully self-versioned and the
-// webserver only has to set cache headers.
+// cache-bust-build.js — inject the runtime shim into cool.html at build/
+// deploy time. Despite the name, this no longer hashes filenames — that
+// became redundant once each editor build started deploying into its own
+// `${EDITOR_URL}/<APP_BUILD_ID>/` folder (per-deploy folder migration,
+// 2026-05-11). The folder path is the version; renaming individual
+// files to <base>.<8hex>.<ext> would be belt-and-suspenders that costs
+// build-step complexity without adding cache-correctness.
 //
-// Each long-cacheable asset is renamed in place to <base>.<hash>.<ext>
-// (sha256[:8] of the file contents), its .br sidecar is renamed alongside,
-// and cool.html is rewritten to reference the hashed names. cool.html also
-// gets a one-shot inject containing the loading overlay, dict-loader /
-// wasm-loader / relay-adapter <script> tags, and a Module.locateFile shim
-// that remaps online.wasm / soffice.data / soffice.data.js.metadata to
-// their hashed names (online.js fetches those by name internally).
+// What this script DOES still do:
+//   1. Strip the integrator branding refs from cool.html (we don't ship
+//      branding.css / branding.js; leaving them in spams the console
+//      with 404s on every cold load).
+//   2. Inject a single <!-- COOL_CACHE_BUST_INJECT_BEGIN/END --> block
+//      containing:
+//        - <link rel="preload"> hints for the heavy assets
+//        - a `window.__assetMap` of unhashed identity mappings — kept
+//          for back-compat with wasm-loader.js + snapshot-inject-
+//          locate-file.js + a handful of tests that probe it. The map
+//          values are identical to their keys; the consumers all
+//          fall through to the natural filename when the value is
+//          identity, so the indirection is a no-op runtime-wise.
+//        - a Module.locateFile shim — also no-op since the values
+//          are identity, but kept for the same back-compat reason.
+//        - the loading-overlay <style> + DOM
+//        - <script> tags for wasm-loader / relay-adapter / dict-loader
+//        - an inline <script> setting window.LANG from the ?lang= URL
+//          param BEFORE bundle.js parses (l10n-all.js, prepended into
+//          bundle.js, reads window.LANG synchronously at module load)
+//   3. Strip any pre-existing hashed asset references in cool.html
+//      back to their unhashed form (forward-migration: handles cool.html
+//      checked out from before the hashing strip).
 //
-// Usage:
-//   node wasm/tools/cache-bust-build.js --dir <browser-dist>
+// What this script USED TO DO (and no longer does):
+//   - Rename bundle.js → bundle.<hash>.js (and online.wasm, etc.). The
+//     per-deploy folder URL `${EDITOR}/<id>/browser/bundle.js` is
+//     already content-addressed by id, so the immutability + cache-bust
+//     properties hold without filename hashing.
 //
-// Idempotent:
-//   - Plain assets that have already been renamed (no <base>.<ext> on disk
-//     but a matching <base>.<hash>.<ext> exists) are reused — the hashed
-//     name flows into cool.html exactly as in a fresh run.
-//   - cool.html is only injected once: presence of window.__assetMap marks
-//     the file as already processed.
+// If you're reading this because you're chasing a stale-cache bug:
+// the per-deploy `/<id>/` URL is the cache-busting mechanism now. Each
+// new deploy gets a new id, viewer iframe URLs roll, in-flight tabs
+// keep working at the previous id until reload.
 
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
-const HASHED_ASSETS = [
-    // Custom loaders the WASM_LOADER_INJECT splices into cool.html.
+// Asset names that wasm-loader.js / snapshot-inject-locate-file.js /
+// tests expect to look up in window.__assetMap. Post-Phase-3-strip,
+// every value is the bare filename (identity map).
+const ASSET_NAMES = [
     'wasm-loader.js', 'relay-adapter.js', 'dict-loader.js',
-    // Heavy immutables referenced directly from cool.html.
     'bundle.js', 'bundle.css', 'global.js', 'online.js',
-    // Referenced from inside online.js via Module.locateFile.
     'online.wasm', 'soffice.data', 'soffice.data.js.metadata',
 ];
-const COOL_HTML_RENAMED = new Set([
-    'wasm-loader.js', 'relay-adapter.js', 'dict-loader.js',
-    'bundle.js', 'bundle.css', 'global.js', 'online.js',
-]);
-const LOCATE_FILE_RENAMED = new Set([
-    'online.wasm', 'soffice.data', 'soffice.data.js.metadata',
-]);
 
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-function hashedName(name, hash) {
-    const lastDot = name.lastIndexOf('.');
-    return name.substring(0, lastDot) + '.' + hash + name.substring(lastDot);
-}
-
-function findExistingHashed(dir, name) {
-    const lastDot = name.lastIndexOf('.');
-    const base = name.substring(0, lastDot);
-    const ext = name.substring(lastDot);
-    const re = new RegExp('^' + escapeRe(base) + '\\.[0-9a-f]{8}' + escapeRe(ext) + '$');
-    let candidates = [];
-    try {
-        for (const f of fs.readdirSync(dir)) {
-            if (!re.test(f)) continue;
-            const p = path.join(dir, f);
-            // Skip dangling symlinks (legacy from runtime-hashing era can
-            // point at a plain target that no longer exists). statSync
-            // follows the symlink — if the target is gone, it throws.
-            try { fs.statSync(p); } catch (_) {
-                console.log(`  ${name}: orphan ${f} (dangling symlink), removing`);
-                try { fs.unlinkSync(p); } catch (_) {}
-                continue;
-            }
-            candidates.push(f);
-        }
-    } catch (_) {}
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0];
-    // Multiple live candidates from prior runs. Pick the most recent so
-    // hash-rolls converge on the fresh build's output.
-    candidates.sort((a, b) =>
-        fs.lstatSync(path.join(dir, b)).mtimeMs -
-        fs.lstatSync(path.join(dir, a)).mtimeMs);
-    return candidates[0];
-}
-
+// Loading-overlay + spinner + progress UI shown over cool.html while
+// the WASM runtime is fetching+instantiating. wasm-loader.js fades it
+// out once Module is ready.
 const WASM_LOADER_INJECT_STATIC = `
 <style id="wasm-loading-style">
   #wasm-loading-overlay {
@@ -98,31 +78,23 @@ const WASM_LOADER_INJECT_STATIC = `
   #wasm-progress-bar {
     width: 300px; height: 12px; background: #e0e0e0; border-radius: 6px; overflow: hidden; margin-bottom: 6px;
   }
-  #wasm-progress-bar-fill {
-    height: 100%; background: linear-gradient(90deg, #4a90e2, #357abd); width: 0%;
-    transition: width 0.3s ease;
+  #wasm-progress-fill {
+    height: 100%; background: #4a90e2; transition: width 200ms ease-out; width: 0%;
   }
-  #wasm-progress-detail { font-size: 12px; color: #666; }
+  #wasm-progress-bytes { font-size: 12px; color: #666; }
 </style>
 <div id="wasm-loading-overlay">
   <div id="wasm-spinner"></div>
   <div id="wasm-progress-label">Loading editor…</div>
-  <div id="wasm-progress-bar"><div id="wasm-progress-bar-fill"></div></div>
-  <div id="wasm-progress-detail"></div>
+  <div id="wasm-progress-bar"><div id="wasm-progress-fill"></div></div>
+  <div id="wasm-progress-bytes"></div>
 </div>
-<script type="text/javascript" src="dict-loader.js"></script>
-<script type="text/javascript" src="wasm-loader.js"></script>
-<script type="text/javascript" src="relay-adapter.js"></script>
+<script src="wasm-loader.js"></script>
+<script src="dict-loader.js"></script>
+<script src="relay-adapter.js"></script>
 `;
 
-// Iter 44: emit preload hints for the heavy assets so the browser starts
-// fetching them in parallel with the dict-loader / wasm-loader / online.js
-// scripts. Without these, online.wasm only starts fetching AFTER online.js
-// runs and calls findWasmBinary() — adding ~1-2 s of sequential network
-// latency to cold init. With preload, fetches start as soon as the browser
-// parses the cool.html <head>. Cached visits still hit Cache Storage via
-// the SW (preload requests go through the SW just like normal fetches).
-function buildPreloadHints(assetHashMap) {
+function buildPreloadHints() {
     const lines = [];
     const heavy = [
         { name: 'online.wasm', as: 'fetch', type: 'application/wasm' },
@@ -134,30 +106,34 @@ function buildPreloadHints(assetHashMap) {
         { name: 'global.js', as: 'script' },
     ];
     for (const h of heavy) {
-        const hashed = assetHashMap[h.name] || h.name;
         const typeAttr = h.type ? ` type="${h.type}"` : '';
-        lines.push(`<link rel="preload" href="${hashed}" as="${h.as}"${typeAttr} crossorigin>`);
+        lines.push(`<link rel="preload" href="${h.name}" as="${h.as}"${typeAttr} crossorigin>`);
     }
     return lines.join('\n') + '\n';
 }
 
-function buildLocateFileShim(map) {
-    // Two pre-bundle setup steps wrapped in one inline <script>:
+function buildShim() {
+    // window.__assetMap (identity values, kept for wasm-loader.js +
+    // snapshot-inject-locate-file.js + a few tests that probe it).
+    // The Module.locateFile shim is also no-op-equivalent — emscripten's
+    // default `prefix + file` resolution would do the same thing — but
+    // kept so wasm-loader's override hook chain stays intact.
     //
-    // 1. Module.locateFile shim — must run BEFORE online.js so its first
-    //    locateFile() call sees the hashed-asset map.
+    // window.LANG init — MUST run BEFORE bundle.js (which has
+    // l10n-all.js prepended at line 1: `var onlylang = window.LANG;
+    // ...`). Without this, l10n-all.js reads `undefined`, falls into
+    // the else branch, and LOCALIZATIONS stays empty even when the
+    // viewer passed ?lang=<code>.
     //
-    // 2. window.LANG initialiser — must run BEFORE bundle.js (which has
-    //    l10n-all.js prepended at line 1: `var onlylang = window.LANG;
-    //    ...`). Without this, l10n-all.js reads `undefined`, falls into
-    //    the else branch, and LOCALIZATIONS stays empty even when the
-    //    viewer correctly passed ?lang=<code>. Set window.LANG from the
-    //    URL param so the cool.html iframe URL ?lang=<code> propagates
-    //    into the COOL editor's locale lookup. Falls back to "en-US"
-    //    so the existing English path is unchanged when no lang is set.
+    // Defined as a non-writable, non-configurable property: empirically
+    // a downstream COOL path overwrites `window.LANG = "en-US"` after
+    // init; the read-only descriptor makes the assignment a silent
+    // no-op so l10n-all.js reads the URL-derived value every time.
+    const identityMap = {};
+    for (const n of ASSET_NAMES) identityMap[n] = n;
     return `<script>
 (function(){
-  window.__assetMap = ${JSON.stringify(map)};
+  window.__assetMap = ${JSON.stringify(identityMap)};
   var existing = (typeof window.Module === 'object' && window.Module) ? window.Module : {};
   var prevLocate = existing.locateFile;
   existing.locateFile = function(file, prefix) {
@@ -166,20 +142,6 @@ function buildLocateFileShim(map) {
     return (prefix || '') + mapped;
   };
   window.Module = existing;
-  // window.LANG init for l10n-all.js (which is prepended into bundle.js
-  // and reads window.LANG synchronously at bundle-start). The viewer
-  // (and any WOPI integrator) passes the chosen UI language via ?lang=
-  // on the cool.html URL.
-  //
-  // Defined as a non-writable, non-configurable property whose value is
-  // derived from the URL on every read. Empirically a downstream COOL
-  // path overwrites \`window.LANG = "en-US"\` after init, defeating the
-  // straightforward assignment we tried first; the read-only descriptor
-  // makes the assignment a silent no-op (or throws in strict mode), so
-  // l10n-all.js reads the URL-derived value every single time. URL
-  // resolution is cached on the first read since cool.html's URL is
-  // immutable for its lifetime — costs one URLSearchParams construction
-  // per page load.
   try {
     var __p = new URLSearchParams(window.location.search);
     var __lang = __p.get('lang') || 'en-US';
@@ -199,46 +161,7 @@ function buildLocateFileShim(map) {
 `;
 }
 
-function hashAssetsInPlace(dir) {
-    const map = {};
-    for (const name of HASHED_ASSETS) {
-        const src = path.join(dir, name);
-        if (fs.existsSync(src)) {
-            const content = fs.readFileSync(src);
-            const hash = crypto.createHash('sha256').update(content).digest('hex').substring(0, 8);
-            const hashed = hashedName(name, hash);
-            const dest = path.join(dir, hashed);
-            // Rename in place (overwrite if a stale prior-build hash collides).
-            if (fs.existsSync(dest)) {
-                try { fs.unlinkSync(dest); } catch (_) {}
-            }
-            fs.renameSync(src, dest);
-            // Move .br sidecar alongside if present.
-            const srcBr = src + '.br';
-            const destBr = dest + '.br';
-            if (fs.existsSync(srcBr)) {
-                if (fs.existsSync(destBr)) {
-                    try { fs.unlinkSync(destBr); } catch (_) {}
-                }
-                fs.renameSync(srcBr, destBr);
-            }
-            map[name] = hashed;
-            console.log(`  ${name} → ${hashed}`);
-        } else {
-            // Plain file missing — maybe a previous run already renamed it.
-            const existing = findExistingHashed(dir, name);
-            if (existing) {
-                map[name] = existing;
-                console.log(`  ${name} → ${existing} (already renamed)`);
-            } else {
-                console.log(`  ${name}: missing, skipping`);
-            }
-        }
-    }
-    return map;
-}
-
-function rewriteCoolHtml(dir, assetHashMap) {
+function rewriteCoolHtml(dir) {
     const cool = path.join(dir, 'cool.html');
     if (!fs.existsSync(cool)) {
         console.log('  cool.html: not found, skipping');
@@ -251,64 +174,30 @@ function rewriteCoolHtml(dir, assetHashMap) {
     html = html.replace(/\s*<link rel="stylesheet" href="branding\.css" \/>/g, '');
     html = html.replace(/\s*<script src="branding\.js"><\/script>/g, '');
 
-    // One-shot inject: loading overlay + custom loaders + Module.locateFile
-    // shim. The shim must run BEFORE online.js (which appears very early
-    // in cool.html) so its first call into Module.locateFile sees the
-    // asset map. The init-mobile-app-os-type input is the build-stable
-    // anchor we splice in after.
-    //
-    // window.__assetMap is the single source of truth for hashed names,
-    // referenced from (a) Module.locateFile in this shim — needed for
-    // online.js's findWasmBinary (online.wasm) + getPreloadedPackage
-    // (soffice.data{.js.metadata}); and (b) wasm-loader.js's
-    // document.write that bootstraps online.js. Include the FULL hash
-    // map so both consumers can resolve any asset name.
-    // Inject (or RE-inject) the preload hints, locateFile + LANG-init
-    // shim, and the wasm-loader/relay-adapter script tags as ONE
-    // block bracketed by HTML markers. We always re-emit the full
-    // block rather than partially patching the existing one — the
-    // partial-patch path used to update only the __assetMap value
-    // and re-emit preload hints, leaving the rest of the shim body
-    // untouched. That made additions to the shim template (e.g. iter
-    // 76878b9069's window.LANG initializer) silently skip on every
-    // subsequent deploy that ran cache-bust against an already-
-    // injected cool.html — the editor shipped without the LANG init
-    // for weeks because the shim's first version got frozen.
-    //
-    // The <!-- markers --> let future runs find begin/end
-    // deterministically regardless of what cache-bust prepended in
-    // the past (older runs without preload hints, future runs with
-    // additional script tags, etc.). The markers go inside the
-    // generated block so they roll forward together.
+    // Build the inject block. Markers bracket it so future re-runs replace
+    // the whole block atomically (no partial-update drift — that's how
+    // iter 76878b9069's window.LANG init silently regressed for weeks).
     const INJECT_BEGIN = '<!-- COOL_CACHE_BUST_INJECT_BEGIN -->';
     const INJECT_END   = '<!-- COOL_CACHE_BUST_INJECT_END -->';
     const inject = INJECT_BEGIN + '\n'
-        + buildPreloadHints(assetHashMap)
-        + buildLocateFileShim(assetHashMap)
+        + buildPreloadHints()
+        + buildShim()
         + WASM_LOADER_INJECT_STATIC
         + INJECT_END + '\n';
 
     const beginIdx = html.indexOf(INJECT_BEGIN);
     const endIdx   = html.indexOf(INJECT_END);
     if (beginIdx >= 0 && endIdx > beginIdx) {
-        // Both markers present — replace the bracketed block.
         html = html.slice(0, beginIdx) + inject
              + html.slice(endIdx + INJECT_END.length).replace(/^\s*\n/, '');
-        console.log('  cool.html: replaced previous inject block (bracketed by markers)');
+        console.log('  cool.html: replaced previous inject block');
     } else if (html.includes('window.__assetMap')) {
         // Legacy un-bracketed inject from an older cache-bust-build.js.
-        // Strip everything from the first <link rel="preload"> (or the
-        // locateFile shim's opening <script> if no preload hints) through
-        // the relay-adapter <script> tag, then emit the fresh bracketed
-        // block in its place. Greedy match is safe because the inject
-        // block is the only place these tags appear in cool.html.
         const startTry = [
             html.indexOf('<link rel="preload"'),
             html.indexOf('<script>\n(function(){\n  window.__assetMap'),
         ].filter(i => i >= 0);
         const stripStart = startTry.length ? Math.min(...startTry) : -1;
-        // Find the LAST relay-adapter <script>...</script> in the
-        // inject block. The block ends with the relay-adapter tag.
         const relayMatch = html.match(/<script[^>]*src="relay-adapter[^"]*"[^>]*>\s*<\/script>/);
         const stripEnd = relayMatch
             ? (html.indexOf(relayMatch[0]) + relayMatch[0].length)
@@ -318,7 +207,7 @@ function rewriteCoolHtml(dir, assetHashMap) {
                  + html.slice(stripEnd).replace(/^\s*\n/, '');
             console.log('  cool.html: migrated legacy inject block to bracketed form');
         } else {
-            console.log('  cool.html: WARN: __assetMap present but legacy strip markers not found; skipping re-inject (run with a fresh cool.html to re-bracket)');
+            console.log('  cool.html: WARN: __assetMap present but legacy strip markers not found');
         }
     } else {
         // Fresh cool.html — first-time inject.
@@ -330,22 +219,18 @@ function rewriteCoolHtml(dir, assetHashMap) {
         }
     }
 
-    // Rewrite refs to the current hashed names. We have to handle two
-    // shapes because cool.html may be (a) freshly out of the LO build
-    // (plain <base>.<ext>) or (b) carry-over from an earlier deploy
-    // whose hashes have since rolled (<base>.<oldhash>.<ext>). Match
-    // both and rewrite to <base>.<newhash>.<ext>.
-    for (const orig of COOL_HTML_RENAMED) {
-        const hashed = assetHashMap[orig];
-        if (!hashed) continue;
+    // Strip any legacy hashed references back to unhashed (forward
+    // migration: handles cool.html that came out of a build before
+    // the hashing strip).
+    for (const orig of ASSET_NAMES) {
         const lastDot = orig.lastIndexOf('.');
         const base = orig.substring(0, lastDot);
         const ext = orig.substring(lastDot);
         const re = new RegExp(
             '(src|href)="' + escapeRe(base) +
-            '(?:\\.[0-9a-f]{8})?' +
+            '\\.[0-9a-f]{8}' +
             escapeRe(ext) + '"', 'g');
-        html = html.replace(re, '$1="' + hashed + '"');
+        html = html.replace(re, '$1="' + orig + '"');
     }
 
     fs.writeFileSync(cool, html);
@@ -367,8 +252,7 @@ function main() {
         process.exit(1);
     }
     console.log(`cache-bust-build: ${dir}`);
-    const map = hashAssetsInPlace(dir);
-    rewriteCoolHtml(dir, map);
+    rewriteCoolHtml(dir);
     console.log('cache-bust-build: done');
 }
 

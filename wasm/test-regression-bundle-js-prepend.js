@@ -41,20 +41,14 @@ function check(label, cond, ev) {
     console.log('=== Regression: bundle.js prepend has window.LANG → l10n-all → locateFile ===');
     const t0 = Date.now();
 
-    // Resolve hashed bundle.js name via cool.html.
-    let bundleUrl;
-    try {
-        const cool = await fetch(EDITOR + '/browser/cool.html');
-        const html = await cool.text();
-        const m = html.match(/window\.__assetMap\s*=\s*(\{[^}]+\})/);
-        if (!m) throw new Error('no __assetMap');
-        const assetMap = JSON.parse(m[1]);
-        bundleUrl = EDITOR + '/browser/' + assetMap['bundle.js'];
-    } catch (e) {
-        check('bundle.js URL resolved via __assetMap', false, e.message);
-        process.exit(1);
-    }
-    check('bundle.js URL resolved via __assetMap', true, bundleUrl);
+    // Resolve bundle.js URL. Post-per-deploy migration (2026-05-11),
+    // cache-bust-build.js no longer renames assets — bundle.js stays
+    // unhashed because the per-deploy folder path is the version. So
+    // bundle.js URL is just ${EDITOR}/<id>/browser/bundle.js (the
+    // editor-server routes flat paths via DEFAULT_DEPLOY_ID too, so
+    // the legacy /browser/bundle.js still resolves on either side).
+    const bundleUrl = EDITOR + '/browser/bundle.js';
+    check('bundle.js URL resolved', true, bundleUrl);
 
     // Fetch only the first 1KB. Range request — the editor server
     // honors Range on hashed assets. Falls back to full GET if
