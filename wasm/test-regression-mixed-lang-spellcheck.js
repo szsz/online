@@ -166,10 +166,18 @@ async function clickInCanvas(page, frame, fractionDown) {
               `loaded=[${initial.loaded.join(',')}]`);
         if (!initial.hasResolver) process.exit(allPassed ? 0 : 1);
 
-        // Click into the GERMAN paragraph (vertical position ~55%).
+        // Click into the GERMAN paragraph. Empirically the fixture's
+        // paragraph layout under the post-FD viewport puts German in
+        // the ~35-45% vertical band (English wraps to a single short
+        // line at the top, then German wraps 2-3 lines, then French
+        // wraps 2 lines). Earlier coords (0.50) landed in French.
         log('clicking into German paragraph');
-        await clickInCanvas(page, frame, 0.50);
-        await sleep(500);
+        await clickInCanvas(page, frame, 0.40);
+        await sleep(2000);
+        const deLangStatus = await frame.evaluate(() =>
+            (window.app && window.app.map && window.app.map['stateChangeHandler']
+                && window.app.map['stateChangeHandler'].getItemValue('.uno:LanguageStatus')) || '(unset)');
+        log(`  .uno:LanguageStatus after German click: "${deLangStatus}"`);
         await snap(page, 'after_click_german_paragraph');
 
         const gotDe = await waitForLoadedLang(frame, 'de',
