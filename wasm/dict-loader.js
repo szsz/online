@@ -30,18 +30,31 @@
     'use strict';
 
     // ── URL resolution ────────────────────────────────────────────
-    // cool.html can be loaded from /browser/cool.html or directly, so
-    // resolve relative to this script's source URL.
+    // Dictionary blobs live at `<deploy-root>/dicts/`. The deploy
+    // root depends on what served cool.html. Three shapes seen in
+    // practice:
+    //   /<id>/browser/dist/dict-loader.js  ← Front Door static site
+    //                                        (literal webpack output
+    //                                        path; manifest at
+    //                                        /<id>/dicts/manifest.json)
+    //   /<id>/browser/dict-loader.js       ← old editor-server layout
+    //                                        (routed via express.static)
+    //   /dict-loader.js                    ← flat dev layout
+    //
+    // The transform: strip `/browser/[dist/]<script>` off the URL,
+    // then append `/dicts`. We use the script's own URL as the
+    // anchor since it's the most reliable thing to navigate from.
     var scriptEl = document.currentScript;
     var DICTS_BASE = (function() {
-        // Try relative to this script.
         if (scriptEl && scriptEl.src) {
             var u = new URL(scriptEl.src);
-            // If script is at /browser/<hash>/dict-loader.js — go up two
-            // levels to find /dicts at the app root. We also accept
-            // /browser/dict-loader.js and plain /dict-loader.js.
-            u.pathname = u.pathname.replace(/\/browser\/[^/]+$/, '/dicts');
+            // Trim `/browser/(dist/)?<filename>` (covers FD literal +
+            // legacy App-Service-routed layouts) OR a bare
+            // `/<filename>` (flat layout).
+            u.pathname = u.pathname.replace(/\/browser\/(?:dist\/)?[^/]+$/, '');
             u.pathname = u.pathname.replace(/\/dict-loader(\.[0-9a-f]+)?\.js$/, '');
+            // Drop trailing slash so the join below doesn't double up.
+            u.pathname = u.pathname.replace(/\/$/, '');
             if (!/\/dicts$/.test(u.pathname)) u.pathname += '/dicts';
             u.search = ''; u.hash = '';
             return u.toString();
