@@ -1,0 +1,220 @@
+name: Editor build + FD deploy
+
+# Builds the editor (WASM + browser/dist + sw-bridge) and deploys it
+# to Azure Front Door + Storage as a per-id folder. Independent from
+# the combined wasm-ci.yml so that:
+#   - editor-side changes on dev re-roll only the editor, without
+#     re-zipping + re-pushing the viewer App Service unnecessarily.
+#   - any commit can be re-deployed as a fresh editor build via
+#     workflow_dispatch (handy for rolling back to a known-good
+#     editor without re-uploading the viewer code).
+#
+# What this DOESN'T do:
+#   - Touch the viewer App Service code (that's wasm-ci.yml's job).
+#   - Run the test suite (wasm-ci.yml runs it after viewer-side
+#     deploys; this workflow's success means the editor is published
+#     and the viewer's EDITOR_DEPLOY_ID setting now points at it).
+
+on:
+  push:
+    branches: [dev]
+    # Editor-side paths: anything that affects the WASM build output
+    # or the editor-side runtime files (wasm-loader, relay-adapter,
+    # sw-bridge, sw, dict-loader, the build pipeline, LO_BUILD_ID).
+    # Viewer-only paths (wasm/viewer-server.js, wasm/viewer-public/**,
+    # wasm/lib/storage/**) are EXCLUDED — those trigger wasm-ci.yml
+    # instead.
+    paths:
+      - 'wasm/wasm-loader.js'
+      - 'wasm/relay-adapter.js'
+      - 'wasm/sw-bridge.js'
+      - 'wasm/sw.js'
+      - 'wasm/dict-loader.js'
+      - 'wasm/build-*.sh'
+      - 'wasm/finalize-build.sh'
+      - 'wasm/deploy-front-door.sh'
+      - 'wasm/apply-front-door-rules.sh'
+      - 'wasm/precompress-br.js'
+      - 'wasm/tools/**'
+      - 'wasm/LO_BUILD_ID'
+      - 'browser/**'
+      - 'coolwsd/**'
+      - 'configure.ac'
+      - 'Makefile.am'
+      - '.github/workflows/editor-build.yml'
+      - '.github/scripts/wasm-ci/build-online.sh'
+      - '.github/scripts/wasm-ci/fetch-lo.sh'
+      - '.github/scripts/wasm-ci/deploy-front-door.sh'
+      - '.github/scripts/wasm-ci/publish-editor-build.sh'
+      - '.github/scripts/wasm-ci/resolve-ids.sh'
+  workflow_dispatch:
+    inputs:
+      online_sha:
+        description: 'Online commit SHA to build the editor from (default: HEAD of dev)'
+        required: false
+        default: ''
+      lo_build_id:
+        description: "Override LO_BUILD_ID (default: read from that commit's wasm/LO_BUILD_ID)"
+        required: false
+        default: ''
+      roll_viewer:
+        description: 'After deploy, update viewer App Service EDITOR_DEPLOY_ID to this new editor build'
+        required: false
+        default: 'true'
+
+env:
+  AZURE_STORAGE_ACCOUNT: coolwasmfiles
+  CI_STATE_DIR: /home/localadmin/lo-wasm-ci-state
+  STATIC_SITE_BASE: https://coolwasmfiles.z6.web.core.windows.net
+
+# Serialise editor builds on the same SHA. Different SHAs run in
+# parallel (each producing its own EDITOR_BUILD_ID folder on FD).
+concurrency:
+  group: editor-build-${{ github.event.inputs.online_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  # Lightweight LO_BUILD_ID sanity check on a public hosted runner
+  # so PRs can be gated without spinning up the heavy self-hosted runner.
+  validate-lo-build:
+    runs-on: ubuntu-latest
+    outputs:
+      lo_build_id: ${{ steps.lo.outputs.lo_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
+
+      - name: Resolve LO_BUILD_ID
+        id: lo
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          LO_BID="${LO_BUILD_ID_OVERRIDE:-}"
+          if [[ -z "$LO_BID" ]]; then
+              if [[ ! -f wasm/LO_BUILD_ID ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::wasm/LO_BUILD_ID is missing"
+                  exit 1
+              fi
+              LO_BID="$(grep -v '^[[:space:]]*#' wasm/LO_BUILD_ID | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]')"
+          fi
+          if [[ "$LO_BID" == "__LATEST__" ]]; then
+              LO_BID="$(curl -fsSL "$STATIC_SITE_BASE/lo-builds/latest.txt" 2>/dev/null | tr -d '[:space:]' || true)"
+              if [[ -z "$LO_BID" ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::__LATEST__ requested but lo-builds/latest.txt is empty/missing"
+                  exit 1
+              fi
+          fi
+          echo "Resolved LO_BUILD_ID: $LO_BID"
+          echo "lo_build_id=$LO_BID" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build artefacts exist on coolwasmfiles
+        env:
+          LO_BUILD_ID: ${{ steps.lo.outputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          MANIFEST_URL="$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/MANIFEST.json"
+          TARBALL_URL="$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/lo-core.tar.zst"
+          ok=true
+          for url in "$MANIFEST_URL" "$TARBALL_URL"; do
+              code="$(curl -fsSL -o /dev/null -w '%{http_code}' --head --max-time 30 "$url" || echo 000)"
+              if [[ "$code" != "200" ]]; then
+                  echo "::error::Missing artefact: $url (HTTP $code)"
+                  ok=false
+              else
+                  echo "  OK ($code) $url"
+              fi
+          done
+          $ok
+
+  build-editor:
+    needs: validate-lo-build
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, wasm-build]
+    outputs:
+      editor_build_id: ${{ steps.ids.outputs.app_build_id }}
+      lo_build_id:     ${{ steps.ids.outputs.lo_build_id }}
+    steps:
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
+
+      - name: Resolve build IDs
+        id: ids
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+        # resolve-ids.sh emits `app_build_id`. The editor-build
+        # workflow treats that as the editor's build id — it gets
+        # used both as the FD folder name AND as the editor_build_id
+        # value other manifests reference.
+        run: bash .github/scripts/wasm-ci/resolve-ids.sh
+
+      - name: Fetch LibreOffice artefacts
+        env:
+          LO_BUILD_ID: ${{ steps.ids.outputs.lo_build_id }}
+        run: bash .github/scripts/wasm-ci/fetch-lo.sh
+
+      - name: Build Online (WASM)
+        env:
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/build-online.sh
+
+      - name: Build spellcheck dicts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/wasm/online-build"
+          ln -s "$CI_STATE_DIR/online-build" "$GITHUB_WORKSPACE/wasm/online-build"
+          bash "$GITHUB_WORKSPACE/wasm/build-dicts.sh"
+
+      - name: Deploy editor to Front Door
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.event.inputs.online_sha || github.sha }}
+        run: bash .github/scripts/wasm-ci/deploy-front-door.sh
+
+      # Update the staging viewer App Service so the next page load
+      # iframes the freshly-deployed editor folder.  workflow_dispatch
+      # callers can pass roll_viewer=false to deploy the editor without
+      # flipping which build is "live" — useful for staging a build,
+      # smoke-testing it via a direct URL, and only rolling once you're
+      # happy.
+      - name: Roll staging viewer to new editor
+        if: ${{ github.event.inputs.roll_viewer != 'false' }}
+        env:
+          NEW_EDITOR_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: |
+          set -euo pipefail
+          STAGING_ENV="$HOME/ENV/online-staging-deploy.env"
+          if [[ ! -f "$STAGING_ENV" ]]; then
+              echo "WARN: $STAGING_ENV not found — skipping viewer roll"
+              exit 0
+          fi
+          # shellcheck disable=SC1090
+          set -a; source "$STAGING_ENV"; set +a
+          : "${VIEWER_APP_NAME:?}"
+          : "${RESOURCE_GROUP:?}"
+          echo "Setting EDITOR_DEPLOY_ID=$NEW_EDITOR_BUILD_ID on $VIEWER_APP_NAME..."
+          az webapp config appsettings set \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$VIEWER_APP_NAME" \
+              --settings EDITOR_DEPLOY_ID="$NEW_EDITOR_BUILD_ID" \
+              --only-show-errors >/dev/null
+          echo "Done. Viewer now iframes $EDITOR_URL/$NEW_EDITOR_BUILD_ID/"
+
+      - name: Publish editor-build manifest + index
+        env:
+          EDITOR_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+          LO_BUILD_ID:     ${{ steps.ids.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.event.inputs.online_sha || github.sha }}
+          GIT_REF: ${{ github.event.inputs.online_sha || github.ref }}
+        run: bash .github/scripts/wasm-ci/publish-editor-build.sh

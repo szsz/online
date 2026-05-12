@@ -172,9 +172,15 @@ configure_settings() {
     # (no editor App Service), the iframe URL needs the explicit
     # /<id>/browser/cool.html path. viewer-server.js's
     # readViewerConfig() falls back to this App Setting when no
-    # VIEWER_CONFIG_FILE is set. APP_BUILD_ID is exported by the CI
-    # caller for fresh deploys; for ad-hoc rolls, set it in the env
-    # file or skip (viewer reverts to flat-iframe legacy mode).
+    # VIEWER_CONFIG_FILE is set.
+    #
+    # Resolution order:
+    #   1. EDITOR_DEPLOY_ID_OVERRIDE — set by wasm-ci.yml from
+    #      editor-builds/latest.txt so a viewer-only deploy pins to
+    #      the current editor build (NOT this viewer's app_build_id).
+    #   2. APP_BUILD_ID — combined-build / legacy fallback (the viewer
+    #      and editor are built in the same run with the same id).
+    #   3. (unset) — viewer reverts to flat-iframe legacy mode.
     local VIEWER_SETTINGS_ARGS=(
         STORAGE_BACKEND="azure"
         FILE_STORAGE_URL="$VIEWER_URL"
@@ -185,8 +191,9 @@ configure_settings() {
         ALLOWED_ORIGINS="$VIEWER_ALLOWED"
         WEBSITE_NODE_DEFAULT_VERSION="~24"
     )
-    if [[ -n "${APP_BUILD_ID:-}" ]]; then
-        VIEWER_SETTINGS_ARGS+=("EDITOR_DEPLOY_ID=$APP_BUILD_ID")
+    local EFFECTIVE_EDITOR_ID="${EDITOR_DEPLOY_ID_OVERRIDE:-${APP_BUILD_ID:-}}"
+    if [[ -n "$EFFECTIVE_EDITOR_ID" ]]; then
+        VIEWER_SETTINGS_ARGS+=("EDITOR_DEPLOY_ID=$EFFECTIVE_EDITOR_ID")
     fi
     az webapp config appsettings set \
         --resource-group "$RESOURCE_GROUP" \
