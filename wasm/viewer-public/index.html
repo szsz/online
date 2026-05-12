@@ -818,7 +818,14 @@ async function startPrewarm() {
         if (__vp === '0' || __vp === 'off') __viewerPlanC = '&planc=0';
         else if (__vp === '1' || __vp === 'on') __viewerPlanC = '&planc=1';
     } catch (e) { /* ignore */ }
-    iframe.src = EDITOR_BASE + '/browser/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
+    // cool.html lives at /<id>/browser/dist/cool.html on FD (the literal
+    // webpack output path). Pre-cutover the editor App Service routed
+    // /browser/cool.html → browser/dist/cool.html via express.static;
+    // FD static storage serves blobs literally, no routing. The other
+    // assets cool.html references (bundle.js, online.wasm) resolve
+    // relative to its own URL, so they continue to work from /browser/
+    // dist/ once cool.html itself loads from there.
+    iframe.src = EDITOR_BASE + '/browser/dist/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                + '&access_token=test'
                + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
                + '&UserName=' + encodeURIComponent(MY_USER_NAME)
@@ -1252,7 +1259,7 @@ async function openFile(name, opts) {
         } else {
             // No parked iframe for this doctype — fresh cold reload
             // (the original code path).
-            const coolUrl = EDITOR_BASE + '/browser/cool.html?WOPISrc=' + encodeURIComponent(name)
+            const coolUrl = EDITOR_BASE + '/browser/dist/cool.html?WOPISrc=' + encodeURIComponent(name)
                           + '&access_token=test'
                           + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
                           + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
