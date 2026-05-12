@@ -76,6 +76,25 @@ echo "=== Front Door deploy: id=$APP_BUILD_ID account=$EDITOR_STORAGE_ACCOUNT ==
 echo "  Staging browser/dist..."
 cp -r "$BUILD_DIST/." "$EDIR_CONTENT/browser/dist/"
 
+# Strip stale content-hashed leftovers. Phase 3 (PR #51) removed
+# cache-bust filename hashing; cool.html references only the
+# unhashed canonical names (bundle.js, online.wasm, …). Yet the
+# upstream LO/Online build sometimes emits hashed siblings AND
+# the persistent CI state dir accumulates them across runs. Without
+# this filter every deploy was uploading ~250 unreferenced
+# bundle.<8hex>.js / online.<8hex>.wasm files — ~16 GB of dead
+# weight per build. Safe to drop: cool.html has no refs to them
+# (verified by grep at deploy time).
+STALE_BEFORE=$(find "$EDIR_CONTENT" -type f -regextype posix-extended \
+    -regex '.*/[A-Za-z_-]+\.[0-9a-f]{6,}\.(js|css|wasm|data|metadata)(\.br)?' \
+    -print 2>/dev/null | wc -l)
+if [[ "$STALE_BEFORE" -gt 0 ]]; then
+    find "$EDIR_CONTENT" -type f -regextype posix-extended \
+        -regex '.*/[A-Za-z_-]+\.[0-9a-f]{6,}\.(js|css|wasm|data|metadata)(\.br)?' \
+        -delete 2>/dev/null
+    echo "    pruned $STALE_BEFORE stale hashed asset(s) (pre-Phase-3 leftovers)"
+fi
+
 # Pick paired online.{js,wasm}. Same defensive logic as deploy-azure.sh.
 PAIRED_DIR=""
 for d in "$BUILD_DIST" "$BUILD_WASM"; do
@@ -166,6 +185,14 @@ EOF
 # ── Upload ─────────────────────────────────────────────────────────
 # Use account key (faster, less role plumbing). Mint it via control-
 # plane RBAC if not provided in env.
+#
+# Once minted we export it as AZURE_STORAGE_KEY so the az CLI picks
+# it up implicitly — meaning we DON'T have to pass `--account-key
+# "$KEY"` on each command line. That's not just terser, it's a
+# security improvement: `--account-key` is visible in `ps -ef` for
+# the duration of the call, leaking the secret to any other UID
+# that can read /proc/<pid>/cmdline. Passing it via env keeps it
+# out of process listings.
 if [[ -z "${STORAGE_KEY:-}" ]]; then
     STORAGE_KEY="$(az storage account keys list \
         --account-name "$EDITOR_STORAGE_ACCOUNT" \
@@ -176,6 +203,8 @@ if [[ -z "${STORAGE_KEY:-}" ]]; then
         exit 1
     }
 fi
+export AZURE_STORAGE_KEY="$STORAGE_KEY"
+export AZURE_STORAGE_ACCOUNT="$EDITOR_STORAGE_ACCOUNT"
 
 echo "  Uploading to $EDITOR_STORAGE_ACCOUNT/$EDITOR_STORAGE_CONTAINER/$APP_BUILD_ID/..."
 
@@ -190,9 +219,10 @@ echo "  Uploading to $EDITOR_STORAGE_ACCOUNT/$EDITOR_STORAGE_CONTAINER/$APP_BUIL
 # we already have. azcopy will SAS the destination URL directly,
 # avoiding any login-cache state on the runner.
 SAS_EXPIRY="$(date -u -d '+30 min' +%Y-%m-%dT%H:%MZ)"
+# AZURE_STORAGE_ACCOUNT + AZURE_STORAGE_KEY (exported above) feed the
+# CLI implicitly — no --account-key on the cmdline, so the secret
+# doesn't show up in ps.
 SAS_TOKEN="$(az storage account generate-sas \
-    --account-name "$EDITOR_STORAGE_ACCOUNT" \
-    --account-key "$STORAGE_KEY" \
     --permissions cwdl \
     --services b \
     --resource-types co \
@@ -265,7 +295,9 @@ mime_for() {
     esac
 }
 export -f mime_for
-export EDITOR_STORAGE_ACCOUNT EDITOR_STORAGE_CONTAINER STORAGE_KEY STAGE
+# AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_KEY already exported above —
+# inherited into the xargs child shells; no --account-key needed.
+export EDITOR_STORAGE_CONTAINER STAGE
 
 upload_one_br() {
     local br_src="$1"
@@ -274,8 +306,6 @@ upload_one_br() {
     local ct
     ct="$(mime_for "$blob_name")"
     az storage blob upload \
-        --account-name "$EDITOR_STORAGE_ACCOUNT" \
-        --account-key "$STORAGE_KEY" \
         --container-name "$EDITOR_STORAGE_CONTAINER" \
         --name "$blob_name" \
         --file "$br_src" \
