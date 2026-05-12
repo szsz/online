@@ -121,33 +121,28 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
         log('Uploading fixture to viewer');
         const bytes = fs.readFileSync(DOC_PATH);
         const upMain = await uploadV2(VIEWER, DOC_NAME, bytes);
-        // Cold-open tests (below) bypass the viewer and open cool.html
-        // directly at WOPISrc=<fileId>. The editor fetches /wasm/<fileId>
-        // at boot; uploadV2 only populated /api/v2/file/<fileId>, so we
-        // also pre-stage the plaintext bytes under the fileId at the
-        // editor's staging endpoint — mirroring what the viewer's
-        // openFileBySecret would have done.
-        await fetch(EDITOR + '/wasm/' + upMain.fileId, {
-            method: 'POST', body: bytes,
-        });
-        log(`  Uploaded ${DOC_NAME} → ${upMain.fileId.substring(0,8)}… (${(bytes.length/1024).toFixed(0)}KB) [viewer+editor]`);
+        log(`  Uploaded ${DOC_NAME} → ${upMain.fileId.substring(0,8)}… (${(bytes.length/1024).toFixed(0)}KB) [viewer-only]`);
 
-        // ===== COLD OPEN (baseline, no pre-warm context) =====
-        // In v2, the editor's WOPISrc is the opaque fileId (the editor
-        // never sees the plaintext name).
-        log('\n--- Baseline: cold open (fresh browser context) ---');
-        const coldContext = await browser.createBrowserContext();
-        const coldPage = await coldContext.newPage();
-        attachListeners(coldPage, 'cold', errors, allLogs);
+        // ===== COLD OPEN (baseline, viewer-flow, no pre-warm) =====
+        // Pre-FD the test bypassed the viewer and went straight to
+        // cool.html. Post-FD there's no parent-less cool.html that
+        // works (SW bridge needs a viewer parent), so the cold
+        // baseline runs through the viewer too — same code path as
+        // the user takes when there's no pre-warmed iframe.
+        log('\n--- Baseline: cold open (viewer flow, fresh context) ---');
+        const { openSecretInBrowser } = require('./lib/open-via-viewer');
         const coldT0 = Date.now();
-        await coldPage.goto(
-            EDITOR + '/browser/cool.html?WOPISrc=' + upMain.fileId + '&access_token=test',
-            { waitUntil: 'domcontentloaded', timeout: 30000 });
-        const coldRes = await waitForDocumentLoaded(coldPage.mainFrame(), RENDER_TIMEOUT);
+        const coldOpen = await openSecretInBrowser(browser, VIEWER, upMain.b64urlSecret,
+            { iframeTimeout: RENDER_TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
+              isolatedContext: true,
+              onPage: p => attachListeners(p, 'cold', errors, allLogs),
+            });
+        const coldRes = await waitForDocumentLoaded(coldOpen.editorFrame, RENDER_TIMEOUT);
         const coldTime = (Date.now() - coldT0) / 1000;
         log(`  Cold open took ${coldTime.toFixed(1)}s, loaded=${coldRes.ok}`);
-        await snap(coldPage, 'cold_loaded');
-        await coldContext.close();
+        await snap(coldOpen.page, 'cold_loaded');
+        await coldOpen.page.close();
+        if (coldOpen.context) await coldOpen.context.close();
         check('Cold open reaches loaded state', coldRes.ok);
 
         // ===== VIEWER FLOW: pre-warm then open =====
@@ -189,7 +184,7 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
             { timeout: 15000 });
         let editorFrame = null;
         for (let fi = 0; fi < 30; fi++) {
-            editorFrame = page.frames().find(f => f.url().includes('/browser/cool.html'));
+            editorFrame = page.frames().find(f => f.url().includes('cool.html'));
             if (editorFrame) break;
             await sleep(500);
         }
