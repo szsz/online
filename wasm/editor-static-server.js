@@ -353,18 +353,20 @@ function handler(req, res) {
         // SW must always revalidate so a code update rolls out within
         // 24h max instead of being pinned by the immutable rule below.
         headers['Cache-Control'] = 'no-cache';
+    } else if (effectivePub !== PUB) {
+        // Per-deploy folder is in play (req routed through <id>/ via
+        // either explicit prefix or current-deploy.txt pointer). The
+        // URL is content-addressed by build id; cache forever.
+        headers['Cache-Control'] = 'public, max-age=31536000, immutable';
     } else if (HASHED_RE.test(pathname)) {
-        // Content-hashed asset (built by cache-bust-build.js): the hash
-        // is the version, so the URL itself rolls on every change.
+        // Legacy content-hashed asset (pre-per-deploy era).
         headers['Cache-Control'] = 'public, max-age=31536000, immutable';
     } else if (IMMUTABLE.some(n => pathname.endsWith(n))) {
-        // Belt-and-braces for any unhashed wasm/data still on disk
-        // (e.g. clients caching an older cool.html during a deploy
-        // window). Build-time hashing replaces these in the normal
-        // path.
+        // Belt-and-braces for unhashed wasm/data in flat layout.
         headers['Cache-Control'] = 'public, max-age=31536000, immutable';
     } else if (pathname.endsWith('.js')) {
-        // Non-hashed JS: no-cache so code changes take effect immediately.
+        // Non-hashed JS in flat layout — no-cache so code changes take
+        // effect immediately on dev hosts.
         headers['Cache-Control'] = 'no-cache';
     } else {
         headers['Cache-Control'] = 'public, max-age=3600';
