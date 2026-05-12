@@ -1,6 +1,10 @@
 name: WASM build, deploy, test
 
-# Two-path policy for Online deploys (mirrors LO build policy):
+# Viewer + relay App Service deploy + test suite.
+# Editor builds live in editor-build.yml (Front Door + Storage); this
+# workflow no longer touches the editor.
+#
+# Two-path policy for deploys (mirrors LO build policy):
 #   1. PR to dev — validate + auto-merge on green (deploy runs on the
 #      post-merge `push: dev` event below).
 #   2. workflow_dispatch — redeploy any past Online commit. Set
@@ -10,12 +14,36 @@ name: WASM build, deploy, test
 on:
   push:
     branches: [dev]
+    # Viewer-side + test + CI-infra paths only. Editor-side paths
+    # trigger editor-build.yml instead. Commits touching both fire
+    # both workflows in parallel — each owns its half.
     paths:
-      - 'wasm/**'
+      - 'wasm/viewer-server.js'
+      - 'wasm/viewer-public/**'
+      - 'wasm/lib/storage/**'
+      - 'wasm/lib/v2-upload.js'
+      - 'wasm/lib/file-crypto.js'
+      - 'wasm/lib/open-via-viewer.js'
+      - 'wasm/lib/test-env.js'
+      - 'wasm/lib/inject-checklist.js'
+      - 'wasm/lib/browser.js'
+      - 'wasm/message-relay.js'
+      - 'wasm/test-*.js'
+      - 'wasm/run-*tests*.sh'
+      - 'wasm/deploy-azure.sh'
+      - 'wasm/.env.example'
+      - 'wasm/.env.deploy.*.example'
+      - 'wasm/LO_BUILD_ID'
       - '.github/workflows/wasm-ci.yml'
-      - '.github/scripts/wasm-ci/**'
+      - '.github/scripts/wasm-ci/deploy.sh'
+      - '.github/scripts/wasm-ci/test-and-publish.sh'
+      - '.github/scripts/wasm-ci/publish-app-build.sh'
+      - '.github/scripts/wasm-ci/regen-indexes.sh'
+      - '.github/scripts/wasm-ci/_lib.sh'
   pull_request:
     branches: [dev]
+    # PR triggers stay broad (any wasm/** change) so validate-lo-build
+    # runs as a required check on PRs that touch anything wasm-related.
     paths:
       - 'wasm/LO_BUILD_ID'
       - 'wasm/**'
@@ -158,65 +186,48 @@ jobs:
           GH_RUN_NUMBER: ${{ github.run_number }}
         run: bash .github/scripts/wasm-ci/resolve-ids.sh
 
-      - name: Fetch LibreOffice artefacts
-        env:
-          LO_BUILD_ID: ${{ steps.ids.outputs.lo_build_id }}
-        run: bash .github/scripts/wasm-ci/fetch-lo.sh
+      # Note: no `Fetch LO` / `Build Online (WASM)` / `Build spellcheck
+      # dicts` steps here — the editor (and its bundled dicts) lives on
+      # Front Door + Storage now, deployed by editor-build.yml. This
+      # workflow ships viewer + relay code only, both pure Node servers
+      # that don't need the WASM build output.
 
-      - name: Build Online (WASM)
+      - name: Resolve current editor build (from editor-builds/latest.txt)
+        id: editor
         env:
-          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
-          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
-        run: bash .github/scripts/wasm-ci/build-online.sh
-
-      # Build per-language hunspell dict bundles. Writes to
-      # $CI_STATE_DIR/online-build/dicts/ (which deploy-azure.sh
-      # reads from). Cached dicts-src in the same dir survive
-      # across runs — first run hits GitHub API ~25 times, later
-      # runs are near-instant. Without this step, /dicts/manifest.json
-      # 404s on Azure and the Group N spellcheck regression tests
-      # (regression-dict-manifest-coverage, regression-dict-multi-lang,
-      # regression-dict-locale-resolve, regression-mixed-lang-spellcheck)
-      # all fail.
-      - name: Build spellcheck dicts
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATIC_SITE_BASE: ${{ env.STATIC_SITE_BASE }}
+        # Reads the FD-side latest pointer so the manifest published
+        # below records which editor folder the viewer is iframing.
+        # Falls back to the viewer build id when the pointer is missing
+        # (very early in the cutover; should not happen in steady state).
         run: |
           set -euo pipefail
-          # Symlink wasm/online-build into the persistent state dir
-          # so build-dicts.sh writes where deploy-azure.sh reads.
-          rm -rf "$GITHUB_WORKSPACE/wasm/online-build"
-          ln -s "$CI_STATE_DIR/online-build" "$GITHUB_WORKSPACE/wasm/online-build"
-          bash "$GITHUB_WORKSPACE/wasm/build-dicts.sh"
+          EBID="$(curl -fsSL "$STATIC_SITE_BASE/editor-builds/latest.txt" 2>/dev/null \
+              | tr -d '[:space:]' || true)"
+          if [[ -z "$EBID" ]]; then
+              echo "WARN: editor-builds/latest.txt empty/missing — using viewer build id as editor_build_id"
+              EBID="${{ steps.ids.outputs.app_build_id }}"
+          fi
+          echo "Editor build id: $EBID"
+          echo "editor_build_id=$EBID" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy to Azure App Services
+      - name: Deploy viewer + relay to Azure App Services
         env:
-          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+          APP_BUILD_ID:    ${{ steps.ids.outputs.app_build_id }}
+          EDITOR_DEPLOY_ID_OVERRIDE: ${{ steps.editor.outputs.editor_build_id }}
+        # deploy.sh sources online-staging-deploy.env and runs
+        # deploy-azure.sh — which now only deploys viewer + relay
+        # (editor App Service was decommissioned). The viewer's
+        # EDITOR_DEPLOY_ID App Setting is set from APP_BUILD_ID by
+        # default; we pass an override so it pins to the *editor*
+        # build (not the viewer build) when they differ.
         run: bash .github/scripts/wasm-ci/deploy.sh
-
-      # ── Editor → Front Door + Storage static-site path ─────────────
-      # Each editor build lands at $EDITOR_FD_URL/<APP_BUILD_ID>/. The
-      # viewer's host-side viewer-config.json pointer flip (operator-
-      # triggered via promote-editor.sh) decides which <id>/ folder
-      # the viewer iframes into. App-Service deploy above still runs
-      # in parallel for the transition; will be removed once the
-      # SW-bridge cutover is verified stable on FD.
-      #
-      # Required env on the runner ($HOME/ENV/online-front-door-deploy.env):
-      #   EDITOR_STORAGE_ACCOUNT, EDITOR_STORAGE_CONTAINER, EDITOR_FD_URL
-      #   AZURE_FD_PROFILE, AZURE_FD_RG, AZURE_FD_ENDPOINT (optional —
-      #   step skips rule apply with a warning if missing).
-      - name: Deploy editor to Front Door + apply rules
-        env:
-          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
-          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
-          GIT_SHA: ${{ github.event.inputs.online_sha || github.sha }}
-        run: bash .github/scripts/wasm-ci/deploy-front-door.sh
 
       - name: Publish build artefacts + index
         env:
-          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
-          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          APP_BUILD_ID:    ${{ steps.ids.outputs.app_build_id }}
+          EDITOR_BUILD_ID: ${{ steps.editor.outputs.editor_build_id }}
+          LO_BUILD_ID:     ${{ steps.ids.outputs.lo_build_id }}
           GIT_SHA: ${{ github.event.inputs.online_sha || github.sha }}
           GIT_REF: ${{ github.event.inputs.online_sha || github.ref }}
         run: bash .github/scripts/wasm-ci/publish-app-build.sh

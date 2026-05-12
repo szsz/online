@@ -47,11 +47,15 @@ fi
 # shellcheck disable=SC1090
 source "$STAGING_DEPLOY_ENV"
 
+# Only viewer + relay zips are produced by deploy-azure.sh now.
+# Editor zip used to live here too, but the editor moved to Front
+# Door + Storage in 2026-05-12 — the FD folder IS the artefact, no
+# per-build zip is archived (the manifest at editor-builds/<id>/
+# records its identity).
 VIEWER_ZIP="${VIEWER_DEPLOY_DIR:?VIEWER_DEPLOY_DIR not set in $STAGING_DEPLOY_ENV}.zip"
 RELAY_ZIP="${RELAY_DEPLOY_DIR:?RELAY_DEPLOY_DIR not set}.zip"
-EDITOR_ZIP="${EDITOR_DEPLOY_DIR:?EDITOR_DEPLOY_DIR not set}.zip"
 
-for z in "$VIEWER_ZIP" "$RELAY_ZIP" "$EDITOR_ZIP"; do
+for z in "$VIEWER_ZIP" "$RELAY_ZIP"; do
     if [[ ! -f "$z" ]]; then
         echo "ERROR: deploy zip missing: $z" >&2
         echo "       deploy-azure.sh must have run successfully before this script." >&2
@@ -68,7 +72,6 @@ size_of() { stat -c '%s' "$1"; }
 
 VIEWER_MD5="$(md5_of "$VIEWER_ZIP")";  VIEWER_SIZE="$(size_of "$VIEWER_ZIP")"
 RELAY_MD5="$(md5_of "$RELAY_ZIP")";    RELAY_SIZE="$(size_of "$RELAY_ZIP")"
-EDITOR_MD5="$(md5_of "$EDITOR_ZIP")";  EDITOR_SIZE="$(size_of "$EDITOR_ZIP")"
 
 cat > "$OUT/manifest.json" <<JSON
 {
@@ -85,8 +88,7 @@ cat > "$OUT/manifest.json" <<JSON
   },
   "zips": [
     { "service": "viewer", "name": "viewer.zip", "size": $VIEWER_SIZE, "md5": "$VIEWER_MD5" },
-    { "service": "relay",  "name": "relay.zip",  "size": $RELAY_SIZE,  "md5": "$RELAY_MD5"  },
-    { "service": "editor", "name": "editor.zip", "size": $EDITOR_SIZE, "md5": "$EDITOR_MD5" }
+    { "service": "relay",  "name": "relay.zip",  "size": $RELAY_SIZE,  "md5": "$RELAY_MD5"  }
   ],
   "test_report": null
 }
@@ -134,7 +136,7 @@ code.hash{font-size:.85em;color:#666}
   <ul>
     <li><a href="viewer.zip">viewer.zip</a> &nbsp;<span class="muted">$(fmt_mb "$VIEWER_SIZE") MB</span> &nbsp;<code class="hash">md5 $VIEWER_MD5</code></li>
     <li><a href="relay.zip">relay.zip</a> &nbsp;<span class="muted">$(fmt_mb "$RELAY_SIZE") MB</span> &nbsp;<code class="hash">md5 $RELAY_MD5</code></li>
-    <li><a href="editor.zip">editor.zip</a> &nbsp;<span class="muted">$(fmt_mb "$EDITOR_SIZE") MB</span> &nbsp;<code class="hash">md5 $EDITOR_MD5</code></li>
+    <li>Editor: <a href="../../editor-builds/$EDITOR_BID/">editor-builds/$EDITOR_BID/</a> &nbsp;<span class="muted">(Front Door static — no per-build zip)</span></li>
   </ul>
   <p class="muted">Promote: <code>bash wasm/promote-online-build.sh $APP_BID ~/ENV/online-internal-deploy.env</code></p>
 </div>
@@ -161,10 +163,9 @@ upload() {
 # Upload the three zips first — if they fail, the build summary should
 # not be made visible (manifest is the source of truth for promote, and
 # a manifest pointing at missing zips is worse than no manifest).
-echo "Uploading zips ($(fmt_mb "$VIEWER_SIZE") + $(fmt_mb "$RELAY_SIZE") + $(fmt_mb "$EDITOR_SIZE") MB)..."
+echo "Uploading zips ($(fmt_mb "$VIEWER_SIZE") + $(fmt_mb "$RELAY_SIZE") MB)..."
 upload "$VIEWER_ZIP" "app-builds/$APP_BID/viewer.zip"
 upload "$RELAY_ZIP"  "app-builds/$APP_BID/relay.zip"
-upload "$EDITOR_ZIP" "app-builds/$APP_BID/editor.zip"
 
 # Now the manifest + summary HTML.
 upload "$OUT/manifest.json" "app-builds/$APP_BID/manifest.json"
