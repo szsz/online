@@ -102,8 +102,8 @@ CI_SKIP_TESTS=(
     # Tests that POST plaintext to /wasm/<id> + open cool.html directly.
     # Migrating to the viewer flow (lib/open-via-viewer.js) one by one;
     # each entry should be removed as its test gets rewritten.
-    caching fonts latejoin
-    pptx-coedit prewarm snapshot-stale
+    caching fonts
+    prewarm snapshot-stale
     regression-delete-key-coedit
     regression-paste-coedit regression-sab-context
     regression-user-save-checkpoint
