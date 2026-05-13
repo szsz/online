@@ -177,7 +177,15 @@ function handler(req, res) {
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
     const parsed = url.parse(req.url);
-    let pathname = decodeURIComponent(parsed.pathname);
+    // Malformed percent-encoding throws URIError; degrade to raw pathname
+    // instead of letting Node's uncaughtException fire and leave the
+    // request hanging (which detaches puppeteer iframes mid-test).
+    let pathname;
+    try {
+        pathname = decodeURIComponent(parsed.pathname);
+    } catch (_) {
+        pathname = parsed.pathname;
+    }
 
     // Per-deploy: if the URL starts with /<id>/, strip the prefix and
     // route file lookups into $PUB/<id>/. If no prefix but a default
