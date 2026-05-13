@@ -336,7 +336,35 @@ function handler(req, res) {
         }
     }
 
-    const filepath = path.join(effectivePub, pathname);
+    let filepath = path.join(effectivePub, pathname);
+    // Match Azure FD's literal-path semantics on local:
+    //   - On Azure FD, /<id>/browser/dist/cool.html maps to the literal
+    //     storage path $web/<id>/browser/dist/cool.html.
+    //   - On local, deploy.sh flattens BUILD_DIR/browser/dist/* into
+    //     $PUB/<id>/browser/*, so the viewer's /browser/dist/cool.html
+    //     URL would 404. Rewrite /browser/dist/<x> → /browser/<x> to
+    //     bridge the layout difference. (Migrating deploy.sh to preserve
+    //     dist/ would mean migrating every test that probes /browser/<x>
+    //     — much bigger blast radius.)
+    if ((!fs.existsSync(filepath) || !fs.statSync(filepath).isFile()) &&
+        pathname.startsWith('/browser/dist/')) {
+        const rewritten = '/browser/' + pathname.slice('/browser/dist/'.length);
+        const alt = path.join(effectivePub, rewritten);
+        if (fs.existsSync(alt) && fs.statSync(alt).isFile()) {
+            filepath = alt;
+        }
+    }
+    // Per-deploy fallback: Azure FD also serves root-level files (like
+    // sw-bridge.js, deliberately kept at $PUB/ as one copy across deploys
+    // by deploy.sh). When effectivePub is the per-deploy <id>/ folder and
+    // the lookup misses, retry at the flat $PUB root.
+    if (effectivePub !== PUB &&
+        (!fs.existsSync(filepath) || !fs.statSync(filepath).isFile())) {
+        const flat = path.join(PUB, pathname);
+        if (fs.existsSync(flat) && fs.statSync(flat).isFile()) {
+            filepath = flat;
+        }
+    }
     if (!fs.existsSync(filepath) || !fs.statSync(filepath).isFile()) {
         res.writeHead(404); res.end('Not found: ' + pathname); return;
     }

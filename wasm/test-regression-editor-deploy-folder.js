@@ -93,10 +93,11 @@ function check(label, cond, ev) {
 
     // 2. cool.html reachable via the explicit prefix path. The viewer
     // iframe URL uses exactly this shape (window.__CONFIG.EDITOR_DEPLOY_ID
-    // -> EDITOR_BASE -> /<id>/browser/cool.html); if the editor-server
-    // middleware fumbles the prefix, this would 404 even though the
-    // build files are correctly on disk.
-    const coolUrl = EDITOR + '/' + DEPLOY_ID + '/browser/cool.html';
+    // -> EDITOR_BASE -> /<id>/browser/dist/cool.html — matches Azure FD's
+    // literal storage path); if the editor-server middleware fumbles the
+    // prefix, this would 404 even though the build files are correctly
+    // on disk.
+    const coolUrl = EDITOR + '/' + DEPLOY_ID + '/browser/dist/cool.html';
     try {
         const r = await fetch(coolUrl);
         check('explicit-prefix cool.html reachable', r.ok,

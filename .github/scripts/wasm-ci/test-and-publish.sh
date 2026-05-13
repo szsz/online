@@ -245,6 +245,12 @@ if [[ "$TEST_TARGET" == "local" ]]; then
     # ensure_storage_key (sourced above) exports AZURE_STORAGE_KEY by
     # listing the storage account keys via the runner's MI. viewer-server
     # reads DOC_STORAGE_KEY, so we pass the same value through.
+    # EDITOR_DEPLOY_ID — the per-deploy folder id this viewer iframes into.
+    # Without this the viewer falls back to flat URLs (EDITOR/browser/dist/
+    # cool.html with no <id>/ prefix), and editor-static-server's current-
+    # deploy.txt-driven rewrite kicks in. With it, the viewer builds explicit
+    # /<id>/browser/dist/cool.html URLs that match the FD layout exactly.
+    # Mirrors the azure-deploy block below + line 297.
     PORT="$VIEWER_PORT" \
     STORAGE_BACKEND=azure \
     DOC_STORAGE_ACCOUNT="$ACCT" \
@@ -253,6 +259,7 @@ if [[ "$TEST_TARGET" == "local" ]]; then
     FILE_STORAGE_URL="$VIEWER_URL_LOCAL" \
     EDITOR_URL="$EDITOR_URL_LOCAL" \
     RELAY_URL="$RELAY_URL_LOCAL" \
+    EDITOR_DEPLOY_ID="$APP_BID" \
         node "$WORKSPACE/wasm/viewer-server.js" \
         > "$REPORT_DIR/viewer.log" 2>&1 &
     LOCAL_SERVER_PIDS+=($!)
@@ -276,6 +283,10 @@ if [[ "$TEST_TARGET" == "local" ]]; then
     export EDITOR_URL="$EDITOR_URL_LOCAL"
     export RELAY_URL="$RELAY_URL_LOCAL"
     export VIEWER_URL="$VIEWER_URL_LOCAL"
+    # Surface to tests that read env.EDITOR_DEPLOY_ID directly
+    # (test-regression-editor-deploy-folder.js, test-caching.js's deploy-id
+    # extractor). Mirrors the azure-deploy block.
+    export EDITOR_DEPLOY_ID="$APP_BID"
     export TEST_TARGET="local"
 
 elif [[ "$TEST_TARGET" == "azure-deploy" ]]; then
