@@ -122,10 +122,19 @@ download_and_verify() {
 }
 
 echo "Downloading + verifying zips..."
+# The editor moved from App Service to Azure Front Door + Storage in
+# 2026-05-12 (iter 246). Builds since then archive only viewer + relay
+# zips; the editor is deployed separately by editor-build.yml and
+# referenced via EDITOR_DEPLOY_ID app settings on each viewer. Skip
+# any zip the manifest doesn't list rather than aborting.
 for service in viewer relay editor; do
     md5="$(jq -r ".zips[] | select(.service == \"$service\") | .md5" "$SCRATCH/manifest.json")"
     size="$(jq -r ".zips[] | select(.service == \"$service\") | .size" "$SCRATCH/manifest.json")"
     if [[ -z "$md5" || "$md5" == "null" || -z "$size" || "$size" == "null" ]]; then
+        if [[ "$service" == "editor" ]]; then
+            echo "  (no editor zip — build is post-FD; editor lives on Front Door, skipping)"
+            continue
+        fi
         echo "ERROR: manifest does not list $service zip — was this build archived before the zip-archive feature landed?" >&2
         exit 1
     fi
@@ -136,7 +145,7 @@ done
 echo "Loading target env: $ENV_FILE"
 # shellcheck disable=SC1090
 source "$ENV_FILE"
-for var in RESOURCE_GROUP VIEWER_APP_NAME RELAY_APP_NAME EDITOR_APP_NAME \
+for var in RESOURCE_GROUP VIEWER_APP_NAME RELAY_APP_NAME \
            VIEWER_URL RELAY_URL EDITOR_URL; do
     if [[ -z "${!var:-}" ]]; then
         echo "ERROR: $var is not set in $ENV_FILE" >&2
@@ -188,7 +197,11 @@ deploy_zip() {
 
 deploy_zip "$VIEWER_APP_NAME" "$SCRATCH/viewer.zip" "$VIEWER_URL/"
 deploy_zip "$RELAY_APP_NAME"  "$SCRATCH/relay.zip"  "${RELAY_URL/wss:/https:}/healthz"
-deploy_zip "$EDITOR_APP_NAME" "$SCRATCH/editor.zip" "$EDITOR_URL/browser/cool.html"
+# Editor deployment removed iter 246: editor moved off App Service to
+# Front Door + Storage static-website. The shared FD endpoint is
+# updated by editor-build.yml on editor-side changes; per-tier editor
+# pinning is done by flipping the viewer's EDITOR_DEPLOY_ID app setting
+# (wasm/promote-editor.sh).
 
 cat <<DONE
 

@@ -179,8 +179,16 @@ upload "$OUT/index.html"    "app-builds/$APP_BID/index.html"
 echo -n "$APP_BID" > "$OUT/latest.txt"
 upload "$OUT/latest.txt" "app-builds/latest.txt"
 
-# Refresh the app-builds list and the root index.
-bash "$(dirname "$0")/regen-indexes.sh"
+# Refresh the app-builds list and the root index. NON-FATAL: the
+# manifest + per-build index are already uploaded above, so the build
+# itself is durable. If listing-page regen fails (env var drift, az
+# transient, etc.), don't fail the whole build-deploy job — that
+# would skip the test step (`needs: build-deploy`), even though the
+# build artefacts are fine. The next dev push will refresh the
+# listing; today's failure is a missing entry, not a missing build.
+bash "$(dirname "$0")/regen-indexes.sh" || {
+    echo "WARNING: regen-indexes.sh failed (exit $?). Listing pages may be stale until the next push refreshes them. Build artefacts at $SITE/app-builds/$APP_BID/ are unaffected." >&2
+}
 
 echo "Published: $SITE/app-builds/$APP_BID/"
 echo "         + $SITE/app-builds/latest.txt now points at $APP_BID"
