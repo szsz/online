@@ -126,7 +126,7 @@ code.hash{font-size:.85em;color:#666}
   <h3>Live endpoints (just deployed)</h3>
   <ul>
     <li>Viewer &nbsp;<a href="${VIEWER_URL:-https://szebeni-wasm-viewer.azurewebsites.net}">${VIEWER_URL:-https://szebeni-wasm-viewer.azurewebsites.net}</a></li>
-    <li>Editor &nbsp;<a href="${EDITOR_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}/$EDITOR_BID/browser/cool.html">${EDITOR_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}/$EDITOR_BID/</a> &nbsp;<span class="muted">(Front Door + Storage static-site)</span></li>
+    <li>Editor &nbsp;<a href="${EDITOR_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}/$EDITOR_BID/browser/dist/cool.html">${EDITOR_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}/$EDITOR_BID/</a> &nbsp;<span class="muted">(Front Door + Storage static-site)</span></li>
     <li>Relay  &nbsp;<code>${RELAY_URL:-wss://szebeni-wasm-relay.azurewebsites.net}</code></li>
   </ul>
 </div>

@@ -106,15 +106,13 @@ SMOKE_FAILED=0
 # RELAY_URL is wss://...; the relay itself answers HTTP on /healthz.
 RELAY_HEALTHZ="${RELAY_URL/wss:/https:}"
 RELAY_HEALTHZ="${RELAY_HEALTHZ/ws:/http:}/healthz"
-# Editor smoke URL depends on per-deploy mode. If APP_BUILD_ID is set,
-# editor-static-server has DEFAULT_DEPLOY_ID set to the same id and
-# transparently routes /browser/cool.html into <id>/browser/. We can
-# probe either the flat or the explicit-prefix URL; the explicit one
-# directly validates the per-deploy structure landed on disk.
+# Editor smoke URL: post-FD layout has cool.html at <id>/browser/dist/
+# (matching deploy-front-door.sh's Azure FD storage path). If APP_BUILD_ID
+# is set, probe the explicit-prefix path; otherwise the flat fallback.
 if [[ -n "${APP_BUILD_ID:-}" ]]; then
-    EDITOR_COOL_URL="$EDITOR_URL/$APP_BUILD_ID/browser/cool.html"
+    EDITOR_COOL_URL="$EDITOR_URL/$APP_BUILD_ID/browser/dist/cool.html"
 else
-    EDITOR_COOL_URL="$EDITOR_URL/browser/cool.html"
+    EDITOR_COOL_URL="$EDITOR_URL/browser/dist/cool.html"
 fi
 for url in "$FILE_STORAGE_URL/" "$EDITOR_COOL_URL" "$RELAY_HEALTHZ"; do
     code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)"

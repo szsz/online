@@ -1,7 +1,8 @@
 // Regression: every published app-build at coolwasmfiles has the
-// three deploy zips (viewer.zip / relay.zip / editor.zip) plus
-// tests/summary.json — the inputs `wasm/promote-online-build.sh`
-// expects.
+// two deploy zips (viewer.zip / relay.zip) plus tests/summary.json —
+// the inputs `wasm/promote-online-build.sh` expects. The editor has
+// moved to Front Door + Storage (per-deploy folder, no zip artefact);
+// see project memory `per-deploy-folders`.
 //
 // Background: an app-build directory is the bundle of artefacts
 // `wasm-ci-local.yml` publishes for each successful CI run. The
@@ -75,7 +76,9 @@ function check(label, cond, ev) {
     console.log('  latest:', latest);
 
     const buildBase = BASE + latest + '/';
-    for (const zipName of ['viewer.zip', 'relay.zip', 'editor.zip']) {
+    // editor.zip dropped post-FD migration — editor now lives on Azure
+    // Front Door at <id>/browser/dist/ (see deploy-front-door.sh).
+    for (const zipName of ['viewer.zip', 'relay.zip']) {
         try {
             const r = await fetch(buildBase + zipName, { method: 'HEAD' });
             const cl = Number(r.headers.get('content-length') || 0);
