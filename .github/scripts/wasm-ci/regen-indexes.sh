@@ -11,6 +11,12 @@ ensure_storage_key
 
 ACCT="${AZURE_STORAGE_ACCOUNT:?}"
 SITE="${STATIC_SITE_BASE:?}"
+# The editor's Front Door endpoint — surfaced only in the root index's
+# "Editor builds" prose. Falls back to the production FD URL when the
+# workflow doesn't pass it explicitly. With `set -u` this default is
+# mandatory; without it the script crashes mid-regen and the index
+# pages stay frozen on whatever version produced them last.
+EDITOR_FD_URL="${EDITOR_FD_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}"
 
 list_prefix() {
     local prefix="$1"
