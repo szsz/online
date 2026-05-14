@@ -82,20 +82,51 @@ async function openSecretInBrowser(browser, viewerUrl, b64urlSecret, opts) {
         timeout: opts.gotoTimeout || 60000,
     });
 
+    // Wait for the FILE-loading iframe — not the blank-docx bootstrap.
+    //
+    // viewer-public/index.html:828 creates an initial iframe with
+    // WOPISrc=blank.docx during bootstrap. Then openFileBySecret →
+    // openFile runs (async, triggered by the #file=<secret> hash) and
+    // takes one of two paths:
+    //   - Hot-switch (same-doctype, prewarm ready): rewrites iframe.src
+    //     with a #switchdoc= hash. Frame ref survives.
+    //   - Cold-reload (cross-doctype OR no-prewarm-yet, the typical FIRST
+    //     open path): index.html:1292 does `parentNode.replaceChild`
+    //     which REMOVES the bootstrap iframe and appends a new one. The
+    //     puppeteer Frame ref to the old iframe becomes "detached" ~50–
+    //     200 ms after openFileBySecret completes.
+    //
+    // Tests that match the first `cool.html`-URL frame land on the blank
+    // bootstrap, then their next `frame.evaluate / waitForFunction` call
+    // throws "frame got detached" because the replaceChild already ran.
+    //
+    // Strategy: resolve the iframe via getElementById('editor-frame').src
+    // (the active id — parked iframes get renamed) AND require the URL to
+    // NOT carry WOPISrc=blank.docx. That waits past the bootstrap and
+    // returns the iframe the viewer is actually loading the file into.
     const iframeT0 = Date.now();
     const iframeTimeout = opts.iframeTimeout || 60000;
     let editorFrame = null;
     while (Date.now() - iframeT0 < iframeTimeout) {
-        editorFrame = page.frames().find(
-            f => f.url() && f.url().indexOf('cool.html') >= 0
-        );
-        if (editorFrame) break;
+        const activeUrl = await page.evaluate(() => {
+            const el = document.getElementById('editor-frame');
+            return el && el.src ? el.src : null;
+        }).catch(() => null);
+        // BLANK_FILENAME in viewer-public/index.html is '__prewarm_blank.docx'
+        // — match the substring to handle either form (encoded/decoded).
+        if (activeUrl
+            && activeUrl.indexOf('cool.html') >= 0
+            && activeUrl.indexOf('__prewarm_blank') < 0) {
+            editorFrame = page.frames().find(f => f.url() === activeUrl);
+            if (editorFrame) break;
+        }
         await new Promise(r => setTimeout(r, 200));
     }
     if (!editorFrame) {
-        throw new Error('openSecretInBrowser: editor iframe never loaded '
-            + 'within ' + iframeTimeout + 'ms — viewer probably '
-            + 'failed to decrypt or stage the file (check page console)');
+        throw new Error('openSecretInBrowser: file-loading iframe never '
+            + 'replaced the bootstrap blank-docx iframe within '
+            + iframeTimeout + 'ms — viewer probably failed to decrypt '
+            + 'or stage the file (check page console)');
     }
 
     return { page, editorFrame, context };
