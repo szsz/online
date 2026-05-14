@@ -129,7 +129,99 @@ async function openSecretInBrowser(browser, viewerUrl, b64urlSecret, opts) {
             + 'or stage the file (check page console)');
     }
 
-    return { page, editorFrame, context };
+    // Wrap the Frame in a re-resolving proxy that survives inner-iframe
+    // location.reload() calls.
+    //
+    // PR #81 fixed the PARENT-side iframe replaceChild race. But once
+    // the test holds editorFrame, the iframe's OWN wasm-loader can
+    // re-navigate via `location.reload()` (it does this in the warm-
+    // restore handshake at wasm-loader.js around line ~1380 when the
+    // restore times out, and again at the parent's 180s cross-type
+    // canvas-paint watchdog at viewer-public/index.html:1327-1335).
+    // Either path destroys the puppeteer Frame handle's contentDocument
+    // even though the parent iframe element identity is unchanged, so
+    // `editorFrame.evaluate(...)` throws "frame got detached" or
+    // "Execution context was destroyed, most likely because of a
+    // navigation".
+    //
+    // On Azure these reloads rarely fire because warm-restore succeeds
+    // and the kit paints. On the CI runner Chrome they fire reliably,
+    // accounting for ~22 of 60 failing tests (Cluster A from the
+    // 2026-05-14 root-cause clustering). All affected tests use the
+    // editorFrame returned here for `evaluate`, `waitForFunction`,
+    // `isDetached`, or `url` — only those four methods, per grep.
+    //
+    // Strategy: return a thin object that wraps each of the four
+    // methods and, on detach-shaped errors, re-resolves the frame via
+    // the same getElementById('editor-frame').src lookup that found it
+    // the first time. Up to 3 attempts with 500 ms backoff so a reload
+    // that's still in flight gets a chance to settle.
+    return { page, editorFrame: makeResilientFrame(page, editorFrame), context };
+}
+
+function makeResilientFrame(page, initialFrame) {
+    let cached = initialFrame;
+
+    async function _reresolve() {
+        const activeUrl = await page.evaluate(() => {
+            const el = document.getElementById('editor-frame');
+            return el && el.src ? el.src : null;
+        }).catch(() => null);
+        if (!activeUrl
+            || activeUrl.indexOf('cool.html') < 0
+            || activeUrl.indexOf('__prewarm_blank') >= 0) {
+            return null;
+        }
+        return page.frames().find(f => f.url() === activeUrl) || null;
+    }
+
+    function _isDetachShape(err) {
+        const m = err && err.message ? err.message : String(err);
+        return /detached|destroyed|not attached|execution context was destroyed/i.test(m);
+    }
+
+    function _wrap(method) {
+        return async function(...args) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                if (!cached || (typeof cached.isDetached === 'function' && cached.isDetached())) {
+                    const next = await _reresolve();
+                    if (next) cached = next;
+                }
+                if (!cached) {
+                    if (attempt === 2) throw new Error('ResilientFrame: editor-frame gone — no resolvable cool.html iframe');
+                    await new Promise(r => setTimeout(r, 500));
+                    continue;
+                }
+                try {
+                    return await cached[method](...args);
+                } catch (err) {
+                    if (attempt < 2 && _isDetachShape(err)) {
+                        cached = null;
+                        await new Promise(r => setTimeout(r, 500));
+                        continue;
+                    }
+                    throw err;
+                }
+            }
+        };
+    }
+
+    return {
+        // Re-resolving async methods (the puppeteer Frame surface tests
+        // actually use — grep across test-*.js shows only these four).
+        evaluate: _wrap('evaluate'),
+        waitForFunction: _wrap('waitForFunction'),
+
+        // Sync passthroughs — best-effort against the current cached
+        // frame. url() returning '' after detach is the typical Frame
+        // behavior so we mirror that.
+        url: () => (cached ? cached.url() : ''),
+        isDetached: () => (cached ? cached.isDetached() : true),
+
+        // Escape hatch — tests that need the raw Frame (e.g. for
+        // page.frames() membership tests) can pull it.
+        _frame: () => cached,
+    };
 }
 
 async function openViaViewer(browser, viewerUrl, name, bytes, opts) {
