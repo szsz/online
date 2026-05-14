@@ -22,6 +22,10 @@ on:
       - 'wasm/viewer-public/**'
       - 'wasm/lib/**'
       - 'wasm/message-relay.js'
+      # editor-static-server.js is test-infra (CI ephemeral + dev-box CI
+      # stack) — the Azure editor lives on FD via editor-build.yml. Changes
+      # to its routing affect every CI test run, so push:dev must re-test.
+      - 'wasm/editor-static-server.js'
       - 'wasm/test-*.js'
       - 'wasm/run-*tests*.sh'
       - 'wasm/generate-report.js'
