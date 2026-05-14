@@ -56,21 +56,7 @@ async function launch(opts = {}) {
             '--no-sandbox', '--ignore-certificate-errors',
             '--enable-features=SharedArrayBuffer',
             `--window-size=${width},${height}`,
-            // GPU strategy: replace the blunt `--disable-gpu` with
-            // SwiftShader (software-rasterized GL). The CI runner is a
-            // GPU-less Linux box; --disable-gpu skipped ALL GL, which
-            // made Chrome's compositor fall back to a slower software
-            // path that under JOBS=2 contention didn't schedule paint
-            // events fast enough to fire WasmPrewarmReady within the
-            // viewer's 180s cross-type canvas-paint watchdog. With
-            // SwiftShader, GL calls still go through a SW backend but
-            // the canvas pipeline gets the paint-scheduling fastpath.
-            // Azure phase-2 smoke passes today (Azure runner has a
-            // usable GPU); this flag is purely a CI-runner remediation.
-            '--use-gl=swiftshader',
-            '--enable-unsafe-swiftshader',
-            '--ignore-gpu-blocklist',
-            '--no-first-run', '--no-default-browser-check',
+            '--disable-gpu', '--no-first-run', '--no-default-browser-check',
         ],
     });
 
