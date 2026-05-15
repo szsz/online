@@ -166,6 +166,30 @@ function viewerLog(label) {
         'color: #1565c0; font-weight: bold; font-size: 13px');
 }
 viewerLog('Viewer page JS started');
+
+// armWOPIReady — open the kit's WOPI postMessage gate.
+// Mirrors framed.html's pattern: post Host_PostmessageReady before
+// other WOPI messages can reach Map.WOPI's handler. Without it,
+// window.WOPIPostmessageReady stays false in cool.html (set in
+// browser/js/global.js:449) and Map.WOPI.js:541 drops every parent
+// postMessage with "PostMessage ignored: not ready." The viewer
+// previously never sent it, leaving every WOPI host-message
+// silently ignored. Idempotent in kit (listener self-removes on
+// first receipt), so posting on every iframe load is harmless;
+// per-iframe data-flag avoids re-arming the same iframe.
+function armWOPIReady(iframe) {
+    if (!iframe || iframe.dataset.wopiReadyArmed === '1') return;
+    iframe.dataset.wopiReadyArmed = '1';
+    iframe.addEventListener('load', function postReady() {
+        try {
+            if (iframe.contentWindow) {
+                iframe.contentWindow.postMessage(
+                    JSON.stringify({ MessageId: 'Host_PostmessageReady' }),
+                    '*');
+            }
+        } catch (e) { /* cross-origin in some configs — best-effort */ }
+    });
+}
 </script>
 <script>
 // --- Sidebar collapse/expand ---
@@ -825,6 +849,7 @@ async function startPrewarm() {
     // assets cool.html references (bundle.js, online.wasm) resolve
     // relative to its own URL, so they continue to work from /browser/
     // dist/ once cool.html itself loads from there.
+    armWOPIReady(iframe);
     iframe.src = EDITOR_BASE + '/browser/dist/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
                + '&access_token=test'
                + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
@@ -1281,6 +1306,7 @@ async function openFile(name, opts) {
             newIframe.style.width = '100%';
             newIframe.style.height = '100%';
             newIframe.style.border = 'none';
+            armWOPIReady(newIframe);
             // If we parked the previous iframe, append a sibling so the
             // parked one stays alive. If we didn't park (initial open or
             // un-used iframe), replace it — keeping a stale empty iframe
