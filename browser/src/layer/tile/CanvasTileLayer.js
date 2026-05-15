@@ -1593,6 +1593,61 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 		var parser = document.createElement('a');
 		parser.href = window.host;
 
+		// WASM: the kit just wrote print.pdf to its in-memory Emscripten FS at
+		// /tmp/user/docs/<downloadid>/<filename> (kit/ChildSession.cpp:1974-2009;
+		// path is jail-root + downloadid, both already known here). In a normal
+		// coolwsd deploy a C++ HTTP handler would serve that file at
+		// /<urlPrefix>/<doc>/download/<id> — but in WASM there is no listening
+		// HTTP and the XHR below would 404. Short-circuit: read the bytes via
+		// window.__wasmFS (exposed by wasm-loader.js around line 1267 once
+		// Module.FS is up), build a blob: URL, and reuse the existing
+		// filedownloadready → hidden-iframe print pipeline. window.__wasmFS
+		// guard is belt-and-braces against a downloadas: arriving before
+		// Module.FS finishes hooking up — unlikely once saveAs returned, but
+		// cheap to check.
+		if (window.ThisIsTheEmscriptenApp && window.__wasmFS) {
+			var path = '/tmp/user/docs/' + command.downloadid + '/' + command.filename;
+			try {
+				var bytes = window.__wasmFS.readFile(path);
+				var mime = command.id === 'print' ? 'application/pdf'
+					: (command.id === 'slideshow' ? 'application/pdf'
+					: 'application/octet-stream');
+				var blob = new Blob([bytes], {type: mime});
+				var blobUrl = URL.createObjectURL(blob);
+				// Tidy up the kit-side temp dir — in the HTTP flow
+				// ClientRequestDispatcher unlinks after streaming; here
+				// nothing else ever reads it.
+				try { window.__wasmFS.unlink(path); } catch (e) {}
+				try { window.__wasmFS.rmdir('/tmp/user/docs/' + command.downloadid); } catch (e) {}
+
+				this._map.hideBusy();
+				if (this._map['wopi'].DownloadAsPostMessage) {
+					this._map.fire('postMessage', {msgId: 'Download_As', args: {Type: command.id, URL: blobUrl, filename: command.filename}});
+				}
+				else if (command.id === 'print') {
+					this._map.fire('filedownloadready', {url: blobUrl});
+				}
+				else if (command.id === 'slideshow') {
+					this._map.fire('slidedownloadready', {url: blobUrl});
+				}
+				else if (command.id === 'export') {
+					if (!window.L.Browser.cypressTest)
+						this._map._fileDownloader.src = blobUrl;
+					else
+						this._map._fileDownloader.setAttribute('data-src', blobUrl);
+				}
+				// blob URLs leak GC roots; revoke after a long enough delay
+				// to cover the print iframe load + dialog open (mirrors the
+				// 300s _closePrintIframe budget in Map.Print.js).
+				setTimeout(function () { try { URL.revokeObjectURL(blobUrl); } catch (e) {} }, 300000);
+				return;
+			} catch (e) {
+				console.warn('[wasm-print] fallback to HTTP after FS read failed:', e && e.message);
+				// Fall through to the legacy HTTP path below — at least
+				// preserves whatever behavior non-WASM environments expect.
+			}
+		}
+
 		var url = window.makeHttpUrlWopiSrc('/' + this._map.options.urlPrefix + '/',
 			this._map.options.doc, '/download/' + command.downloadid);
 
