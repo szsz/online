@@ -168,26 +168,40 @@ function viewerLog(label) {
 viewerLog('Viewer page JS started');
 
 // armWOPIReady — open the kit's WOPI postMessage gate.
-// Mirrors framed.html's pattern: post Host_PostmessageReady before
-// other WOPI messages can reach Map.WOPI's handler. Without it,
-// window.WOPIPostmessageReady stays false in cool.html (set in
-// browser/js/global.js:449) and Map.WOPI.js:541 drops every parent
-// postMessage with "PostMessage ignored: not ready." The viewer
-// previously never sent it, leaving every WOPI host-message
-// silently ignored. Idempotent in kit (listener self-removes on
-// first receipt), so posting on every iframe load is harmless;
-// per-iframe data-flag avoids re-arming the same iframe.
+// Posts Host_PostmessageReady so window.WOPIPostmessageReady flips
+// true in cool.html (set in browser/js/global.js:449 on receipt).
+// Without it Map.WOPI.js:541 drops every parent postMessage with
+// "PostMessage ignored: not ready." The viewer previously never
+// sent it.
+//
+// Retry strategy: kit registers its message listener mid-bootstrap
+// (after the bundle.js's Initializer class is instantiated). A
+// single post on iframe `load` lands too early. We spray the
+// message on load AND on a 500ms interval for ~6 s. The kit's
+// listener self-removes on first receipt (global.js:450), so
+// extras are no-ops; if the kit reloads (planc=0 cold-loop) the
+// listener is re-armed and a later retry catches it.
 function armWOPIReady(iframe) {
     if (!iframe || iframe.dataset.wopiReadyArmed === '1') return;
     iframe.dataset.wopiReadyArmed = '1';
-    iframe.addEventListener('load', function postReady() {
+    function postReady() {
         try {
             if (iframe.contentWindow) {
                 iframe.contentWindow.postMessage(
                     JSON.stringify({ MessageId: 'Host_PostmessageReady' }),
                     '*');
             }
-        } catch (e) { /* cross-origin in some configs — best-effort */ }
+        } catch (e) {
+            console.log('[viewer] armWOPIReady post failed:', e && e.message);
+        }
+    }
+    iframe.addEventListener('load', function () {
+        postReady();
+        var ticks = 0;
+        var iv = setInterval(function () {
+            postReady();
+            if (++ticks >= 12) clearInterval(iv);
+        }, 500);
     });
 }
 </script>
