@@ -189,16 +189,52 @@ fi
 # only needed if someone uses BUILD_DIR as a sandbox.
 
 if [ "$DO_RESTART" = true ]; then
-    # ── SIGHUP editor-static (no-op now; kept for visibility) ──
-    SERVER_PID=$(pgrep -f "editor-static-server" | head -1)
-    if [ -n "$SERVER_PID" ]; then
-        if kill -HUP "$SERVER_PID" 2>/dev/null; then
-            echo "  Signaled editor-static (PID $SERVER_PID); cool.html is no-cache so the next refresh picks up new hashes"
-        else
-            echo "  WARNING: kill -HUP $SERVER_PID failed (different user?) — editor-static may be stale"
-        fi
+    # ── Restart editor-static-server so code changes take effect ──
+    # editor-static-server.js handles SIGHUP as a no-op (the runtime
+    # rehashing it used to do is now build-time), so signaling alone
+    # leaves the running process on STALE code. When deploy.sh ships
+    # a code change (e.g. PR #78's /browser/dist/<x> → /browser/<x>
+    # rewrite), the process must actually be killed and relaunched.
+    # Before this fix the running server was 10+ days stale on the
+    # dev box → every viewer cold-open got 404 on cool.html → kit
+    # never started → ~40 tests failed with "frame got detached".
+    #
+    # The process typically runs as root (HTTPS cert files at
+    # /etc/letsencrypt/live/<host>/ are root-only). The runner has
+    # NOPASSWD sudo configured. Multiple instances may run on the
+    # box (ad-hoc vs ci-* tier); restart EACH detected process and
+    # relaunch via its launcher script with the same env it was
+    # started with (parsed from /proc/<pid>/environ).
+    EDITOR_PIDS=$(pgrep -f "node .*editor-static-server\.js" || true)
+    if [ -n "$EDITOR_PIDS" ]; then
+        for PID in $EDITOR_PIDS; do
+            # Extract the env this process was started with so we can
+            # relaunch it identically. ENV_FILE / HTTP_PORT / HTTPS_PORT
+            # / EDITOR_SSL_CERT / EDITOR_SSL_KEY / PUB / DOCS are the
+            # ones launch-editor-static.sh reads.
+            ENVS=$(sudo -n cat "/proc/$PID/environ" 2>/dev/null | tr '\0' '\n' | grep -E '^(ENV_FILE|HTTP_PORT|HTTPS_PORT|EDITOR_SSL_CERT|EDITOR_SSL_KEY|PUB|DOCS|FILE_STORAGE_URL)=' | sort -u | tr '\n' ' ')
+            echo "  Restarting editor-static PID $PID with env: $ENVS"
+            sudo -n kill "$PID" 2>/dev/null || true
+            # Also kill the sudo parent if present (launch-editor-static
+            # wraps the node process in `sudo -b nohup bash launch-...`).
+            PARENT=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+            if [ -n "$PARENT" ] && [ "$PARENT" != "1" ]; then
+                sudo -n kill "$PARENT" 2>/dev/null || true
+            fi
+            for _i in 1 2 3 4 5; do
+                if ! kill -0 "$PID" 2>/dev/null; then break; fi
+                sleep 1
+            done
+            # Relaunch with the same env. sudo -b runs in background;
+            # nohup keeps it alive past the shell exit.
+            sudo -b -n env $ENVS nohup bash "$SCRIPT_DIR/launch-editor-static.sh" \
+                > "/tmp/editor-static-restart-$PID.log" 2>&1 &
+        done
+        sleep 3
+        NEW_PIDS=$(pgrep -f "node .*editor-static-server\.js" | tr '\n' ' ')
+        echo "  editor-static-server restarted (new PIDs: $NEW_PIDS)"
     else
-        echo "  WARNING: editor-static-server not running"
+        echo "  NOTE: editor-static-server not running — fresh start not handled by deploy.sh, run launch-editor-static.sh manually"
     fi
 
     # ── Restart message-relay so every client reconnects against new code ──
