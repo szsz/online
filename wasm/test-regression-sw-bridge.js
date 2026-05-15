@@ -87,6 +87,21 @@ function readRepo(rel) {
         loader.includes('sw-bridge-response')
         && /navigator\.serviceWorker\.controller\.postMessage/.test(loader));
 
+    // 4b. cache-bust-build.js (the build-time HTML shim) MUST install a
+    // Module.preInit that awaits __swBridgeReady. Without this gate,
+    // kit's first GET /wasm/<fileId> races SW activation; on a fresh
+    // browser context (every test gets one via isolatedContext) the SW
+    // typically activates 50-500ms after iframe load while kit's
+    // request can fire earlier. The bypassed request hits the editor
+    // origin which has no /wasm/ endpoint → 404 → kit can't load →
+    // canvas never paints → 180s cross-type watchdog → test fails.
+    // ~40 of 60 phase-1 failures share this root cause.
+    const shim = readRepo('tools/cache-bust-build.js');
+    check('cache-bust-build.js: HTML shim adds Module.preInit',
+        /existing\.preInit\s*=\s*existing\.preInit\s*\|\|\s*\[\]/.test(shim));
+    check('cache-bust-build.js: preInit awaits __swBridgeReady',
+        /preInit\.push[\s\S]{0,200}__swBridgeReady/.test(shim));
+
     // 5. viewer-public/index.html staged-cache wiring.
     const viewerIdx = readRepo('viewer-public/index.html');
     check('viewer-public/index.html: loads lib/editor-bridge.js',
