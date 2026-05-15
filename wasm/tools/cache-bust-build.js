@@ -141,6 +141,23 @@ function buildShim() {
     if (typeof prevLocate === 'function') return prevLocate.call(this, mapped, prefix);
     return (prefix || '') + mapped;
   };
+  // Gate Emscripten startup on sw-bridge.js becoming this iframe's
+  // controller. Without this, kit fires the first GET /wasm/<fileId>
+  // before navigator.serviceWorker.controller is set; the request
+  // bypasses the bridge and falls through to the editor origin (Front
+  // Door on Azure, editor-static-server.js locally) which has no
+  // /wasm/ endpoint → 404 → kit can't load → canvas never paints →
+  // 180s cross-type watchdog → test fails with chars=-1 or frame
+  // detached. window.__swBridgeReady is exposed by wasm-loader.js
+  // (~line 171); preInit returning a Promise blocks _main() until it
+  // resolves. .catch(()=>{}) so a non-SW-capable runtime still boots —
+  // worst case is the same pre-fix behaviour for that one client.
+  existing.preInit = existing.preInit || [];
+  existing.preInit.push(function() {
+    if (typeof window.__swBridgeReady !== 'undefined' && window.__swBridgeReady) {
+      return window.__swBridgeReady.catch(function(){});
+    }
+  });
   window.Module = existing;
   try {
     var __p = new URLSearchParams(window.location.search);
