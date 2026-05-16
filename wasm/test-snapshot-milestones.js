@@ -35,17 +35,22 @@ const { uploadV2 } = require('./lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const OUT_DIR = '/tmp/hot-switch-report/snapshot-milestones';
 const T0 = Date.now();
-// Cold sessions use the full timeout (cold can take 25-40s; we allow
-// slack). Warm sessions get a tighter budget — passing warms complete
-// in 10-15s; if a trial hasn't verified by 60s it's hung, no need to
-// wait the full 180s.
+// Cold sessions get 50s; warm sessions get 10s. These are the true
+// budgets — typical good runs verify in 25-40s cold and 7-11s warm,
+// so 50s/10s leave only modest headroom (10-25s slack on cold, 0s on
+// warm). If a trial hasn't verified by then, something is broken; no
+// reason to wait minutes for the symptom to settle. Previous looser
+// 180s/60s budgets masked the FD-migration cluster failure as a slow
+// test (the test ran 37 min while the kit never actually loaded the
+// WASM module) — tightening forces fast failure when the product is
+// broken.
 // Iter 79: scaled via env.scaleTimeout — under JOBS_SCALE>1 the
 // per-trial wait widens proportionally so the wrapper's "any-trial
 // verified" gate gets the patience it needs under contention. The
 // WARM_BUDGET_MS gate below stays unscaled; it's the actual perf
 // regression detector and should fail when warm gets slow.
-const TIMEOUT_MS = env.scaleTimeout(180000);
-const WARM_TIMEOUT_MS = env.scaleTimeout(60000);
+const TIMEOUT_MS = env.scaleTimeout(50000);
+const WARM_TIMEOUT_MS = env.scaleTimeout(10000);
 // Wall-time budget for a warm trial. Typical good runs verify in 7-11 s
 // (writer/calc) and 9-12 s (impress). Under CPU contention from
 // concurrent puppeteer Chromes (parallel test runner JOBS≥2, or the
