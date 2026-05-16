@@ -1617,8 +1617,8 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 				// Tidy up the kit-side temp dir — in the HTTP flow
 				// ClientRequestDispatcher unlinks after streaming; here
 				// nothing else ever reads it.
-				try { window.__wasmFS.unlink(path); } catch (e) {}
-				try { window.__wasmFS.rmdir('/tmp/user/docs/' + command.downloadid); } catch (e) {}
+				try { window.__wasmFS.unlink(path); } catch (e) { void e; }
+				try { window.__wasmFS.rmdir('/tmp/user/docs/' + command.downloadid); } catch (e) { void e; }
 
 				this._map.hideBusy();
 				if (this._map['wopi'].DownloadAsPostMessage) {
@@ -1639,7 +1639,7 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 				// blob URLs leak GC roots; revoke after a long enough delay
 				// to cover the print iframe load + dialog open (mirrors the
 				// 300s _closePrintIframe budget in Map.Print.js).
-				setTimeout(function () { try { URL.revokeObjectURL(blobUrl); } catch (e) {} }, 300000);
+				setTimeout(function () { try { URL.revokeObjectURL(blobUrl); } catch (e) { void e; } }, 300000);
 				return;
 			} catch (e) {
 				console.warn('[wasm-print] fallback to HTTP after FS read failed:', e && e.message);
