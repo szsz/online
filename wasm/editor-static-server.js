@@ -325,9 +325,22 @@ function handler(req, res) {
                 };
                 _coolCache.set(filepath, entry);
             }
+            // Cache policy: path-keyed cool.html (under /<EDITOR_BUILD_ID>/…)
+            // is immutable by construction — the URL contains the deploy
+            // ID so the bytes at that URL never change. Flat-layout
+            // cool.html (at /browser/cool.html) is mutated by every
+            // deploy, so it stays no-cache. The path-keyed check matches
+            // an 8+-digit segment that starts with a date prefix
+            // (e.g. /2026-05-16-113700/...) — same shape resolve-ids.sh
+            // emits. The caching test (test-caching.js Test 3) locks
+            // this behaviour: path-keyed cool.html MUST include
+            // 'immutable' in Cache-Control.
+            const pathKeyed = /^\/\d{4}-\d{2}-\d{2}-\d+\//.test(pathname);
             const headers = {
                 'Content-Type': 'text/html; charset=utf-8',
-                'Cache-Control': 'no-cache',
+                'Cache-Control': pathKeyed
+                    ? 'public, max-age=31536000, immutable'
+                    : 'no-cache',
                 'ETag': entry.etag,
                 'Last-Modified': new Date(stat.mtimeMs).toUTCString(),
             };
