@@ -77,6 +77,26 @@ async function openSecretInBrowser(browser, viewerUrl, b64urlSecret, opts) {
         + (opts.urlSuffix || '');
     if (opts.singleUser) url = url.replace('/#', '/?singleuser#');
 
+    // JOBS_SCALE wiring. Under parallel test runners (JOBS=2+) on the
+    // self-hosted runner, CPU contention slows canvas paint enough to
+    // trip the viewer's 180s cross-type watchdog, tearing the iframe
+    // down mid-test. The viewer reads ?ws=N and uses it as a multiplier
+    // on those budgets. We append ?ws=$JOBS_SCALE here so every test
+    // that opens via this helper inherits the widening. opts.urlSuffix
+    // is preserved (it's after the hash so doesn't conflict with the
+    // search-string `ws` param).
+    const _jobsScale = parseInt(process.env.JOBS_SCALE || '1', 10);
+    if (Number.isFinite(_jobsScale) && _jobsScale > 1) {
+        // Inject ?ws= into the search portion (before the hash). Handle
+        // existing ?singleuser case by appending with & instead.
+        const _hashIdx = url.indexOf('#');
+        const _searchEnd = _hashIdx === -1 ? url.length : _hashIdx;
+        const _hasSearch = url.slice(0, _searchEnd).includes('?');
+        const _sep = _hasSearch ? '&' : '?';
+        url = url.slice(0, _searchEnd) + _sep + 'ws=' + _jobsScale
+            + url.slice(_searchEnd);
+    }
+
     await page.goto(url, {
         waitUntil: 'domcontentloaded',
         timeout: opts.gotoTimeout || 60000,

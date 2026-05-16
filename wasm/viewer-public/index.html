@@ -167,6 +167,31 @@ function viewerLog(label) {
 }
 viewerLog('Viewer page JS started');
 
+// JOBS_SCALE-aware budgets. Tests under parallel runners (JOBS=2+) on
+// the self-hosted runner share CPU/RAM with other puppeteer Chromes,
+// so canvas paint takes longer. The runner exports JOBS_SCALE as an
+// env var to its test processes; lib/open-via-viewer.js then appends
+// ?ws=<scale> to the viewer URL when launching the page. This viewer
+// reads ?ws=N and uses it as a multiplier on the per-page watchdogs
+// that otherwise tear the iframe down before the kit can finish
+// painting heavy docs.
+//
+// Bounds: clamp to [1, 8] so a malformed param can't blow up the
+// budget into hours. Default 1 = production behaviour unchanged.
+window.__JOBS_SCALE = (function() {
+    try {
+        var raw = new URLSearchParams(window.location.search).get('ws');
+        var n = parseInt(raw || '1', 10);
+        if (!Number.isFinite(n) || n < 1) return 1;
+        if (n > 8) return 8;
+        return n;
+    } catch (e) { return 1; }
+})();
+if (window.__JOBS_SCALE !== 1) {
+    console.log('[viewer] JOBS_SCALE=' + window.__JOBS_SCALE
+        + ' — canvas-paint watchdog and friends widen accordingly');
+}
+
 // armWOPIReady — open the kit's WOPI postMessage gate.
 // Posts Host_PostmessageReady so window.WOPIPostmessageReady flips
 // true in cool.html (set in browser/js/global.js:449 on receipt).
@@ -1366,13 +1391,15 @@ async function openFile(name, opts) {
             // captured snapshot.
             if (!opts.__crossTypeRetry) {
                 clearTimeout(window.__crossTypeWatchdog);
+                var __watchdogMs = 180000 * (window.__JOBS_SCALE || 1);
                 window.__crossTypeWatchdog = setTimeout(function() {
                     // WasmPrewarmReady fires only when canvas actually paints.
                     // If __lastPaintedFile matches the file we expected, the
                     // load succeeded and we don't need to recover.
                     if (window.__lastPaintedFile === name) return;
                     console.warn('[viewer] Cross-type canvas-paint watchdog '
-                        + '(180s) — no WasmPrewarmReady, recreating with planc=0');
+                        + '(' + (__watchdogMs / 1000) + 's) — no WasmPrewarmReady, '
+                        + 'recreating with planc=0');
                     window.__warmRestoreFailedThisSession = true;
                     // Reset state so the retry takes a clean cold path.
                     currentFile = null;
@@ -1391,7 +1418,7 @@ async function openFile(name, opts) {
                     } catch (e) {
                         console.error('[viewer] cross-type watchdog retry failed', e);
                     }
-                }, 180000);
+                }, __watchdogMs);
             }
 
             filePromise.then(buf => {
