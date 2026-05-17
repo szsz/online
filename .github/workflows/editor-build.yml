@@ -44,6 +44,14 @@ on:
       - 'wasm/LO_BUILD_ID'
       - 'browser/**'
       - 'coolwsd/**'
+      # C++ kit sources and shared utilities — both compile into the
+      # WASM editor (online.wasm). Without these in the filter, a kit
+      # fix like the print-button create_directory crash (PR #108)
+      # merges to dev but never triggers a rebuild, so the bug stays
+      # live on Front Door even though the source says it's fixed.
+      - 'common/**'
+      - 'kit/**'
+      - 'net/**'
       - 'configure.ac'
       - 'Makefile.am'
       - '.github/workflows/editor-build.yml'
