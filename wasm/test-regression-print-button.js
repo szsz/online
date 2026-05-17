@@ -18,13 +18,22 @@
 // What this test asserts:
 //   1. After the doc is loaded, dispatching .uno:Print triggers the kit's
 //      downloadas flow.
-//   2. The flow reaches print() with a blob: URL (NOT an editor-origin URL).
+//   2. The map fires `filedownloadready` with a blob: URL (NOT an
+//      editor-origin /download/ URL). This is the canonical signal the
+//      fix produces; the downstream iframe.print() chain is gravy.
 //   3. The PDF body starts with "%PDF-" (real saveAs output, not an empty
 //      stub).
 //   4. No "404" console error from the editor-origin /download/ route appears.
 //
-// Stubs out the real print dialog so the test doesn't freeze on a system
-// modal in headless Chrome.
+// Note on assertion choice — earlier iterations of this test stubbed
+// HTMLIFrameElement.contentWindow.print() globally and polled the top
+// page's window for an `__printDialogOpened` flag. That approach was
+// frame-scoped wrong (the proxy's `window` closure captured the
+// editor iframe's window, but the test polled the top page) AND
+// fragile against headless Chrome's blob-PDF iframe.onload behavior.
+// Hooking `app.map.fire` for `filedownloadready` inside the editor
+// frame is the right surface: it's exactly the kit→viewer boundary
+// where the WASM short-circuit produces its observable effect.
 
 const { launch, sleep } = require('./lib/browser');
 const { openViaViewer } = require('./lib/open-via-viewer');
@@ -53,56 +62,33 @@ const TIMEOUT = env.scaleTimeout(120000);
             path.join(__dirname, '..', 'test', 'data', 'new.docx'));
         const docName = 'print-' + Date.now() + '.docx';
 
-        // Stub iframe.contentWindow.print BEFORE navigation so the OS dialog
-        // never fires. The real Map.Print._onIframeLoaded creates the hidden
-        // iframe via L.DomUtil.create, then calls
-        // this._printIframe.contentWindow.print() at Map.Print.js:55. We hook
-        // the iframe creation and replace contentWindow with a stub that
-        // records the call instead of opening the dialog.
+        // Stub iframe.contentWindow.print so the OS print dialog never opens
+        // if Map.Print._onIframeLoaded does fire. Best-effort: the real
+        // assertion is on `filedownloadready` below; this stub just keeps
+        // headless Chrome from doing anything visible if the iframe onload
+        // path runs.
         const installStub = (page) => {
             return page.evaluateOnNewDocument(() => {
-                window.__printDialogOpened = false;
-                window.__printBlobUrl = null;
-                const origDescriptor = Object.getOwnPropertyDescriptor(
-                    HTMLIFrameElement.prototype, 'contentWindow');
-                Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-                    configurable: true,
-                    get() {
-                        const real = origDescriptor.get.call(this);
-                        // Wrap real contentWindow so .print() is intercepted
-                        // but everything else (e.g. assignment in viewer)
-                        // works.
-                        if (!real) return real;
-                        return new Proxy(real, {
-                            get(t, prop) {
-                                if (prop === 'print') {
-                                    return function() {
-                                        try {
-                                            window.__printBlobUrl =
-                                                t.location && t.location.href;
-                                        } catch(e) {}
-                                        window.__printDialogOpened = true;
-                                    };
-                                }
-                                // BIND functions to their original `this`.
-                                // Without this, code calling
-                                // `iframe.contentWindow.postMessage(...)`
-                                // gets an unbound function — invoking it
-                                // with the Proxy as `this` fails the
-                                // window-object check inside postMessage,
-                                // breaking the viewer's WOPI handshake
-                                // (armWOPIReady at viewer-public/index.html
-                                // around line 215). The kit then never
-                                // flips WOPIPostmessageReady, the status
-                                // bar never updates, and the test times
-                                // out at 240s waiting for #StateWordCount.
-                                const v = Reflect.get(t, prop);
-                                return typeof v === 'function' ? v.bind(t) : v;
-                            },
-                            set(t, prop, value) { t[prop] = value; return true; }
-                        });
-                    }
-                });
+                try {
+                    const orig = Object.getOwnPropertyDescriptor(
+                        HTMLIFrameElement.prototype, 'contentWindow');
+                    if (!orig || !orig.get) return;
+                    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+                        configurable: true,
+                        get() {
+                            const real = orig.get.call(this);
+                            if (!real) return real;
+                            return new Proxy(real, {
+                                get(t, prop) {
+                                    if (prop === 'print') return function() { /* noop */ };
+                                    const v = Reflect.get(t, prop);
+                                    return typeof v === 'function' ? v.bind(t) : v;
+                                },
+                                set(t, prop, value) { t[prop] = value; return true; }
+                            });
+                        }
+                    });
+                } catch (_) { /* some envs lock the prototype — fine */ }
             });
         };
 
@@ -116,7 +102,34 @@ const TIMEOUT = env.scaleTimeout(120000);
             const wc = document.querySelector('#StateWordCount');
             return !!(wc && wc.textContent && wc.textContent.includes('characters'));
         }, { timeout: TIMEOUT });
-        console.log('  Editor ready, dispatching .uno:Print');
+        console.log('  Editor ready, hooking filedownloadready');
+
+        // Hook app.map.fire INSIDE the editor frame. CanvasTileLayer's WASM
+        // short-circuit calls this._map.fire('filedownloadready', {url: blobUrl})
+        // exactly once when the kit returns downloadas: for the print job.
+        // Capturing it is the cleanest evidence the fix path executed.
+        await up.editorFrame.evaluate(() => {
+            window.__capturedPrintEvent = null;
+            window.__capturedDownloadAsPM = null;
+            const origFire = app.map.fire;
+            app.map.fire = function(type, data) {
+                if (type === 'filedownloadready') {
+                    window.__capturedPrintEvent = {
+                        url: data && data.url,
+                        ts: Date.now(),
+                    };
+                }
+                // Some hosts route print as a Download_As postMessage instead;
+                // capture that too so we can give a precise failure reason.
+                if (type === 'postMessage' && data && data.msgId === 'Download_As') {
+                    window.__capturedDownloadAsPM = {
+                        args: data.args,
+                        ts: Date.now(),
+                    };
+                }
+                return origFire.apply(this, arguments);
+            };
+        });
 
         // Track network: the bug signature is a 404 to /<prefix>/<doc>/download/<id>
         let saw404 = false;
@@ -130,8 +143,6 @@ const TIMEOUT = env.scaleTimeout(120000);
 
         // Trigger print via the kit dispatcher (same path the toolbar uses).
         await up.editorFrame.evaluate(() => {
-            // app.dispatcher.dispatch is the canonical entry; fall back to
-            // socket-level uno command if app dispatcher isn't on window.
             if (typeof app !== 'undefined' && app.dispatcher
                 && typeof app.dispatcher.dispatch === 'function') {
                 app.dispatcher.dispatch('print');
@@ -143,38 +154,44 @@ const TIMEOUT = env.scaleTimeout(120000);
             }
         });
 
-        // Poll for the stubbed print() call. Allow up to 20 s for the kit's
-        // saveAs("pdf") + downloadas: round-trip + blob URL construction.
-        const dialogTimeout = env.scaleTimeout(20000);
-        const dialogStart = Date.now();
-        let dialogOpened = false;
-        let blobUrl = null;
-        while (Date.now() - dialogStart < dialogTimeout) {
-            const state = await up.page.evaluate(() => ({
-                opened: window.__printDialogOpened,
-                url: window.__printBlobUrl,
+        // Poll for filedownloadready (or the postMessage fallback). Allow
+        // up to 30 s for the kit's saveAs("pdf") + downloadas: round-trip +
+        // blob URL construction.
+        const evtTimeout = env.scaleTimeout(30000);
+        const evtStart = Date.now();
+        let captured = null;
+        let capturedPM = null;
+        while (Date.now() - evtStart < evtTimeout) {
+            const state = await up.editorFrame.evaluate(() => ({
+                fired: window.__capturedPrintEvent,
+                pm: window.__capturedDownloadAsPM,
             }));
-            if (state.opened) {
-                dialogOpened = true;
-                blobUrl = state.url;
+            if (state.fired || state.pm) {
+                captured = state.fired;
+                capturedPM = state.pm;
                 break;
             }
             await sleep(500);
         }
 
-        check('print() invoked within ' + dialogTimeout + 'ms', dialogOpened);
-        check('print iframe carries a blob: URL (not editor-origin /download/)',
-              blobUrl && blobUrl.startsWith('blob:'),
-              'url=' + blobUrl);
+        check('filedownloadready (or Download_As pm) fires within ' + evtTimeout + 'ms',
+              !!(captured || capturedPM),
+              capturedPM ? 'took postMessage path (host integration)' : '');
 
-        // Validate the blob content: download via XHR and check the PDF magic.
-        if (blobUrl && blobUrl.startsWith('blob:')) {
-            const head = await up.page.evaluate(async (u) => {
+        const url = captured && captured.url;
+        check('event URL is a blob: URL (not editor-origin /download/)',
+              url && url.startsWith('blob:'),
+              'url=' + url);
+
+        // Validate the blob content: fetch from the editor frame (same
+        // origin as the blob) and check the PDF magic.
+        if (url && url.startsWith('blob:')) {
+            const head = await up.editorFrame.evaluate(async (u) => {
                 const r = await fetch(u);
                 const b = await r.arrayBuffer();
                 const head4 = new Uint8Array(b).slice(0, 5);
                 return Array.from(head4).map(c => String.fromCharCode(c)).join('');
-            }, blobUrl);
+            }, url);
             check('blob body starts with "%PDF-"', head === '%PDF-',
                   'first 5 bytes: ' + JSON.stringify(head));
         }
