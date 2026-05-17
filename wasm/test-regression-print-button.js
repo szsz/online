@@ -92,10 +92,28 @@ const TIMEOUT = env.scaleTimeout(120000);
             });
         };
 
+        // Capture browser console lines that mention the print/downloadas
+        // pipeline. In WASM mode the kit's `LOG_DBG`/`LOG_ERR` from
+        // ChildSession::downloadAs route through Emscripten to console.log
+        // — surfacing them tells us whether saveAs() actually ran and what
+        // jail path it used. Capped to avoid blowing up the report.
+        const kitLines = [];
+        const onConsole = (msg) => {
+            try {
+                const t = msg.text();
+                if (/downloadas|saveAs|SaveAs|registerdownload|filterDownloadAs|cmd=downloadas/i.test(t)) {
+                    if (kitLines.length < 50) kitLines.push(t.substring(0, 300));
+                }
+            } catch (_) { /* */ }
+        };
+
         const up = await openViaViewer(browser, VIEWER, docName, docBytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true,
-              onPage: installStub });
+              onPage: (page) => {
+                  page.on('console', onConsole);
+                  return installStub(page);
+              } });
 
         // Wait for the doc to be loaded enough that .uno:Print would succeed.
         await up.editorFrame.waitForFunction(() => {
@@ -254,6 +272,8 @@ const TIMEOUT = env.scaleTimeout(120000);
         console.log('    got downloadas: reply: ' + JSON.stringify(post.got));
         console.log('    map.fire events seen (last 30): '
             + JSON.stringify(post.fired));
+        console.log('    kit console lines matching pipeline (count=' + kitLines.length + '):');
+        for (const line of kitLines) console.log('      | ' + line);
 
         check('filedownloadready (or Download_As pm) fires within ' + evtTimeout + 'ms',
               !!(captured || capturedPM),
