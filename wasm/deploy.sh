@@ -227,8 +227,14 @@ if [ "$DO_RESTART" = true ]; then
             done
             # Relaunch with the same env. sudo -b runs in background;
             # nohup keeps it alive past the shell exit.
+            # `200>&-` closes the deploy.sh flock fd (line 40) before
+            # the child takes over. Without it, the nohup'd service
+            # inherits fd 200 and never releases the lock, so the next
+            # deploy fails with "another deploy is running" until
+            # someone manually `rm`s /tmp/static-deploy*.lock — a
+            # recurring operational headache.
             sudo -b -n env $ENVS nohup bash "$SCRIPT_DIR/launch-editor-static.sh" \
-                > "/tmp/editor-static-restart-$PID.log" 2>&1 &
+                > "/tmp/editor-static-restart-$PID.log" 2>&1 200>&- &
         done
         sleep 3
         NEW_PIDS=$(pgrep -f "node .*editor-static-server\.js" | tr '\n' ' ')
@@ -245,7 +251,7 @@ if [ "$DO_RESTART" = true ]; then
             pgrep -f "node.*message-relay" >/dev/null 2>&1 || break
             sleep 1
         done
-        nohup bash "$SCRIPT_DIR/launch-relay.sh" > /tmp/relay.log 2>&1 &
+        nohup bash "$SCRIPT_DIR/launch-relay.sh" > /tmp/relay.log 2>&1 200>&- &
         sleep 2
         NEW_RELAY_PID=$(pgrep -f "node.*message-relay" | head -1)
         if [ -n "$NEW_RELAY_PID" ]; then
@@ -255,7 +261,7 @@ if [ "$DO_RESTART" = true ]; then
         fi
     else
         echo "  NOTE: message-relay not running — starting fresh"
-        nohup bash "$SCRIPT_DIR/launch-relay.sh" > /tmp/relay.log 2>&1 &
+        nohup bash "$SCRIPT_DIR/launch-relay.sh" > /tmp/relay.log 2>&1 200>&- &
         sleep 2
     fi
 fi
