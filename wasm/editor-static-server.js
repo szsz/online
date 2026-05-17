@@ -387,13 +387,17 @@ function handler(req, res) {
             // is immutable by construction — the URL contains the deploy
             // ID so the bytes at that URL never change. Flat-layout
             // cool.html (at /browser/cool.html) is mutated by every
-            // deploy, so it stays no-cache. The path-keyed check matches
-            // an 8+-digit segment that starts with a date prefix
-            // (e.g. /2026-05-16-113700/...) — same shape resolve-ids.sh
-            // emits. The caching test (test-caching.js Test 3) locks
-            // this behaviour: path-keyed cool.html MUST include
-            // 'immutable' in Cache-Control.
-            const pathKeyed = /^\/\d{4}-\d{2}-\d{2}-\d+\//.test(pathname);
+            // deploy, so it stays no-cache. test-caching.js Test 3
+            // asserts path-keyed cool.html MUST include 'immutable' in
+            // Cache-Control.
+            //
+            // Detection: at this point in the request handler the per-
+            // deploy prefix has ALREADY been stripped from `pathname`
+            // (line 200), so a regex on pathname always misses. Use the
+            // `effectivePub !== PUB` signal instead — that's true iff
+            // the request URL carried a /<id>/ prefix the dispatcher
+            // matched.
+            const pathKeyed = (effectivePub !== PUB);
             const headers = {
                 'Content-Type': 'text/html; charset=utf-8',
                 'Cache-Control': pathKeyed
