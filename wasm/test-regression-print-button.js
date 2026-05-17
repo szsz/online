@@ -84,7 +84,20 @@ const TIMEOUT = env.scaleTimeout(120000);
                                         window.__printDialogOpened = true;
                                     };
                                 }
-                                return t[prop];
+                                // BIND functions to their original `this`.
+                                // Without this, code calling
+                                // `iframe.contentWindow.postMessage(...)`
+                                // gets an unbound function — invoking it
+                                // with the Proxy as `this` fails the
+                                // window-object check inside postMessage,
+                                // breaking the viewer's WOPI handshake
+                                // (armWOPIReady at viewer-public/index.html
+                                // around line 215). The kit then never
+                                // flips WOPIPostmessageReady, the status
+                                // bar never updates, and the test times
+                                // out at 240s waiting for #StateWordCount.
+                                const v = Reflect.get(t, prop);
+                                return typeof v === 'function' ? v.bind(t) : v;
                             },
                             set(t, prop, value) { t[prop] = value; return true; }
                         });
