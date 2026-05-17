@@ -156,9 +156,7 @@ RESULTS_DIR="$TEST_OUTPUT_ROOT/reports/.logs"
 } > "$LOG"
 
 JUNIT_BASE_URL="$SITE/local-builds/$APP_BID/tests/output/reports"
-# Match test-and-publish.sh — JOBS=1 default, same reasoning (kit-paint
-# contention under parallel Chromes). Override via TEST_JOBS_OVERRIDE.
-TEST_JOBS="${TEST_JOBS_OVERRIDE:-1}"
+TEST_JOBS="${TEST_JOBS_OVERRIDE:-2}"
 
 # WARM_BUDGET_MS for snapshot-milestones — the test's default is 8000 ms,
 # which the author's own header comment notes is below the typical
