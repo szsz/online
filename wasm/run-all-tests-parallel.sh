@@ -2,14 +2,23 @@
 # run-all-tests-parallel.sh — parallel test suite runner.
 # Uses xargs -P for batching (more reliable than bash job control).
 #
-# Usage:  bash wasm/run-all-tests-parallel.sh        # 2 jobs (default)
-#         JOBS=4 bash wasm/run-all-tests-parallel.sh # legacy parallel-4
+# Usage:  bash wasm/run-all-tests-parallel.sh        # 1 job (default, serial)
+#         JOBS=2 bash wasm/run-all-tests-parallel.sh # legacy parallel-2
 #
-# Iter 215: default dropped from 4→2. JOBS=4 had ±5 fail variance
-# per run because the relay-broker + viewer-server saturate under
-# heavier contention; tests that pass solo timed out in the
-# parallel-4 run. JOBS=2 keeps most of the speedup while halving
-# the contention pressure.
+# History:
+# - JOBS=4 had ±5 fail variance; relay-broker + viewer-server saturated.
+# - JOBS=2 was the default for many iters; gave a ~50% wall-time win
+#   but produced 60-test failures on dev pushes — the kit-paint cluster
+#   (chart, caching, e2e-upload, singleuser, pptx-viewer, ~25 more)
+#   stalled at 360s waiting for canvas paint. Iter 2 widened the
+#   cross-type watchdog by JOBS_SCALE (so 720s) and recovered ZERO
+#   tests, proving the issue is resource contention (CPU/RAM/network
+#   between two parallel Chromes each running a full WASM LibreOffice
+#   kit), not a tunable timeout.
+# - JOBS=1 default (this commit) — serial, recovers the kit-paint
+#   cluster. ~8 h wall vs ~4.3 h at JOBS=2. Override with JOBS=2 once
+#   SW-bridge fetch backpressure / WASM compile parallelism is rooted
+#   out and recovery becomes reliable.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_OUTPUT_ROOT="${TEST_OUTPUT_ROOT:-/tmp/static-deploy/public}"
@@ -17,7 +26,7 @@ REPORTS_DIR="$TEST_OUTPUT_ROOT/reports"
 SHOTS_BASE="$TEST_OUTPUT_ROOT"
 GENERATOR="$SCRIPT_DIR/generate-report.js"
 LOG_DIR="$REPORTS_DIR/.logs"
-JOBS="${JOBS:-2}"
+JOBS="${JOBS:-1}"
 # Iter 70: scale 2-browser test patience timeouts proportionally to
 # parallelism. See lib/test-env.js scaleTimeout() — tests that route
 # their timeouts through it widen automatically when JOBS_SCALE > 1.
