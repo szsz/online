@@ -15,6 +15,16 @@
 // XHRs (works on blob:), drops into a hidden iframe, and calls
 // iframe.contentWindow.print() to open the OS print dialog.
 //
+// Iters 11+12 diag revealed a second kit-side bug uncovered by the
+// blob-URL fix: ChildSession::downloadAs called
+// FileUtil::createRandomDir(jailDoc), which used non-recursive
+// std::filesystem::create_directory. When jailDoc (/tmp/user/docs)
+// didn't exist in the Emscripten FS at downloadas-time (race with
+// snapshot-inject's lazy mkdir on warm restore), the kit threw
+// `filesystem error: in create_directory: No such file or directory`
+// and silently never replied to the browser. Fixed by switching to
+// create_directories (recursive) in common/FileUtil.cpp.
+//
 // What this test asserts:
 //   1. After the doc is loaded, dispatching .uno:Print triggers the kit's
 //      downloadas flow.
