@@ -104,13 +104,62 @@ const TIMEOUT = env.scaleTimeout(120000);
         }, { timeout: TIMEOUT });
         console.log('  Editor ready, hooking filedownloadready');
 
-        // Hook app.map.fire INSIDE the editor frame. CanvasTileLayer's WASM
-        // short-circuit calls this._map.fire('filedownloadready', {url: blobUrl})
-        // exactly once when the kit returns downloadas: for the print job.
-        // Capturing it is the cleanest evidence the fix path executed.
-        await up.editorFrame.evaluate(() => {
+        // Diagnostics + capture: log every meaningful link in the chain so a
+        // failure points to the exact broken step instead of a generic
+        // "filedownloadready never fired."
+        const diag = await up.editorFrame.evaluate(() => {
             window.__capturedPrintEvent = null;
             window.__capturedDownloadAsPM = null;
+            window.__diag = {
+                hasDispatcher: !!(typeof app !== 'undefined' && app.dispatcher
+                    && typeof app.dispatcher.dispatch === 'function'),
+                hasMapPrint: !!(typeof app !== 'undefined' && app.map
+                    && typeof app.map.print === 'function'),
+                wopiDisablePrint: (typeof app !== 'undefined' && app.map && app.map['wopi'])
+                    ? !!app.map['wopi'].DisablePrint : 'no-wopi-handler',
+                wopiHidePrint: (typeof app !== 'undefined' && app.map && app.map['wopi'])
+                    ? !!app.map['wopi'].HidePrintOption : 'no-wopi-handler',
+                wopiDownloadAsPM: (typeof app !== 'undefined' && app.map && app.map['wopi'])
+                    ? !!app.map['wopi'].DownloadAsPostMessage : 'no-wopi-handler',
+                hasWasmFS: !!window.__wasmFS,
+                hasEmscriptenApp: !!window.ThisIsTheEmscriptenApp,
+                sentMessages: [],
+                gotDownloadasReply: null,
+                firedEvents: [],
+            };
+
+            // Hook outbound: app.socket.sendMessage
+            try {
+                const origSend = app.socket.sendMessage;
+                app.socket.sendMessage = function(msg) {
+                    if (typeof msg === 'string' && (msg.startsWith('downloadas') || msg.indexOf('Print') >= 0)) {
+                        window.__diag.sentMessages.push({ msg: msg.substring(0, 200), ts: Date.now() });
+                    }
+                    return origSend.apply(this, arguments);
+                };
+            } catch (e) { window.__diag.sentMessagesHookErr = e.message; }
+
+            // Hook inbound at the WS layer if reachable, else hook _onMessage.
+            // CanvasTileLayer._onDownloadAsMsg is what fires filedownloadready;
+            // intercept it directly to see if it ever ran.
+            try {
+                const layer = app.map._docLayer || (app.map._layers && Object.values(app.map._layers).find(l => l._onDownloadAsMsg));
+                if (layer && typeof layer._onDownloadAsMsg === 'function') {
+                    const orig = layer._onDownloadAsMsg.bind(layer);
+                    layer._onDownloadAsMsg = function(textMsg) {
+                        window.__diag.gotDownloadasReply = {
+                            msg: typeof textMsg === 'string' ? textMsg.substring(0, 300) : '<non-string>',
+                            ts: Date.now(),
+                        };
+                        return orig(textMsg);
+                    };
+                    window.__diag.downloadAsHooked = true;
+                } else {
+                    window.__diag.downloadAsHooked = false;
+                }
+            } catch (e) { window.__diag.downloadAsHookErr = e.message; }
+
+            // Hook app.map.fire to capture filedownloadready + postMessage events.
             const origFire = app.map.fire;
             app.map.fire = function(type, data) {
                 if (type === 'filedownloadready') {
@@ -119,17 +168,35 @@ const TIMEOUT = env.scaleTimeout(120000);
                         ts: Date.now(),
                     };
                 }
-                // Some hosts route print as a Download_As postMessage instead;
-                // capture that too so we can give a precise failure reason.
                 if (type === 'postMessage' && data && data.msgId === 'Download_As') {
                     window.__capturedDownloadAsPM = {
                         args: data.args,
                         ts: Date.now(),
                     };
                 }
+                if (window.__diag.firedEvents.length < 200
+                    && (type === 'filedownloadready' || type === 'postMessage'
+                        || type === 'docloaded' || type.indexOf('download') >= 0
+                        || type.indexOf('print') >= 0)) {
+                    window.__diag.firedEvents.push({ type: type, ts: Date.now() });
+                }
                 return origFire.apply(this, arguments);
             };
+
+            return {
+                hasDispatcher: window.__diag.hasDispatcher,
+                hasMapPrint: window.__diag.hasMapPrint,
+                wopi: {
+                    DisablePrint: window.__diag.wopiDisablePrint,
+                    HidePrintOption: window.__diag.wopiHidePrint,
+                    DownloadAsPostMessage: window.__diag.wopiDownloadAsPM,
+                },
+                hasWasmFS: window.__diag.hasWasmFS,
+                hasEmscriptenApp: window.__diag.hasEmscriptenApp,
+                downloadAsHooked: window.__diag.downloadAsHooked,
+            };
         });
+        console.log('  diag pre-dispatch: ' + JSON.stringify(diag));
 
         // Track network: the bug signature is a 404 to /<prefix>/<doc>/download/<id>
         let saw404 = false;
@@ -173,6 +240,20 @@ const TIMEOUT = env.scaleTimeout(120000);
             }
             await sleep(500);
         }
+
+        // Dump chain state regardless of pass/fail so the report always
+        // shows where the print pipeline got stuck this run.
+        const post = await up.editorFrame.evaluate(() => ({
+            sent: window.__diag.sentMessages,
+            got: window.__diag.gotDownloadasReply,
+            fired: window.__diag.firedEvents.slice(-30),
+        }));
+        console.log('  diag post-dispatch:');
+        console.log('    sent ' + post.sent.length + ' downloadas/Print message(s): '
+            + JSON.stringify(post.sent));
+        console.log('    got downloadas: reply: ' + JSON.stringify(post.got));
+        console.log('    map.fire events seen (last 30): '
+            + JSON.stringify(post.fired));
 
         check('filedownloadready (or Download_As pm) fires within ' + evtTimeout + 'ms',
               !!(captured || capturedPM),
