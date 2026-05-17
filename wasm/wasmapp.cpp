@@ -199,26 +199,6 @@ static void send2JS(const std::vector<char>& buffer)
         let data = HEAPU8.slice($0, $0 + $1);
         if (!newline) {
             data = new TextDecoder().decode(data);
-            // task #116 iter 8: event-driven doc-ready. Fork `docready:`
-            // text frames to a dedicated global hook BEFORE the
-            // TheFakeWebSocket.onmessage forward. Online's Socket.ts:292
-            // rebinds `onmessage` to its own _slurpMessage handler once
-            // Socket connects, defeating any wrap-then-assign hook the JS
-            // side installed on TheFakeWebSocket directly. send2JS is
-            // upstream of that rebind, so the kit-event dispatch stays
-            // intact for the lifetime of the WASM runtime.
-            // wasm-loader.js installs the receiver (`__onDocReadyFrame`)
-            // at module init — see the recordReadyArrival('kit') call
-            // site there. The forward to TheFakeWebSocket.onmessage runs
-            // afterwards so COOL's normal message processing is unchanged.
-            if (data.length >= 9 && data.charCodeAt(0) === 100 /* 'd' */
-                && data.startsWith('docready:')) {
-                try {
-                    if (typeof globalThis.__onDocReadyFrame === 'function') {
-                        globalThis.__onDocReadyFrame(data);
-                    }
-                } catch (_) { /* swallow — never block the kit's main thread */ }
-            }
         }
 
         globalThis.TheFakeWebSocket.onmessage({data});

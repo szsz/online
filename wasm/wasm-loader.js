@@ -553,29 +553,6 @@
     // `__docReadyFiredFor` to null so the next load re-fires.
     window.__docReadyFiredFor = null;
     window.__docReadyArrivals = {};
-
-    // task #116 iter 8: event-driven doc-ready via C++ send2JS fork.
-    // wasmapp.cpp's send2JS peeks at outbound text frames; when it sees
-    // a `docready:` prefix it fires this hook BEFORE forwarding to
-    // TheFakeWebSocket.onmessage. That bypasses the Socket.ts:292
-    // `onmessage` rebind that defeated the previous JS-side hook on
-    // TheFakeWebSocket (which only saw frames arriving before Socket
-    // connected — rare, since kit emits `docready:` after doc load).
-    //
-    // Set __docReadyHookInstalled here so the existing JS-installer
-    // (installDocReadyHook below) short-circuits — it's a fallback for
-    // an old WASM binary that doesn't have the send2JS fork. The new
-    // path is the authoritative one and survives the rebind.
-    window.__docReadyHookInstalled = true;
-    globalThis.__onDocReadyFrame = function (frame) {
-        try {
-            if (typeof frame !== 'string') return;
-            if (frame.indexOf('docready:') !== 0) return;
-            recordReadyArrival('kit');
-            fireDocReady({ source: 'kit', type: 'lok-callback' });
-        } catch (_) { /* swallow — never block the kit's main thread */ }
-    };
-    mark('docready-hook:installed-globalfn');
     function fireDocReady(opts) {
         opts = opts || {};
         var key = String(opts.filename || window.__wasmLoadedDocName ||
