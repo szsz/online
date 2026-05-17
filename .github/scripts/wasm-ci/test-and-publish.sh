@@ -24,7 +24,7 @@
 #
 # Override with env:
 #   TEST_TARGET=azure-deploy   # legacy single-Azure-phase mode (skips local)
-#   TEST_JOBS_OVERRIDE=N       # parallelism for the local main run (default 1)
+#   TEST_JOBS_OVERRIDE=N       # parallelism for the local main run (default 2)
 #   SKIP_AZURE_SMOKE=1         # skip phase 2 entirely
 #   AZURE_SMOKE_DOWNLOAD_MS=N  # override the 30 s download budget
 set -euo pipefail
@@ -324,18 +324,7 @@ fi
 } > "$LOG"
 
 # ── Phase 1: run the full TESTS array via the parallel runner ────────
-# JOBS default is 1 (serial). At JOBS=2 the runner regularly produced
-# 60-failure dev pushes — the kit-paint cluster (chart, caching,
-# e2e-upload, singleuser, pptx-viewer, ~25 more) stalled at 360s
-# waiting for canvas paint or status-bar text. Iter 2's JOBS_SCALE
-# watchdog widening doubled the budget to 720s and recovered zero
-# tests, proving the issue is resource contention (CPU/RAM/network
-# between two parallel Chromes each running a full WASM LibreOffice
-# kit) rather than a tunable timeout. Serial keeps the suite at
-# ~8 h wall but recovers the kit-paint cluster; flip to 2 via
-# TEST_JOBS_OVERRIDE=2 once the underlying contention is rooted out
-# (SW-bridge fetch backpressure / WASM compile parallelism).
-TEST_JOBS="${TEST_JOBS_OVERRIDE:-1}"
+TEST_JOBS="${TEST_JOBS_OVERRIDE:-2}"
 # Pass the eventual public URL of the per-test reports through to the
 # JUnit emitter so each <testcase> has a clickable deep-link.
 JUNIT_BASE_URL="$SITE/app-builds/$APP_BID/tests/output/reports"
