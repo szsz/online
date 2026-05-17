@@ -97,6 +97,16 @@ echo "=== All tests done in ${TOTAL_WALL}s wall ==="
 TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 PASSED=0; FAILED=0; TOTAL=0
 ROWS_HTML=""
+# HTML-escape title/description before injecting into the table cells.
+# A literal `<id>` (e.g. in "/wasm/<id>?access_token=…") in a test
+# description used to make the browser parser treat it as an unknown
+# HTML tag and swallow the rest of the table — a row 46 test's `<id>`
+# truncated the rendered table to 46 rows on build 2026-05-17-085355,
+# while the summary at the top still showed Total: 107.
+html_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\\&#39;/g"
+}
+
 i=1
 for entry in "${TESTS[@]}"; do
     IFS='|' read -r slug script title description shots_name <<< "$entry"
@@ -108,9 +118,12 @@ for entry in "${TESTS[@]}"; do
     fi
     TOTAL=$((TOTAL + 1))
     if [ "$status" = "pass" ]; then PASSED=$((PASSED + 1)); else FAILED=$((FAILED + 1)); fi
-    ROWS_HTML+="<tr class=\"$status\"><td>$i</td><td><a href=\"$slug.html\">$title</a></td>"
+    title_esc=$(html_escape "$title")
+    desc_esc=$(html_escape "$description")
+    slug_esc=$(html_escape "$slug")
+    ROWS_HTML+="<tr class=\"$status\"><td>$i</td><td><a href=\"${slug_esc}.html\">${title_esc}</a></td>"
     ROWS_HTML+="<td class=\"s\">$status</td><td class=\"dur\">${elapsed}</td>"
-    ROWS_HTML+="<td>$description</td></tr>"
+    ROWS_HTML+="<td>${desc_esc}</td></tr>"
     i=$((i + 1))
 done
 
@@ -143,8 +156,14 @@ Failed: <span class="fail-count">${FAILED}</span></p>
 
 <div class="embed-section">
 <h2>Snapshot Milestones (per-doc cold/warm × N=3 trials)</h2>
-<p><a href="/report/snapshot-milestones/">Open in new tab →</a></p>
-<iframe src="/report/snapshot-milestones/"></iframe>
+<!-- Relative path resolves on both local viewer and Azure publish.
+     The rich report is mirrored to ../snapshot-milestones/ (sibling
+     of this reports/ dir) by test-and-publish.sh and the local
+     deploy. /report/snapshot-milestones/ (absolute) only worked on
+     the local viewer with its `/report/*` static route, not on the
+     coolwasmfiles.z6.web.core.windows.net publish path. -->
+<p><a href="../snapshot-milestones/">Open in new tab →</a></p>
+<iframe src="../snapshot-milestones/"></iframe>
 </div>
 
 </body></html>
