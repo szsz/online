@@ -320,8 +320,48 @@ function handler(req, res) {
     // revalidation. Substitution happens once per mtime, cache holds
     // the substituted bytes.
     if (pathname.endsWith('/cool.html')) {
-        const filepath = path.join(effectivePub, pathname);
-        if (fs.existsSync(filepath)) {
+        let filepath = path.join(effectivePub, pathname);
+        // Apply the same dist→bridge rewrite as the generic file branch
+        // below uses. The viewer's iframe URL is always
+        // /browser/dist/cool.html, but deploy.sh flattens dist/* into the
+        // browser/ dir, so /browser/dist/cool.html as-is doesn't exist on
+        // disk. Without this rewrite the substitution handler skips
+        // (fs.existsSync=false), the request falls through to the generic
+        // file branch, the file gets served WITHOUT substitution, and the
+        // literal `%ACCESS_TOKEN%` placeholders end up in the kit's doc
+        // fetch URL → 404 → kit exits → kit-paint failure cluster. The
+        // bug landed in the previous fix because the dist→bridge rewrite
+        // happened only in the generic branch; this re-applies it inside
+        // the cool.html handler so substitution sees the right file.
+        if ((!fs.existsSync(filepath) || !fs.statSync(filepath).isFile()) &&
+            pathname.startsWith('/browser/dist/')) {
+            const rewritten = '/browser/' + pathname.slice('/browser/dist/'.length);
+            const alt = path.join(effectivePub, rewritten);
+            if (fs.existsSync(alt) && fs.statSync(alt).isFile()) {
+                filepath = alt;
+            }
+        }
+        // Per-deploy fallback (mirrors the generic branch's flat-$PUB
+        // retry): when effectivePub is a per-deploy folder and the file
+        // isn't there, retry at the flat $PUB root (with the same
+        // dist→bridge rewrite applied).
+        if (effectivePub !== PUB &&
+            (!fs.existsSync(filepath) || !fs.statSync(filepath).isFile())) {
+            const flatCandidates = [
+                path.join(PUB, pathname),
+            ];
+            if (pathname.startsWith('/browser/dist/')) {
+                flatCandidates.push(path.join(PUB,
+                    '/browser/' + pathname.slice('/browser/dist/'.length)));
+            }
+            for (const cand of flatCandidates) {
+                if (fs.existsSync(cand) && fs.statSync(cand).isFile()) {
+                    filepath = cand;
+                    break;
+                }
+            }
+        }
+        if (fs.existsSync(filepath) && fs.statSync(filepath).isFile()) {
             const stat = fs.statSync(filepath);
             let entry = _coolCache.get(filepath);
             if (!entry || entry.mtimeMs !== stat.mtimeMs) {
