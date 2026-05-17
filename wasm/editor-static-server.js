@@ -301,27 +301,45 @@ function handler(req, res) {
         }
     }
 
-    // cool.html is served as-is. The build step (cache-bust-build.js)
-    // already rewrote asset refs to hashed names, injected the loading
-    // overlay + custom loaders + Module.locateFile shim, and stripped
-    // branding hooks. Cache-Control: no-cache so a deploy is picked up
-    // on the next refresh.
+    // cool.html is served with template-placeholder substitution baked
+    // in at read time. The COOL build emits placeholders %ACCESS_TOKEN%,
+    // %ACCESS_TOKEN_TTL%, %BRANDING_THEME%, etc.; the pre-FD editor-
+    // server.js did this per-request, deploy-front-door.sh does it via
+    // sed at upload time for the FD path. This server is the third path
+    // (local dev box + CI Phase 1's locally-launched stack) — without
+    // the substitution, the kit reads cool.html, finds a literal
+    // "%ACCESS_TOKEN%", appends it to the document fetch URL, and the
+    // resulting `/wasm/<id>?access_token=%ACCESS_TOKEN%&access_token_ttl=
+    // %ACCESS_TOKEN_TTL%` returns 404. That hangs the kit at
+    // COOLWSD::run() entry, which is the kit-paint failure cluster
+    // (chart, caching, e2e-upload, singleuser, pptx-viewer,
+    // snapshot-milestones — ~25 tests) we've been hunting through 3+
+    // iterations. Defaults match deploy-front-door.sh's sed args.
     //
-    // Iter 58: cache the body in memory keyed on mtime + emit ETag so
-    // the iframe's revisit hits 304. The previous early-return skipped
-    // the generic ETag block below, which meant every iframe load got
-    // a full-body 200 even though the browser already had it. Mirrors
-    // editor-server.js iter 53 (Azure side).
+    // Iter 58 baseline: in-memory cache keyed on mtime + ETag for 304
+    // revalidation. Substitution happens once per mtime, cache holds
+    // the substituted bytes.
     if (pathname.endsWith('/cool.html')) {
         const filepath = path.join(effectivePub, pathname);
         if (fs.existsSync(filepath)) {
             const stat = fs.statSync(filepath);
             let entry = _coolCache.get(filepath);
             if (!entry || entry.mtimeMs !== stat.mtimeMs) {
+                let html = fs.readFileSync(filepath, 'utf8');
+                html = html
+                    .split('%ACCESS_TOKEN_TTL%').join('0')
+                    .split('%ACCESS_TOKEN%').join('')
+                    .split('%ACCESS_HEADER%').join('')
+                    .split('%NO_AUTH_HEADER%').join('')
+                    .split('%UI_RTL_SETTINGS%').join('')
+                    .split('%BRANDING_THEME%').join('')
+                    .split('%LOGO_URL%').join('')
+                    .split('%PRODUCT_BRANDING_NAME%').join('Collabora Online');
+                const body = Buffer.from(html, 'utf8');
                 entry = {
-                    body: fs.readFileSync(filepath),
+                    body,
                     mtimeMs: stat.mtimeMs,
-                    etag: '"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"',
+                    etag: '"' + body.length.toString(16) + '-' + stat.mtimeMs.toString(16) + '"',
                 };
                 _coolCache.set(filepath, entry);
             }
