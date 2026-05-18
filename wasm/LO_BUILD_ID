@@ -18,9 +18,18 @@
 #                  LOK_CALLBACK_DOCUMENT_READY=75 protocol number").
 #                  Reserved the enum value Online's kit/Kit.cpp
 #                  forwards (#ifdef-guarded; emit is in 2026-05-12-21).
-#   2026-05-12-21  current pin — git_sha 69c442f9 ("WASM: emit
+#   2026-05-12-21  git_sha 69c442f9 ("WASM: emit
 #                  LOK_CALLBACK_DOCUMENT_READY from
 #                  doc_registerCallback"). The kit's docready: text
 #                  frame now fires for every cold load + hot-switch,
 #                  unblocking regression-event-driven-docready.
-2026-05-12-21
+#   2026-05-18-24  current pin — git_sha 00ece5fd ("WASM: pack de/en-US/
+#                  es/fr langpacks + repoint submodules to upstream
+#                  (online task #193)"). Bundles de/en-US/es/fr
+#                  translations into instdir so the styles sidebar can
+#                  localise; also points the LO submodules
+#                  (translations/dictionaries/help) at the upstream
+#                  LibreOffice org refs instead of stale szsz forks.
+#                  Pairs with kit-side switchdocument lang-respect
+#                  (online dev 0945dea9) for end-to-end #193.
+2026-05-18-24
