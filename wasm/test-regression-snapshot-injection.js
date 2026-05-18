@@ -24,7 +24,10 @@ const REQUIRED = [
     '__wasmSnapshotData',
     '__snapRestoredBeforeMain',
     // deploy.sh Injection 2: bypass checkStackCookie after restore.
-    '// skip after snapshot',
+    // Block-comment form so a minifier flattening online.js to a
+    // single line doesn't kill the rest of the line (matches the
+    // finalize-build.sh splice).
+    '/* skip after snapshot */',
 ];
 
 let allPassed = true;
