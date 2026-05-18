@@ -574,22 +574,75 @@
         } catch (_) {}
         return true;
     }
-    function recordReadyArrival(source) {
+    // `overrideT` lets the kit-side dispatch fork capture the true
+    // arrival timestamp at the moment the docready: frame lands, while
+    // the actual slot write may be deferred (see __onDocReadyFrame
+    // below — kit can fire before window.__wasmLoadedDocName is set,
+    // so we wait for the name to reconcile under the same key the
+    // poll path uses, but the timestamp we compare must still be the
+    // real arrival time, not the deferred-write time).
+    function recordReadyArrival(source, overrideT) {
         var key = String(window.__wasmLoadedDocName ||
                          pendingSwitchFilename || 'cold');
         var slot = window.__docReadyArrivals[key] = window.__docReadyArrivals[key] || {};
         if (slot[source] != null) return;   // first wins per source
-        slot[source] = performance.now();
+        slot[source] = overrideT != null ? overrideT : performance.now();
         if (slot.kit != null && slot.poll != null) {
             var winner = slot.kit < slot.poll ? 'kit' : 'poll';
             var deltaMs = Math.abs(slot.kit - slot.poll).toFixed(0);
             mark('event-vs-poll', winner + '+' + deltaMs + 'ms key=' + key);
-            // Phase 1 stays passive — don't act on the winner here, both
-            // paths already called fireDocReady (idempotent). The mark
-            // is what feeds the gating decision for the Phase 4 cleanup.
+            // Phase 1 stays passive — don't act on the winner here, the
+            // poll path already called fireDocReady (idempotent). The
+            // mark feeds the gating decision for the Phase 4 cleanup.
             delete window.__docReadyArrivals[key];
         }
     }
+
+    // task #116 phase 1: event-driven doc-ready, JS-side receiver for
+    // wasmapp.cpp's send2JS fork. We capture the kit arrival time at
+    // frame landing, then defer the slot write until the polling path
+    // has set window.__wasmLoadedDocName so both sources record under
+    // the same key (prior attempt — PR #102, reverted as PR #104 —
+    // recorded under "cold" while poll recorded under the filename,
+    // so [event-vs-poll] never reconciled).
+    //
+    // We DO NOT call fireDocReady from this path. PR #102 did, and it
+    // fanned out (window.__wasmInitialDocLoaded, WasmDocReady, etc)
+    // BEFORE canvas paint completed, regressing ~20 kit-paint tests
+    // (2browser, 3browser, e2e-upload, latejoin, pptx, pptx-coedit,
+    // checkpoint-cursor-delete, …). Fan-out stays driven by the
+    // polling path, which already gates on canvas-paint via the
+    // existing pixel-hash + status-text watchdog. The kit event is
+    // purely telemetry here; in a future Phase 4 — after a week of
+    // observed >99% kit-first arrivals — the polling code at lines
+    // ~880 and ~1700 can be deleted and the kit event drives fan-out
+    // directly. But ONLY once we trust the timing.
+    //
+    // Set __docReadyHookInstalled = true at module init so the
+    // legacy TheFakeWebSocket.onmessage wrap-installer (installDocReadyHook
+    // below) short-circuits — it's only a fallback for old WASM
+    // binaries without the send2JS fork.
+    window.__docReadyHookInstalled = true;
+    globalThis.__onDocReadyFrame = function (frame) {
+        try {
+            if (typeof frame !== 'string') return;
+            if (frame.indexOf('docready:') !== 0) return;
+            var kitArrivalT = performance.now();
+            var tries = 0;
+            var commit = function () {
+                recordReadyArrival('kit', kitArrivalT);
+            };
+            var waitForName = function () {
+                if (window.__wasmLoadedDocName || tries++ > 200) {
+                    commit();
+                } else {
+                    setTimeout(waitForName, 25);
+                }
+            };
+            waitForName();
+        } catch (_) { /* never block the kit's main thread */ }
+    };
+    mark('docready-hook:send2js-installed');
 
     // Installer for the docready: text-frame parser. Runs idempotently;
     // can be called from multiple call sites (cold-load init below, the

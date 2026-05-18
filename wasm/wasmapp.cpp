@@ -199,6 +199,30 @@ static void send2JS(const std::vector<char>& buffer)
         let data = HEAPU8.slice($0, $0 + $1);
         if (!newline) {
             data = new TextDecoder().decode(data);
+            // task #116 phase 1: event-driven doc-ready, kit-side
+            // dispatch fork. Online's browser/src/app/Socket.ts:292
+            // rebinds `globalThis.TheFakeWebSocket.onmessage` to its
+            // own _slurpMessage handler the moment Socket connects,
+            // defeating any wrap-then-assign hook the JS side might
+            // install on TheFakeWebSocket directly. send2JS sits
+            // upstream of that rebind, so a fork here stays intact
+            // for the lifetime of the WASM runtime. wasm-loader.js
+            // installs the receiver `globalThis.__onDocReadyFrame`
+            // at module init — it records kit arrival timing for
+            // [event-vs-poll] telemetry but does NOT call
+            // fireDocReady (that path regresses ~20 kit-paint tests;
+            // fan-out stays gated on canvas-paint via the existing
+            // polling path). The forward to TheFakeWebSocket.onmessage
+            // runs afterwards so COOL's normal message processing is
+            // unchanged.
+            if (data.length >= 9 && data.charCodeAt(0) === 100 /* 'd' */
+                && data.startsWith('docready:')) {
+                try {
+                    if (typeof globalThis.__onDocReadyFrame === 'function') {
+                        globalThis.__onDocReadyFrame(data);
+                    }
+                } catch (_) { /* swallow — never block the kit's main thread */ }
+            }
         }
 
         globalThis.TheFakeWebSocket.onmessage({data});
