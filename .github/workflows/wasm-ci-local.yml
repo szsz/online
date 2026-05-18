@@ -167,6 +167,13 @@ jobs:
       # staging doesn't auto-deploy.
       - name: Auto-merge PR (build + deploy succeeded; tests informational)
         if: github.event_name == 'pull_request'
+        # Don't fail the job on auto-merge failures (e.g. draft PR
+        # rejected by `gh pr merge --admin`, or bot lacking permission).
+        # Without this guard the subsequent test step is silently
+        # skipped — producing a 10-min "completed" run with no test
+        # data. The merge attempt result is informational; the actual
+        # gate is the build+deploy steps above which already exited 0.
+        continue-on-error: true
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
