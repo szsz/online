@@ -102,8 +102,17 @@ online_LDADD = \
 	@LOBUILDDIR@/workdir/LinkTarget/StaticLibrary/libunoembind.a
 
 # TODO these are just copypasta from core
+#
+# -O3 at link is the single biggest size win for online.wasm. emcc/wasm-ld
+# only runs wasm-opt (the post-link size + speed optimizer + debug stripper)
+# when an explicit -O level is on the LINK line; without it, the link
+# defaults to -O0 and ships the raw -O3 object output unoptimized AND with
+# all DWARF/producers metadata intact. Verified on baseline 2026-05-18:
+# `wasm-opt --strip-debug --strip-producers` alone shrinks online.wasm
+# from 278 → 179 MB (35.7%); -O3-link picks that up automatically as part
+# of its standard pipeline.
 online_LDFLAGS = \
-	-pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
+	-O3 -pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
 	--pre-js @LOSOURCEDIR@/static/emscripten/environment.js \
 	--pre-js @LOBUILDDIR@/workdir/CustomTarget/static/emscripten_fs_image/soffice.data.js.link \
 	--post-js @LOBUILDDIR@/workdir/CustomTarget/static/unoembind/bindings_uno.js \
