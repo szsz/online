@@ -559,7 +559,23 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             // timed out (>48s). Reverted — apparently the per-load
             // locale reset is load-bearing for calc/impress models
             // even though the docs say it sets process-global state.
-            auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), "Language=en-US,Batch=true");
+            //
+            // Pass the session's lang (captured from the initial `load
+            // url=... lang=<code>` command at Session.cpp:220-226) instead
+            // of hardcoding en-US. Hot-switch preserves the user's UI
+            // language; previously every cross-type or same-type switch
+            // silently reverted the kit-side locale to en-US, which
+            // matters for #193 once non-en-US langpacks are present in
+            // the LO WASM build. Falls back to en-US when getLang() is
+            // empty (defensive — initial load always sets _lang since
+            // Socket.ts always includes lang=String.locale on the load
+            // command, but the kit shouldn't crash if it's somehow not
+            // there).
+            const std::string& sessionLang = getLang();
+            const std::string switchDocOpts =
+                "Language=" + (sessionLang.empty() ? std::string("en-US") : sessionLang) +
+                ",Batch=true";
+            auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), switchDocOpts.c_str());
             SW_MARK("documentLoad:done");
 #ifdef __EMSCRIPTEN__
             MAIN_THREAD_EM_ASM({
