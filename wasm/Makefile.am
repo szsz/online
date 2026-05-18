@@ -102,22 +102,8 @@ online_LDADD = \
 	@LOBUILDDIR@/workdir/LinkTarget/StaticLibrary/libunoembind.a
 
 # TODO these are just copypasta from core
-#
-# -Oz -g0 at LINK: shrinks online.wasm from 278 MB → 161 MB (-42%
-# raw / -24% brotli q2 on the wire) by enabling emcc's wasm-opt
-# pass at size-optimization level AND stripping debug + name
-# sections. Verified locally 2026-05-18 with cold-open smoke
-# (doc ready at 2.45s, same speed as baseline). Build memory
-# peak: ~14 GB for wasm-opt -Oz on this binary; the CI
-# container's `--memory` was bumped to 32 GB in
-# .github/scripts/wasm-ci/build-online.sh to fit comfortably.
-#
-# Why not -O3: -O3 inlines aggressively for SPEED, which on this
-# codebase grows the binary instead of shrinking it (measured: 278
-# → 302 MB). -Oz is the correct level for size; size also matters
-# more than speed for cold-load latency over the wire.
 online_LDFLAGS = \
-	-Oz -g0 -pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
+	-pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
 	--pre-js @LOSOURCEDIR@/static/emscripten/environment.js \
 	--pre-js @LOBUILDDIR@/workdir/CustomTarget/static/emscripten_fs_image/soffice.data.js.link \
 	--post-js @LOBUILDDIR@/workdir/CustomTarget/static/unoembind/bindings_uno.js \
