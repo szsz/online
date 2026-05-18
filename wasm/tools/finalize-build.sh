@@ -74,20 +74,40 @@ with open(inject_path) as f:
 # whitespace minification, so the pretty-printed `    if (shouldRunNow)
 # callMain(args);` becomes the bare `if(shouldRunNow)callMain(args)`.
 # We need to match BOTH forms and splice in front of whichever we find.
+#
+# CRITICAL: re.sub()'s REPLACEMENT string interprets `\n`, `\1`,
+# `\g<…>` etc. as escape sequences / backreferences. snapshot-inject.js
+# contains a JS string literal `'<?xml ?>\n<oor:items …'` whose `\n` is
+# the two-char escape sequence; if we pass that body directly as the
+# replacement to re.sub(), Python converts those two chars into a real
+# newline (0x0A), breaking the JS string literal mid-line and producing
+# `SyntaxError: Invalid or unexpected token` at runtime
+# (`createOnlineModule is not defined`, every test that loads a doc
+# times out). Use a lambda for the replacement — re.sub() treats the
+# lambda's return value as literal, no escape interpretation.
+#
+# Verified 2026-05-18 from PR #111's broken build: online.js line 104
+# was `'<?xml version="1.0" encoding="UTF-8"?>` (truncated; followed by
+# a real newline and `<oor:items …` on its own line — JS parser
+# rejected the un-terminated string literal).
 CALLMAIN_RE = re.compile(r'if\s*\(\s*shouldRunNow\s*\)\s*callMain\s*\(\s*args\s*\)\s*;?')
 matches = CALLMAIN_RE.findall(c)
 if len(matches) != 1:
     print(f'ERROR: {target_path}: expected 1 callMain anchor, found {len(matches)}', file=sys.stderr)
     sys.exit(1)
-c = CALLMAIN_RE.sub(inject_body + matches[0], c, count=1)
+c = CALLMAIN_RE.sub(lambda m: inject_body + m.group(0), c, count=1)
 
 # checkStackCookie: skip after snapshot restore. Same minification
-# concern — the body might be on the same line as the brace.
+# concern — the body might be on the same line as the brace. Same
+# escape-safety lambda. Marker is `/* skip after snapshot */` (block
+# comment) instead of `// skip after snapshot` because in minified
+# online.js the rest of the physical line after `//` would be
+# commented out — block comments are safe inline.
 CSC_RE = re.compile(r'function\s+checkStackCookie\s*\(\s*\)\s*\{')
 csc_matches = CSC_RE.findall(c)
 if len(csc_matches) == 1:
     c = CSC_RE.sub(
-        csc_matches[0] + 'if(Module.__snapRestoredBeforeMain)return;',
+        lambda m: m.group(0) + 'if(Module.__snapRestoredBeforeMain)return;/* skip after snapshot */',
         c, count=1)
 elif len(csc_matches) == 0:
     pass  # already patched, or emcc dropped it under -Oz
