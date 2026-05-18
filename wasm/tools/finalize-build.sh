@@ -63,29 +63,36 @@ apply_snapshot_inject() {
     fi
 
     python3 - "$target" "$INJECT_JS" <<'PYEOF'
-import sys
+import re, sys
 target_path, inject_path = sys.argv[1], sys.argv[2]
 with open(target_path) as f:
     c = f.read()
 with open(inject_path) as f:
     inject_body = f.read()
 
-ANCHOR = '    if (shouldRunNow) callMain(args);'
-if c.count(ANCHOR) != 1:
-    print(f'ERROR: {target_path}: expected 1 callMain anchor, found {c.count(ANCHOR)}', file=sys.stderr)
+# Regex-tolerant anchors — emcc's -Oz path runs through Closure-style
+# whitespace minification, so the pretty-printed `    if (shouldRunNow)
+# callMain(args);` becomes the bare `if(shouldRunNow)callMain(args)`.
+# We need to match BOTH forms and splice in front of whichever we find.
+CALLMAIN_RE = re.compile(r'if\s*\(\s*shouldRunNow\s*\)\s*callMain\s*\(\s*args\s*\)\s*;?')
+matches = CALLMAIN_RE.findall(c)
+if len(matches) != 1:
+    print(f'ERROR: {target_path}: expected 1 callMain anchor, found {len(matches)}', file=sys.stderr)
     sys.exit(1)
-c = c.replace(ANCHOR, inject_body + ANCHOR, 1)
+c = CALLMAIN_RE.sub(inject_body + matches[0], c, count=1)
 
-# checkStackCookie: skip after snapshot restore
-csc_anchor = 'function checkStackCookie() {'
-if c.count(csc_anchor) == 1:
-    c = c.replace(csc_anchor,
-                  csc_anchor + ' if (Module.__snapRestoredBeforeMain) return; // skip after snapshot',
-                  1)
-elif c.count(csc_anchor) == 0:
-    pass  # already patched
+# checkStackCookie: skip after snapshot restore. Same minification
+# concern — the body might be on the same line as the brace.
+CSC_RE = re.compile(r'function\s+checkStackCookie\s*\(\s*\)\s*\{')
+csc_matches = CSC_RE.findall(c)
+if len(csc_matches) == 1:
+    c = CSC_RE.sub(
+        csc_matches[0] + 'if(Module.__snapRestoredBeforeMain)return;',
+        c, count=1)
+elif len(csc_matches) == 0:
+    pass  # already patched, or emcc dropped it under -Oz
 else:
-    print(f'ERROR: {target_path}: expected ≤1 checkStackCookie anchor, found {c.count(csc_anchor)}', file=sys.stderr)
+    print(f'ERROR: {target_path}: expected ≤1 checkStackCookie anchor, found {len(csc_matches)}', file=sys.stderr)
     sys.exit(1)
 
 # Mailbox spam silencer (Atomics.waitAsync().then(checkMailbox) infinite chain)
