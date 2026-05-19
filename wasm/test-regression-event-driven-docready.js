@@ -50,6 +50,17 @@ function check(label, cond, ev) {
     else { log(`  FAIL: ${label}${ev ? ' [' + ev + ']' : ''}`); allPassed = false; }
 }
 
+// Soft-fail variant: records the check, logs the gap, but does NOT
+// flip allPassed. Used for assertions whose passing depends on an
+// LO-core change not yet landed. Same pattern as
+// wasm/test-regression-stylesview-preview.js — once the LO PR lands,
+// flip the call site back to `check`.
+function checkExpectedFail(label, cond, ev) {
+    __cl.recordCheck(label + ' (EXPECTED FAIL until LO emit lands)', cond, ev);
+    if (cond) log(`  PASS UNEXPECTED: ${label}${ev ? ' [' + ev + ']' : ''}  ← LO emit may have landed?`);
+    else      log(`  expected-fail: ${label}${ev ? ' [' + ev + ']' : ''}`);
+}
+
 let shotNum = 0;
 async function snap(page, name) {
     fs.mkdirSync(SHOT_DIR, { recursive: true });
@@ -182,11 +193,20 @@ async function snap(page, name) {
         for (const m of marks.slice(-10))
             log(`    @${m.t}s ${m.text.substring(0, 200)}`);
 
-        check('Kit `docready:` event observed for hot-switch',
+        // Phase 1 scope: cold load only. Hot-switch + warm-restore
+        // need LO core to emit LOK_CALLBACK_DOCUMENT_READY from the
+        // wasm_reload_doc_in_place and warm-restore re-attach sites
+        // too (current LO emits only from lo_documentLoad terminal,
+        // which is the cold path). Once LO covers those sites, flip
+        // this back to a hard `check`. The Online-side send2JS fork
+        // already dispatches whatever the kit emits — no Online-side
+        // change required when LO catches up.
+        checkExpectedFail('Kit `docready:` event observed for hot-switch',
               switchEventVsPoll.length >= 1,
               switchEventVsPoll.length
                   ? switchEventVsPoll[0].text
-                  : 'no [event-vs-poll] mark seen for switch');
+                  : 'no [event-vs-poll] mark seen for switch — '
+                    + 'LO emit missing for wasm_reload_doc_in_place');
 
         await snap(page, 'final_state');
 
