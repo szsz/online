@@ -1268,9 +1268,14 @@ pot:
 		src/control/jsdialog/Widget.HTMLContent.ts \
 		src/control/jsdialog/Widget.MobileBorderSelector.js \
 		src/control/jsdialog/Widget.NewSlideLayoutEntry.ts \
+		src/control/jsdialog/Widget.NotebookbarIconView.ts \
 		src/control/jsdialog/Widget.RadioButton.ts \
 		src/control/jsdialog/Widget.SidebarContainers.ts \
 		src/control/jsdialog/Widget.TreeView.ts \
+		src/control/jsdialog/Definitions.DialogModification.ts \
+		src/control/Control.NotebookbarBase.ts \
+		src/canvas/sections/FormFieldButton.ts \
+		src/slideshow/engine/SlideShowHandler.ts \
 		src/app/Socket.ts \
 		src/app/TracingEvents.ts \
 		src/app/ServerCommand.ts \
