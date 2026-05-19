@@ -2499,11 +2499,20 @@ bool Document::forwardToChild(const std::string_view prefix, const std::vector<c
     }
 
     // By default we enable spell-checking, unless it's disabled explicitly.
-    if (!spellOnline.empty())
-    {
-        const bool set = (spellOnline != "false");
-        renderOptsObj->set(".uno:SpellOnline", makePropertyValue("boolean", set));
-    }
+    //
+    // task #196: the previous form had an inverted guard — it only set
+    // `.uno:SpellOnline` when `spellOnline` was non-empty, so the
+    // common case (empty default — no browserSettings override) ended
+    // up skipping the option entirely. LO's OnlineSpellChecker only
+    // computes misspelled-word ranges (the red squiggles consumed by
+    // the tile renderer) when this initRenderOpt is set at
+    // initializeForRendering() — toggling .uno:SpellOnline *after*
+    // doc load doesn't retroactively start the spelling daemon.
+    //
+    // Default to ON; only honour `spellOnline=="false"` as an
+    // explicit opt-out. Matches the comment intent.
+    const bool enableSpellChecking = (spellOnline != "false");
+    renderOptsObj->set(".uno:SpellOnline", makePropertyValue("boolean", enableSpellChecking));
 
     if (!theme.empty())
         renderOptsObj->set(".uno:ChangeTheme", makePropertyValue("string", theme));
