@@ -32,12 +32,20 @@
 #                  #193. The sidebar deck content (paragraph style
 #                  names like "Heading 1") still rendered English
 #                  because StyleList.cxx used the internal name.
-#   2026-05-19-26  current pin — git_sha ffb379fd ("WASM #193: sidebar
-#                  Styles deck shows localised DisplayName"). Closes
-#                  the second half of #193: sfx2/source/dialog/
-#                  StyleList.cxx now caches the UNO DisplayName at
-#                  tree-build time and uses it at set_text, so the
-#                  Writer right-side Styles deck renders "Überschrift 1",
-#                  "Fließtext", "Blockzitat", "Standardvorlage"
-#                  instead of the language-invariant English names.
-2026-05-19-26
+#   2026-05-19-26  git_sha ffb379fd ("WASM #193: sidebar Styles deck
+#                  shows localised DisplayName"). StyleList.cxx caches
+#                  UNO DisplayName at tree-build time and uses it at
+#                  set_text for the hierarchical TreeView. Probe
+#                  showed sidebar STILL English — turned out
+#                  treeview_NN selectors belong to the FLAT-LIST view
+#                  (m_xFmtLb), not the TreeView (m_xTreeBox). Default
+#                  view is flat.
+#   2026-05-20-27  current pin — git_sha 055b3225 ("WASM #193 follow-
+#                  up: flat-list view uses DisplayName too"). Extends
+#                  the fix to m_xFmtLb's bulk_insert_for_each lambdas
+#                  at lines 1436 + 1447 — set_text now uses
+#                  aStyles[nIdx].getDisplayName(). With this, the
+#                  Writer right-side Styles deck flat list finally
+#                  renders German names ("Überschrift 1", "Fließtext",
+#                  "Blockzitat", "Standardvorlage", "Aufzählung 1"...).
+2026-05-20-27
