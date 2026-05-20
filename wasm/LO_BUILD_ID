@@ -40,12 +40,17 @@
 #                  treeview_NN selectors belong to the FLAT-LIST view
 #                  (m_xFmtLb), not the TreeView (m_xTreeBox). Default
 #                  view is flat.
-#   2026-05-20-27  current pin — git_sha 055b3225 ("WASM #193 follow-
-#                  up: flat-list view uses DisplayName too"). Extends
-#                  the fix to m_xFmtLb's bulk_insert_for_each lambdas
-#                  at lines 1436 + 1447 — set_text now uses
-#                  aStyles[nIdx].getDisplayName(). With this, the
-#                  Writer right-side Styles deck flat list finally
-#                  renders German names ("Überschrift 1", "Fließtext",
-#                  "Blockzitat", "Standardvorlage", "Aufzählung 1"...).
-2026-05-20-27
+#   2026-05-20-27  git_sha 055b3225 ("WASM #193 follow-up: flat-list
+#                  view uses DisplayName too"). Extended the fix to
+#                  m_xFmtLb. Probe STILL showed English at runtime
+#                  because…
+#   2026-05-20-28  current pin — git_sha da81f271 ("WASM #193:
+#                  CustomRenderHdl fallback uses localised name").
+#                  Found that StyleList::CustomRenderHdl is connected
+#                  as a custom column renderer; when the kit-side
+#                  StylePreviewRenderer fails (returns nullptr/false
+#                  in WASM/LOK), the handler falls back to
+#                  DrawText(rId,…) which OVERRIDES the row's set_text
+#                  with canvas-drawn English internal-name text. Now
+#                  also looks up DisplayName for rId in the fallback.
+2026-05-20-28
