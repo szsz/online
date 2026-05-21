@@ -44,13 +44,39 @@
 #                  view uses DisplayName too"). Extended the fix to
 #                  m_xFmtLb. Probe STILL showed English at runtime
 #                  because…
-#   2026-05-20-28  current pin — git_sha da81f271 ("WASM #193:
-#                  CustomRenderHdl fallback uses localised name").
-#                  Found that StyleList::CustomRenderHdl is connected
-#                  as a custom column renderer; when the kit-side
-#                  StylePreviewRenderer fails (returns nullptr/false
-#                  in WASM/LOK), the handler falls back to
-#                  DrawText(rId,…) which OVERRIDES the row's set_text
-#                  with canvas-drawn English internal-name text. Now
-#                  also looks up DisplayName for rId in the fallback.
-2026-05-20-28
+#   2026-05-20-28  git_sha da81f271 ("WASM #193: CustomRenderHdl
+#                  fallback uses localised name"). Wired UNO
+#                  DisplayName through every set_text + canvas-draw
+#                  path. Iconview tiles now German.
+#   2026-05-21-30  git_sha 63a63148 ("WASM #196: enable spell squiggle
+#                  painting in LOK tile mode"). Root cause for #196:
+#                  sw/source/core/text/inftxt.cxx:687 gated
+#                  red-spell-squiggle painting on `OnWin() &&
+#                  IsOnlineSpell()`. In LOK tile rendering OnWin()
+#                  is false (no native window — output goes to
+#                  VirtualDevice tile buffers), so the squiggle was
+#                  suppressed entirely regardless of the
+#                  .uno:SpellOnline option set by kit/Kit.cpp. Fix
+#                  changes the gate to `(OnWin() ||
+#                  comphelper::LibreOfficeKit::isActive())` matching
+#                  the established pattern from viewsh.cxx:213.
+#   2026-05-21-31  current pin — git_sha f77b564b ("WASM #193
+#                  follow-up: drop UNO DisplayName indirection —
+#                  use GetName() directly"). Final fix for #193
+#                  treeview-deck gap: UNO `DisplayName` is the
+#                  language-invariant English identifier (used as a
+#                  stable programmatic key across locales), NOT a
+#                  translation. Prior PRs threaded that English
+#                  identifier through set_text, overriding the
+#                  actually-localised name that pStyle->GetName()
+#                  returns (SfxResId-translated at pool init via
+#                  STR_POOLCOLL_* keys). The treeview-deck now uses
+#                  GetName() directly (matches what
+#                  StylesPreviewWindow's lcl_AppendParaStyles does
+#                  for the iconview). Selection lookup goes via
+#                  get_selected_text() → Find(text), which also
+#                  matches on GetName() — so id/text equality stays
+#                  consistent. Removes the now-unused
+#                  lcl_GetLocalisedStyleName helper. Build 31
+#                  contains both #196 and #193 fixes.
+2026-05-21-31
