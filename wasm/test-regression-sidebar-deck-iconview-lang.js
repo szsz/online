@@ -30,7 +30,10 @@ const puppeteer = require('puppeteer');
 const env = require('./lib/test-env');
 const { uploadV2 } = require('./lib/v2-upload');
 
-const VIEWER  = env.FILE_STORAGE_URL;
+// Allow overriding the viewer target via VIEWER env var so the test can
+// run against the internal Azure deploy when CI tests haven't yet
+// validated the fix locally.
+const VIEWER  = process.env.VIEWER_URL || env.FILE_STORAGE_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data',
                           'mixed-lang-paragraphs.docx');
 const NAME    = `sidebar-de-${Date.now()}.docx`;
@@ -176,6 +179,63 @@ const REQUIRED_MATCHES = 3;
         'no English "Heading N" fallback in stylesview',
         !hasEnglishHeading,
         `captured contains Heading-N: ${[...captured].filter(t => /^Heading\s+\d/.test(t)).join(',')}`
+    );
+
+    // -- treeview_NN entries (the tree-list below the iconview) --
+    // Same widget chain (StyleList.cxx FillTreeBox / FillBox), separate
+    // JSTreeView DOM nodes. The follow-up LO PR (drop UNO DisplayName
+    // indirection) is what makes these render German. Before that PR,
+    // they showed internal English names like "Numbering 1", "Quote".
+    const treeSamples = await frame.evaluate(() => {
+        const out = [];
+        document.querySelectorAll('[id^="treeview"]').forEach(el => {
+            const r = el.getBoundingClientRect();
+            if (r.x < 1200 || r.width < 30 || r.height < 10) return;
+            const t = (el.innerText || el.textContent || '').trim();
+            if (!t || t.length > 80) return;
+            out.push({ id: el.id, text: t, x: r.x | 0, y: r.y | 0 });
+        });
+        return out;
+    });
+    log(`captured ${treeSamples.length} treeview_NN samples`);
+    fs.writeFileSync(`${SHOT_DIR}/tree-samples.json`,
+                     JSON.stringify(treeSamples, null, 2));
+
+    const treeCaptured = new Set(treeSamples.map(s => s.text));
+
+    // Same German labels — we expect a subset to appear in the tree
+    // list too. Tree list often shows different alphabetical range
+    // than the iconview, so we require a smaller match count.
+    const EXPECTED_TREE_DE = [
+        // Common Writer styles that have translated names in upstream
+        // German LO data, likely to be visible in the visible tree
+        // range (alphabetical).
+        'Nummerierung 1', 'Nummerierung 2', 'Nummerierung 3',
+        'Aufzählung 1', 'Aufzählung 2', 'Aufzählung 3',
+        'Liste 1', 'Liste 2', 'Liste 3',
+        'Zitat', 'Untertitel', 'Titel',
+        'Standardvorlage', 'Vorformatierter Text',
+        'Stichwortverzeichnis Überschrift',
+    ];
+    const treeFound = EXPECTED_TREE_DE.filter(l => treeCaptured.has(l));
+    log(`treeview_NN: expected German labels ${EXPECTED_TREE_DE.length}; found ` +
+        `${treeFound.length}: ${JSON.stringify(treeFound)}`);
+
+    // Specific anti-regression: these English internal names must NOT
+    // appear (they're the exact strings shown before the fix).
+    const TREE_REGRESSION_STRINGS = [
+        'Numbering 1', 'Numbering 2', 'Numbering 3',
+        'List 1', 'List 2', 'List 3',
+        'Quote', 'Subtitle', 'Title',
+        'Preformatted Text',
+    ];
+    const treeEnglishLeak = TREE_REGRESSION_STRINGS.filter(l => treeCaptured.has(l));
+
+    check(
+        `treeview_NN: no English internal names leak (expected zero of ${TREE_REGRESSION_STRINGS.length})`,
+        treeEnglishLeak.length === 0,
+        `leaked: ${JSON.stringify(treeEnglishLeak)}; sample captured=` +
+        `${JSON.stringify([...treeCaptured].slice(0, 15))}`
     );
 
     await browser.close();
