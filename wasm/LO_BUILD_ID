@@ -60,23 +60,25 @@
 #                  changes the gate to `(OnWin() ||
 #                  comphelper::LibreOfficeKit::isActive())` matching
 #                  the established pattern from viewsh.cxx:213.
-#   2026-05-21-31  current pin — git_sha f77b564b ("WASM #193
-#                  follow-up: drop UNO DisplayName indirection —
-#                  use GetName() directly"). Final fix for #193
-#                  treeview-deck gap: UNO `DisplayName` is the
-#                  language-invariant English identifier (used as a
-#                  stable programmatic key across locales), NOT a
-#                  translation. Prior PRs threaded that English
-#                  identifier through set_text, overriding the
-#                  actually-localised name that pStyle->GetName()
-#                  returns (SfxResId-translated at pool init via
-#                  STR_POOLCOLL_* keys). The treeview-deck now uses
-#                  GetName() directly (matches what
-#                  StylesPreviewWindow's lcl_AppendParaStyles does
-#                  for the iconview). Selection lookup goes via
-#                  get_selected_text() → Find(text), which also
-#                  matches on GetName() — so id/text equality stays
-#                  consistent. Removes the now-unused
-#                  lcl_GetLocalisedStyleName helper. Build 31
-#                  contains both #196 and #193 fixes.
-2026-05-21-31
+#   2026-05-21-31  git_sha f77b564b ("WASM #193 follow-up: drop UNO
+#                  DisplayName indirection — use GetName() directly").
+#                  Hypothesis was wrong: GetName() does NOT return
+#                  localised in StyleList iteration context. Probe
+#                  post-deploy showed treeview_NN still English.
+#   2026-05-22-32  current pin — git_sha affd98c6 (Revert "WASM #193
+#                  follow-up: drop UNO DisplayName indirection").
+#                  Restores lcl_GetLocalisedStyleName helper.
+#                  Corrected understanding: UNO style families
+#                  getByName is a locale-aware key resolver — it
+#                  accepts the English-canonical key even when the
+#                  doc stores the German aName. For the ~10 well-
+#                  known styles (Title, Subtitle, Heading 1-4,
+#                  Standard, Text body, Quotations, Preformatted
+#                  Text) getPropertyValue("DisplayName") returns
+#                  the German translation. For styles UNO can't
+#                  translate ("List 2" etc.) the helper falls back
+#                  to sInternalName — same English as before.
+#                  Expected treeview improvement: Title→Titel,
+#                  Subtitle→Untertitel, Heading 1→Überschrift 1,
+#                  etc.
+2026-05-22-32
