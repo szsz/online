@@ -423,6 +423,26 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
     const finalShot = path.join(sessDir, 'final.png');
     try { await page.screenshot({ path: finalShot, fullPage: false }); } catch (e) {}
 
+    // task #116 telemetry: extract event-vs-poll signals from the
+    // captured console. wasm-loader.js:593 logs every reconciled
+    // arrival as `[profile +<ms>ms] event-vs-poll <winner>+<delta>ms
+    // key=<filename>`. Each session can produce 0+ records (0 when
+    // only one source arrived in time; multiple on hot-switch or
+    // warm-restore replays). Each record becomes one row in the
+    // aggregate published with the test report.
+    const eventVsPoll = [];
+    for (const e of consoleLines) {
+        const m = /event-vs-poll\s+(kit|poll)\+(\d+)ms\s+key=(.+)$/.exec(e.line);
+        if (m) {
+            eventVsPoll.push({
+                winner: m[1],
+                deltaMs: +m[2],
+                key: m[3].trim(),
+                tNavMs: e.t - navStart,
+            });
+        }
+    }
+
     // Save console log + DOM debug. If content_verified didn't fire,
     // the debug.json shows what the iframe DOM looked like at end —
     // critical for diagnosing "stuck on Opening document…" failures.
@@ -442,6 +462,7 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
         transferTopBytes,
         transferIframeBytes,
         transferCount,
+        eventVsPoll,
     }, null, 2));
 
     // Iter 132: per-resource breakdown for offline analysis.
@@ -458,6 +479,7 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
 
     return { hits, screenshots, navStart, totalMs: Date.now() - navStart,
              lastDomProbe, consoleLines: consoleLines.length,
+             eventVsPoll,
              transferBytes, transferTopBytes, transferIframeBytes,
              transferCount };
 }
@@ -772,6 +794,38 @@ ${body}
     fs.writeFileSync(path.join(OUT_DIR, 'index.html'), html);
     log(`Report written: ${OUT_DIR}/index.html`);
     log(`URL: https://viewer.szebeni.hu/report/snapshot-milestones/`);
+
+    // task #116 telemetry: aggregate event-vs-poll outcomes across
+    // every session captured this run. Writes
+    // OUT_DIR/event-vs-poll-summary.json + emits a one-line summary
+    // to stdout so iterate.sh + run-all-tests.sh capture trends.
+    const allRecords = [];
+    for (const r of Object.values(results)) {
+        if (r.cold && r.cold.eventVsPoll) allRecords.push(...r.cold.eventVsPoll);
+        for (const t of (r.warmTrials || [])) {
+            if (t.result && t.result.eventVsPoll) allRecords.push(...t.result.eventVsPoll);
+        }
+    }
+    const kitWins   = allRecords.filter(r => r.winner === 'kit').length;
+    const pollWins  = allRecords.filter(r => r.winner === 'poll').length;
+    const total     = allRecords.length;
+    const kitPct    = total ? (kitWins / total * 100).toFixed(1) : '0.0';
+    const deltas    = allRecords.map(r => r.deltaMs).sort((a, b) => a - b);
+    const median    = deltas.length ? deltas[Math.floor(deltas.length / 2)] : null;
+    const p95Idx    = deltas.length ? Math.floor(deltas.length * 0.95) : 0;
+    const p95       = deltas.length ? deltas[Math.min(deltas.length - 1, p95Idx)] : null;
+    fs.writeFileSync(path.join(OUT_DIR, 'event-vs-poll-summary.json'),
+        JSON.stringify({
+            timestamp: new Date().toISOString(),
+            test: 'snapshot-milestones',
+            total, kitWins, pollWins,
+            kitPct: +kitPct,
+            deltaMsMedian: median,
+            deltaMsP95: p95,
+            records: allRecords,
+        }, null, 2));
+    log(`[event-vs-poll] kit=${kitWins} poll=${pollWins} total=${total} ` +
+        `kit-first=${kitPct}% median-delta=${median ?? '—'}ms p95=${p95 ?? '—'}ms`);
 
     // Pass-rate summary line so iterate.sh tail catches it.
     const passRates = Object.entries(results).map(([tag, r]) => {
