@@ -81,4 +81,17 @@
 #                  Expected treeview improvement: Title→Titel,
 #                  Subtitle→Untertitel, Heading 1→Überschrift 1,
 #                  etc.
-2026-05-22-32
+#   2026-05-22-34  current pin — git_sha 7eea7ded ("WASM #196 diag:
+#                  log spell paint-gate state in LOK mode").
+#                  Diagnostic-only LO PR — adds one SAL_INFO log
+#                  line at sw/source/core/text/inftxt.cxx after the
+#                  OnWin gate, firing only when LOK is active. Logs
+#                  bWrong / bRenderToVisibleSurface / IsOnlineSpell /
+#                  bTmpWrong / wrongListPtr per text frame paint.
+#                  After deploy, run wasm/probe-spellcheck-diag.js
+#                  and grep coolwsd trace for `lok-spell-paint` to
+#                  determine which of three hypotheses is the actual
+#                  #196 blocker: (a) m_pWrongList null (daemon not
+#                  populating), (b) one gate predicate false, or
+#                  (c) downstream of SetWrong.
+2026-05-22-34
