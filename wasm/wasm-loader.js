@@ -630,10 +630,24 @@
             var kitArrivalT = performance.now();
             var tries = 0;
             var commit = function () {
+                // Phase 4 cleanup: kit event drives fan-out directly.
+                // Polling removed (telemetry showed 24/24 sessions
+                // kit-first, median 1.8s ahead). The polling used to
+                // set __wasmLoadedDocName as a side-effect; do that
+                // here from pendingSwitchFilename if not already set.
+                if (!window.__wasmLoadedDocName && pendingSwitchFilename) {
+                    window.__wasmLoadedDocName = pendingSwitchFilename;
+                }
                 recordReadyArrival('kit', kitArrivalT);
+                fireDocReady({
+                    source: 'kit',
+                    filename: window.__wasmLoadedDocName ||
+                              pendingSwitchFilename || undefined,
+                });
             };
             var waitForName = function () {
-                if (window.__wasmLoadedDocName || tries++ > 200) {
+                if (window.__wasmLoadedDocName || pendingSwitchFilename
+                    || tries++ > 200) {
                     commit();
                 } else {
                     setTimeout(waitForName, 25);
@@ -877,90 +891,69 @@
                     }), '*');
                 } catch(e) {}
                 if (typeof hideOverlay === 'function') hideOverlay();
-
-                // Gate WasmDocReady on BOTH:
-                //   (a) status bar has a real value ("N characters",
-                //       "Sheet X of Y", "Slide X of Y") — means Kit
-                //       finished layout
-                //   (b) canvas has been stable for STABILITY_MS — tiles
-                //       have stopped arriving
+                // Phase 4 cleanup (#116): the kit's
+                // LOK_CALLBACK_DOCUMENT_READY emit (handled by
+                // __onDocReadyFrame) drives fan-out directly. Telemetry
+                // over 24/24 sessions confirmed kit arrives 1.8s
+                // before the polling-gated fan-out would have.
                 //
-                // A previous iteration also required "≥ 3 distinct
-                // canvas samples" to guard against firing after a
-                // single partial tile landed. But on the warm path
-                // (snapshot restore), the canvas can stabilize
-                // immediately after one paint, and the 3-sample guard
-                // never unlocked → WasmDocReady never fired → shield
-                // stayed up forever. Dropped it; (a)+(b) is enough
-                // (the parent visiblePoll already confirms the canvas
-                // differs from the pre-switch baseline, so we know
-                // SOME paint happened before we entered this block).
-                // 400 ms after Rec 6.5 (capture-point shift) made the
-                // warm path reliable. Iter9–13 saw apparent regressions
-                // at 400 ms but those were the lockstep capture race,
-                // not STABILITY_MS related.
-                // Iter7 (post-warm-restore-flag-clear): with the doc-
-                // switch loop fixed, the canvas paints ONCE and stays.
-                // Combined with statusReady (which only fires when LO
-                // emitted a real word/cell/slide count, i.e. layout is
-                // done), the stability buffer is just paranoia. 100 ms
-                // is enough to ride out a single jittery frame.
-                var STABILITY_MS = 100;
-                var readyStart = performance.now();
-                var lastSample = null;
-                var lastChangeAt = performance.now();
-                var docReadyInterval = setInterval(function() {
+                // Safety net: if the kit event somehow doesn't fire
+                // within 8s of canvas-visible (e.g. an LO core
+                // regression strips the emit, or the docready: frame
+                // gets dropped by send2JS), the canvas-paint +
+                // status-bar poll below kicks in as a fallback. This
+                // preserves the historical behavior and the
+                // canvas-paint gating that kit-paint cluster tests
+                // depend on. The fallback no-ops if the kit event
+                // arrived first (fireDocReady is idempotent on
+                // filename).
+                var fallbackStart = performance.now();
+                var fallbackInterval = setInterval(function() {
+                    // Kit event arrived → fan-out already done; stop polling.
+                    if (window.__docReadyFiredFor === String(filename)) {
+                        clearInterval(fallbackInterval);
+                        return;
+                    }
+                    // Don't engage the polling fallback until 8s have
+                    // passed without a kit event — the kit nearly always
+                    // wins, no point doing canvas work in parallel.
+                    if (performance.now() - fallbackStart < 8000) return;
                     var wc = document.querySelector('#StateWordCount');
                     var dp = document.querySelector('#StatusDocPos');
                     var wcReady = wc && wc.textContent && /character|word|cell|slide/i.test(wc.textContent);
                     var dpReady = dp && dp.textContent && /Sheet|Slide/i.test(dp.textContent);
                     var statusReady = wcReady || dpReady;
-                    var sample = snapshotCanvas();
-                    if (sample !== lastSample) {
-                        lastSample = sample;
-                        lastChangeAt = performance.now();
-                    }
-                    var stableFor = performance.now() - lastChangeAt;
-                    if (statusReady && stableFor >= STABILITY_MS) {
-                        var rdt = (performance.now() - readyStart).toFixed(0);
-                        clearInterval(docReadyInterval);
+                    if (statusReady) {
+                        clearInterval(fallbackInterval);
                         window.__wasmLoadedDocName = filename;
-                        // Phase 1 telemetry: record poll arrival. If the
-                        // kit `docready:` event already fired for this
-                        // filename, fireDocReady() inside is a no-op
-                        // (idempotent on filename); recordReadyArrival
-                        // logs `[event-vs-poll]` showing which won by
-                        // how many ms. After Phase 4 cleanup the
-                        // polling block is deleted entirely.
                         var fired = fireDocReady({
-                            source: 'poll-switch', filename: filename,
+                            source: 'poll-switch-fallback', filename: filename,
                         });
                         recordReadyArrival('poll');
                         if (fired) {
-                            // Only emit the legacy postMessage when our
-                            // fan-out ran. fireDocReady already posted
-                            // WasmDocReady but with source='poll-switch'
-                            // and no ms field — keep the historical
-                            // payload too, gated on us being the winner.
-                            mark('bridge:doc_ready', rdt + 'ms, stable ' + stableFor.toFixed(0) + 'ms');
+                            mark('bridge:doc_ready_fallback',
+                                 'kit_missed=' + (performance.now() - fallbackStart).toFixed(0) + 'ms');
                             try {
                                 parent.postMessage(JSON.stringify({
                                     MessageId: 'WasmDocReady',
-                                    Values: { filename: filename, ms: +rdt + +dt }
+                                    Values: { filename: filename, ms: -1, fallback: true }
                                 }), '*');
                             } catch(e) {}
                         }
                     }
-                    if (performance.now() - readyStart > 60000) {
-                        clearInterval(docReadyInterval);
-                        try {
-                            parent.postMessage(JSON.stringify({
-                                MessageId: 'WasmDocReady',
-                                Values: { filename: filename, ms: -1, timeout: true }
-                            }), '*');
-                        } catch(e) {}
+                    // Hard timeout after 60s — emit timeout signal.
+                    if (performance.now() - fallbackStart > 60000) {
+                        clearInterval(fallbackInterval);
+                        if (window.__docReadyFiredFor !== String(filename)) {
+                            try {
+                                parent.postMessage(JSON.stringify({
+                                    MessageId: 'WasmDocReady',
+                                    Values: { filename: filename, ms: -1, timeout: true }
+                                }), '*');
+                            } catch(e) {}
+                        }
                     }
-                }, 50);
+                }, 200);
             }
             if (performance.now() - watchStart > 30000) clearInterval(visiblePollInterval);
         }, 50);
@@ -1735,29 +1728,35 @@
 
             if (runtimeReady && canvases > 0 && loaded && changed && !window.__wasmPrewarmReady) {
                 window.__wasmPrewarmReady = true;
-                window.__wasmInitialDocLoaded = true;  // sticky one-shot
                 // Authoritative "LO is painting this doc" flag for the
                 // initial-load path (cold-reload iframe opens with the
                 // target's WOPISrc and no switchdoc). Tests should read
                 // window.__wasmLoadedDocName to know which doc is
-                // actually rendered (vs prewarm). The switchdoc path
-                // updates this separately via the docReadyInterval
-                // inside checkHashSwitch.
+                // actually rendered (vs prewarm). Phase 4 cleanup moved
+                // __wasmInitialDocLoaded fan-out to __onDocReadyFrame —
+                // the kit's LOK_CALLBACK_DOCUMENT_READY emit fires it
+                // ~1.8s before this canvas-paint poll would.
                 try {
                     var initParams = new URLSearchParams(window.location.search);
                     var initWopi = initParams.get('WOPISrc') || '';
                     if (initWopi) window.__wasmLoadedDocName = initWopi;
                 } catch(e) {}
-                // Phase 1 telemetry — race log between this polling
-                // path and the kit `docready:` event hook. fireDocReady
-                // is idempotent on filename, so if the kit event fired
-                // first this is a no-op except for the [event-vs-poll]
-                // mark. After Phase 4 cleanup the polling block dies.
-                fireDocReady({
-                    source: 'poll-cold',
-                    filename: window.__wasmLoadedDocName,
-                });
-                recordReadyArrival('poll');
+                // Safety net (Phase 4): if the kit event somehow
+                // hasn't fired by the time the canvas-paint poll
+                // satisfies, fire fallback fan-out. fireDocReady is
+                // idempotent on filename so this is a no-op when kit
+                // arrived first (the common case per telemetry).
+                var coldFallback = window.__wasmLoadedDocName || 'cold';
+                if (window.__docReadyFiredFor !== String(coldFallback)) {
+                    var fired = fireDocReady({
+                        source: 'poll-cold-fallback',
+                        filename: window.__wasmLoadedDocName,
+                    });
+                    if (fired) {
+                        recordReadyArrival('poll');
+                        mark('bridge:doc_ready_fallback_cold');
+                    }
+                }
                 prewarmWordCountAtReady = wc ? wc.textContent : '';
                 mark('prewarm:ready');
                 logTiming('Document ready');
