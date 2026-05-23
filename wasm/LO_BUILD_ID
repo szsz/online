@@ -105,18 +105,26 @@
 #                  toolbox-control construction (which happens BEFORE
 #                  SfxLokInit completes). See
 #                  project_193_uno_diag_2026_05_23.md.
-#   2026-05-23-38  current pin — git_sha 9e3014918dc0 ("WASM #196
-#                  diag: log DrawWaveLine cache + bitmap state").
-#                  After -35's diag confirmed bWrong=1 wrongListPtr=
-#                  non-null with all paint-gate predicates TRUE (the
-#                  squiggle code reaches the paint chain), this adds
-#                  fprintf inside DrawWaveLine itself logging:
-#                    - cacheHit (was bitmap pre-cached?)
-#                    - salBmpOk (is the bitmap drawable?)
-#                    - color RGB (what's the pen?)
-#                    - bmpSize + spanPx
-#                  If salBmpOk=0 we know the VirtualDevice cache path
-#                  is broken in WASM. If salBmpOk=1 but redPx=0 we
-#                  know DrawBitmap onto the tile output is the broken
-#                  step.
-2026-05-23-38
+#   2026-05-23-38  git_sha 9e3014918dc0 ("WASM #196 diag: log
+#                  DrawWaveLine cache + bitmap state"). 2026-05-23
+#                  test result against test env: ZERO lok-wave-line
+#                  lines despite plenty of lok-spell-paint with
+#                  bWrong=1 wrongListPtr=non-null. The drop happens
+#                  between SetWrong and the DrawWaveLine call — i.e.
+#                  somewhere in fntcache.cxx's wrong-list gate or
+#                  inside lcl_DrawLineForWrongListData's early-exit
+#                  paths.
+#   2026-05-23-39  current pin — git_sha 1605498f3259 ("WASM #196
+#                  diag: log fntcache wrong-list gate + early-exits").
+#                  Adds fprintf at both:
+#                  - fntcache.cxx::SwFntObj::DrawText (line ~1635)
+#                    where the wrong-list gate evaluates GetWrong/
+#                    Grammar/Smart and decides whether to call
+#                    lcl_DrawLineForWrongListData.
+#                  - lcl_DrawLineForWrongListData (line 658): logs
+#                    each of its three early-exit paths (pWList null,
+#                    pWList->Check failed, font too small) + a
+#                    success entry log when it reaches the iteration.
+#                  Together these pinpoint exactly WHERE the squiggle
+#                  drops between SetWrong and DrawWaveLine.
+2026-05-23-39
