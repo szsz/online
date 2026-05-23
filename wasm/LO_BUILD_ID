@@ -96,16 +96,27 @@
 #                  snapshot-milestones / regression-spellcheck-squiggle
 #                  iframe console.log to identify which of three
 #                  hypotheses is the #196 blocker.
-#   2026-05-22-36  current pin — git_sha 3db65a69 ("WASM #193 diag:
-#                  log UNO DisplayName at both call sites").
-#                  Adds fprintf at StylesPreviewToolBoxControl::
-#                  InitializeStyles (iconview side, returns German)
-#                  AND StyleList::lcl_GetLocalisedStyleName (treeview
-#                  side, returns English) to compare what UNO
-#                  getPropertyValue("DisplayName") returns at each
-#                  call site for the same family/style key. Grep
-#                  iframe console.log for `lok-193-iconview-uno` and
-#                  `lok-193-treeview-uno` to identify the broken
-#                  lookup path. -36 does NOT include -35's spell
-#                  fprintf (branched off pre-#15-merge fork/dev).
-2026-05-22-36
+#   2026-05-22-36  git_sha 3db65a69 ("WASM #193 diag: log UNO
+#                  DisplayName at both call sites"). 2026-05-23 probe
+#                  result: iconview render produced German tiles in
+#                  the ribbon ("Fließtext", "Blockzitat", "Titel",
+#                  "Untertitel") but the iconview fprintf didn't fire
+#                  — the LOK-active gate evaluates FALSE during
+#                  toolbox-control construction (which happens BEFORE
+#                  SfxLokInit completes). See
+#                  project_193_uno_diag_2026_05_23.md.
+#   2026-05-23-38  current pin — git_sha 9e3014918dc0 ("WASM #196
+#                  diag: log DrawWaveLine cache + bitmap state").
+#                  After -35's diag confirmed bWrong=1 wrongListPtr=
+#                  non-null with all paint-gate predicates TRUE (the
+#                  squiggle code reaches the paint chain), this adds
+#                  fprintf inside DrawWaveLine itself logging:
+#                    - cacheHit (was bitmap pre-cached?)
+#                    - salBmpOk (is the bitmap drawable?)
+#                    - color RGB (what's the pen?)
+#                    - bmpSize + spanPx
+#                  If salBmpOk=0 we know the VirtualDevice cache path
+#                  is broken in WASM. If salBmpOk=1 but redPx=0 we
+#                  know DrawBitmap onto the tile output is the broken
+#                  step.
+2026-05-23-38
