@@ -69,6 +69,20 @@ const MIN_RED_PIXELS = 30;
     const page = await browser.newPage();
     await page.setViewport({ width: 1600, height: 1000 });
 
+    // Capture iframe console (including fprintf(stderr) routed through
+    // emscripten → console.error). The LO -35 build adds a
+    // lok-spell-paint diagnostic at the OnWin paint gate so we can see
+    // which of three hypotheses holds when 0 red pixels are observed.
+    const consoleLines = [];
+    page.on('console', m => {
+        const t = m.text();
+        consoleLines.push(`[${m.type()}] ${t}`);
+        if (/lok-spell-paint|lok-193-|spell|hunspell|wrongl/i.test(t)) {
+            log(`  iframe ${m.type()}: ${t}`);
+        }
+    });
+    page.on('pageerror', e => consoleLines.push(`[pageerror] ${e.message}`));
+
     await page.goto(`${VIEWER}/?singleuser#file=${up.b64urlSecret}`, {
         waitUntil: 'domcontentloaded',
         timeout: env.scaleTimeout(120000),
@@ -145,6 +159,19 @@ const MIN_RED_PIXELS = 30;
         (redScan.redPx || 0) >= MIN_RED_PIXELS,
         `observed redPx=${redScan.redPx} totalPx=${redScan.totalPx}`
     );
+
+    // Surface the lok-spell-paint diag lines (added in lo-build
+    // 2026-05-22-35) so the test report shows WHY 0 red pixels were
+    // observed. Always dumps — passing or failing.
+    const paintLines = consoleLines.filter(l => /lok-spell-paint/.test(l));
+    log(`captured ${paintLines.length} lok-spell-paint lines from iframe`);
+    paintLines.slice(0, 12).forEach(l => log(`  ${l}`));
+    if (paintLines.length === 0) {
+        const spellish = consoleLines.filter(l => /spell|wrongl|hunspell/i.test(l));
+        log(`no lok-spell-paint lines; ${spellish.length} other spell-related lines`);
+        spellish.slice(0, 8).forEach(l => log(`  ${l}`));
+    }
+    fs.writeFileSync(`${SHOT_DIR}/iframe-console.log`, consoleLines.join('\n'));
 
     await browser.close();
 
