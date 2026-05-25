@@ -136,4 +136,10 @@
 #                  Answers binary question: does fntcache get
 #                  reached at all in LOK tile mode, or is sw using
 #                  a completely different text-paint path?
-2026-05-25-42
+#   2026-05-25-43  git_sha 7584030a ("WASM #196 diag: log which fntcache
+#                  branch fires when hasWrong=1"). Adds fprintf BEFORE
+#                  the `if (rInf.GetGreyWave())` decision in
+#                  SwFntObj::DrawText logging greyWave/symbol/len/
+#                  wrongInnerWouldEnter. Pinpoints which branch
+#                  swallows wrong-list path in LOK mode.
+2026-05-25-43
