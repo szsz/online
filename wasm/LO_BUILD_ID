@@ -127,4 +127,13 @@
 #                    success entry log when it reaches the iteration.
 #                  Together these pinpoint exactly WHERE the squiggle
 #                  drops between SetWrong and DrawWaveLine.
-2026-05-23-39
+#   2026-05-25-42  current pin — git_sha 98ae1fdcc907 ("WASM #196
+#                  diag: log SwFntObj::DrawText entry unconditionally").
+#                  Previous -39 diag was inside an else-if branch
+#                  which never fired. This puts fprintf at the very
+#                  top of SwFntObj::DrawText (before any branching),
+#                  gated only on LOK-active + non-null GetWrong().
+#                  Answers binary question: does fntcache get
+#                  reached at all in LOK tile mode, or is sw using
+#                  a completely different text-paint path?
+2026-05-25-42
