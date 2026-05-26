@@ -142,4 +142,12 @@
 #                  SwFntObj::DrawText logging greyWave/symbol/len/
 #                  wrongInnerWouldEnter. Pinpoints which branch
 #                  swallows wrong-list path in LOK mode.
-2026-05-25-43
+#   2026-05-25-45  git_sha 65c532773864 ("WASM #196 diag: log wrong-list
+#                  state on Check failure"). Adds fprintf in
+#                  WrongListIterator::Check returning false in LOK mode.
+#                  -43 proved fntcache enters wrong-list inner branch
+#                  but pWList->Check returns false for ALL 56 painted
+#                  ranges. -45 logs Count() + first entry pos/len OR
+#                  merged-para extent count to distinguish empty-list
+#                  vs mismatched-indices hypotheses.
+2026-05-25-45
