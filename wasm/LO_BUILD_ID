@@ -150,4 +150,12 @@
 #                  ranges. -45 logs Count() + first entry pos/len OR
 #                  merged-para extent count to distinguish empty-list
 #                  vs mismatched-indices hypotheses.
-2026-05-25-45
+#   2026-05-26-46  git_sha 63454bad ("WASM #196 diag: trace
+#                  spell-daemon idle chain"). -45 proved wrong-list
+#                  Count()=0 (daemon never populates entries). -46
+#                  instruments DocumentTimerManager StartIdling +
+#                  DoIdleJobs + SwTextFrame::AutoSpell_ entries to
+#                  pinpoint where the LOK idle-spell chain breaks
+#                  (thread not started? idle never schedules? Layout
+#                  job not chosen? AutoSpell never invoked?).
+2026-05-26-46
