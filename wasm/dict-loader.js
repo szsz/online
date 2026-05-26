@@ -146,14 +146,22 @@
     }
 
     // ── Write unpacked files to Module.FS ─────────────────────────
-    // The canonical location for a bundled-with-LO dictionary extension
-    // is /instdir/share/extensions/dict-<lang>/. The build's tar is
-    // rooted at "./" so entries look like "en_US.dic", "dictionaries.xcu",
-    // "META-INF/manifest.xml" etc. — we prepend the extension dir.
+    // Writes only the spell/hyphen/thesaurus data files into the flat
+    // /instdir/share/dict/ directory that LO's lingucomponent scans at
+    // startup (see lingucomponent/source/lingutil/lingutil.cxx, the
+    // EMSCRIPTEN branch of GetOldStyleDics). Filename conventions the
+    // scanner expects:
+    //    <locale>.dic        — spell (hunspell)
+    //    <locale>.aff        — spell (hunspell affix file)
+    //    hyph_<locale>.dic   — hyphenation
+    //    th_<locale>_v2.dat  — thesaurus
+    //    th_<locale>_v2.idx  — thesaurus index
+    // Everything else in the tar (dictionaries.xcu, META-INF/, README)
+    // is unused for the legacy DICPATH path and gets skipped.
     function writeExtension(Module, lang, entries) {
         var FS = Module.FS;
         if (!FS) throw new Error('Module.FS not available');
-        var base = '/instdir/share/extensions/dict-' + lang;
+        var base = '/instdir/share/dict';
         var mkdirs = {};
         function ensureDir(p) {
             if (mkdirs[p]) return;
@@ -169,17 +177,26 @@
             }
         }
         ensureParents(base + '/x');
+        // Pattern: keep only data files for the lingu directory scan.
+        // (Spell .dic / .aff; hyphenation hyph_*.dic; thesaurus
+        //  th_*_v2.dat / th_*_v2.idx.)
+        var DATA_RE = /(?:^|\/)([^\/]+\.(?:dic|aff|dat|idx))$/i;
+        var written = 0;
         for (var i = 0; i < entries.length; i++) {
             var e = entries[i];
-            var full = base + '/' + e.name.replace(/^\/+/, '');
+            var m = DATA_RE.exec(e.name);
+            if (!m) continue;
+            var leaf = m[1];
+            var full = base + '/' + leaf;
             ensureParents(full);
             try {
                 FS.writeFile(full, e.data, { canOwn: false });
+                written++;
             } catch (err) {
                 warn('writeFile failed', full, err);
             }
         }
-        log('wrote', entries.length, 'files to', base);
+        log('wrote', written, '/', entries.length, 'data files to', base);
     }
 
     // ── Main entry: preRun-blocking primary preload ───────────────
