@@ -23,7 +23,7 @@
 //      'de.tar.gz' fetch count before/after).
 //   4. window.loadDictionary('fr') for a different lang fetches +
 //      installs; state.loaded gains 'fr' as a third entry.
-//   5. Module.FS has the expected /instdir/share/extensions/dict-
+//   5. Module.FS has the expected /instdir/share/dict/<file> after
 //      <lang>/ directory for each loaded language with at least
 //      one file inside (the .dic).
 //
@@ -149,18 +149,26 @@ async function waitForEditorFrame(page, timeoutMs) {
               result1.loaded.includes(targetA),
               `loaded=[${result1.loaded.join(',')}]`);
 
-        // Verify the FS write happened.
+        // Verify the FS write happened. After the EMSCRIPTEN DICPATH
+        // switch (LO #26 + this online change), dict-loader writes
+        // only the data files (.dic/.aff/.dat/.idx) into the flat
+        // /instdir/share/dict/ that LO's lingucomponent scans on
+        // startup — not the per-lang extension dir.
         const fsHas1 = await editor.evaluate((lang) => {
             try {
-                const dir = '/instdir/share/extensions/dict-' + lang;
-                const entries = window.Module && window.Module.FS
+                const dir = '/instdir/share/dict';
+                const all = window.Module && window.Module.FS
                     ? window.Module.FS.readdir(dir).filter(n => n !== '.' && n !== '..')
                     : [];
-                return { dir, count: entries.length };
+                // Match leaf names that look like spell/hyph/thes data
+                // for this lang. Hunspell uses e.g. en_US.dic; underscore.
+                const re = new RegExp('(?:^|_)' + lang + '(?:[._]|$)', 'i');
+                const hits = all.filter(n => re.test(n));
+                return { dir, total: all.length, hits: hits.length, sampleHit: hits[0] || null };
             } catch (e) { return { error: e.message }; }
         }, targetA);
-        check(`Module.FS has dict-${targetA}/ with files`,
-              fsHas1.count >= 1,
+        check(`Module.FS /instdir/share/dict/ has data for ${targetA}`,
+              fsHas1.hits >= 1,
               JSON.stringify(fsHas1));
 
         // SECOND call to same lang — must short-circuit.
