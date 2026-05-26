@@ -158,4 +158,12 @@
 #                  pinpoint where the LOK idle-spell chain breaks
 #                  (thread not started? idle never schedules? Layout
 #                  job not chosen? AutoSpell never invoked?).
-2026-05-26-46
+#   2026-05-26-47  git_sha 12bce240 ("WASM #196 diag: trace
+#                  spell-checker invocation inside AutoSpell_").
+#                  -46 proved daemon runs + AutoSpell_ executes 5x
+#                  but produces zero entries. -47 instruments the
+#                  per-word loop: xSpell non-null, hasLang, isValid
+#                  result (first 12 words). Distinguishes null
+#                  checker / wrong lang / dictionary returning valid
+#                  for known misspellings.
+2026-05-26-47
