@@ -166,4 +166,14 @@
 #                  result (first 12 words). Distinguishes null
 #                  checker / wrong lang / dictionary returning valid
 #                  for known misspellings.
-2026-05-26-47
+#   2026-05-26-49  git_sha 36b84645 ("WASM #196 fix: enable DICPATH
+#                  dictionary scan in EMSCRIPTEN"). -47 proved
+#                  xSpell.is()=true but hasLanguage()=0 — no dicts
+#                  registered. Root cause: WASM configmgr is
+#                  bundle-only; extension-format files written by
+#                  dict-loader.js were never picked up. -49 enables
+#                  the legacy DICPATH/system-dir scan in EMSCRIPTEN
+#                  pointing at $BRAND_BASE_DIR/share/dict. Pairs
+#                  with the dict-loader.js flat-path write in the
+#                  same online PR.
+2026-05-26-49
