@@ -91,7 +91,7 @@ fi
 # Each profile picks a regex over test slugs and either keeps matches
 # or keeps non-matches. `basic` and `non-basic` together partition the
 # full suite; `snapshot` is a one-test cut for fast warm-path iteration.
-NON_BASIC_RE='2browser|3browser|coedit|latejoin|paste|copypaste|propagation|hard-refresh|formats|^chart$|cross-format|same-type|cross-type|prewarm-benchmark|e2e-upload|e2e-copypaste|checkpoint|room-switch|first-client-overwrite|samedoc-flicker|delete-key|select-delete|user-save|docname-switch|calc-impress|iframe-pool|xlsx-hotswitch|wasm-cache-crosstype|snapshot-(milestones|cross-type)|stress|prewarm$|sab-context'
+NON_BASIC_RE='2browser|3browser|coedit|latejoin|paste|copypaste|propagation|hard-refresh|formats|^chart$|cross-format|same-type|cross-type|e2e-upload|e2e-copypaste|checkpoint|room-switch|first-client-overwrite|samedoc-flicker|delete-key|select-delete|user-save|docname-switch|calc-impress|iframe-pool|xlsx-hotswitch|wasm-cache-crosstype|snapshot-(milestones|cross-type)|stress|prewarm$|sab-context'
 SNAPSHOT_RE='^snapshot-milestones$'
 
 case "$PROFILE" in
