@@ -118,7 +118,18 @@ async function getSidebarState(page) {
             const ev = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
             ep.dispatchEvent(ev);
         });
-        await sleep(800);  // 500ms scheduleCollapse + buffer
+        // Poll until the docs-hover class is gone (500ms scheduleCollapse fires)
+        // AND the CSS width transition (200ms) has finished. Bare sleep(800)
+        // raced under JOBS_SCALE=2 contention — the browser took >800ms to
+        // step the CSS animation off 33px even though the JS timer had fired.
+        try {
+            await page.waitForFunction(() => {
+                const files = document.getElementById('files');
+                if (!files) return false;
+                if (document.body.classList.contains('docs-hover')) return false;
+                return files.getBoundingClientRect().width <= 30;
+            }, { timeout: env.scaleTimeout(3000), polling: 50 });
+        } catch (_) { /* fall through — the checks below will fail with state */ }
         await snap(page, 'hover_left');
         s = await getSidebarState(page);
         log(`After mouse-out sidebar: width=${s.width}px, hover=${s.hoverClass}`);
