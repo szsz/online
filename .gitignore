@@ -4,6 +4,9 @@
 
 # Working list — user-personal task queue read by /dev-iterate, /fix-bug
 TASKS.md
+# Skill-surfaced proposals — captured during work, user reviews then promotes
+# to TASKS.md (or discards). Per-box working list, not a PR artifact.
+PROPOSALS.md
 
 # Autofoo
 .deps
