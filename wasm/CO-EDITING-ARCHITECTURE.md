@@ -13,13 +13,73 @@ this file is the authoritative spec.
 
 ## Services
 
-| Host | Service | Internal port | Role |
-|---|---|---|---|
-| `viewer.szebeni.hu` | `viewer-server.js` | 6934 | Sidebar UI, v2 encrypted storage (`/api/v2/file`), blob index (`/api/blobs`), legacy `/api/files` |
-| `wasm.atgpartners.info` | `editor-static-server.js` | 6932 | Serves `cool.html` + `online.wasm` + `/wasm/<name>` plaintext staging |
-| `relay.atgpartners.info` | `message-relay.js` | 9091 | WebSocket broker — metadata + message ordering only |
+Three services per environment. Hostnames vary across **dev box**,
+**Azure test**, **Azure internal**, **Azure staging**, **Azure prod**,
+and the **CI stack** (a parallel Azure environment driven by the
+self-hosted GitHub Actions runner). Production user traffic only hits
+staging + prod; everything else is for development, CI, and ad-hoc
+validation.
 
-`sni-router.js` on :443 proxies by Host header to the backend; each service has its own Let's Encrypt cert. Certs are configured per-service in `wasm/.env` under namespaced keys (`RELAY_SSL_CERT`, `EDITOR_SSL_CERT`; the viewer uses bare `SSL_CERT`/`PORT`).
+### Per-environment service roles
+
+Same role across every tier — the differences are deploy target,
+storage backend, and the URL the user sees. Roles:
+
+| Service | Role |
+|---|---|
+| **viewer** (`viewer-server.js`) | Sidebar UI, v2 encrypted storage (`/api/v2/file`), blob index (`/api/blobs`), legacy `/api/files`. |
+| **editor-static** (`editor-static-server.js` — local-only) / **Azure Front Door** (all Azure tiers) | Serves `cool.html` + `online.wasm` + `/wasm/<name>` plaintext staging. On Azure tiers the editor lives at a per-deploy folder on Front Door + Storage static-website (no editor App Service). |
+| **relay** (`message-relay.js`) | WebSocket broker — metadata + message ordering only. |
+| **sni-router** (`sni-router.js`, local only) | Routes :443 → backend by Host header. Each backend has its own Let's Encrypt cert. |
+
+Certs on the dev box are configured per-service in `wasm/.env` under
+namespaced keys (`RELAY_SSL_CERT`, `EDITOR_SSL_CERT`; the viewer uses
+bare `SSL_CERT`/`PORT`). On Azure tiers the cert lives on the App
+Service / Front Door.
+
+### Per-environment hostnames
+
+| Env | Viewer | Editor | Relay | Notes |
+|---|---|---|---|---|
+| **Local (dev box)** | `viewer.szebeni.hu` (port 6934 behind SNI) | `wasm.atgpartners.info` (port 6932 behind SNI) | `relay.atgpartners.info` (port 9091 behind SNI) | Runs via `wasm/launch-{viewer,editor-static,relay,sni-router}.sh`. Plaintext storage; no encryption boundary. |
+| **Azure test** | `wasm-viewer-test.azurewebsites.net` | `wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net` (per-deploy folder `/<EDITOR_DEPLOY_ID>/`) | `wasm-relay-test.azurewebsites.net` | Throwaway env wrapped by `/test-deploy`; env file at `~/ENV/online-test-deploy.env`. |
+| **Azure internal** | `wasm-viewer-internal.azurewebsites.net` | same FD endpoint, different `EDITOR_DEPLOY_ID` App Setting | `wasm-relay-internal.azurewebsites.net` | Manual deploy via `wasm/deploy-internal.sh`; env at `~/ENV/online-internal-deploy.env`. |
+| **Azure staging** | `szebeni-wasm-viewer.azurewebsites.net` | same FD endpoint, staging `EDITOR_DEPLOY_ID` | `szebeni-wasm-relay.azurewebsites.net` | CI-driven via merge to `dev`; env at `~/ENV/online-staging-deploy.env`. |
+| **Azure prod** | _(set in `~/ENV/online-prod-deploy.env` when used)_ | same FD endpoint, prod `EDITOR_DEPLOY_ID` | _(same env file)_ | Manual promotion via `wasm/promote-online-build.sh latest ~/ENV/online-prod-deploy.env`. |
+| **CI stack** | `ci-viewer.szebeni.hu` (port 7934 behind SNI) | `ci-editor.atgpartners.info` (port 7932 behind SNI) | `ci-relay.atgpartners.info` (port 9092 behind SNI) | Parallel of the local stack, driven by the self-hosted runner via `wasm-ci-local.yml`. Reports at `coolwasmfiles.z6.web.core.windows.net/local-builds/<id>/tests/`. |
+
+The Front Door endpoint (`wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net`)
+is shared across **all** Azure tiers. Per-tier separation happens via
+the `EDITOR_DEPLOY_ID` App Setting on each viewer App Service — it
+points the viewer at the `<EDITOR_DEPLOY_ID>/` folder on Front Door.
+That's how `wasm/promote-editor.sh` (against any tier's env file)
+flips an editor build without redeploying the viewer.
+
+### Authoritative env files
+
+The dev-box env layout lives in `wasm/.env` (gitignored; example at
+`wasm/.env.example`). The Azure tier deploy configs live OUTSIDE the
+repo at `~/ENV/online-*.env`:
+
+- `~/ENV/online-test-deploy.env` — Azure test
+- `~/ENV/online-internal-deploy.env` — Azure internal
+- `~/ENV/online-staging-deploy.env` — Azure staging
+- `~/ENV/online-prod-deploy.env` — Azure prod
+- `~/ENV/online-ci.env` — CI stack
+- `~/ENV/online.env` — dev box default (sources viewer-config.json
+  for the local editor pointer)
+
+Example templates ship with `wasm/.env.deploy.{test,internal,staging}.example`.
+
+### Operating-principle boundaries
+
+- `/dev-iterate` and `/fix-bug` may verify against **local stack** and
+  **Azure test** only. Staging / internal / prod / CI stack stay
+  hands-off — they're CI-managed or operator-only.
+- Reading CI state is always allowed (logs, run lists, artifact URLs).
+- Internal is "off limits to skills" but the user has on past occasions
+  asked for one-off rollbacks there; treat such requests as
+  scope-limited authorizations.
 
 ## Message flow
 
