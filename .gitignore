@@ -222,7 +222,10 @@ Makecache
 .ai
 .ai-cache
 *.ai.md
-CLAUDE.md
+# CLAUDE.md is project documentation (workflow rules, engineering
+# guidelines, skill pointers) — track it so the conventions are
+# shared across clones and survive into future Claude sessions.
+# Per-session transient state stays under .claude/ (still gitignored).
 claude.log
 .claude
 .cursor
