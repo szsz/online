@@ -7,6 +7,9 @@ TASKS.md
 # Skill-surfaced proposals — captured during work, user reviews then promotes
 # to TASKS.md (or discards). Per-box working list, not a PR artifact.
 PROPOSALS.md
+# Skill-parked questions — when a task hits a decision point the user
+# must answer, the skill parks the task and appends the question here.
+QUESTIONS.md
 
 # Autofoo
 .deps
