@@ -24,6 +24,13 @@
 #   RELAY_HOSTNAME       hostname the relay advertises (default
 #                        relay.atgpartners.info). Used by the startup
 #                        cert sanity check in message-relay.js.
+#
+# DEV-BOX DEPLOYMENT — recommended:
+#   Run this script under systemd via wasm/launch-relay-dev.service.example.
+#   That unit pins Environment=ENV_FILE=/home/localadmin/ENV/online.env so
+#   CI-job-inherited ENV_FILE=online-ci.env exports (from the actions-
+#   runner's .env) cannot reach the dev relay and silently flip it onto
+#   the CI port (9092) + CI cert.
 
 set -euo pipefail
 
