@@ -1033,17 +1033,30 @@
         }
         return total / 100;  // result in %, capped at sum of weights (~88)
     }
+    function fmtMB(bytes) {
+        if (!bytes || bytes < 0) return '?';
+        var mb = bytes / (1024 * 1024);
+        return (mb < 10 ? mb.toFixed(1) : Math.round(mb)) + ' MB';
+    }
+    // Render the detail line as `<file>  <loaded> / <total> MB  ·  …`. User
+    // asked for MB-based progress (2026-05-28) — % alone hides whether 67%
+    // of a 1 MB file or 67% of a 66 MB file is left.
+    function renderDetail() {
+        var parts = Object.keys(progressState.fileBytes)
+            .filter(k => progressState.fileBytes[k].total > 0)
+            .map(function (k) {
+                var b = progressState.fileBytes[k];
+                return k + ' ' + fmtMB(b.loaded) + ' / ' + fmtMB(b.total);
+            });
+        return parts.join('  ·  ');
+    }
     function fileProgress(name, loaded, total) {
         var key = Object.keys(PROGRESS_WEIGHTS).find(k => name === k);
         if (!key) return;
         progressState.fileBytes[key] = { loaded: loaded, total: total };
         progressState.fileDone[key] = total > 0 ? Math.min(1, loaded / total) : 0;
         var pct = aggregateProgress();
-        var detail = Object.keys(progressState.fileBytes)
-            .filter(k => progressState.fileBytes[k].total > 0)
-            .map(k => k + ' ' + Math.round(progressState.fileDone[k]*100) + '%')
-            .join('  ');
-        updateProgress('Downloading editor assets…', pct, detail);
+        updateProgress('Downloading editor assets…', pct, renderDetail());
     }
 
     // Look up the perf entry written for `url` after the fetch completed.
@@ -1084,12 +1097,67 @@
             // V8 caches the compiled WASM module keyed on the response
             // identity; wrapping it in new Response() breaks the cache
             // and forces a 21s recompile on every page load.
+            //
+            // The body bytes are consumed downstream by the WASM compiler,
+            // so we can't read them for actual progress. Instead, surface
+            // the Content-Length immediately (so the user sees total MB)
+            // and run a time-based estimator until the perf entry confirms
+            // the body fully arrived. Snaps to 100% on real completion.
             if (name === 'online.wasm') {
                 return origFetch.apply(this, arguments).then(function(r) {
-                    progressState.fileDone[name] = 1;
-                    var dur = performance.now() - tStart;
-                    mark('net:fetch_end', name + ' ' + dur.toFixed(0) + 'ms (unwrapped for V8 code cache)');
-                    logCacheState(key, name, dur);
+                    var total = parseInt(r.headers.get('content-length') || '0');
+                    // Initialize the file in progressState so renderDetail()
+                    // shows it from headers-arrive onward, with loaded=0.
+                    progressState.fileBytes[name] = { loaded: 0, total: total };
+                    progressState.fileDone[name] = 0;
+                    fileProgress(name, 0, total);
+
+                    // Estimator — assumes ~6 MB/s sustained throughput on
+                    // a typical residential link. Caps at 95% so the bar
+                    // doesn't claim "done" before the body actually is.
+                    var ASSUMED_BPS = 6 * 1024 * 1024;
+                    var estStart = performance.now();
+                    var estTimer = setInterval(function () {
+                        if (progressState.fileDone[name] >= 1) {
+                            clearInterval(estTimer);
+                            return;
+                        }
+                        var elapsed = (performance.now() - estStart) / 1000;
+                        var estLoaded = Math.min(total * 0.95,
+                            Math.round(elapsed * ASSUMED_BPS));
+                        if (total > 0 && estLoaded > progressState.fileBytes[name].loaded) {
+                            fileProgress(name, estLoaded, total);
+                        }
+                    }, 250);
+
+                    // Watch the Resource Timing API for response completion.
+                    // PerformanceResourceTiming.responseEnd marks when the
+                    // FULL body has arrived (not just headers). When that
+                    // entry appears, the download is genuinely done and we
+                    // snap to 100% — the estimator was just visual filler.
+                    var pollDone = setInterval(function () {
+                        var entries = performance.getEntriesByName(key);
+                        for (var i = 0; i < entries.length; i++) {
+                            var e = entries[i];
+                            if (e.responseEnd && e.responseEnd >= e.startTime) {
+                                clearInterval(pollDone);
+                                clearInterval(estTimer);
+                                fileProgress(name, total || 1, total || 1);
+                                progressState.fileDone[name] = 1;
+                                var dur = performance.now() - tStart;
+                                mark('net:fetch_end', name + ' ' + dur.toFixed(0) +
+                                    'ms (unwrapped for V8 code cache)');
+                                logCacheState(key, name, dur);
+                                return;
+                            }
+                        }
+                    }, 250);
+                    // Safety: never leave timers running forever.
+                    setTimeout(function () {
+                        clearInterval(estTimer);
+                        clearInterval(pollDone);
+                    }, 300000);
+
                     return r;  // original response — V8 can cache compiled module
                 });
             }
