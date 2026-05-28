@@ -2,6 +2,11 @@
 *~
 \#*
 
+# Per-dev AI-skill working lists — ai/tasks, ai/proposals, ai/questions.
+# Folder-based: one .md per entry, status = subfolder; status changes via
+# `git mv`. Replaces the old TASKS.md/PROPOSALS.md/QUESTIONS.md trio (2026-05-28).
+/ai/
+
 # Autofoo
 .deps
 .dirstamp
