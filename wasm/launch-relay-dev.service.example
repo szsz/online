@@ -1,0 +1,54 @@
+# launch-relay-dev.service — systemd unit for the dev-box relay.
+#
+# Why this exists:
+#   The self-hosted GitHub Actions runner exports ENV_FILE=online-ci.env
+#   for every job (see /home/localadmin/actions-runners/online/.env). When
+#   a CI job calls wasm/deploy.sh, the relay-restart step inherits that
+#   ENV_FILE → launch-relay.sh picks up CI's RELAY_PORT (9092) and the
+#   ci-relay cert instead of the dev port 9091 + dev cert. The SNI router
+#   then forwards relay.atgpartners.info → 127.0.0.1:9091 → dead socket,
+#   and every co-edit test against the local stack fails with
+#   SSL_ERROR_SYSCALL.
+#
+#   Running the dev relay under systemd with a PINNED Environment=ENV_FILE
+#   below severs the inheritance: regardless of what CI exports, this unit
+#   always launches with the dev env file.
+#
+# Install (one-time, on this dev box only):
+#
+#   sudo cp wasm/launch-relay-dev.service.example /etc/systemd/system/launch-relay-dev.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now launch-relay-dev.service
+#
+# Verify:
+#
+#   sudo ss -lntp | grep ':9091 '            # relay listening
+#   curl -sS https://relay.atgpartners.info/healthz   # 200 OK + cert chain
+#
+# Restart / status:
+#
+#   sudo systemctl restart launch-relay-dev.service
+#   sudo systemctl status launch-relay-dev.service
+#
+# This file is the EXAMPLE — the live unit lives at /etc/systemd/system/.
+# Updates here don't take effect until you copy them over and reload.
+
+[Unit]
+Description=Online dev-box relay (message-relay.js) — pinned to dev ENV_FILE
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/localadmin/online
+# CRITICAL: pin ENV_FILE so CI-job-inherited overrides can't reach this unit.
+Environment=ENV_FILE=/home/localadmin/ENV/online.env
+ExecStart=/bin/bash /home/localadmin/online/wasm/launch-relay.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/launch-relay-dev.log
+StandardError=append:/var/log/launch-relay-dev.log
+
+[Install]
+WantedBy=multi-user.target
