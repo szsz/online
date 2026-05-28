@@ -48,7 +48,24 @@ class ImpressTransitionTab implements NotebookbarTab {
 								id: 'transitions_icons',
 								type: 'iconview',
 								entries: [...Array(29).keys()].map((n: number) => {
-									return { ondemand: true, selected: false, row: n };
+									// width/height must be present up front. The
+									// iconview's ondemand renderer (Widget.IconView.ts →
+									// setupSize) only sizes the placeholder when both
+									// fields are set; otherwise the placeholder span
+									// is unsized and the tile collapses to ~2 px tall,
+									// leaving the transitions ribbon visually empty
+									// even though 29 entry slots exist in the DOM.
+									// 76×64 matches the preview size PowerPoint uses
+									// for transition thumbnails. The icon image
+									// arrives later via the OnDemandRenderer
+									// IntersectionObserver round-trip to LO core.
+									return {
+										ondemand: true,
+										selected: false,
+										row: n,
+										width: 76,
+										height: 64,
+									};
 								}),
 							} as IconViewJSON,
 						],
