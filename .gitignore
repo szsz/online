@@ -2,6 +2,9 @@
 *~
 \#*
 
+# Working list — user-personal task queue read by /dev-iterate, /fix-bug
+TASKS.md
+
 # Autofoo
 .deps
 .dirstamp
