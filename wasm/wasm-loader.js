@@ -276,6 +276,38 @@
     // Loading it eagerly caused memory pressure that broke __wasm_call_ctors.
     window.__wasmSnapshotData = undefined; // undefined = not yet checked
     window.__wasmSnapshotExists = false;
+    // Promise variant of __wasmSnapshotData — set as soon as cache.match()
+    // returns the heap Response. emscripten-module.js.m4's preRun awaits
+    // THIS instead of re-opening Cache Storage to do its own redundant
+    // 142 MB read (saved ~485 ms on every warm restore).
+    window.__wasmSnapshotDataPromise = null;
+
+    // Shared snapshot-read helper. Schedules the 142 MB arrayBuffer()
+    // materialisation off the bundle-eval critical path (via
+    // requestIdleCallback when available), populates both the Promise
+    // global (for preRun) and the buffer global (for the deploy.sh-
+    // injected HEAPU8 inject right before callMain).
+    function startSnapshotRead(heapResp) {
+        var promise = new Promise(function (resolve) {
+            var schedule = window.requestIdleCallback ||
+                function (fn) { setTimeout(fn, 0); };
+            schedule(function () {
+                heapResp.arrayBuffer().then(function (buf) {
+                    window.__wasmSnapshotData = buf;
+                    mark('snapshot:heap_loaded',
+                         (buf.byteLength / 1048576).toFixed(0) + 'MB');
+                    resolve(buf);
+                }).catch(function (e) {
+                    mark('snapshot:heap_load_failed', e.message);
+                    window.__wasmSnapshotData = null;
+                    resolve(null);
+                });
+            }, { timeout: 2000 }); // requestIdleCallback option;
+                                   // setTimeout fallback ignores it
+        });
+        window.__wasmSnapshotDataPromise = promise;
+        return promise;
+    }
     // KILLSWITCH (2026-04-26): the addRunDependency dup-id assert is fixed
     // (emscripten-module.js now uses 'snapshot-load-emm'), and warm restore
     // reaches `emscripten:calledRun` + `snapshot:signal restored` at ~5.1 s
@@ -393,25 +425,18 @@
                     // restored heap takes 20-40 s on its own — the default
                     // 8 s watchdog would kill a perfectly healthy restore.
                     window.__wasmRestoredDocType = meta.docType || '';
-                    // Fingerprint matches — snapshot is valid. Eagerly read
-                    // the heap blob so it's ready before Module.preRun fires.
-                    // Reading 256MB from Cache API takes ~500ms-2s; smaller
-                    // than the wasm-fetch + instantiate that runs in
-                    // parallel, so this isn't on the cold-start critical
-                    // path. (Was previously left as null/'deferred' but
-                    // never actually loaded — making preRun a no-op.)
+                    // Fingerprint matches — snapshot is valid. Schedule the
+                    // 142 MB ArrayBuffer materialisation via requestIdleCallback
+                    // (or setTimeout 0 fallback) so it doesn't block bundle.js
+                    // parse + WASM module instantiate during the warm-1 init
+                    // window. emscripten-module.js.m4's preRun awaits
+                    // __wasmSnapshotDataPromise instead of re-opening
+                    // Cache Storage and re-reading the same 142 MB — that
+                    // duplication was costing ~485 ms on every warm restore.
                     mark('snapshot:exists');
                     logTiming('Snapshot: found (warm start)');
                     window.__wasmSnapshotExists = true;
-                    return heapResp.arrayBuffer().then(function(buf) {
-                        window.__wasmSnapshotData = buf;
-                        mark('snapshot:heap_loaded', (buf.byteLength/1048576).toFixed(0) + 'MB');
-                        return buf;
-                    }).catch(function(e) {
-                        mark('snapshot:heap_load_failed', e.message);
-                        window.__wasmSnapshotData = null;
-                        return null;
-                    });
+                    return startSnapshotRead(heapResp);
                 }).catch(function(e) {
                     return discardStale('meta-parse-error: ' + (e.message || ''));
                 });
@@ -419,13 +444,7 @@
             // Dev mode: BUILD_FINGERPRINT not injected. Accept whatever's there.
             mark('snapshot:exists');
             window.__wasmSnapshotExists = true;
-            return heapResp.arrayBuffer().then(function(buf) {
-                window.__wasmSnapshotData = buf;
-                return buf;
-            }).catch(function(e) {
-                window.__wasmSnapshotData = null;
-                return null;
-            });
+            return startSnapshotRead(heapResp);
         }).catch(function(e) {
             mark('snapshot:cache_error', e.message);
             window.__wasmSnapshotData = null;
