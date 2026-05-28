@@ -618,10 +618,38 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
     // cache between sessions" speedup doesn't hide a real regression.
     let assetRow = '';
     const assetParts = [];
+    let downloadPhaseEndMs = 0;
+    let downloadPhaseMB = 0;
     for (const [name, a] of Object.entries(assets || {})) {
         if (!a || a.downloadMs == null) continue;
-        const mb = a.contentLength ? (a.contentLength / 1048576).toFixed(1) + ' MB' : '?';
-        assetParts.push(`<code>${name}</code> ${mb} in ${(a.downloadMs/1000).toFixed(2)}s`);
+        const mb = a.contentLength ? (a.contentLength / 1048576) : 0;
+        // Identify "cache hit" — small downloadMs combined with a known
+        // content length suggests the byte stream came from disk cache
+        // and the request never hit the network. Useful signal because
+        // it's how the "writer cold 40 s vs calc cold 25 s" artifact
+        // shows up: writer pays the download; calc doesn't.
+        const fromCache = mb > 1 && a.downloadMs < 200;
+        const mbLabel = mb ? mb.toFixed(1) + ' MB' : '?';
+        assetParts.push(`<code>${name}</code> ${mbLabel} in ${(a.downloadMs/1000).toFixed(2)}s` +
+                        (fromCache ? ' <em>cache</em>' : ''));
+        if (a.finishedAtMs != null && a.finishedAtMs > downloadPhaseEndMs) {
+            downloadPhaseEndMs = a.finishedAtMs;
+        }
+        downloadPhaseMB += mb;
+    }
+    let phaseSplit = '';
+    if (downloadPhaseEndMs > 0 && totalMs > downloadPhaseEndMs) {
+        // Total = download phase (wall time from nav to last heavy asset
+        // finished) + open phase (everything else: kit init, doc load,
+        // first paint, content verify). On second-cold sessions the
+        // download phase collapses because the browser cache is warm —
+        // making the "open phase" the only fair cross-doctype comparison.
+        const openMs = totalMs - downloadPhaseEndMs;
+        phaseSplit = `<br><span class="dl-split">phase split:
+              <strong>download ${(downloadPhaseEndMs/1000).toFixed(2)} s</strong>
+              (${downloadPhaseMB ? downloadPhaseMB.toFixed(1) + ' MB across ' + Object.keys(assets).length + ' files' : '0 MB'})
+              · <strong>open ${(openMs/1000).toFixed(2)} s</strong>
+              <small>(open = total − download; on a warm browser cache the download phase collapses to ~0)</small></span>`;
     }
     if (assetParts.length) {
         assetRow = `<p class="assets"><small>large-asset timing: ${assetParts.join(' · ')}</small></p>`;
@@ -630,14 +658,14 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
     if (dropped) {
         banner = `<p class="ok">✓ Document VISIBLE at +${(hits.shield_dropped/1000).toFixed(2)}s
                   (DOM verified at +${(hits.content_verified/1000).toFixed(2)}s; viewer overlay dropped at
-                  +${(hits.shield_dropped/1000).toFixed(2)}s)<br>${wireDetail}</p>`;
+                  +${(hits.shield_dropped/1000).toFixed(2)}s)<br>${wireDetail}${phaseSplit}</p>`;
     } else if (verified) {
         banner = `<p class="warn">⚠ DOM verified at +${(hits.content_verified/1000).toFixed(2)}s
-                  but viewer overlay never dropped — user would still see a spinner.<br>${wireDetail}</p>`;
+                  but viewer overlay never dropped — user would still see a spinner.<br>${wireDetail}${phaseSplit}</p>`;
     } else {
         banner = `<p class="fail">✗ Document NOT verified — final iframe DOM had
                   canvas=${lastDomProbe.hasCanvas}, statusMatches=${lastDomProbe.statusMatches},
-                  statusText=<code>${(lastDomProbe.statusText || '(empty)').substring(0, 120)}</code><br>${wireDetail}</p>`;
+                  statusText=<code>${(lastDomProbe.statusText || '(empty)').substring(0, 120)}</code><br>${wireDetail}${phaseSplit}</p>`;
     }
 
     let prevId = null;
@@ -885,6 +913,10 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
   .ok   { color: #22863a; font-weight: 600; }
   .warn { color: #b08800; font-weight: 600; }
   .fail { color: #cb2431; font-weight: 600; }
+  .dl-split { display: inline-block; margin-top: .25em; color: #444; font-weight: normal; }
+  .dl-split small { display: block; color: #888; margin-top: .15em; font-weight: normal; }
+  .dl-split em { color: #22863a; font-style: normal; }
+  .assets { margin-top: .3em; }
 </style>
 </head><body>
 <h1>Snapshot milestone report</h1>
