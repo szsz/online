@@ -462,30 +462,45 @@ class Dispatcher {
 			document.getElementById('#addressInput input').focus();
 		};
 
-		// sheets toolbar
+		// sheets toolbar.
+		//
+		// The `#spreadsheet-tab-scroll` DOM element is created lazily by
+		// Control.Tabs.js inside an `if ('partNames' in e)` branch when
+		// the `updateparts` event arrives. In WASM / single-user mode
+		// the bottom-toolbar buttons are visible *before* that branch
+		// has populated the tab strip, so every handler that
+		// dereferences the element used to throw (insertsheet:
+		// childElementCount of undefined; lastrecord: scrollLeft of
+		// null) and the click became a silent crash. Guard each
+		// handler and fall back to a sane default for insertsheet.
 		this.actionsMap['insertsheet'] = function () {
-			var nPos = $('#spreadsheet-tab-scroll')[0].childElementCount;
+			var scrollDiv = document.getElementById('spreadsheet-tab-scroll');
+			var nPos = scrollDiv
+				? scrollDiv.childElementCount
+				: (app.calc && typeof app.calc.getVisiblePartCount === 'function'
+				   ? app.calc.getVisiblePartCount()
+				   : 0);
 			app.map.insertPage(nPos);
 			app.map.insertPage.scrollToEnd = true;
 		};
 		this.actionsMap['firstrecord'] = function () {
-			$('#spreadsheet-tab-scroll').scrollLeft(0);
+			var el = document.getElementById('spreadsheet-tab-scroll');
+			if (el) el.scrollLeft = 0;
 		};
 		this.actionsMap['nextrecord'] = function () {
+			var el = document.getElementById('spreadsheet-tab-scroll');
 			// TODO: We should get visible tab's width instead of 60px
-			$('#spreadsheet-tab-scroll').scrollLeft(
-				$('#spreadsheet-tab-scroll').scrollLeft() + 60,
-			);
+			if (el) el.scrollLeft += 60;
 		};
 		this.actionsMap['prevrecord'] = function () {
-			$('#spreadsheet-tab-scroll').scrollLeft(
-				$('#spreadsheet-tab-scroll').scrollLeft() - 30,
-			);
+			var el = document.getElementById('spreadsheet-tab-scroll');
+			if (el) el.scrollLeft -= 30;
 		};
 		this.actionsMap['lastrecord'] = function () {
 			// Set a very high value, so that scroll is set to the maximum possible value internally.
 			// https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollLeft
-			window.L.DomUtil.get('spreadsheet-tab-scroll').scrollLeft = 100000;
+			var el = window.L.DomUtil.get('spreadsheet-tab-scroll');
+			if (el) el.scrollLeft = 100000;
 		};
 		this.actionsMap['columnrowhighlight'] = function () {
 			var newState = !app.map.uiManager.getHighlightMode();
