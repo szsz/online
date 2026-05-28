@@ -762,22 +762,34 @@
                         return;
                     }
                 }
+                // `uno .uno:Save` and `.uno:SaveAs` must NOT be forwarded
+                // to the kit. The kit's wsd/DocumentBroker.cpp:5284 has
+                // an assertion specifically to catch this — the save flow
+                // is handled out-of-band by saveAndUploadCheckpoint(),
+                // which produces a checkpoint and uploads to storage.
+                // Forwarding the uno would let it reach forwardToChild,
+                // hit the assertion, and abort the WASM process (the user
+                // sees "save failed / discard only" because the kit dies).
+                //
+                // Check this BEFORE the kit/relay forward so the save
+                // never reaches DocumentBroker. Other forms of save —
+                // `save dontTerminateEdit=…` from the toolbar, and
+                // .uno:SaveGraphic — stay in their original paths
+                // (toolbar save is handled in the else-branch below at
+                // line ~796; SaveGraphic is exempted from the kit's
+                // own assertion).
+                if (isUserSaveCommand(text)) {
+                    console.log('[relay] User save detected (' + text.substring(0, 40) +
+                                ') — scheduling checkpoint + upload (kit forward skipped)');
+                    saveAndUploadCheckpoint();
+                    return;
+                }
+
                 if (singleUserMode) {
                     // No relay — send directly to local Kit
                     originalSend(data);
                 } else {
                     sendToRelay(0x00, myViewId, data);
-                }
-
-                // User-initiated save (Ctrl+S → COOL emits `uno .uno:Save`):
-                // create a checkpoint and upload the saved file to storage.
-                // In relay mode, only the ORIGINATOR runs this — other peers
-                // receive the same uno via relay and save locally. In
-                // single-user mode, we always run it since there are no peers.
-                if (isUserSaveCommand(text)) {
-                    console.log('[relay] User save detected (' + text.substring(0, 40) +
-                                ') — scheduling checkpoint + upload');
-                    saveAndUploadCheckpoint();
                 }
             } else {
                 // Non-user-input (tileprocessed, clientzoom, etc.) goes
