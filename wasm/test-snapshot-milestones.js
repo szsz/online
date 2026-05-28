@@ -50,7 +50,19 @@ const T0 = Date.now();
 // WARM_BUDGET_MS gate below stays unscaled; it's the actual perf
 // regression detector and should fail when warm gets slow.
 const TIMEOUT_MS = env.scaleTimeout(50000);
-const WARM_TIMEOUT_MS = env.scaleTimeout(10000);
+// 2026-05-28: trial timeout (10 s) used to be tighter than the
+// WARM_BUDGET_MS gate (15 s). On Azure tiers (internal / test) the
+// extra RTT pushed legitimate slow-but-passing warm trials past 10 s
+// — they got marked unverified by the trial timeout even though they
+// would have passed the 15 s budget. Aligning the trial timeout to
+// the budget closes that gap: the budget assertion is the actual
+// fast-failure signal; the trial timeout just shouldn't fire before
+// the budget would have rendered a verdict. Override with
+// WARM_TIMEOUT_MS env if you need to investigate a specific case.
+const WARM_TIMEOUT_MS = parseInt(
+    process.env.WARM_TIMEOUT_MS
+        || String(env.scaleTimeout(parseInt(process.env.WARM_BUDGET_MS || '15000', 10))),
+    10);
 // Wall-time budget for a warm trial. Typical good runs verify in 7-11 s
 // (writer/calc) and 9-12 s (impress). Under CPU contention from
 // concurrent puppeteer Chromes (parallel test runner JOBS≥2, or the
