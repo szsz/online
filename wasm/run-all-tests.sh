@@ -146,7 +146,6 @@ TESTS=(
     "regression-hard-refresh|test-regression-hard-refresh.js|Regression: Hard Refresh|Type without saving, hard refresh, content preserved via relay message replay|shots-regression-hard-refresh"
     "regression-hard-refresh-slow|test-regression-hard-refresh-slow.js|Regression: Hard Refresh (Slow)|Type without saving, wait >60s for room cleanup, content preserved|shots-regression-hard-refresh-slow"
     "regression-mouse-select-copypaste|test-regression-mouse-select-copypaste.js|Regression: Mouse Select + Copy/Paste|Mouse click/double-click selection + copy/paste between 2 browsers|shots-regression-mouse-select-copypaste"
-    "prewarm-benchmark|test-prewarm-benchmark.js|Prewarm Benchmark|Document open timing for all doc types: first visit vs return visit, cold vs warm cache|shots-prewarm-benchmark"
     "pptx-viewer-slides|test-pptx-viewer-slides.js|PPTX Viewer Slides|Real pptx via viewer: Impress UI, slide panel, navigation, content rendering|shots-pptx-viewer-slides"
     "singleuser|test-singleuser.js|Single-User Mode|Open/edit/save docx, xlsx, pptx without relay in one session|shots-singleuser"
     "singleuser-viewer|test-singleuser-viewer.js|Single-User via Viewer|Full viewer flow for /singleuser.html: redirect, no relay WS, type + save|shots-singleuser-viewer"

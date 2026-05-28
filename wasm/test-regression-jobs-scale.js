@@ -91,7 +91,6 @@ function loadEnv(scale) {
         'test-regression-calc-impress-edits.js',
         'test-regression-checkpoint-timing.js',
         'test-snapshot-cross-type.js',
-        'test-prewarm-benchmark.js',
         // Focused-suite known flakes (run-focused-tests.sh worker comment)
         'test-snapshot-milestones.js',
         'test-regression-paste-coedit.js',
