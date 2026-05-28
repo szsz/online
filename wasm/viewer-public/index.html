@@ -577,10 +577,15 @@ window.addEventListener('message', function(event) {
             var pct = msg.Values.pct;
             var label = msg.Values.label || '';
             var detail = msg.Values.detail || '';
-            // Map generic wasm-loader labels to user-friendly ones
+            // Map generic wasm-loader labels to user-friendly ones.
+            // For the download phase: REUSE the wasm-loader's detail
+            // (`online.wasm 12.3/35.6 MB · soffice.data 8.0/20 MB · …`).
+            // 2026-05-28 — user wants the per-file MB breakdown visible,
+            // not just a generic "Downloading editor components" line.
             if (label.includes('Downloading editor')) {
-                label = 'Initializing app…';
-                detail = 'Downloading editor components';
+                label = 'Downloading editor…';
+                // detail passes through unmodified — already MB-formatted
+                // by wasm-loader's renderDetail().
                 // Scale wasm-loader's 0-90% into our 30-80% range
                 if (pct != null) pct = 30 + (pct * 0.55);
             } else if (label.includes('Opening') || label.includes('Switching')) {

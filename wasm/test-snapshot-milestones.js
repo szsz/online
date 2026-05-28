@@ -111,6 +111,21 @@ const WARM_P50_GOAL_MS = parseInt(process.env.WARM_P50_GOAL_MS || '5500', 10);
 // recommendations land. Set WARM_TRIALS=1 for a fast smoke run.
 const WARM_TRIALS = parseInt(process.env.WARM_TRIALS || '3', 10);
 
+// Wire-byte budgets per session — hard fail when exceeded.
+// Cold = first open of a doc, browser cache empty: legitimately fetches
+//   the heavy WASM payloads + soffice.data + cool.html + bundle (~82 MB
+//   observed on 2026-05-28). 100 MB gives a small safety margin without
+//   masking a real regression.
+// Warm = subsequent open from snapshot in IndexedDB: should be essentially
+//   zero network (snapshot read is local, kit comms are tiny). Observed
+//   <5 KB across recent runs. 2 MB ceiling catches a cache-miss / SW
+//   bypass that would re-download a fragment of the bundle. Both override-
+//   able via env for one-off investigation.
+const COLD_WIRE_BUDGET_BYTES = parseInt(process.env.COLD_WIRE_BUDGET_BYTES
+    || String(100 * 1024 * 1024), 10);
+const WARM_WIRE_BUDGET_BYTES = parseInt(process.env.WARM_WIRE_BUDGET_BYTES
+    || String(2 * 1024 * 1024), 10);
+
 const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
 
 // Per doc type: what status text and what selector prove the document
@@ -264,6 +279,60 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
     });
     page.on('pageerror', e =>
         consoleLines.push({ t: Date.now(), line: 'PAGEERROR: ' + (e.message || '').substring(0, 600) }));
+
+    // ── Large-asset download timing ───────────────────────────────
+    // Capture start/end timestamps + bytes for the heavy WASM payloads
+    // (online.wasm, soffice.data). The shared puppeteer browser caches
+    // these between sessions, so subsequent doctype colds look ~15 s
+    // faster than the first cold — purely a test-ordering artifact, not
+    // a real perf delta. Surfacing the download phase separately lets
+    // the report distinguish "cache hit on second cold" from "doctype is
+    // intrinsically faster". A FROM-CACHE hit shows transferSize=0 in
+    // the perf entry; we surface that flag too.
+    const ASSETS = ['online.wasm', 'soffice.data'];
+    const assetTimings = {};
+    ASSETS.forEach(n => { assetTimings[n] = null; });
+    page.on('request', req => {
+        const u = req.url();
+        for (const n of ASSETS) {
+            if (u.endsWith('/' + n) && !assetTimings[n]) {
+                assetTimings[n] = { startedAt: Date.now(), url: u };
+            }
+        }
+    });
+    page.on('response', resp => {
+        const u = resp.url();
+        for (const n of ASSETS) {
+            if (u.endsWith('/' + n) && assetTimings[n] && !assetTimings[n].headersAt) {
+                assetTimings[n].headersAt = Date.now();
+                assetTimings[n].status = resp.status();
+                const cl = parseInt(resp.headers()['content-length'] || '0', 10);
+                if (cl > 0) assetTimings[n].contentLength = cl;
+            }
+        }
+    });
+    page.on('requestfinished', req => {
+        const u = req.url();
+        for (const n of ASSETS) {
+            if (u.endsWith('/' + n) && assetTimings[n] && !assetTimings[n].finishedAt) {
+                assetTimings[n].finishedAt = Date.now();
+                // transferSize / encodedBodySize from puppeteer's perf event,
+                // if available — distinguishes a true network hit (>0)
+                // from a HTTP-cache or 304 (0).
+                try {
+                    const r = req.response();
+                    if (r) {
+                        const f = req.failure ? req.failure() : null;
+                        if (!f) {
+                            // chromium-only fields, may be undefined
+                            const ext = r._timing ? r._timing : null;
+                            if (ext) assetTimings[n].timingDetail = ext;
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
+    });
 
     await page.setCacheEnabled(true);
     await page.setViewport({ width: 1280, height: 900 });
@@ -460,6 +529,23 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
     // critical for diagnosing "stuck on Opening document…" failures.
     fs.writeFileSync(path.join(sessDir, 'console.log'),
         consoleLines.map(e => `[+${e.t - navStart}ms] ${e.line}`).join('\n'));
+    // Per-asset download timing — surfaces the wasm/data download phase
+    // separately so the cold-vs-warm comparison isn't blurred by the
+    // shared puppeteer browser's HTTP cache between sessions. Each entry:
+    //   { startedAt, headersAt, finishedAt, contentLength, status }
+    // All as absolute ms (navStart-relative deltas added for readability).
+    const assets = {};
+    for (const [name, t] of Object.entries(assetTimings)) {
+        if (!t) continue;
+        assets[name] = {
+            startedAtMs: t.startedAt - navStart,
+            headersAtMs: t.headersAt ? t.headersAt - navStart : null,
+            finishedAtMs: t.finishedAt ? t.finishedAt - navStart : null,
+            downloadMs: t.finishedAt && t.startedAt ? t.finishedAt - t.startedAt : null,
+            contentLength: t.contentLength || null,
+            status: t.status || null,
+        };
+    }
     fs.writeFileSync(path.join(sessDir, 'debug.json'), JSON.stringify({
         sessionTag, kind, navStart, totalMs: Date.now() - navStart,
         contentVerified: hits.content_verified !== undefined,
@@ -474,6 +560,7 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
         transferTopBytes,
         transferIframeBytes,
         transferCount,
+        assets,
         eventVsPoll,
     }, null, 2));
 
@@ -491,7 +578,7 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
 
     return { hits, screenshots, navStart, totalMs: Date.now() - navStart,
              lastDomProbe, consoleLines: consoleLines.length,
-             eventVsPoll,
+             eventVsPoll, assets,
              transferBytes, transferTopBytes, transferIframeBytes,
              transferCount };
 }
@@ -518,13 +605,27 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
     const subdir = subdirOverride || `${docTag}-${kind}`;
     const { hits, screenshots, totalMs, lastDomProbe,
             transferBytes = 0, transferTopBytes = 0,
-            transferIframeBytes = 0, transferCount = 0 } = result;
+            transferIframeBytes = 0, transferCount = 0,
+            assets = {} } = result;
     const verified = hits.content_verified !== undefined;
     const dropped  = hits.shield_dropped !== undefined;
     const wireMB = (transferBytes / 1048576).toFixed(2);
     const wireDetail = `<span class="wire">wire: <strong>${wireMB} MB</strong>
                           <small>(${transferCount} req · top ${(transferTopBytes/1048576).toFixed(2)} MB
                             · iframe ${(transferIframeBytes/1048576).toFixed(2)} MB)</small></span>`;
+    // Per-asset download breakdown — separates the heavy WASM payload
+    // timing from the rest of the cold-open work, so a "shared browser
+    // cache between sessions" speedup doesn't hide a real regression.
+    let assetRow = '';
+    const assetParts = [];
+    for (const [name, a] of Object.entries(assets || {})) {
+        if (!a || a.downloadMs == null) continue;
+        const mb = a.contentLength ? (a.contentLength / 1048576).toFixed(1) + ' MB' : '?';
+        assetParts.push(`<code>${name}</code> ${mb} in ${(a.downloadMs/1000).toFixed(2)}s`);
+    }
+    if (assetParts.length) {
+        assetRow = `<p class="assets"><small>large-asset timing: ${assetParts.join(' · ')}</small></p>`;
+    }
     let banner;
     if (dropped) {
         banner = `<p class="ok">✓ Document VISIBLE at +${(hits.shield_dropped/1000).toFixed(2)}s
@@ -552,6 +653,7 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
     <section id="${subdir}">
       <h2>${label} — ${kind.toUpperCase()} session</h2>
       ${banner}
+      ${assetRow}
       <p class="summary">Total wall: <strong>${(totalMs/1000).toFixed(2)} s</strong>.
          Click any thumbnail for full size. The <span class="terminal-tag">highlighted row</span>
          is the moment the document was actually verified rendered in the iframe DOM.</p>
@@ -909,12 +1011,51 @@ ${body}
         log(`     WARM_BUDGET_MS=30000 node wasm/test-snapshot-milestones.js`);
     }
 
+    // ── Wire-byte budget assertions ────────────────────────────────
+    // Cold sessions are allowed up to COLD_WIRE_BUDGET_BYTES (default
+    // 100 MB) — the WASM + data payloads alone are ~82 MB. Warm sessions
+    // must stay under WARM_WIRE_BUDGET_BYTES (default 2 MB) — anything
+    // higher means the snapshot path bypassed and the bundle is
+    // re-downloading from network. Either violation fails the run.
+    log('');
+    log(`Wire budget — cold ≤ ${(COLD_WIRE_BUDGET_BYTES/1048576).toFixed(0)} MB, ` +
+        `warm ≤ ${(WARM_WIRE_BUDGET_BYTES/1048576).toFixed(0)} MB:`);
+    let allWireInBudget = true;
+    for (const [tag, r] of Object.entries(results)) {
+        const coldMB = (r.cold.transferBytes / 1048576);
+        const coldOk = r.cold.transferBytes <= COLD_WIRE_BUDGET_BYTES;
+        log(`  ${tag} cold: ${coldMB.toFixed(2)} MB ${coldOk ? 'PASS' : 'FAIL'}`);
+        if (!coldOk) allWireInBudget = false;
+        for (let i = 0; i < r.warmTrials.length; i++) {
+            const wb = r.warmTrials[i].result.transferBytes || 0;
+            const wMB = wb / 1048576;
+            const wOk = wb <= WARM_WIRE_BUDGET_BYTES;
+            log(`  ${tag} warm ${i+1}: ${wMB.toFixed(3)} MB ${wOk ? 'PASS' : 'FAIL'}`);
+            if (!wOk) allWireInBudget = false;
+        }
+    }
+    if (!allWireInBudget) {
+        log('');
+        log('!!! WIRE BUDGET EXCEEDED. Likely causes:');
+        log('  COLD over budget: a new heavy asset shipped (check bundle');
+        log('     size, font payload, dict-build output). Run a diff of');
+        log('     resources.json against the last green build.');
+        log('  WARM over budget: the snapshot HEAPU8 + V8 code cache path');
+        log('     didn\'t hit — usually a service-worker eviction or a');
+        log('     fingerprint mismatch on the cool.html/online.js inject.');
+        log('     Check `[cache] CACHE HIT` / `from network` lines in the');
+        log('     per-session console.log.');
+        log('  Override the budget for one-off investigation:');
+        log(`     COLD_WIRE_BUDGET_BYTES=$((150*1024*1024)) ... node wasm/test-snapshot-milestones.js`);
+    }
+
     // Exit 0 only if EVERY doc type had ≥1 cold pass AND ≥1 verified
-    // warm trial AND the best verified warm trial is within budget.
+    // warm trial AND the best verified warm trial is within budget
+    // AND every session stayed within its wire-byte budget.
     const allOk = Object.values(results).every(r =>
         r.cold.hits.content_verified !== undefined &&
         r.warmTrials.some(t => t.result.hits.content_verified !== undefined))
-        && allWarmInBudget;
+        && allWarmInBudget && allWireInBudget;
     process.exit(allOk ? 0 : 1);
 })().catch(e => {
     log('FATAL: ' + (e.stack || e.message || e));
