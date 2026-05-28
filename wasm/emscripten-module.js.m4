@@ -16,12 +16,38 @@ function createEmscriptenModule(documentKind, documentDescriptor) {
 		preRun: [function() {
 			if (_snapshotDepAdded || !globalThis.__wasmSnapshotExists) return;
 			_snapshotDepAdded = true;
-			console.log('[snapshot] preRun: adding dependency for deferred snapshot load');
 			// Use a unique dep id to avoid colliding with main.js's
 			// addRunDependency('snapshot-load') — the assert at
 			// online.js:1150 (`!runDependencyTracking[id]`) fires if both
 			// run on the same Module. Both deps must reach 0 for callMain.
 			Module['addRunDependency']('snapshot-load-emm');
+
+			// Fast path: wasm-loader.js already kicked off the snapshot
+			// arrayBuffer() read and published the Promise. Awaiting it
+			// here avoids a redundant 142 MB Cache-Storage re-read
+			// (which previously cost ~485 ms on every warm restore +
+			// stalled bundle.js parse on warm-1).
+			var existing = globalThis.__wasmSnapshotDataPromise;
+			if (existing && typeof existing.then === 'function') {
+				console.log('[snapshot] preRun: awaiting eager-scheduled read');
+				existing.then(function(buf) {
+					if (buf) {
+						console.log('[snapshot] Loaded ' +
+							(buf.byteLength / 1048576).toFixed(0) +
+							'MB via eager path (no redundant read)');
+					}
+					Module['removeRunDependency']('snapshot-load-emm');
+				});
+				return;
+			}
+
+			// Fallback: eager path didn't run (defensive; in practice
+			// __wasmSnapshotExists=true ⇒ wasm-loader called
+			// startSnapshotRead which always publishes a Promise).
+			// Retains the original Cache-Storage path so a future
+			// loader refactor that drops the eager scheduler doesn't
+			// silently break warm restore.
+			console.log('[snapshot] preRun: no eager promise; fallback to Cache re-read');
 			caches.open('wasm-snapshot').then(function(cache) {
 				return Promise.all([
 					cache.match('/snapshot/heap-v2'),
@@ -36,7 +62,7 @@ function createEmscriptenModule(documentKind, documentDescriptor) {
 			}).then(function(data) {
 				var buf = data[0], meta = data[1];
 				if (buf) {
-					console.log('[snapshot] Loaded ' + (buf.byteLength / 1048576).toFixed(0) + 'MB from Cache API (deferred), heapBase=' + (meta.heapBase || 0));
+					console.log('[snapshot] Loaded ' + (buf.byteLength / 1048576).toFixed(0) + 'MB from Cache API (fallback), heapBase=' + (meta.heapBase || 0));
 					globalThis.__wasmSnapshotData = buf;
 					globalThis.__wasmSnapshotMeta = meta;
 				} else {
