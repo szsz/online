@@ -1057,15 +1057,29 @@
         var mb = bytes / (1024 * 1024);
         return (mb < 10 ? mb.toFixed(1) : Math.round(mb)) + ' MB';
     }
-    // Render the detail line as `<file>  <loaded> / <total> MB  ·  …`. User
-    // asked for MB-based progress (2026-05-28) — % alone hides whether 67%
-    // of a 1 MB file or 67% of a 66 MB file is left.
+    // Friendly per-file labels — the bare filename ("online.wasm") doesn't
+    // mean anything to a non-dev user. Pair it with what the file is FOR so
+    // the progress detail reads as "Editor code (online.wasm) 12.3 / 35.6 MB
+    // · Fonts & data (soffice.data) 8.0 / 20 MB" — visible MB plus the
+    // why-this-is-downloading context.
+    var FRIENDLY_NAMES = {
+        'online.wasm':  'Editor code',
+        'soffice.data': 'Fonts & data',
+        'bundle.js':    'UI bundle',
+        'online.js':    'Loader',
+        'bundle.css':   'UI styles',
+    };
+    // Render the detail line as `Editor code (online.wasm)  <loaded> / <total> MB  ·  …`.
+    // User asked for MB-based progress (2026-05-28) — % alone hides whether
+    // 67% of a 1 MB file or 67% of a 66 MB file is left. Friendly labels
+    // added (2026-05-28 follow-up) so the user knows what's being loaded.
     function renderDetail() {
         var parts = Object.keys(progressState.fileBytes)
             .filter(k => progressState.fileBytes[k].total > 0)
             .map(function (k) {
                 var b = progressState.fileBytes[k];
-                return k + ' ' + fmtMB(b.loaded) + ' / ' + fmtMB(b.total);
+                var label = FRIENDLY_NAMES[k] ? FRIENDLY_NAMES[k] + ' (' + k + ')' : k;
+                return label + ' ' + fmtMB(b.loaded) + ' / ' + fmtMB(b.total);
             });
         return parts.join('  ·  ');
     }
