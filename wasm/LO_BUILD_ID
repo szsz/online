@@ -176,4 +176,22 @@
 #                  pointing at $BRAND_BASE_DIR/share/dict. Pairs
 #                  with the dict-loader.js flat-path write in the
 #                  same online PR.
-2026-05-28-52
+#   2026-05-28-51  git_sha 64bb48e598bb ("WASM #196 fix: EMSCRIPTEN
+#                  takes precedence in dict scan"). REVERTED in dev
+#                  — this enables spellcheck activation for the first
+#                  time, exposing a stack overflow inside the WASM
+#                  pthread stack ("Stack overflow! Stack cookie has
+#                  been overwritten ... received 0x00000000 0x00000000"
+#                  → unreachable). Cascade kills 30+ tests (97p/17f →
+#                  66p/51f baseline regression across 2026-05-28 →
+#                  2026-05-29). Per-commit pass/fail correlation on
+#                  coolwasmfiles/local-builds shows the drop is
+#                  entirely between SHAs 5ce51ae7 (-50) and 021bb577
+#                  (-51); the ONLY diff is this LO bump. Spell-check
+#                  pixel rendering remains an open issue (#196 Phase 2)
+#                  but needs to be unblocked WITHOUT triggering the
+#                  thread-stack overflow first.
+#   2026-05-28-52  binary-identical to -51 (regen-indexes.sh fix only).
+#                  Same regression behaviour; pinned dev briefly
+#                  between -51 merge and the revert.
+2026-05-27-50
