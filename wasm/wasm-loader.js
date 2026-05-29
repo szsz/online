@@ -282,28 +282,32 @@
     // 142 MB read (saved ~485 ms on every warm restore).
     window.__wasmSnapshotDataPromise = null;
 
-    // Shared snapshot-read helper. Schedules the 142 MB arrayBuffer()
-    // materialisation off the bundle-eval critical path (via
-    // requestIdleCallback when available), populates both the Promise
-    // global (for preRun) and the buffer global (for the deploy.sh-
-    // injected HEAPU8 inject right before callMain).
+    // Shared snapshot-read helper. Kicks off the 142 MB arrayBuffer()
+    // read immediately and publishes the Promise so emscripten-module's
+    // preRun can await it (avoiding a redundant second 142 MB read from
+    // Cache Storage — that was the original win of this consolidation).
+    //
+    // Earlier version (2026-05-28) wrapped the arrayBuffer() call in
+    // requestIdleCallback to defer the main-thread Promise resolution
+    // past bundle.js eval (extra ~1.2 s win on warm-1). In practice
+    // requestIdleCallback NEVER fires during the WASM compile + init
+    // window (browser is too busy to enter idle), so the Promise stays
+    // unresolved, preRun's run dependency never clears, and callMain
+    // never runs — every doc cold-opens to a permanent loading state.
+    // Caused 47 → 49 new test failures across the suite (cold-load
+    // gate timeouts). Reverted to plain `arrayBuffer()` — keep the
+    // ~485 ms saving from killing the second read; accept the ~1.2 s
+    // warm-1 first-paint cost.
     function startSnapshotRead(heapResp) {
-        var promise = new Promise(function (resolve) {
-            var schedule = window.requestIdleCallback ||
-                function (fn) { setTimeout(fn, 0); };
-            schedule(function () {
-                heapResp.arrayBuffer().then(function (buf) {
-                    window.__wasmSnapshotData = buf;
-                    mark('snapshot:heap_loaded',
-                         (buf.byteLength / 1048576).toFixed(0) + 'MB');
-                    resolve(buf);
-                }).catch(function (e) {
-                    mark('snapshot:heap_load_failed', e.message);
-                    window.__wasmSnapshotData = null;
-                    resolve(null);
-                });
-            }, { timeout: 2000 }); // requestIdleCallback option;
-                                   // setTimeout fallback ignores it
+        var promise = heapResp.arrayBuffer().then(function (buf) {
+            window.__wasmSnapshotData = buf;
+            mark('snapshot:heap_loaded',
+                 (buf.byteLength / 1048576).toFixed(0) + 'MB');
+            return buf;
+        }).catch(function (e) {
+            mark('snapshot:heap_load_failed', e.message);
+            window.__wasmSnapshotData = null;
+            return null;
         });
         window.__wasmSnapshotDataPromise = promise;
         return promise;
