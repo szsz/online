@@ -72,11 +72,19 @@ HTML
                 sha="$(jq -r '.git_sha // .git_short_sha // ""' "$tmp" 2>/dev/null)"
                 sha_short="${sha:0:12}"
                 if [[ "$prefix" == "app-builds/" || "$prefix" == "local-builds/" ]]; then
-                    local rc lo p_pass p_fail tests_cell profile editor_bid editor_cell
+                    local rc lo p_pass p_fail tests_cell profile editor_bid editor_cell aborted
                     rc="$(jq -r '.test_report.exit_code // empty' "$tmp" 2>/dev/null)"
                     lo="$(jq -r '.lo_build_id // ""' "$tmp" 2>/dev/null)"
                     p_pass="$(jq -r '.test_report.pass_count // empty' "$tmp" 2>/dev/null)"
                     p_fail="$(jq -r '.test_report.fail_count // empty' "$tmp" 2>/dev/null)"
+                    # `aborted: true` is set by mark-test-aborted.sh when
+                    # the test job exits without uploading summary.json
+                    # (timeout, runner cancellation, manual cancel). The
+                    # bare "failed (rc=124)" rendering would otherwise be
+                    # indistinguishable from a code-level red, and prior
+                    # to this guard the row stayed on "no tests yet"
+                    # forever — both hide the real status.
+                    aborted="$(jq -r '.test_report.aborted // false' "$tmp" 2>/dev/null)"
                     profile="$(jq -r '.test_profile // ""' "$tmp" 2>/dev/null)"
                     # editor_build_id added 2026-05-12 (SW-bridge cutover).
                     # Older manifests don't have it — fall back to the
@@ -84,6 +92,8 @@ HTML
                     editor_bid="$(jq -r '.editor_build_id // .app_build_id // ""' "$tmp" 2>/dev/null)"
                     if [[ -z "$rc" ]]; then
                         tests_cell="<span class=\"muted\">no tests yet</span>"
+                    elif [[ "$aborted" == "true" ]]; then
+                        tests_cell="<span class=\"bad\">tests aborted</span>"
                     elif [[ -n "$p_pass" && -n "$p_fail" ]]; then
                         tests_cell="<a href=\"$id/tests/\"><span class=\"ok\">$p_pass</span> / <span class=\"bad\">$p_fail</span></a>"
                     elif [[ "$rc" == "0" ]]; then
