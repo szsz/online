@@ -236,6 +236,16 @@ jobs:
     needs: build-deploy
     if: ${{ github.event.inputs.skip_tests != 'true' }}
     runs-on: [self-hosted, wasm-build]
+    # 180 min ceiling — a clean run lands at ~118 min (see
+    # app-builds/2026-05-27-081253/tests/summary.json). Anything past
+    # this wall-clock is a hung test runner, not a legitimately long
+    # suite — kill the step cleanly so the cleanup step below can
+    # patch the manifest before the runner force-kills the job at the
+    # default 360 min. Without this ceiling a hung suite eats the full
+    # 6 h slot and leaves the app-builds index frozen on "no tests yet"
+    # (see PR #157's dev-merge run 26604583018 — 2:43 h stall, then
+    # external cancel, no manifest update).
+    timeout-minutes: 180
     steps:
       - name: Reclaim workspace ownership
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
@@ -251,6 +261,23 @@ jobs:
           LO_BUILD_ID:  ${{ needs.build-deploy.outputs.lo_build_id }}
           GIT_SHA: ${{ github.sha }}
         run: bash .github/scripts/wasm-ci/test-and-publish.sh
+
+      # Defensive guard: when the test step above gets killed before
+      # it could upload its own summary.json (job timeout / runner
+      # contention / manual cancel) the build's manifest stays at
+      # test_report: null and the app-builds index renders the row as
+      # "no tests yet" indefinitely — indistinguishable from a build
+      # whose tests are still queued. Patch the manifest with an
+      # explicit aborted marker and regen the index so the failure
+      # mode is visible. Always runs; no-op when summary.json is
+      # already up.
+      - name: Mark tests aborted (if test step didn't publish)
+        if: always()
+        env:
+          APP_BUILD_ID:    ${{ needs.build-deploy.outputs.app_build_id }}
+          GIT_SHA:         ${{ github.sha }}
+          TEST_JOB_STATUS: ${{ job.status }}
+        run: bash .github/scripts/wasm-ci/mark-test-aborted.sh
 
       # Upload junit.xml as a workflow artifact for external consumers.
       # test-and-publish.sh already uploaded the same file to coolwasmfiles
