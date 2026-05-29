@@ -69,6 +69,29 @@ The single exception: when the user explicitly says "create a task
 for X", write the task file directly (they've done the curation step
 in flight).
 
+### One PR at a time on `dev` — batch iterations
+
+The self-hosted runner is single-tenant; full CI takes 60-90 min;
+multiple open PRs saturate the queue for half a day. **Only ONE PR is
+open against `dev` at a time.** Multiple iterations accumulate as
+commits on the same accumulator branch; CI re-runs once per push and
+covers the full batch.
+
+- Before committing, `gh pr list --state open --base dev`. If a PR
+  is open → `gh pr checkout <N>` and commit on top. If not → branch
+  `batch/<topic>-<YYYY-MM-DD>` off `origin/dev`, commit, push, open
+  the PR (now the next accumulator).
+- Each commit must be **independently revert-able**. A failing batch
+  CI is recovered by reverting just the bad commit, not the whole
+  batch. Risky / speculative changes go in their own accumulator.
+- **Hold pushes while CI is in-progress on the current batch.**
+  Pushing mid-CI cancels + re-queues from scratch. Only push mid-CI
+  for a critical hot-fix to an active CI failure.
+- LO-core PRs and `LO_BUILD_ID` bumps are exempt — different repo,
+  different cycle, always their own PR.
+- When the accumulator auto-merges (on green build-deploy-test), the
+  next iter starts a fresh accumulator branch.
+
 ## Engineering rules (from user feedback, durable)
 - All user input goes through the relay; never bypass for "own" messages.
 - Every fixed bug gets a `test-regression-*.js` + entry in `run-all-tests.sh`.
