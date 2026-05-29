@@ -24,6 +24,7 @@ class NavigatorPanel extends SidebarBase {
 
 	highlightTerm: string;
 	focusQuickFind: boolean;
+	private floatingIconClickBound: boolean = false;
 
 	constructor(map: any) {
 		super(map, SidebarType.Navigator);
@@ -329,19 +330,28 @@ class NavigatorPanel extends SidebarBase {
 		buttonWrapper.appendChild(button);
 		this.floatingNavIcon.appendChild(buttonWrapper);
 
-		// Click event
-		this.floatingNavIcon.addEventListener(
-			'click',
-			function () {
-				this.showNavigationPanel(true);
-				if (app.map.isPresentationOrDrawing()) {
-					this.switchNavigationTab('tab-slide-sorter');
-				} else {
-					app.map.sendUnoCommand('.uno:Navigator');
-				}
-				this.focusSearch();
-			}.bind(this),
-		);
+		// Click event — attach ONCE per panel instance. createFloatingNavigatorBtn
+		// is called every time initializeImpl runs, and initializeImpl fires
+		// twice on cold open (TileLayer.beforeAdd + Socket._onStatusMsg per the
+		// idempotency comment above). Without this guard a second listener
+		// gets bound on the same element, so a single user click dispatches
+		// .uno:Navigator twice → kit toggles open then closed → panel flashes
+		// and stays closed (the "Writer Navigator only flashes" bug).
+		if (!this.floatingIconClickBound) {
+			this.floatingIconClickBound = true;
+			this.floatingNavIcon.addEventListener(
+				'click',
+				function () {
+					this.showNavigationPanel(true);
+					if (app.map.isPresentationOrDrawing()) {
+						this.switchNavigationTab('tab-slide-sorter');
+					} else {
+						app.map.sendUnoCommand('.uno:Navigator');
+					}
+					this.focusSearch();
+				}.bind(this),
+			);
+		}
 	}
 
 	onNavigator(data: FireEvent) {
