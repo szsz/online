@@ -48,6 +48,34 @@ entries appear only when the user explicitly says so OR when they
 promote a proposal. This keeps the backlog curated rather than
 flooded.
 
+## One PR at a time on `dev` (batch multiple iterations)
+
+The self-hosted runner is a single resource and full CI takes 60-90
+minutes. Eight open PRs each running their own CI saturates the
+runner queue for half a day. So: **only ONE PR is open against `dev`
+at any time.** Multiple iterations accumulate as separate commits on
+the same branch; CI re-runs once per push and covers the full batch.
+
+Workflow:
+
+- Before committing, `gh pr list --state open --base dev` to find the
+  current accumulator. If one exists: `gh pr checkout <N>` and commit
+  on top. If not: branch `batch/<topic>-<YYYY-MM-DD>` off
+  `origin/dev`, commit, push, open the PR — that becomes the next
+  accumulator.
+- Each commit must be **independently revert-able**. If CI fails on
+  one bad commit later, revert just that one — the rest of the batch
+  is preserved. Don't ride a speculative change on the same batch as
+  safe ones; start a new accumulator for risky work.
+- **Hold pushes while CI is in-progress on the current batch.**
+  Pushing mid-CI cancels the run and re-queues from scratch — wasteful
+  unless it's a critical hot-fix to an active CI failure.
+- LO-core PRs + `LO_BUILD_ID` bumps are exempt — different repo /
+  different cycle. They always get their own PRs.
+
+When the accumulator merges (auto-merge fires on green
+`build-deploy-test`), the next iter starts a fresh accumulator branch.
+
 ## Skill index
 
 Local skills under `.claude/skills/` (themselves gitignored):
