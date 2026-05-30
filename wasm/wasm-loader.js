@@ -1248,6 +1248,94 @@
                 headers: { 'Content-Type': 'application/json' },
             }));
         }
+        // ── Clipboard GET stub ───────────────────────────────────
+        // Clipboard.js `_asyncAttemptNavigatorClipboardWrite` (the
+        // right-click → Copy and async-clipboard path) fetches
+        // `<webserver>/cool/clipboard?WOPISrc=…&Tag=…&MimeType=text/html,
+        // text/plain;charset=utf-8` to retrieve the kit's most recent
+        // selection contents for `navigator.clipboard.write`. In WASM
+        // there's no webserver so the request 404s and the external
+        // clipboard write silently fails — cross-app paste from a
+        // right-click Copy is broken.
+        //
+        // The kit DID already push the selection via the
+        // `textselectioncontent:` message. We cache it directly off
+        // TheFakeWebSocket (see installClipboardSelectionHook below) —
+        // reading `app.map._clip._selectionContent` instead races: kit
+        // sends `unocommandresult: .uno:Copy` AND `textselectioncontent:`
+        // close together, and the fetch fires from `_onCommandResult`
+        // before CanvasTileLayer has finished dispatching the text
+        // message. The dedicated hook captures the bytes the moment
+        // the WS frame lands.
+        if (typeof key === 'string' && key.includes('/cool/clipboard') &&
+            (!opts || !opts.method || opts.method === 'GET')) {
+            mark('clipboard:get_stub');
+            return new Promise(function(resolve) {
+                // Step 1 — explicitly ask the kit for the current text
+                // selection. The kit's `.uno:Copy` populates its
+                // INTERNAL clipboard but does not auto-emit
+                // `textselectioncontent:`; the server-side webserver
+                // (which we don't have in WASM) would normally fire
+                // `gettextselection` to retrieve it. Replicate that
+                // call so the kit responds with `textselectioncontent:`,
+                // which CanvasTileLayer routes into
+                // `app.map._clip._selectionContent`. The existing
+                // `document.oncopy` handler (Ctrl+C path) does the
+                // same dance at lines 2027-2064.
+                try {
+                    if (globalThis.TheFakeWebSocket) {
+                        globalThis.TheFakeWebSocket.send(
+                            'gettextselection mimetype=text/html,text/plain;charset=utf-8');
+                    }
+                } catch (_) {}
+
+                // Step 2 — poll for `_selectionContent` to populate.
+                // textselectioncontent: typically lands within 50–
+                // 200 ms of the gettextselection request; wait up to
+                // 1.5 s for in-flight WS jitter.
+                //
+                // (Wrapping `TheFakeWebSocket.onmessage` for direct
+                // capture was tried but breaks: COOL's
+                // browser/src/app/Socket.ts:292 reassigns onmessage
+                // after Socket connects, dropping any earlier wrapper.
+                // See the comment at the docready hook above.)
+                //
+                // If the wait times out empty, return 404 — that way
+                // `_asyncAttemptNavigatorClipboardWrite`'s
+                // `clipboardItem` promise rejects, navigator.clipboard
+                // is left untouched, and any prior clipboard content
+                // (e.g. set by Ctrl+C earlier) stands.
+                var t0 = performance.now();
+                var iv = setInterval(function() {
+                    var clip = null;
+                    try { clip = window.app && window.app.map && window.app.map._clip; }
+                    catch (_) {}
+                    var html  = (clip && clip._selectionContent)          || '';
+                    var plain = (clip && clip._selectionPlainTextContent) || '';
+                    var elapsed = performance.now() - t0;
+                    if (html || plain || elapsed > 1500) {
+                        clearInterval(iv);
+                        if (!html && !plain) {
+                            console.log('[wasm-loader] Clipboard GET stub — ' +
+                                'empty after ' + elapsed.toFixed(0) +
+                                'ms, returning 404');
+                            return resolve(new Response('', { status: 404 }));
+                        }
+                        var body = JSON.stringify({
+                            'text/html': html,
+                            'text/plain;charset=utf-8': plain,
+                        });
+                        console.log('[wasm-loader] Clipboard GET stub — html=' +
+                                    html.length + 'b plain=' + plain.length +
+                                    'b waited=' + elapsed.toFixed(0) + 'ms');
+                        resolve(new Response(body, {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' },
+                        }));
+                    }
+                }, 25);
+            });
+        }
 
         return origFetch.apply(this, arguments);
     };

@@ -119,11 +119,19 @@ async function realClickMenuItem(page, frame, labelRegex) {
         });
         await page.setViewport({ width: 1280, height: 900 });
 
-        // Capture clipboard-related errors so we surface them in the report.
+        // Capture clipboard-related errors + the wasm-loader's clipboard
+        // log lines (so we can see whether the GET stub actually fired).
         const clipboardErrors = [];
+        const clipboardLogs   = [];
         page.on('pageerror', e => {
             if (/clipboard|paste|copy/i.test(e.message)) {
                 clipboardErrors.push(e.message.substring(0, 200));
+            }
+        });
+        page.on('console', m => {
+            const t = m.text();
+            if (/wasm-loader|wasm-loader-diag|Clipboard GET stub|Clipboard POST stub|onpaste|Internal paste|External paste|navigator\.clip|textselectioncontent|cached textselectioncontent/i.test(t)) {
+                clipboardLogs.push(t.substring(0, 200));
             }
         });
 
@@ -266,32 +274,35 @@ async function realClickMenuItem(page, frame, labelRegex) {
                   wcAfterPaste - wcAfterType > 0,
                   `delta=${wcAfterPaste - wcAfterType}`);
 
-            // SMOKING-GUN probe (informational, not a hard fail until
-            // the wasm-loader.js /cool/clipboard GET stub lands).
-            // Currently `_asyncAttemptNavigatorClipboardWrite` does a
-            // GET to /cool/clipboard?... which 404s in WASM (only POST
-            // is stubbed at wasm-loader.js:1243). Result: kit-side copy
-            // succeeds (assertion above) but the external/system
-            // clipboard never receives the text — cross-app paste from
-            // a right-click Copy is broken. Logged here as a known
-            // issue; ship the fix in a follow-up that adds the GET
-            // stub returning the kit's last textselectioncontent.
+            // Hard assertion: the external/system clipboard must receive
+            // the copied text. Now backed by the wasm-loader.js
+            // /cool/clipboard GET stub (added in the same commit as
+            // this assertion upgrade). The stub returns the kit's last
+            // textselectioncontent (`app.map._clip._selectionContent` +
+            // `_selectionPlainTextContent`) as JSON, which
+            // `_asyncAttemptNavigatorClipboardWrite` then writes into
+            // `navigator.clipboard.write`. Without the stub the GET
+            // 404'd, the write silently dropped its payload, and
+            // `navigator.clipboard.readText()` came back empty.
             const extClip = await page.evaluate(async () => {
                 try {
                     const t = await navigator.clipboard.readText();
-                    return { ok: true, text: t.substring(0, 80) };
+                    return { ok: true, text: t.substring(0, 200) };
                 } catch (e) {
                     return { ok: false, why: String(e).substring(0, 200) };
                 }
             });
-            const extOk = extClip.ok === true &&
-                extClip.text && extClip.text.length > 0;
-            log(`SMOKING GUN — navigator.clipboard.readText() after ` +
-                `right-click Copy: ok=${extClip.ok} text="${extClip.text || ''}" ` +
-                `why=${extClip.why || ''} — ${extOk ? 'WORKING' :
-                'BROKEN (expected, see /cool/clipboard GET 404)'}`);
+            log(`navigator.clipboard.readText() after right-click Copy: ` +
+                `ok=${extClip.ok} text="${extClip.text || ''}" ` +
+                `why=${extClip.why || ''}`);
+            check('navigator.clipboard.readText() returns non-empty text ' +
+                  '(external clipboard write succeeded via /cool/clipboard GET stub)',
+                  extClip.ok === true && extClip.text && extClip.text.length > 0,
+                  extClip.ok ? `len=${(extClip.text || '').length}` : extClip.why);
         }
 
+        log(`clipboard logs captured (${clipboardLogs.length}):`);
+        clipboardLogs.slice(-12).forEach(e => log(`  L| ${e}`));
         if (clipboardErrors.length) {
             log(`captured ${clipboardErrors.length} clipboard-related pageerrors:`);
             clipboardErrors.slice(0, 5).forEach(e => log(`  ! ${e}`));
