@@ -38,6 +38,14 @@ CI_IMAGE="lo-wasm-ci:latest"
 CI_CONTAINER="lo-wasm-ci-build"
 LOCK="$STATE_DIR/host.lock"
 
+# ── Prune stale lo-extracted/<LO_BID> dirs (>7 days old) ──────
+# Each extraction is ~5–10 GB; without cleanup the runner's disk fills up.
+# Use mtime (set at extraction) and skip the current LO_BID defensively.
+if [[ -d "$STATE_DIR/lo-extracted" ]]; then
+    find "$STATE_DIR/lo-extracted" -mindepth 1 -maxdepth 1 -type d -mtime +7 \
+        ! -name "$LO_BID" -print -exec rm -rf {} + 2>/dev/null || true
+fi
+
 mkdir -p "$STATE_DIR" "$LO_EXTRACTED" "$ONLINE_BUILD" "$EMSDK_CACHE" "$CCACHE_DIR"
 
 # ── Cleanup trap: container runs as root and writes into the bind-mounted

@@ -18,6 +18,14 @@ CACHE_ROOT="${CI_STATE_DIR:?CI_STATE_DIR required}/lo-cache"
 DEST="$CACHE_ROOT/$LO_BID"
 TARBALL="$DEST/lo-core.tar.zst"
 
+# ── Prune stale lo-cache/<LO_BID> dirs (>7 days old) ──────────
+# Each tarball is ~1–2 GB; without cleanup the runner's disk fills up.
+# Skip the current LO_BID so a re-run on the same ID never wipes itself.
+if [[ -d "$CACHE_ROOT" ]]; then
+    find "$CACHE_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +7 \
+        ! -name "$LO_BID" -print -exec rm -rf {} + 2>/dev/null || true
+fi
+
 mkdir -p "$DEST"
 
 if [[ -f "$DEST/.complete" ]]; then
