@@ -19,9 +19,13 @@ ai/
 - **Pick work from `ai/tasks/todo/`.** Skills `/dev-iterate` and
   `/fix-bug` read it as their source of truth. Status changes use
   `git mv` so history is preserved.
-- **File sideways findings as proposals**, not tasks. Write a new
-  `ai/proposals/proposed/<slug>.md`. The user reviews proposals and
-  promotes accepted ones to `ai/tasks/todo/` themselves.
+- **Sideways findings split by scope.** A finding adjacent to the
+  current task you can fix in the SAME diff (same files, no new test
+  cycle, no separate LO build) → **fix it inline** in the current
+  commit. A finding that would balloon scope (different subsystem,
+  different code path, separate verification) → **file a proposal**
+  at `ai/proposals/proposed/<slug>.md`. Never write directly to
+  `ai/tasks/todo/`.
 - **Park-with-question** instead of `AskUserQuestion`. Write
   `ai/questions/pending/<slug>.md` — the single ntfy.sh hook
   (`~/.claude/hooks/ntfy-new-question.sh`) pushes a notification.
@@ -43,10 +47,14 @@ must make, park-with-question (see above). Otherwise: pick and ship.
 
 ## Do NOT auto-create tasks
 
-Skills file findings as PROPOSALS, never as tasks. New `ai/tasks/`
-entries appear only when the user explicitly says so OR when they
-promote a proposal. This keeps the backlog curated rather than
-flooded.
+New `ai/tasks/` entries appear only when the user explicitly says so
+OR when they promote a proposal. Skills never write directly to
+`ai/tasks/todo/`.
+
+For sideways findings, the rule is **inline-if-related, proposal-if-
+unrelated** (see above). Don't file a proposal for a one-line cleanup
+in the file you're already editing — just fix it and note it in the
+commit body.
 
 ## One PR at a time on `dev` (batch multiple iterations)
 

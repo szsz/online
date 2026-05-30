@@ -56,18 +56,29 @@ If you hit a decision a human must make: `git mv` the task to
 `ai/tasks/parked/` and write `ai/questions/pending/<slug>.md` — the
 ntfy hook will notify the user. Don't block on `AskUserQuestion`.
 
-### Do NOT create new tasks
+### Sideways findings — inline-if-related, proposal-if-unrelated
 
-**Skills file findings as PROPOSALS, never as tasks.** When you notice
-a bug or improvement that's out-of-scope for the current iteration,
-write `ai/proposals/proposed/<slug>.md` (not `ai/tasks/todo/`). The
-user reviews proposals and promotes accepted ones to tasks themselves
-— that's the only way new task entries appear. Side-effect: the
-backlog is curated, not flooded with auto-filed work.
+While working any iteration you'll notice things adjacent to the
+current task. **Determine by scope:**
 
-The single exception: when the user explicitly says "create a task
-for X", write the task file directly (they've done the curation step
-in flight).
+- **Related** = same subsystem, same files you're already touching,
+  defect uncovered by the test you just wrote, one-line cleanup in
+  code you're editing. **Fix it inline in the current commit.** Note
+  it in the commit body. No proposal needed — filing one for a 5-line
+  cleanup in a file you're already in adds ceremony for no gain.
+- **Unrelated** = different code path, separate verification cycle
+  needed, would balloon the PR's diff or require an LO rebuild.
+  Write `ai/proposals/proposed/<slug>.md` — the user reviews and
+  promotes accepted ones to `ai/tasks/todo/` themselves.
+
+"Related" means: no need to touch files outside the current diff, no
+separate test cycle, no extra LO build. If you'd have to widen scope
+to fix it → proposal.
+
+**Never write directly to `ai/tasks/todo/`.** New task entries appear
+only when the user explicitly says "create a task for X" OR when
+they promote a proposal themselves. Backlog stays curated, not
+auto-flooded.
 
 ### One PR at a time on `dev` — batch iterations
 
