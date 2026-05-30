@@ -47,6 +47,14 @@ class ImpressTransitionTab implements NotebookbarTab {
 							{
 								id: 'transitions_icons',
 								type: 'iconview',
+								// Single-click must apply the transition.
+								// Without this flag the click handler in
+								// Widget.IconView.ts only fires the 'select'
+								// builderCallback; 'activate' is gated on
+								// either singleclickactivate=true OR a
+								// dblclick. PowerPoint and LO-desktop both
+								// apply transitions on single click.
+								singleclickactivate: true,
 								entries: [...Array(29).keys()].map((n: number) => {
 									// width/height must be present up front. The
 									// iconview's ondemand renderer (Widget.IconView.ts →
