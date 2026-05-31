@@ -18,12 +18,17 @@ const __cl = require('./lib/inject-checklist');
 //   1. Opens an xlsx that starts with 1 sheet.
 //   2. Reads #StatusDocPos to confirm "Sheet 1 of 1".
 //   3. Clicks insertsheet-button. Expects status to flip to a "Sheet
-//      N of 2" form (i.e. sheet count went up). FAILS if the button
-//      did nothing.
-//   4. Clicks firstrecord-button. Expects active sheet to be sheet 1.
-//   5. Clicks lastrecord-button. Expects active sheet to be sheet 2.
-//   6. Clicks prevrecord-button. Expects sheet 1.
-//   7. Clicks nextrecord-button. Expects sheet 2.
+//      N of 2" form (i.e. sheet count went up).
+//   4. Clicks firstrecord-button (|<). Active sheet must be idx=1.
+//   5. Clicks lastrecord-button (>|). Active sheet must be idx=2.
+//   6. Clicks prevrecord-button (<). Active sheet must be idx=1.
+//   7. Clicks nextrecord-button (>). Active sheet must be idx=2.
+//
+// Per docdispatcher.ts:486-509 (Excel-like behavior, added 2026-05-31):
+// each tab-nav button BOTH scrolls the tab strip AND changes the
+// active sheet via app.map.setPart(). Pre-2026-05-31 the buttons were
+// scroll-only and the test revision that ran 2026-05-30 → 2026-05-31
+// failed against that intermediate state.
 //
 // Pattern follows test-hotswitch-xlsx.js: read #StatusDocPos plus a
 // pixel-hash of a canvas band so we can prove the active sheet
@@ -176,53 +181,28 @@ async function clickButtonInFrame(frame, btnId) {
               s1.sheetIdx === 2,
               `idx=${s1.sheetIdx}`);
 
-        // ── Test 2: firstrecord (|<) must jump to sheet 1 ──────────
-        log('--- click firstrecord-button (|<) ---');
-        const c2 = await clickButtonInFrame(frame, 'firstrecord-button');
-        check('firstrecord-button is present + clickable',
-              c2.ok === true, c2.why || '');
-        await sleep(1500);
-        const s2 = await probeState(frame);
-        log(`after firstrecord: ${JSON.stringify(s2)}`);
-        check('firstrecord moved active sheet back to idx=1',
-              s2.sheetIdx === 1,
-              `idx=${s2.sheetIdx}`);
-
-        // ── Test 3: lastrecord (>|) must jump to sheet 2 ───────────
-        log('--- click lastrecord-button (>|) ---');
-        const c3 = await clickButtonInFrame(frame, 'lastrecord-button');
-        check('lastrecord-button is present + clickable',
-              c3.ok === true, c3.why || '');
-        await sleep(1500);
-        const s3 = await probeState(frame);
-        log(`after lastrecord: ${JSON.stringify(s3)}`);
-        check('lastrecord moved active sheet to idx=2',
-              s3.sheetIdx === 2,
-              `idx=${s3.sheetIdx}`);
-
-        // ── Test 4: prevrecord (<) — back to sheet 1 ───────────────
-        log('--- click prevrecord-button (<) ---');
-        const c4 = await clickButtonInFrame(frame, 'prevrecord-button');
-        check('prevrecord-button is present + clickable',
-              c4.ok === true, c4.why || '');
-        await sleep(1500);
-        const s4 = await probeState(frame);
-        log(`after prevrecord: ${JSON.stringify(s4)}`);
-        check('prevrecord moved active sheet to idx=1',
-              s4.sheetIdx === 1,
-              `idx=${s4.sheetIdx}`);
-
-        // ── Test 5: nextrecord (>) — forward to sheet 2 ────────────
-        log('--- click nextrecord-button (>) ---');
-        const c5 = await clickButtonInFrame(frame, 'nextrecord-button');
-        check('nextrecord-button is present + clickable',
-              c5.ok === true, c5.why || '');
-        await sleep(1500);
-        const s5 = await probeState(frame);
-        log(`after nextrecord: ${JSON.stringify(s5)}`);
-        check('nextrecord moved active sheet to idx=2',
-              s5.sheetIdx === 2,
-              `idx=${s5.sheetIdx}`);
+        // ── Tests 2-5: the |<, <, >, >| buttons must scroll the tab
+        //   strip AND change the active sheet (Excel-like behavior,
+        //   docdispatcher.ts:486-509). The starting state from Test 1
+        //   has 2 sheets with idx=2 active.
+        const navSteps = [
+            { id: 'firstrecord-button', label: '|< (firstrecord)', expected: 1 },
+            { id: 'lastrecord-button',  label: '>| (lastrecord)',  expected: 2 },
+            { id: 'prevrecord-button',  label: '<  (prevrecord)',  expected: 1 },
+            { id: 'nextrecord-button',  label: '>  (nextrecord)',  expected: 2 },
+        ];
+        for (const b of navSteps) {
+            log(`--- click ${b.id} ---`);
+            const c = await clickButtonInFrame(frame, b.id);
+            check(`${b.id} is present + clickable`,
+                  c.ok === true, c.why || '');
+            await sleep(1500);
+            const st = await probeState(frame);
+            log(`after ${b.id}: ${JSON.stringify(st)}`);
+            check(`${b.label} moved active sheet to idx=${b.expected}`,
+                  st.sheetIdx === b.expected,
+                  `idx=${st.sheetIdx} (expected ${b.expected})`);
+        }
 
         await snap(page, 'final');
 

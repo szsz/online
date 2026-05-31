@@ -483,24 +483,36 @@ class Dispatcher {
 			app.map.insertPage(nPos);
 			app.map.insertPage.scrollToEnd = true;
 		};
+		// Sheet-tab navigation buttons (|< < > >|). Per user request
+		// 2026-05-31, these match Excel behavior: each button BOTH
+		// scrolls the tab strip (so the targeted tab is visible) AND
+		// changes the active sheet. The scroll part is useful when many
+		// tabs overflow; the active-sheet-change is what users expect
+		// from clicking these arrows.
 		this.actionsMap['firstrecord'] = function () {
 			var el = document.getElementById('spreadsheet-tab-scroll');
 			if (el) el.scrollLeft = 0;
+			app.map.setPart(0);
 		};
 		this.actionsMap['nextrecord'] = function () {
 			var el = document.getElementById('spreadsheet-tab-scroll');
 			// TODO: We should get visible tab's width instead of 60px
 			if (el) el.scrollLeft += 60;
+			app.map.setPart('next');
 		};
 		this.actionsMap['prevrecord'] = function () {
 			var el = document.getElementById('spreadsheet-tab-scroll');
 			if (el) el.scrollLeft -= 30;
+			app.map.setPart('prev');
 		};
 		this.actionsMap['lastrecord'] = function () {
 			// Set a very high value, so that scroll is set to the maximum possible value internally.
 			// https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollLeft
 			var el = window.L.DomUtil.get('spreadsheet-tab-scroll');
 			if (el) el.scrollLeft = 100000;
+			var docLayer = app.map._docLayer;
+			if (docLayer && typeof docLayer._parts === 'number' && docLayer._parts > 0)
+				app.map.setPart(docLayer._parts - 1);
 		};
 		this.actionsMap['columnrowhighlight'] = function () {
 			var newState = !app.map.uiManager.getHighlightMode();
