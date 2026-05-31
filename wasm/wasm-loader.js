@@ -477,6 +477,17 @@
         if (l && label) l.textContent = label;
         if (f && pct != null) f.style.width = Math.max(0, Math.min(100, pct)) + '%';
         if (d && detail != null) d.textContent = detail;
+        // Checklist step 1 ('dl' — Downloading editor assets) tracks the
+        // page-wide download progress that this callback aggregates over
+        // every fetched file. Once the download bar saturates the
+        // download step is done and the next step (Initializing) starts.
+        if (typeof setChecklistStep === 'function' && typeof pct === 'number') {
+            if (pct > 0 && pct < 99) setChecklistStep('dl', 'in-progress');
+            else if (pct >= 99) {
+                setChecklistStep('dl', 'done');
+                setChecklistStep('init', 'in-progress');
+            }
+        }
         // Forward to parent so the viewer's shield (which hides the iframe
         // during pre-warm) can show the same progress to the user.
         try {
@@ -486,17 +497,35 @@
             }), '*');
         } catch(e) {}
     }
+    // Four-step checklist surfaced to the user during the cold-open wait.
+    // Each step has a state icon (○ pending / ◔ in-progress / ✓ done /
+    // ✗ failed). Drives off events that already fire — see setChecklistStep
+    // callers below: download progress, WASM compile/runtime_initialized,
+    // first kit message, and fireDocReady.
+    var CHECKLIST_STEPS = [
+        { id: 'dl',   label: 'Downloading editor assets' },
+        { id: 'init', label: 'Initializing editor' },
+        { id: 'conn', label: 'Connecting to document' },
+        { id: 'doc',  label: 'Opening document' },
+    ];
     function ensureOverlay(label, pct, detail) {
         var o = document.getElementById('wasm-loading-overlay');
         if (!o) {
             // Recreate overlay (was removed after prewarm).
             o = document.createElement('div');
             o.id = 'wasm-loading-overlay';
+            var listHtml = '<ul id="wasm-progress-checklist">' +
+                CHECKLIST_STEPS.map(function(s) {
+                    return '<li data-step="' + s.id + '" data-state="pending">' +
+                           '<span class="wpc-icon">○</span>' +
+                           '<span class="wpc-label">' + s.label + '</span></li>';
+                }).join('') + '</ul>';
             o.innerHTML =
                 '<div id="wasm-spinner"></div>' +
                 '<div id="wasm-progress-label"></div>' +
                 '<div id="wasm-progress-bar"><div id="wasm-progress-bar-fill"></div></div>' +
-                '<div id="wasm-progress-detail"></div>';
+                '<div id="wasm-progress-detail"></div>' +
+                listHtml;
             // Inject the same styles if missing
             if (!document.getElementById('wasm-loading-style')) {
                 var st = document.createElement('style');
@@ -512,7 +541,19 @@
                     '#wasm-progress-bar{width:300px;height:12px;background:#e0e0e0;border-radius:6px;overflow:hidden;margin-bottom:6px;}' +
                     '#wasm-progress-bar-fill{height:100%;background:linear-gradient(90deg,#4a90e2,#357abd);' +
                     'width:0%;transition:width 0.3s ease;}' +
-                    '#wasm-progress-detail{font-size:12px;color:#666;}';
+                    '#wasm-progress-detail{font-size:12px;color:#666;}' +
+                    '#wasm-progress-checklist{list-style:none;padding:0;margin:18px 0 0;' +
+                    'font-size:13px;color:#555;min-width:300px;}' +
+                    '#wasm-progress-checklist li{display:flex;align-items:center;gap:8px;' +
+                    'padding:3px 0;line-height:1.4;}' +
+                    '#wasm-progress-checklist .wpc-icon{display:inline-block;width:16px;' +
+                    'text-align:center;font-weight:600;}' +
+                    '#wasm-progress-checklist li[data-state="pending"] .wpc-icon{color:#bbb;}' +
+                    '#wasm-progress-checklist li[data-state="in-progress"] .wpc-icon{color:#4a90e2;}' +
+                    '#wasm-progress-checklist li[data-state="done"] .wpc-icon{color:#2e7d32;}' +
+                    '#wasm-progress-checklist li[data-state="failed"] .wpc-icon{color:#c62828;}' +
+                    '#wasm-progress-checklist li[data-state="pending"] .wpc-label{color:#999;}' +
+                    '#wasm-progress-checklist li[data-state="done"] .wpc-label{color:#666;}';
                 document.head.appendChild(st);
             }
             (document.body || document.documentElement).appendChild(o);
@@ -521,6 +562,37 @@
         o.style.transition = '';
         updateProgress(label, pct, detail);
     }
+    var CHECKLIST_GLYPHS = {
+        'pending':     '○', // ○
+        'in-progress': '◔', // ◔
+        'done':        '✓', // ✓
+        'failed':      '✗', // ✗
+    };
+    function setChecklistStep(id, state) {
+        var li = document.querySelector(
+            '#wasm-progress-checklist li[data-step="' + id + '"]');
+        if (!li) return;
+        var prev = li.getAttribute('data-state');
+        if (prev === state || prev === 'done' && state === 'in-progress') return;
+        li.setAttribute('data-state', state);
+        var icon = li.querySelector('.wpc-icon');
+        if (icon) icon.textContent = CHECKLIST_GLYPHS[state] || icon.textContent;
+        // Forward checklist state to the parent's pre-warm shield (mirrors
+        // the existing WasmProgress postMessage pattern).
+        try {
+            var all = Array.prototype.map.call(
+                document.querySelectorAll('#wasm-progress-checklist li'),
+                function(el) {
+                    return { id: el.getAttribute('data-step'),
+                             state: el.getAttribute('data-state') };
+                });
+            parent.postMessage(JSON.stringify({
+                MessageId: 'WasmProgress',
+                Values: { checklist: all },
+            }), '*');
+        } catch (_) {}
+    }
+    window.__setChecklistStep = setChecklistStep;
     function hideOverlay() {
         var o = document.getElementById('wasm-loading-overlay');
         if (!o) return;
@@ -587,6 +659,17 @@
         // Fan out to existing signals so consumers don't need a code change.
         window.__wasmPrewarmReady = true;
         window.__wasmInitialDocLoaded = true;
+        // Cascade the loading-screen checklist forward. Some of these
+        // intermediate steps don't have their own emit hooks worth wiring
+        // (initialize + connect happen too close together to surface
+        // meaningfully); marking them done here on doc-ready captures the
+        // end state without inventing fake transitions.
+        if (typeof setChecklistStep === 'function') {
+            setChecklistStep('dl',   'done');
+            setChecklistStep('init', 'done');
+            setChecklistStep('conn', 'done');
+            setChecklistStep('doc',  'done');
+        }
         try {
             if (window.parent && window.parent !== window) {
                 window.parent.postMessage(JSON.stringify({
@@ -2036,13 +2119,25 @@
                 // would dispatch a hot-switch before trySendSwitch could deliver
                 // it, so the user saw a 30 s wait while the polled retry waited
                 // for the prewarm doc to actually paint.
-                try {
-                    var pwWopi = new URLSearchParams(window.location.search).get('WOPISrc') || '';
-                    parent.postMessage(JSON.stringify({
-                        MessageId: 'WasmPrewarmReady',
-                        Values: { filename: pwWopi }
-                    }), '*');
-                } catch(e) {}
+                //
+                // Idempotency guard: the surrounding init block fires twice on
+                // cold-then-snapshot-restore (see project_warm_pthread_flake
+                // memory — stale coolwsd_server_socket_fd causes an is_preinit_done
+                // re-fire). The viewer keys hot-switch routing on the FIRST
+                // WasmPrewarmReady; a duplicate fires after the viewer has
+                // already moved on, which the regression test catches but
+                // production silently tolerates. Gate on a one-shot global so
+                // we emit exactly once per page lifetime.
+                if (!window.__wasmPrewarmReadySent) {
+                    window.__wasmPrewarmReadySent = true;
+                    try {
+                        var pwWopi = new URLSearchParams(window.location.search).get('WOPISrc') || '';
+                        parent.postMessage(JSON.stringify({
+                            MessageId: 'WasmPrewarmReady',
+                            Values: { filename: pwWopi }
+                        }), '*');
+                    } catch(e) {}
+                }
                 // ── COPY override ─────────────────────────────────────
                 // Write the selection to the SYSTEM clipboard so external
                 // apps can receive it.  Also save a plain-text fingerprint
