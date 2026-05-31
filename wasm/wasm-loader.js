@@ -670,6 +670,18 @@
             setChecklistStep('conn', 'done');
             setChecklistStep('doc',  'done');
         }
+        // Hide the loading overlay. Pre-#116-phase-4 the docPoll branch
+        // at line ~2005 set `__wasmPrewarmReady = true` AND fired
+        // `setTimeout(hideOverlay, 150)`. Phase-4 moved fan-out to the
+        // kit-driven event path here, which set `__wasmPrewarmReady`
+        // first — making the docPoll branch short-circuit and never
+        // fire its `hideOverlay`. The overlay then stayed up, covering
+        // user UI (writer-navigator-flash test caught this: clicks on
+        // the floating Navigator icon went to the overlay instead of
+        // the button). Mirror the same 150 ms delay so the user sees
+        // the "Ready" state briefly before the overlay fades.
+        if (typeof updateProgress === 'function') updateProgress('Ready', 100);
+        if (typeof hideOverlay === 'function') setTimeout(hideOverlay, 150);
         try {
             if (window.parent && window.parent !== window) {
                 window.parent.postMessage(JSON.stringify({

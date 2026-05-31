@@ -87,11 +87,26 @@ function check(label, cond, ev) {
         });
         const frame = up.editorFrame;
 
-        // Wait for the doc to be loaded — same gate as the print-button test.
+        // Wait for the doc to be loaded — use the SAME gate that fires
+        // overlay-hide (`__wasmInitialDocLoaded` flips in fireDocReady).
+        // `#StateWordCount` populates earlier (when LO emits the
+        // first state message), but the loading overlay only fades on
+        // fireDocReady. Without this wait, the loading overlay is still
+        // up at click time → Puppeteer's mouse-click lands on the
+        // overlay z-index:999999 rather than on the Navigator button,
+        // the click handler never fires, and the test fails with a
+        // misleading "panel never opened" signature.
+        await frame.waitForFunction(() => window.__wasmInitialDocLoaded === true,
+            { timeout: env.scaleTimeout(120000) });
+        // Also wait for the StateWordCount to fully populate so the
+        // editor has done its first paint pass.
         await frame.waitForFunction(() => {
             const wc = document.querySelector('#StateWordCount');
             return !!(wc && wc.textContent && wc.textContent.includes('characters'));
-        }, { timeout: env.scaleTimeout(120000) });
+        }, { timeout: env.scaleTimeout(30000) });
+        // Belt-and-braces: ensure the loading overlay has finished its
+        // 400 ms opacity fade + 500 ms removeChild timeout before clicking.
+        await sleep(env.scaleTimeout(1000));
         log('Editor ready');
         await snap(frame.page(), 'doc_open');
 
