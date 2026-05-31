@@ -163,7 +163,7 @@ TESTS=(
     "snapshot-stale|test-snapshot-stale.js|Snapshot Stale Rejection|Tampered fingerprint causes snapshot to be discarded on reload|none"
     "save-conflict|test-save-conflict.js|Save Conflict|External file modification during editing — conflict detection behavior|none"
     "snapshot-milestones|test-snapshot-milestones.js|Snapshot Milestones|Per-doc-type cold/warm × N=3 trial milestone report; iframe DOM verifies content rendered; screenshots at every milestone. Replaces the old timing-report — same cold-vs-warm signal plus per-doc-type breakdown and a warm-time budget that fails the run when warm regresses.|none"
-    "snapshot-cross-type|test-snapshot-cross-type.js|Snapshot Cross-Type|Warm-restore across writer/calc/impress hot-switch combinations|none"
+    "snapshot-cross-type|test-snapshot-cross-type.js|Snapshot Cross-Type|Warm-restore across writer/calc/impress hot-switch combinations. WARM PHASES ARE XFAIL (2026-05-31, ai/proposals/promoted/triage-snapshot-cross-type.md) — they hang in relay mode because the viewer+relay-adapter checkpoint handshake never produces text on canvas after HEAPU8 restore. Cold-writer still hard-gates. snapshot-milestones (singleuser) remains the authoritative warm gate.|none"
     "regression-font-change-ui|test-regression-font-change-ui.js|Regression: Font Change via UI|Single-user, double-click word + change font via notebookbar dropdown — UNO command dispatched and font value updates|shots-regression-font-change-ui"
 )
 
