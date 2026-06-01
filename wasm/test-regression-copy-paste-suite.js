@@ -174,7 +174,7 @@ async function withFreshDoc() {
         return m ? parseInt(m[1], 10) : -1;
     });
 
-    return { browser, page, frame, charCount,
+    return { browser, page, frame, charCount, up,
              destroy: () => browser.close() };
 }
 
@@ -275,7 +275,66 @@ const USE_CASES = [
     { slug: 'coedit-2browser-paste-propagates-A-to-B',   pendingPort: 'test-regression-paste-coedit.js' },
     { slug: 'coedit-2browser-mouse-selection-paste',     pendingPort: 'test-regression-mouse-select-copypaste.js' },
     { slug: 'late-join-receives-copied-content',         pendingPort: 'test-late-join-copypaste.js' },
-    { slug: 'save-and-reopen-persists-pasted-content',   pendingPort: 'test-singleuser-copy-paste.js case 9' },
+    {
+        slug: 'save-and-reopen-persists-pasted-content',
+        label: 'Type → Ctrl+V external sentinel → Ctrl+S → reopen fresh tab → char count matches',
+        // End-to-end save-and-reopen verifying paste persists across a
+        // tab close. Uses the same secret to open a second browser (no
+        // co-edit involved) and checks the char count comes back exactly
+        // what it was pre-save. Catches the class of bug where paste
+        // mutates the in-memory doc but never reaches the saved ciphertext.
+        run: async () => {
+            const ctx = await withFreshDoc();
+            try {
+                const SENTINEL = 'SAVED-REOPEN-' + Date.now();
+                await focusDocBody(ctx.page);
+                await ctrlEnd(ctx.page);
+                const before = await getCharCount(ctx.page);
+                await writeClipboardText(ctx.page, SENTINEL);
+                await focusDocBody(ctx.page);
+                await pressShortcut(ctx.page, 'v');
+                const grew = await waitForCharCountAtLeast(
+                    ctx.page, before + SENTINEL.length, 12000);
+                if (!grew) return {
+                    pass: false,
+                    ev: `paste did not grow doc: before=${before} after=${await getCharCount(ctx.page)}`,
+                };
+                const beforeSave = await getCharCount(ctx.page);
+                // Save: Ctrl+S, then wait for the kit to flush to /api/v2/file.
+                await pressShortcut(ctx.page, 's');
+                await sleep(8000);
+                await snap(ctx.page, 'before-reopen');
+                // Reopen in a second page in the SAME browser (same origin,
+                // same clipboard perms). Different page = different
+                // session = real reload path.
+                const page2 = await ctx.browser.newPage();
+                await page2.setViewport({ width: 1280, height: 900 });
+                await page2.goto(`${VIEWER}/?singleuser#file=${ctx.up.b64urlSecret}`,
+                    { waitUntil: 'domcontentloaded',
+                      timeout: env.scaleTimeout(120000) });
+                // Wait for the fresh page to load its editor frame.
+                let frame2 = null;
+                for (let i = 0; i < 90 && !frame2; i++) {
+                    frame2 = page2.frames().find(f => f.url().includes('cool.html'));
+                    if (frame2 && !(await frame2.$('#document-canvas').catch(() => null))) frame2 = null;
+                    if (!frame2) await sleep(1000);
+                }
+                if (!frame2) return { pass: false, ev: 'reopen frame never loaded' };
+                await frame2.waitForFunction(() => window.__wasmInitialDocLoaded === true,
+                    { timeout: env.scaleTimeout(60000) });
+                await frame2.waitForFunction(() =>
+                    /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''),
+                    { timeout: env.scaleTimeout(30000) });
+                await sleep(2500);
+                const afterReopen = await getCharCount(page2);
+                await snap(page2, 'after-reopen');
+                return {
+                    pass: afterReopen === beforeSave,
+                    ev: `beforeSave=${beforeSave} afterReopen=${afterReopen} sentinel.len=${SENTINEL.length}`,
+                };
+            } finally { await ctx.destroy(); }
+        },
+    },
 ];
 
 (async () => {
