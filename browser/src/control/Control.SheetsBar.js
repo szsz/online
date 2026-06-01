@@ -40,6 +40,36 @@ class SheetsBar {
 	}
 
 	create() {
+		// Idempotent: initializeSpecializedUI('spreadsheet') fires
+		// twice on cold open (one call site at
+		// browser/src/app/Socket.ts:981, another at
+		// browser/src/layer/tile/CanvasTileLayer.js:937 — same pattern
+		// acknowledged at Control.NavigatorPanel.ts:94). Each call
+		// constructs a fresh SheetsBar via JSDialog.SheetsBar(...).
+		//
+		// Between the two SheetsBar constructions, Control.Tabs.
+		// _initialize() (Control.Tabs.js:41) appends a
+		// `spreadsheet-tabs-container` div to the SAME parent
+		// (#spreadsheet-toolbar). Without this guard the second
+		// SheetsBar.create() runs `this.parentContainer.replaceChildren()`
+		// at the end of this method, wiping the tabs container; the
+		// subsequent `Tabs._updateDisabled` (map.on('updateparts')
+		// handler) keeps appending children to the now-orphan
+		// `this._tabsCont`, so the user sees nav arrows but no sheet
+		// tabs. Test:
+		// wasm/test-regression-xlsx-sheet-tabs-rename.js was 0/12
+		// before this fix.
+		//
+		// The guard at Control.UIManager.ts:564 calls
+		// `this.sheetsBar.remove()` first, but SheetsBar has no
+		// `remove()` method, so the try/catch silently swallows the
+		// TypeError and a fresh SheetsBar is constructed anyway.
+		// Fixing `remove()` is a parallel path; making `create()`
+		// idempotent is the smaller, more surgical fix.
+		if (this.parentContainer.querySelector('#sheets-buttons-toolbox')) {
+			this.updateSheetListMenu();
+			return;
+		}
 		var data = [
 			{
 				id: 'sheets-buttons-toolbox',
