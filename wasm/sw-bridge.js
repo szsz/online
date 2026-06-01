@@ -119,11 +119,57 @@ const _pending = new Map();
 
 self.addEventListener('message', (event) => {
     const msg = event.data;
-    if (!msg || msg.type !== 'sw-bridge-response') return;
-    const pending = _pending.get(msg.id);
-    if (!pending) return;
-    _pending.delete(msg.id);
-    pending.resolve(msg);
+    if (!msg) return;
+
+    // Page replying to a SW bridge-request (the bridge() function's
+    // pending promise resolves here).
+    if (msg.type === 'sw-bridge-response') {
+        const pending = _pending.get(msg.id);
+        if (!pending) return;
+        _pending.delete(msg.id);
+        pending.resolve(msg);
+        return;
+    }
+
+    // Page asking us to precache a list of heavy asset URLs. Fired by
+    // wasm-loader.js after prewarm-ready (line ~2087). Pre-fix
+    // (2026-06-01), only sw.js (an orphaned, never-registered SW file)
+    // had this handler — so the postMessage hit sw-bridge.js, was
+    // silently dropped, and SW Cache Storage was never warmed before
+    // Session 2 of test-regression-wasm-cache-pressure. Result: 52 MB
+    // re-download on second visit, test failed 5/5.
+    //
+    // sw-bridge.js already has CACHE_NAME + heavyCacheFirst above, so
+    // adding this is a no-op for any URL whose fetch handler already
+    // populated the cache. The signal back to the page is what makes
+    // the test gate work — `precache:done` triggers
+    // `window.__swPrecacheDone` in wasm-loader.js:234.
+    if (msg.type === 'precache') {
+        const urls = Array.isArray(msg.urls) ? msg.urls : [];
+        event.waitUntil((async () => {
+            const cache = await caches.open(CACHE_NAME);
+            let cached = 0, fetched = 0, failed = 0;
+            await Promise.all(urls.map(async (url) => {
+                try {
+                    if (await cache.match(url)) { cached++; return; }
+                    const r = await fetch(url, { credentials: 'same-origin' });
+                    if (r.ok && r.status === 200) {
+                        await cache.put(url, r);
+                        fetched++;
+                    } else {
+                        failed++;
+                    }
+                } catch (_) { failed++; }
+            }));
+            const all = await self.clients.matchAll({ includeUncontrolled: true });
+            for (const c of all) {
+                try { c.postMessage({ type: 'precache:done',
+                    urls: urls.length, cached, fetched, failed }); }
+                catch (_) {}
+            }
+        })());
+        return;
+    }
 });
 
 async function bridge(req) {
