@@ -2118,6 +2118,22 @@
                 // already reduced compile time from 21s to ~1.7s. The
                 // remaining 22s is LibreOffice C++ initialization which
                 // can only be improved by modifying the LO source.
+                // Diagnostic counter for the init block (see proposal
+                // ai/proposals/proposed/wasm-init-block-fires-twice-per-iframe).
+                // Within a single iframe lifetime this block re-fires
+                // during snapshot-restore (and possibly during other
+                // late-init paths). Logging the entry count gives the
+                // next investigator ground truth: if `__wasmInitBlockCount`
+                // reaches 2 with `__wasmPrewarmReadySent === true` at the
+                // second entry, the idempotency guard works correctly
+                // (the duplicate App_LoadingStatus is the only residual);
+                // if `__wasmPrewarmReadySent === undefined` at the second
+                // entry, something IS clearing the JS window between
+                // calls and the guard needs a different storage backend.
+                window.__wasmInitBlockCount = (window.__wasmInitBlockCount || 0) + 1;
+                console.log('[wasm-loader] init block entry #' +
+                    window.__wasmInitBlockCount +
+                    ' prewarmReadySent=' + !!window.__wasmPrewarmReadySent);
                 try {
                     parent.postMessage(JSON.stringify({
                         MessageId: 'App_LoadingStatus',
