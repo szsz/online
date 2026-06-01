@@ -108,7 +108,19 @@ async function trackBrowserNetwork(browser) {
     browserCdp.on('sessionattached', (s) => attachToSession(s));
 
     return {
-        bytes: () => heavyResponses.reduce((s, r) => s + r.encodedDataLength, 0),
+        // True-wire bytes only: when Chrome serves a response from the
+        // service worker (Cache Storage), the CDP `Network.loadingFinished`
+        // event reports `encodedDataLength` as the full decoded payload —
+        // NOT 0 — because the SW streamed those bytes from its cache.
+        // Summing that as "wire bytes" double-counts cache hits as live
+        // downloads (test/regression-wasm-cache-pressure triage,
+        // 2026-05-31: `online.wasm bytes=51.99 MB fromCache=true
+        // fromSW=true` was being counted toward Session 2's 1 MB
+        // budget). Sum only entries where the response did NOT come
+        // from disk-cache or the SW.
+        bytes: () => heavyResponses
+            .filter(r => !r.fromCache && !r.fromSW)
+            .reduce((s, r) => s + r.encodedDataLength, 0),
         responses: () => heavyResponses.slice(),
         clear: () => { heavyResponses.length = 0; reqUrls.clear(); },
     };
