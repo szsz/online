@@ -65,6 +65,71 @@ async function snap(page, name) {
     try { await page.screenshot({ path: `${SHOT_DIR}/${f}` }); } catch (_) {}
 }
 
+// ── Per-page helpers (ported verbatim from test-singleuser-copy-paste.js,
+// where they were proven over many iterations). Centralised here so the
+// suite's use-cases share one implementation — when these tests
+// eventually replace singleuser-copy-paste, the helpers stay.
+
+async function getCharCount(page) {
+    try {
+        const fr = page.frames().find(f => f.url().includes('cool.html'));
+        if (!fr) return -1;
+        const t = await fr.evaluate(() =>
+            document.querySelector('#StateWordCount')?.textContent || ''
+        ).catch(() => '');
+        const m = t.match(/([\d,]+)\s*character/);
+        return m ? parseInt(m[1].replace(/,/g, '')) : -1;
+    } catch (_) { return -1; }
+}
+
+async function focusDocBody(page) {
+    const frameEl = await page.$('iframe#editor-frame');
+    if (!frameEl) return false;
+    const box = await frameEl.boundingBox();
+    if (!box) return false;
+    await page.mouse.click(box.x + box.width / 2,
+                           box.y + Math.min(box.height * 0.55, 450));
+    await sleep(200);
+    return true;
+}
+
+async function pressShortcut(page, key) {
+    await page.keyboard.down('Control');
+    await page.keyboard.press(key);
+    await page.keyboard.up('Control');
+    await sleep(200);
+}
+
+async function ctrlEnd(page) {
+    await page.keyboard.down('Control');
+    await page.keyboard.press('End');
+    await page.keyboard.up('Control');
+    await sleep(150);
+}
+
+async function waitForCharCountAtLeast(page, expected, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const last = await getCharCount(page);
+        if (last >= expected) return true;
+        await sleep(150);
+    }
+    return false;
+}
+
+async function writeClipboardText(page, text) {
+    try {
+        await page.evaluate(t => navigator.clipboard.writeText(t), text);
+    } catch (_) {
+        const fr = page.frames().find(f => f.url().includes('cool.html'));
+        if (fr) {
+            await fr.evaluate(t => navigator.clipboard.writeText(t), text)
+                .catch(() => {});
+        }
+    }
+    await sleep(150);
+}
+
 // ── Shared harness: open a fresh single-user Writer doc + grant ─────
 // clipboard perms. Returns { browser, page, frame, charCount(),
 // destroy() }. Each use-case calls this independently so use-case
@@ -174,7 +239,34 @@ const USE_CASES = [
     { slug: 'mouse-drag-select-then-copy-paste',         pendingPort: 'test-singleuser-copy-paste.js case 4' },
     { slug: 'double-click-word-select-then-copy-paste',  pendingPort: 'test-singleuser-copy-paste.js case 3' },
     { slug: 'ctrl-x-cut-then-paste-restores-content',    pendingPort: 'test-singleuser-copy-paste.js case 5' },
-    { slug: 'external-plaintext-paste-via-clipboard',    pendingPort: 'test-regression-plaintext-paste.js' },
+    {
+        slug: 'external-plaintext-paste-via-clipboard',
+        label: 'External text → navigator.clipboard.writeText → Ctrl+V grows doc',
+        // Verifies the OS-clipboard → kit-paste pipeline. Char-count delta
+        // catches the prior "fake pass" mode (LO's internal clipboard had
+        // matching-length content); we use a UNIQUE-LENGTH sentinel so a
+        // stale internal-clipboard match is statistically impossible.
+        run: async () => {
+            const ctx = await withFreshDoc();
+            try {
+                const SENTINEL = 'PASTED-EXTERNAL-' + Date.now();
+                await focusDocBody(ctx.page);
+                await ctrlEnd(ctx.page);
+                const before = await getCharCount(ctx.page);
+                await writeClipboardText(ctx.page, SENTINEL);
+                await focusDocBody(ctx.page);
+                await pressShortcut(ctx.page, 'v');
+                const grew = await waitForCharCountAtLeast(
+                    ctx.page, before + SENTINEL.length, 12000);
+                const after = await getCharCount(ctx.page);
+                await snap(ctx.page, 'external-text-paste');
+                return {
+                    pass: grew,
+                    ev: `before=${before} after=${after} sentinel.len=${SENTINEL.length}`,
+                };
+            } finally { await ctx.destroy(); }
+        },
+    },
     { slug: 'external-rich-html-paste',                  pendingPort: 'test-singleuser-copy-paste.js case 6' },
     { slug: 'external-image-paste-embeds-in-docx',       pendingPort: 'test-singleuser-copy-paste.js case 7' },
     { slug: 'html-table-paste-roundtrips-to-docx',       pendingPort: 'test-regression-paste-table.js' },
