@@ -35,6 +35,7 @@ const { execFileSync } = require('child_process');
 const puppeteer = require('puppeteer');
 const env = require('./lib/test-env');
 const { uploadV2, downloadV2 } = require('./lib/v2-upload');
+const { evalInFrame, waitInFrame } = require('./lib/two-tab');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
@@ -105,20 +106,20 @@ const TABLE_PLAIN = 'R1C1\tR1C2\nR2C1\tR2C2';
             if (!frame) await sleep(1000);
         }
         if (!frame) throw new Error('editor frame never loaded');
-        await frame.waitForFunction(
+        await waitInFrame(page,
             () => window.__wasmInitialDocLoaded === true,
             { timeout: env.scaleTimeout(60000) });
-        await frame.waitForFunction(
+        await waitInFrame(page,
             () => /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''),
             { timeout: env.scaleTimeout(30000) });
         await sleep(3000);
         await snap(page, 'loaded');
 
-        const readChars = () => frame.evaluate(() => {
+        const readChars = () => evalInFrame(page, () => {
             const t = document.querySelector('#StateWordCount')?.textContent || '';
             const m = t.match(/(\d+)\s+character/i);
             return m ? parseInt(m[1], 10) : -1;
-        });
+        }).catch(() => -1);
         const wc0 = await readChars();
         log(`initial #StateWordCount: ${wc0}`);
 
@@ -138,7 +139,7 @@ const TABLE_PLAIN = 'R1C1\tR1C2\nR2C1\tR2C2';
         // coordinate needed — anywhere inside #document-canvas works
         // since the fixture's body is empty enough that any caret lands
         // in editable space). Then move to end + paste.
-        const canvasBox = await frame.evaluate(() => {
+        const canvasBox = await evalInFrame(page, () => {
             const c = document.querySelector('#document-canvas');
             if (!c) return null;
             const r = c.getBoundingClientRect();

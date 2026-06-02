@@ -37,6 +37,7 @@ const path = require('path');
 const puppeteer = require('puppeteer');
 const env = require('./lib/test-env');
 const { uploadV2 } = require('./lib/v2-upload');
+const { evalInFrame, waitInFrame } = require('./lib/two-tab');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
@@ -69,11 +70,11 @@ async function rightClickAt(page, x, y) {
 // Real puppeteer click on a context-menu item with a visible label
 // matching `labelRegex`. Returns true on success. Uses getBoundingClientRect
 // to derive coordinates — DOM-state read, not a synthetic .click().
-async function realClickMenuItem(page, frame, labelRegex) {
+async function realClickMenuItem(page, _unusedFrame, labelRegex) {
     // Wait for the menu to materialise.
     let bbox = null;
     for (let i = 0; i < 30; i++) {
-        bbox = await frame.evaluate((reSrc) => {
+        bbox = await evalInFrame(page, (reSrc) => {
             const re = new RegExp(reSrc.source, reSrc.flags);
             // Items live in `.context-menu-item` (Control.ContextMenu.js:343).
             const items = Array.from(document.querySelectorAll('.context-menu-item'));
@@ -147,22 +148,22 @@ async function realClickMenuItem(page, frame, labelRegex) {
             if (!frame) await sleep(1000);
         }
         if (!frame) throw new Error('editor frame never loaded');
-        await frame.waitForFunction(
+        await waitInFrame(page,
             () => window.__wasmInitialDocLoaded === true,
             { timeout: env.scaleTimeout(60000) });
         // Wait for word count indicator (proxy for "doc fully ready").
-        await frame.waitForFunction(
+        await waitInFrame(page,
             () => /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''),
             { timeout: env.scaleTimeout(30000) });
         await sleep(3000);
         await snap(page, 'loaded');
 
         // Read initial char count.
-        const readChars = () => frame.evaluate(() => {
+        const readChars = () => evalInFrame(page, () => {
             const t = document.querySelector('#StateWordCount')?.textContent || '';
             const m = t.match(/(\d+)\s+character/i);
             return m ? parseInt(m[1], 10) : -1;
-        });
+        }).catch(() => -1);
         const wc0 = await readChars();
         log(`initial #StateWordCount: ${wc0}`);
 
@@ -213,7 +214,7 @@ async function realClickMenuItem(page, frame, labelRegex) {
         // creates `.on-the-fly-context-menu`).
         let menuVisible = false;
         for (let i = 0; i < 30 && !menuVisible; i++) {
-            menuVisible = await frame.evaluate(() =>
+            menuVisible = await evalInFrame(page, () =>
                 !!document.querySelector('.on-the-fly-context-menu') ||
                 !!document.querySelector('.context-menu-list')
             ).catch(() => false);
@@ -226,7 +227,7 @@ async function realClickMenuItem(page, frame, labelRegex) {
             log('No context menu — aborting subsequent checks');
         } else {
             // Enumerate items for diagnostic visibility.
-            const items = await frame.evaluate(() => {
+            const items = await evalInFrame(page, () => {
                 const els = Array.from(document.querySelectorAll('.context-menu-item'));
                 return els.map(el => (el.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 60));
             });
