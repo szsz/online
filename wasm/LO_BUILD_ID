@@ -194,4 +194,25 @@
 #   2026-05-28-52  binary-identical to -51 (regen-indexes.sh fix only).
 #                  Same regression behaviour; pinned dev briefly
 #                  between -51 merge and the revert.
-2026-05-27-50
+#   2026-06-02-57  current pin — cherry-pick branch HEAD a02d4285f876
+#                  off safe base d1964f6d34a3 (parent of the -51
+#                  spellcheck-stack-overflow trigger 64bb48e598bb).
+#                  Cherry-picked four commits in chronological order:
+#                  - 14241f8344f3 ← 5b54180df793 (regen-indexes script
+#                    fix: stop clobbering app-builds + root index)
+#                  - d093a929b98e ← 040db1b85407 (WASM #header-footer:
+#                    LOK-gate the DeleteHeader/Footer warning dialog)
+#                  - 93afb903cd38 ← 9e27eab54765 (svx: map round-quadrat
+#                    → mso_sptRoundRectangle — was sptNil → blank shape,
+#                    LO PR #31)
+#                  - a02d4285f876 ← f39cd5e2bae9 (svx: map quadrat,
+#                    circle, frame, doorplate to existing MSO types,
+#                    LO PR #32)
+#                  Ships the user-reported shape-insertion fixes
+#                  WITHOUT the -51 spellcheck regression. The
+#                  spellcheck activation path is still broken (same
+#                  as -50) — separate fix tracked in LO branch
+#                  fix/spellcheck-stack-overflow-on-50 (gated on a
+#                  smoke test before merging to LO dev). See online
+#                  ai/questions/answered/lo-build-id-bump-after-shape-fixes.md
+2026-06-02-57
