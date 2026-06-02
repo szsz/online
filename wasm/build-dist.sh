@@ -6,15 +6,17 @@
 #   1. Filter   wasm/online-build/browser/dist → wasm/online-build/dist
 #               (drop tsbuildinfo, admin/, src/, non-cool root HTMLs)
 #   2. Minify   *.js via oxc-minify (in-place)
-#   3. Brotli   --best on every file (sidecar .br)
+#   3. Brotli   --best on every file (in-place; skippable via --skip-brotli)
 #   4. Upload   to https://<acct>.blob.core.windows.net/contentpreview/
 #               collabora-<URL-safe-UTC-timestamp>/...
-#               with Content-Encoding: br on every blob.
+#               with Content-Encoding: br on every blob (omitted when
+#               --skip-brotli left the files uncompressed).
 #
 # Usage:
 #   wasm/build-dist.sh -a <storage-account>
 #   wasm/build-dist.sh --skip-upload                       (steps 1-3 only)
 #   wasm/build-dist.sh --skip-build -a <storage-account>   (step 4 only)
+#   wasm/build-dist.sh --skip-brotli -a <storage-account>  (no compression)
 #   wasm/build-dist.sh --help
 
 set -euo pipefail
@@ -36,18 +38,21 @@ Options:
   -a, --account <name>   Azure storage account (required unless --skip-upload)
   --skip-upload          Run steps 1-3 only (build/minify/brotli, no upload)
   --skip-build           Skip steps 1-3, upload $DST as-is
+  --skip-brotli          Skip step 3; upload uncompressed (no Content-Encoding)
   -h, --help             Show this help
 
 Examples:
   $0 -a wasmeditor                        # full pipeline
   $0 --skip-upload                        # local build, no upload
   $0 --skip-build -a wasmeditor           # re-upload existing dist
+  $0 --skip-brotli -a wasmeditor          # upload uncompressed
 EOF
 }
 
 STORAGE_ACCOUNT=""
 SKIP_UPLOAD=""
 SKIP_BUILD=""
+SKIP_BROTLI=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -62,6 +67,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-build)
             SKIP_BUILD=1
+            shift
+            ;;
+        --skip-brotli)
+            SKIP_BROTLI=1
             shift
             ;;
         -h|--help)
@@ -88,7 +97,9 @@ fi
 
 # ── Preflight ────────────────────────────────────────────────────────
 if [[ -z "$SKIP_BUILD" ]]; then
-    for cmd in node brotli; do
+    REQUIRED_CMDS=(node)
+    [[ -z "$SKIP_BROTLI" ]] && REQUIRED_CMDS+=(brotli)
+    for cmd in "${REQUIRED_CMDS[@]}"; do
         command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd not on PATH" >&2; exit 1; }
     done
     [[ -d "$SRC" ]] || { echo "ERROR: source dir $SRC not found — build the editor first." >&2; exit 1; }
@@ -113,6 +124,7 @@ echo "=== build-dist: $BLOB_PREFIX ==="
 [[ -n "$SKIP_BUILD" ]] && echo "  source:  $DST (--skip-build, using pre-built staging)" || \
     echo "  source:  $SRC"
 echo "  staging: $DST"
+[[ -n "$SKIP_BROTLI" ]] && echo "  brotli:  SKIPPED (uploading uncompressed)"
 [[ -n "$SKIP_UPLOAD" ]] && echo "  upload:  SKIPPED" || \
     echo "  upload:  https://$STORAGE_ACCOUNT.blob.core.windows.net/$CONTAINER/$BLOB_PREFIX/"
 echo ""
@@ -213,6 +225,10 @@ find "$DST" -type f -name '*.js' -print0 | \
 echo ""
 
 # ── Step 3: Brotli --best ────────────────────────────────────────────
+if [[ -n "$SKIP_BROTLI" ]]; then
+    echo "=== Step 3/4: Brotli SKIPPED (--skip-brotli) ==="
+    echo ""
+else
 echo "=== Step 3/4: Brotli (--best, q=11) ==="
 # Per-file logging plus running totals. Sequential (deterministic
 # ordering, simpler logging) — the wasm/data files are CPU-bound
@@ -258,6 +274,8 @@ SUMMARY_PCT=$(awk -v b="$TOTAL_BEFORE" -v a="$TOTAL_AFTER" 'BEGIN { if (b > 0) p
 echo ""
 echo "  Brotli summary: $(human "$TOTAL_BEFORE") → $(human "$TOTAL_AFTER")  (-${SUMMARY_PCT}%)  across $BR_COUNT files"
 echo ""
+
+fi  # end --skip-brotli guard
 
 fi  # end --skip-build guard
 
@@ -309,6 +327,11 @@ upload_one() {
     local blob_name="$BLOB_PREFIX/$rel"
     local ct
     ct="$(mime_for "$rel")"
+    # Only advertise Content-Encoding: br when the bytes are actually
+    # brotli-compressed. With --skip-brotli the files are plain, so
+    # tagging them br would make clients fail to decode them.
+    local enc_args=()
+    [[ -z "$SKIP_BROTLI" ]] && enc_args=(--content-encoding "br")
     az storage blob upload \
         --auth-mode login \
         --account-name "$STORAGE_ACCOUNT" \
@@ -316,20 +339,21 @@ upload_one() {
         --name "$blob_name" \
         --file "$src" \
         --content-type "$ct" \
-        --content-encoding "br" \
+        "${enc_args[@]}" \
         --overwrite \
         --no-progress \
         --only-show-errors > /dev/null
 }
 
-export DST BLOB_PREFIX STORAGE_ACCOUNT CONTAINER
+export DST BLOB_PREFIX STORAGE_ACCOUNT CONTAINER SKIP_BROTLI
 export -f mime_for upload_one
 
 # Exclude orphaned `*.br.tmp.*` files left behind by interrupted brotli
 # passes — they're stale, partially-written compressed bytes that must
 # not be served.
 BLOB_TOTAL=$(find "$DST" -type f ! -name '*.br.tmp.*' | wc -l | tr -d ' ')
-echo "  Uploading $BLOB_TOTAL blobs in parallel (-P 8) with Content-Encoding: br..."
+[[ -n "$SKIP_BROTLI" ]] && ENC_NOTE="uncompressed (no Content-Encoding)" || ENC_NOTE="Content-Encoding: br"
+echo "  Uploading $BLOB_TOTAL blobs in parallel (-P 8) with $ENC_NOTE..."
 find "$DST" -type f ! -name '*.br.tmp.*' -print0 | \
     xargs -0 -n1 -P 8 -I{} bash -c 'upload_one "$@"' _ {}
 
