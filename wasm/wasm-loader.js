@@ -1500,21 +1500,34 @@
 
         // Detect internal paste: either fingerprint matches OR the
         // HTML contains COOL's origin marker (set by our oncopy handler).
-        // The fingerprint can be null if the 200ms setTimeout hasn't
-        // fired yet, so the marker check is the reliable fallback.
+        // - fingerprintMatch implies SAME tab/kit: the kit's internal
+        //   clipboard has the content, so .uno:Paste preserves richer
+        //   formatting (embedded objects, shapes, charts) than the HTML
+        //   round-trip would.
+        // - hasCoolMarker WITHOUT fingerprintMatch implies a DIFFERENT
+        //   COOL tab put it there. The destination kit is a separate
+        //   process — its internal clipboard is empty — so .uno:Paste
+        //   would no-op silently. Forward the HTML bytes the source
+        //   wrote so the destination kit's HTML import filter produces
+        //   equivalent content.
         var hasCoolMarker = html && (html.indexOf('data-coolorigin') >= 0 ||
                                      html.indexOf('meta-origin') >= 0);
-        var isInternal = hasCoolMarker ||
-                         (globalThis._lastCopiedPlain && plain === globalThis._lastCopiedPlain);
+        var fingerprintMatch = globalThis._lastCopiedPlain &&
+                               plain === globalThis._lastCopiedPlain;
+        var isInternal = hasCoolMarker || fingerprintMatch;
 
-        if (isInternal) {
-            // Clipboard holds content from our document → Kit internal
-            // paste (preserves full formatting). We suppressed Map.Keyboard's
-            // uno:Paste in the keydown handler, so we send it ourselves.
-            console.log('[wasm-loader] Internal paste (' +
-                (hasCoolMarker ? 'COOL marker' : 'fingerprint') +
-                ', ' + plain.length + ' chars)');
+        if (isInternal && fingerprintMatch) {
+            // Same-tab paste — uno-paste preserves richer formatting.
+            console.log('[wasm-loader] Internal paste same-tab (fingerprint, ' +
+                plain.length + ' chars)');
             globalThis.TheFakeWebSocket.send('uno .uno:Paste');
+        } else if (isInternal && html) {
+            // Cross-tab COOL→COOL paste — destination kit's internal
+            // clipboard is empty, so forward HTML bytes explicitly.
+            console.log('[wasm-loader] Internal paste cross-tab (COOL marker, html ' +
+                html.length + ' chars)');
+            globalThis.TheFakeWebSocket.send(
+                new Blob(['paste mimetype=text/html\n', html]));
         } else if (html) {
             // External HTML content (from browser, Word, etc.)
             console.log('[wasm-loader] External paste (html, ' + html.length + ' chars)');
