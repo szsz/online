@@ -160,7 +160,6 @@ function setupOverflowMenu(
 
 	(overflowGroupContainer as OverflowGroupContainer).foldGroup = () => {
 		if (isCollapsed) return;
-		app.console.debug('overflow manager: fold group: ' + id);
 		JSDialog.CloseDropdown(dropdownId);
 
 		overflowMenuHandler(true);
@@ -174,7 +173,6 @@ function setupOverflowMenu(
 	(overflowGroupContainer as OverflowGroupContainer).unfoldGroup = () => {
 		if (!isCollapsed) return;
 
-		app.console.debug('overflow manager: unfold group: ' + id);
 		JSDialog.CloseDropdown(dropdownId);
 
 		overflowMenuButton.style.display = 'none';

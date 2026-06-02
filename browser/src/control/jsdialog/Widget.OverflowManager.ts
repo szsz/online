@@ -51,14 +51,6 @@ class OverflowManager {
 
 	hasOverflow(maxWidth: number): boolean {
 		const requiredWidth = this.parentContainer.scrollWidth;
-		app.console.debug(
-			'overflow manager: "' +
-				this.data.id +
-				'" max: ' +
-				maxWidth +
-				' req: ' +
-				requiredWidth,
-		);
 
 		// not yet known width -> do not assume it is small to prevent scrollbars
 		if (requiredWidth === 0) return true;
@@ -67,10 +59,6 @@ class OverflowManager {
 	}
 
 	onResize(event: Event) {
-		app.console.debug(
-			'OverflowManager: onResize, scheduledRefresh = ' +
-				(this.scheduledRefresh !== '' ? 'true' : 'false'),
-		);
 		this.lastMaxWidth = -1;
 
 		if (this.scheduledRefresh !== '') {
@@ -85,9 +73,6 @@ class OverflowManager {
 
 	// sometimes we want to call it synchronously as it is already in the task (tab switch)
 	onRefresh(event: Event & { force?: boolean }) {
-		app.console.debug(
-			'OverflowManager: onRefresh, force = ' + (event.force ? 'true' : 'false'),
-		);
 		this.scheduledRefresh = '';
 		if (!this.parentContainer) return;
 		if (this.lastMaxWidth === window.innerWidth) return;
