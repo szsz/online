@@ -273,12 +273,21 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
     page.on('dialog', d => d.accept().catch(() => {}));
 
     const consoleLines = [];
+    // Sum FULL message lengths (not the 600-char per-line truncation we
+    // store) so the report can show real log volume — useful for spotting
+    // chatter regressions like the OverflowManager.onResize spam (~700 lines
+    // per single-user open, see ai/proposals/proposed/console-log-cleanup.md).
+    let consoleBytes = 0;
     page.on('console', m => {
         const t = m.text();
+        consoleBytes += Buffer.byteLength(t, 'utf8');
         consoleLines.push({ t: Date.now(), line: t.substring(0, 600) });
     });
-    page.on('pageerror', e =>
-        consoleLines.push({ t: Date.now(), line: 'PAGEERROR: ' + (e.message || '').substring(0, 600) }));
+    page.on('pageerror', e => {
+        const msg = 'PAGEERROR: ' + (e.message || '');
+        consoleBytes += Buffer.byteLength(msg, 'utf8');
+        consoleLines.push({ t: Date.now(), line: msg.substring(0, 600) });
+    });
 
     // ── Large-asset download timing ───────────────────────────────
     // Capture start/end timestamps + bytes for the heavy WASM payloads
@@ -556,6 +565,7 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
             ? (hits.shield_dropped / 1000).toFixed(2) + 's' : null,
         finalDomProbe: lastDomProbe,
         consoleLines: consoleLines.length,
+        consoleBytes,
         transferBytes,
         transferTopBytes,
         transferIframeBytes,
@@ -577,7 +587,7 @@ async function captureSession({ browser, fileUrl, sessionTag, kind, expectStatus
     await page.close();
 
     return { hits, screenshots, navStart, totalMs: Date.now() - navStart,
-             lastDomProbe, consoleLines: consoleLines.length,
+             lastDomProbe, consoleLines: consoleLines.length, consoleBytes,
              eventVsPoll, assets,
              transferBytes, transferTopBytes, transferIframeBytes,
              transferCount };
@@ -606,13 +616,24 @@ function emitSessionHtml(docTag, kind, label, result, subdirOverride) {
     const { hits, screenshots, totalMs, lastDomProbe,
             transferBytes = 0, transferTopBytes = 0,
             transferIframeBytes = 0, transferCount = 0,
+            consoleLines = 0, consoleBytes = 0,
             assets = {} } = result;
     const verified = hits.content_verified !== undefined;
     const dropped  = hits.shield_dropped !== undefined;
     const wireMB = (transferBytes / 1048576).toFixed(2);
+    // Console-log volume — spotlights chatter regressions in a glance.
+    // KB for normal levels; flips to MB once we cross 1024 KB so the
+    // report row stays readable.
+    const consoleKB = consoleBytes / 1024;
+    const consoleLabel = consoleKB >= 1024
+        ? (consoleKB / 1024).toFixed(2) + ' MB'
+        : consoleKB.toFixed(1) + ' KB';
     const wireDetail = `<span class="wire">wire: <strong>${wireMB} MB</strong>
                           <small>(${transferCount} req · top ${(transferTopBytes/1048576).toFixed(2)} MB
-                            · iframe ${(transferIframeBytes/1048576).toFixed(2)} MB)</small></span>`;
+                            · iframe ${(transferIframeBytes/1048576).toFixed(2)} MB)</small></span>
+                        <span class="console-vol">· console:
+                          <strong>${consoleLabel}</strong>
+                          <small>(${consoleLines} line${consoleLines === 1 ? '' : 's'})</small></span>`;
     // Per-asset download breakdown — separates the heavy WASM payload
     // timing from the rest of the cold-open work, so a "shared browser
     // cache between sessions" speedup doesn't hide a real regression.
