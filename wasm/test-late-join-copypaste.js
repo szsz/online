@@ -6,6 +6,7 @@ const { launch, sleep } = require('./lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('./lib/test-env');
 const { uploadV2 } = require('./lib/v2-upload');
+const { evalInFrame: _evalInFrame } = require('./lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-latejoin-copypaste';
 
@@ -72,8 +73,11 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         if (!frameA) throw new Error('Editor A did not load');
         await sleep(5000);
 
-        async function getWc(frame) {
-            return frame.evaluate(() =>
+        // Take a page, not a frame. Re-resolves the active editor frame
+        // each call so a viewer-side iframe replaceChild mid-test
+        // doesn't poison the read with `frame got detached`.
+        async function getWc(page) {
+            return _evalInFrame(page, () =>
                 document.querySelector('#StateWordCount')?.textContent?.trim() || '').catch(() => '');
         }
         async function clickA() {
@@ -83,14 +87,14 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         }
 
         await clickA();
-        const cc0 = charCount(await getWc(frameA));
+        const cc0 = charCount(await getWc(pageA));
         console.log('  Initial: ' + cc0 + ' chars');
 
         // Type "HELLO "
         await clickA();
         await pageA.keyboard.type('HELLO ', { delay: 80 });
         await sleep(3000);
-        const cc1 = charCount(await getWc(frameA));
+        const cc1 = charCount(await getWc(pageA));
         check('A typed +6', cc1 - cc0 === 6, 'delta=' + (cc1 - cc0));
 
         // Select all + copy + move to end + paste (internal)
@@ -105,7 +109,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await sleep(300);
         await pageA.keyboard.down('Control'); await pageA.keyboard.press('v'); await pageA.keyboard.up('Control');
         await sleep(8000);
-        const cc2 = charCount(await getWc(frameA));
+        const cc2 = charCount(await getWc(pageA));
         check('A internal paste: delta > 0', cc2 > cc1, 'delta=' + (cc2 - cc1));
 
         // External text paste
@@ -120,7 +124,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await sleep(300);
         await pageA.keyboard.down('Control'); await pageA.keyboard.press('v'); await pageA.keyboard.up('Control');
         await sleep(8000);
-        const cc3 = charCount(await getWc(frameA));
+        const cc3 = charCount(await getWc(pageA));
         check('A external text paste: +8', cc3 - cc2 === 8, 'delta=' + (cc3 - cc2));
 
         // External image paste
@@ -137,7 +141,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await clickA();
         await pageA.keyboard.down('Control'); await pageA.keyboard.press('v'); await pageA.keyboard.up('Control');
         await sleep(8000);
-        const cc4 = charCount(await getWc(frameA));
+        const cc4 = charCount(await getWc(pageA));
         check('A image paste: no text change (|delta| <= 2)', Math.abs(cc4 - cc3) <= 2, 'delta=' + (cc4 - cc3));
         const ccAfinal = cc4;
 
@@ -192,11 +196,11 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         // Final convergence wait — A's late-save and B's replay can
         // land up to ~60s apart on Azure (save RTT + upload + blob
         // fetch + decrypt + LO apply chain).
-        let ccB = charCount(await getWc(frameB));
+        let ccB = charCount(await getWc(pageB));
         const convDeadline = Date.now() + 60000;
         while (Math.abs(ccB - ccAfinal) > 5 && Date.now() < convDeadline) {
             await sleep(500);
-            ccB = charCount(await getWc(frameB));
+            ccB = charCount(await getWc(pageB));
         }
         await snap(pageB, 'B_after_join');
         console.log('  B after join: ' + ccB + ' chars (A had ' + ccAfinal + ')');
@@ -214,12 +218,12 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         await sleep(500);
         await pageB.keyboard.type('EXTRA', { delay: 80 });
         await sleep(5000);
-        const ccBafter = charCount(await getWc(frameB));
+        const ccBafter = charCount(await getWc(pageB));
         check('B typed +5', ccBafter - ccB === 5, 'delta=' + (ccBafter - ccB));
 
         // Check A sees B's edit
         await sleep(5000);
-        const ccAend = charCount(await getWc(frameA));
+        const ccAend = charCount(await getWc(pageA));
         check('A sees B edit (A grew by ~5)', Math.abs(ccAend - ccAfinal - 5) <= 2,
             'A=' + ccAend + ' expected~' + (ccAfinal + 5));
 
