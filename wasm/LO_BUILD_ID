@@ -215,4 +215,20 @@
 #                  fix/spellcheck-stack-overflow-on-50 (gated on a
 #                  smoke test before merging to LO dev). See online
 #                  ai/questions/answered/lo-build-id-bump-after-shape-fixes.md
-2026-06-02-57
+#   2026-06-02-60  current pin — branch fix/allow-memory-growth-for-
+#                  area-dialog (HEAD 7b32358e8282) off cherry-pick/
+#                  shape-fixes-on-50. Adds ONE commit on top of -57:
+#                  `-s ALLOW_MEMORY_GROWTH=1` in
+#                  solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk.
+#                  Initial heap stays at 1 GiB; the hard cap is lifted
+#                  so allocations grow on demand. Fixes the
+#                  user-reported `Aborted(Cannot enlarge memory arrays
+#                  to size 1236799488 bytes (OOM))` when opening the
+#                  shape Area dialog on Writer/Impress. Tracked at
+#                  ai/tasks/in-progress/shape-area-oom-master.md.
+#                  Track A (this bump) ships immediate relief; Track B
+#                  is the LO-side root fix profiled in
+#                  ai/proposals/proposed/shape-area-dialog-allocation-
+#                  profile.md (lazy bitmap preview generation in
+#                  SvxPresetListBox).
+2026-06-02-60
