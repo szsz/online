@@ -14,6 +14,7 @@ const { launch, sleep } = require('./lib/browser');
 const fs = require('fs');
 const env = require('./lib/test-env');
 const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
+const { evalInFrame } = require('./lib/two-tab');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);
@@ -34,17 +35,20 @@ async function grantClipboard(page) {
     });
 }
 
-async function getStatus(frame) {
-    return frame.evaluate(() => {
+// Take a page, not a frame. Re-resolves the active editor frame each
+// call so a viewer-side iframe replaceChild mid-test doesn't poison
+// the read with `frame got detached`.
+async function getStatus(page) {
+    return evalInFrame(page, () => {
         const el = document.querySelector('#StateWordCount');
         return el ? el.textContent.trim() : 'NOT FOUND';
-    });
+    }).catch(() => 'NOT FOUND');
 }
 
-async function waitForCharCount(frame, timeoutMs) {
+async function waitForCharCount(page, timeoutMs) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
-        const cc = charCount(await getStatus(frame));
+        const cc = charCount(await getStatus(page));
         if (cc > 0) return cc;
         await sleep(500);
     }
@@ -67,27 +71,27 @@ async function waitForCharCount(frame, timeoutMs) {
         const bytes = Buffer.from('Hello World', 'utf8');
 
         console.log('[A] Opening...');
-        const { page: pageA, editorFrame: frameA, b64urlSecret } =
+        const { page: pageA, b64urlSecret } =
             await openViaViewer(browser, VIEWER, docName, bytes,
                 { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
                   isolatedContext: true });
         await grantClipboard(pageA);
-        await waitForCharCount(frameA, TIMEOUT);
-        console.log(`[A] Loaded: "${await getStatus(frameA)}"`);
+        await waitForCharCount(pageA, TIMEOUT);
+        console.log(`[A] Loaded: "${await getStatus(pageA)}"`);
         await sleep(10000);
 
         console.log('[B] Opening...');
-        const { page: pageB, editorFrame: frameB } =
+        const { page: pageB } =
             await openSecretInBrowser(browser, VIEWER, b64urlSecret,
                 { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
                   isolatedContext: true });
         await grantClipboard(pageB);
-        await waitForCharCount(frameB, TIMEOUT);
-        console.log(`[B] Loaded: "${await getStatus(frameB)}"`);
+        await waitForCharCount(pageB, TIMEOUT);
+        console.log(`[B] Loaded: "${await getStatus(pageB)}"`);
         await sleep(15000);
 
-        const cc0a = charCount(await getStatus(frameA));
-        const cc0b = charCount(await getStatus(frameB));
+        const cc0a = charCount(await getStatus(pageA));
+        const cc0b = charCount(await getStatus(pageB));
         console.log('Initial: A=' + cc0a + ' B=' + cc0b);
         check('Initial: both see 11 chars', cc0a === 11 && cc0b === 11);
 
@@ -101,8 +105,8 @@ async function waitForCharCount(frame, timeoutMs) {
         await clickCanvas(pageA);
         await pageA.keyboard.type('TEST ', { delay: 60 });
         await sleep(5000);
-        const ccA1 = charCount(await getStatus(frameA));
-        const ccB1 = charCount(await getStatus(frameB));
+        const ccA1 = charCount(await getStatus(pageA));
+        const ccB1 = charCount(await getStatus(pageB));
         console.log('  A=' + ccA1 + ' B=' + ccB1);
         check('Step 1: A typed +5', ccA1 === 16);
         check('Step 1: B sees A typing', ccB1 === 16, 'B=' + ccB1);
@@ -128,8 +132,8 @@ async function waitForCharCount(frame, timeoutMs) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const ccA2 = charCount(await getStatus(frameA));
-        const ccB2 = charCount(await getStatus(frameB));
+        const ccA2 = charCount(await getStatus(pageA));
+        const ccB2 = charCount(await getStatus(pageB));
         console.log('  A=' + ccA2 + ' B=' + ccB2);
         check('Step 2: A pasted (doubled)', ccA2 === 32, 'A=' + ccA2);
         check('Step 2: B sees paste', ccB2 === 32, 'B=' + ccB2);
@@ -146,7 +150,7 @@ async function waitForCharCount(frame, timeoutMs) {
         console.log('\n--- Step 4: A double-clicks to select a word ---');
         await pageA.mouse.click(300, 300, { clickCount: 2 });
         await sleep(2000);
-        const selA = await getStatus(frameA);
+        const selA = await getStatus(pageA);
         console.log('  A status after double-click: "' + selA + '"');
         check('Step 4: A has selection', true);
         await snap(pageA, 'A_after_doubleclick');
@@ -161,13 +165,13 @@ async function waitForCharCount(frame, timeoutMs) {
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(500);
-        const ccPrePaste = charCount(await getStatus(frameA));
+        const ccPrePaste = charCount(await getStatus(pageA));
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const ccA5 = charCount(await getStatus(frameA));
-        const ccB5 = charCount(await getStatus(frameB));
+        const ccA5 = charCount(await getStatus(pageA));
+        const ccB5 = charCount(await getStatus(pageB));
         console.log('  A=' + ccA5 + ' B=' + ccB5 + ' (pre-paste was ' + ccPrePaste + ')');
         check('Step 5: A pasted word (delta > 0)', ccA5 > ccPrePaste,
             'delta=' + (ccA5 - ccPrePaste));
@@ -185,8 +189,8 @@ async function waitForCharCount(frame, timeoutMs) {
         await sleep(500);
         await pageB.keyboard.type('END', { delay: 60 });
         await sleep(5000);
-        const ccA6 = charCount(await getStatus(frameA));
-        const ccB6 = charCount(await getStatus(frameB));
+        const ccA6 = charCount(await getStatus(pageA));
+        const ccB6 = charCount(await getStatus(pageB));
         console.log('  A=' + ccA6 + ' B=' + ccB6);
         check('Step 6: B typed +3', ccB6 === ccA5 + 3, 'B=' + ccB6 + ' expected=' + (ccA5 + 3));
         check('Step 6: A sees B typing', Math.abs(ccA6 - ccB6) <= 1,
