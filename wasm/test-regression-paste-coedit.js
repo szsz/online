@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('./lib/test-env');
 const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
+const { waitInFrame, evalInFrame, getActiveEditorFrame } = require('./lib/two-tab');
 const { downloadV2 } = require('./lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
@@ -46,15 +47,19 @@ function check(label, cond, ev) {
 }
 
 function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? parseInt(m[1]) : -1; }
-async function getWc(frame) {
-    return frame.evaluate(() =>
-        document.querySelector('#StateWordCount')?.textContent?.trim() || '');
+// Take a page, not a frame. Resolves the active editor frame fresh
+// each call so a viewer-side iframe replaceChild mid-test doesn't
+// poison the read with `frame got detached`.
+async function getWc(page) {
+    return evalInFrame(page, () =>
+        document.querySelector('#StateWordCount')?.textContent?.trim() || '')
+        .catch(() => '');
 }
 
-async function waitForCC(frame, target, timeoutMs) {
+async function waitForCC(page, target, timeoutMs) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
-        if (charCount(await getWc(frame)) === target) return true;
+        if (charCount(await getWc(page)) === target) return true;
         await sleep(500);
     }
     return false;
@@ -89,10 +94,10 @@ async function grantClipboard(page) {
         const upA = await openViaViewer(browser, VIEWER, NAME, fixtureBytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true });
-        const pageA = upA.page, frameA = upA.editorFrame;
+        const pageA = upA.page;
         await grantClipboard(pageA);
-        await frameA.waitForFunction(() =>
-            document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
+        await waitInFrame(pageA,
+            () => document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
             { timeout: TIMEOUT });
         log(`[A] Loaded`);
         await sleep(8000);
@@ -100,18 +105,18 @@ async function grantClipboard(page) {
         const upB = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true });
-        const pageB = upB.page, frameB = upB.editorFrame;
+        const pageB = upB.page;
         await grantClipboard(pageB);
-        await frameB.waitForFunction(() =>
-            document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
+        await waitInFrame(pageB,
+            () => document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
             { timeout: TIMEOUT });
         log(`[B] Loaded`);
         await sleep(15000);
 
         await snap(pageA, 'before_A');
         await snap(pageB, 'before_B');
-        const initA = charCount(await getWc(frameA));
-        const initB = charCount(await getWc(frameB));
+        const initA = charCount(await getWc(pageA));
+        const initB = charCount(await getWc(pageB));
         log(`Initial: A=${initA} B=${initB}`);
         check('Both browsers loaded same docx', initA > 0 && initA === initB);
 
@@ -137,12 +142,12 @@ async function grantClipboard(page) {
         await pageA.keyboard.up('Control');
         await sleep(8000);
         await snap(pageA, 'after_richtext_A');
-        const afterRichA = charCount(await getWc(frameA));
+        const afterRichA = charCount(await getWc(pageA));
         // Wait up to 30s for B to converge — relay propagation can lag
         // on cold-start runs against wasm-viewer-test.
-        await waitForCC(frameB, afterRichA, 30000);
+        await waitForCC(pageB, afterRichA, 30000);
         await snap(pageB, 'after_richtext_B');
-        const afterRichB = charCount(await getWc(frameB));
+        const afterRichB = charCount(await getWc(pageB));
         log(`After rich paste: A=${afterRichA} B=${afterRichB}`);
         check('TEST1: A char count increased after rich paste', afterRichA > initA);
         check('TEST1: B char count increased (propagated)', afterRichB > initB);
@@ -155,7 +160,7 @@ async function grantClipboard(page) {
         // TEST 1b: Paste exact "ABC"
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 1b: Paste exactly "ABC" ---');
-        const beforeABC = charCount(await getWc(frameA));
+        const beforeABC = charCount(await getWc(pageA));
         await clickCanvas(pageA);
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('End');
@@ -173,9 +178,9 @@ async function grantClipboard(page) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const afterABC_A = charCount(await getWc(frameA));
-        await waitForCC(frameB, afterABC_A, 30000);
-        const afterABC_B = charCount(await getWc(frameB));
+        const afterABC_A = charCount(await getWc(pageA));
+        await waitForCC(pageB, afterABC_A, 30000);
+        const afterABC_B = charCount(await getWc(pageB));
         log(`Paste ABC: A=${afterABC_A} B=${afterABC_B} (was ${beforeABC})`);
         check('TEST1b: A gained exactly 3 chars (ABC)',
               afterABC_A === beforeABC + 3,
@@ -258,13 +263,13 @@ async function grantClipboard(page) {
         }
         await sleep(2000);
         // Query selection content via the iframe's app.map._clip
-        await frameA.evaluate(() => {
+        await evalInFrame(pageA, () => {
             globalThis._deliveringToKit = true;
             try { globalThis.postMobileMessage('gettextselection mimetype=text/html'); }
             finally { globalThis._deliveringToKit = false; }
         });
         await sleep(5000);
-        const selContent = await frameA.evaluate(() => {
+        const selContent = await evalInFrame(pageA, () => {
             var clip = window.app && window.app.map && window.app.map._clip;
             return {
                 content: clip ? (clip._selectionContent || '').substring(0, 300) : null,
@@ -290,14 +295,14 @@ async function grantClipboard(page) {
         await clickCanvas(pageA);
         await pageA.keyboard.press('Home');
         await sleep(500);
-        const beforeCut = charCount(await getWc(frameA));
+        const beforeCut = charCount(await getWc(pageA));
         await pageA.keyboard.down('Control');
         await pageA.keyboard.down('Shift');
         await pageA.keyboard.press('ArrowRight');
         await pageA.keyboard.up('Shift');
         await pageA.keyboard.up('Control');
         await sleep(500);
-        await frameA.evaluate(() => {
+        await evalInFrame(pageA, () => {
             try { document.execCommand('cut'); } catch(e) {}
             try {
                 const map = window.app && window.app.map;
@@ -305,11 +310,11 @@ async function grantClipboard(page) {
                     map.sendUnoCommand('.uno:Cut');
             } catch(e) {}
         });
-        let afterCut = charCount(await getWc(frameA));
+        let afterCut = charCount(await getWc(pageA));
         const cutDeadline = Date.now() + 30000;
         while (afterCut >= beforeCut && Date.now() < cutDeadline) {
             await sleep(500);
-            afterCut = charCount(await getWc(frameA));
+            afterCut = charCount(await getWc(pageA));
         }
         log(`Cut: ${beforeCut} -> ${afterCut}`);
         if (afterCut >= beforeCut) {
@@ -321,7 +326,7 @@ async function grantClipboard(page) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(3000);
-        const afterPasteBack = charCount(await getWc(frameA));
+        const afterPasteBack = charCount(await getWc(pageA));
         log(`Paste back: ${afterCut} -> ${afterPasteBack}`);
         check('TEST4: Paste restored content', afterPasteBack >= afterCut);
 
@@ -342,8 +347,8 @@ async function grantClipboard(page) {
         await sleep(2000);
         await snap(pageA, 'final_A');
         await snap(pageB, 'final_B');
-        const finalA = await getWc(frameA);
-        const finalB = await getWc(frameB);
+        const finalA = await getWc(pageA);
+        const finalB = await getWc(pageB);
         const fA = charCount(finalA);
         const fB = charCount(finalB);
         log(`Final: A="${finalA}" B="${finalB}"`);
@@ -374,12 +379,12 @@ async function grantClipboard(page) {
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(1000);
-        const beforeIntPaste = charCount(await getWc(frameA));
+        const beforeIntPaste = charCount(await getWc(pageA));
         await pageA.keyboard.down('Control');
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(5000);
-        const afterIntPaste = charCount(await getWc(frameA));
+        const afterIntPaste = charCount(await getWc(pageA));
         const intDelta = afterIntPaste - beforeIntPaste;
         log(`Internal paste: ${beforeIntPaste} -> ${afterIntPaste} (delta=${intDelta})`);
         check('TEST6: Internal paste works after external paste',
@@ -412,7 +417,7 @@ async function grantClipboard(page) {
         await pageA.keyboard.press('End');
         await pageA.keyboard.up('Control');
         await sleep(1000);
-        const beforeDbl = charCount(await getWc(frameA));
+        const beforeDbl = charCount(await getWc(pageA));
         await pageA.evaluate(async (html, plain) => {
             var items = {};
             if (html) items['text/html'] = new Blob([html], { type: 'text/html' });
@@ -425,7 +430,7 @@ async function grantClipboard(page) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const afterDbl = charCount(await getWc(frameA));
+        const afterDbl = charCount(await getWc(pageA));
         const dblDelta = afterDbl - beforeDbl;
         log(`Double-paste test: ${beforeDbl} -> ${afterDbl} (delta=${dblDelta})`);
         check('TEST7: Only "NEW" pasted, not also "MARKER" (delta=3)',
@@ -436,7 +441,7 @@ async function grantClipboard(page) {
         // TEST 8: External image paste after internal text copy
         // ══════════════════════════════════════════════════════════════
         log('\n--- TEST 8: External image paste after internal text copy ---');
-        const before8 = charCount(await getWc(frameA));
+        const before8 = charCount(await getWc(pageA));
         await pageA.evaluate(async (b64) => {
             var raw = atob(b64);
             var bytes = new Uint8Array(raw.length);
@@ -451,7 +456,7 @@ async function grantClipboard(page) {
         await pageA.keyboard.press('v');
         await pageA.keyboard.up('Control');
         await sleep(8000);
-        const after8 = charCount(await getWc(frameA));
+        const after8 = charCount(await getWc(pageA));
         const delta8 = after8 - before8;
         log(`Image paste after copy: ${before8} -> ${after8} (delta=${delta8})`);
         check('TEST8: No text double-paste with external image (delta <= 2)',
