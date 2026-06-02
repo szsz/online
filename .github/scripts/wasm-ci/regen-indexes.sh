@@ -20,16 +20,32 @@ EDITOR_FD_URL="${EDITOR_FD_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.
 
 list_prefix() {
     local prefix="$1"
-    # --num-results: az defaults to 5000; we already have 6000+ blobs under
-    # app-builds/ (mostly per-test screenshots) so the default page cuts off
-    # the most recent manifests. Bump to a safe ceiling.
+    # Use --delimiter '/' to list TOP-LEVEL subdirectories (one entry per
+    # build) instead of recursing into every per-test screenshot / junit
+    # / etc. With ~6000 blobs under app-builds/ the previous
+    # --num-results 100000 approach was both broken AND slow:
+    #   * Broken: az defaults to a 5000-blob page; with mostly-screenshot
+    #     children mixed in, the default 5000 came back alphabetically,
+    #     keeping the OLDEST builds' manifests and dropping the newest →
+    #     the index froze on builds from a month earlier. Even at
+    #     --num-results 100000 the listing took >90 s and got killed by
+    #     job timeouts before publishing.
+    #   * Slow: listing every screenshot blob is pointless when we only
+    #     need one manifest per build.
+    # --delimiter '/' returns each build ID as a virtual directory
+    # (`app-builds/<id>/`), so listing is O(builds) not O(blobs). Then
+    # we synthesise the `<id>/manifest.json` path the rest of the script
+    # already expects.
     az storage blob list \
         --account-name "$ACCT" \
         --container-name '$web' \
         --prefix "$prefix" \
-        --num-results 100000 \
-        --query "[?ends_with(name, '/manifest.json')].name" \
-        -o tsv 2>/dev/null | sort -r
+        --delimiter '/' \
+        --query "[].name" \
+        -o tsv 2>/dev/null \
+        | grep -E "^${prefix}.+/$" \
+        | sed -E "s|/$|/manifest.json|" \
+        | sort -r
 }
 
 WORK="$(mktemp -d)"
