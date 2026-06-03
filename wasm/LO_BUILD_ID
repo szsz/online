@@ -231,4 +231,16 @@
 #                  ai/proposals/proposed/shape-area-dialog-allocation-
 #                  profile.md (lazy bitmap preview generation in
 #                  SvxPresetListBox).
-2026-06-02-60
+#   2026-06-03-61  current pin — git_sha from LO dev HEAD after PR #33
+#                  merged ("WASM: strip FRMLOAD perf-trace fprintfs
+#                  from cold-open console"). Removes the 4× FRMLOAD
+#                  / xLoadable: / model:create: fprintf survivors in
+#                  sfx2/source/view/frmload.cxx that printed on every
+#                  cold open (~50 stderr lines). Cold-open console
+#                  noise floor drops from ~405 to ~355 lines on
+#                  new.docx single-user. Pairs with Online PR #188's
+#                  Component.Base verbose precedence fix (-34 more
+#                  lines) for a combined ~84-line / 20% reduction.
+#                  Task tracked at ai/tasks/todo/lo-cold-open-console-
+#                  spam.md.
+2026-06-03-61
