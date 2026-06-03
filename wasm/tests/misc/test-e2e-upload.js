@@ -1,10 +1,10 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test: End-to-end upload → open → co-edit
 // Upload at 3s, click open immediately. No waiting for preload.
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const BASE = env.EDITOR_URL;

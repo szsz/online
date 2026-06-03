@@ -14,11 +14,11 @@
 //   writer-1 → calc       (warm cross-type, factories cached)
 //   calc     → impress    (warm cross-type)
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const T0 = Date.now();

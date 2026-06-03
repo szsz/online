@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: A types (unsaved), A goes offline, B joins.
 //
 // A's edits are in the relay message log but NOT in a checkpoint.
@@ -9,10 +9,10 @@ const __cl = require('./lib/inject-checklist');
 // Bug: If the relay's message log doesn't include A's edits, or if
 // the message replay doesn't work, B opens with stale/blank content.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-latejoin-offline-unsaved';
 

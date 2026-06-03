@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: First client's activation checkpoint might save stale/blank content.
 //
 // Scenario: The viewer pre-warms with blank.docx, then hot-switches to a real doc.
@@ -15,10 +15,10 @@ const __cl = require('./lib/inject-checklist');
 //   6. Browser B opens the same doc
 //   7. B must see the 19-char content, NOT blank
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-first-client-overwrite';
 

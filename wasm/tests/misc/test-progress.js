@@ -1,6 +1,6 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 const EDITOR = env.EDITOR_URL;
 const SHOT = '/tmp/static-deploy/public/shots-progress';
 fs.mkdirSync(SHOT, { recursive: true });

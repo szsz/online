@@ -1,13 +1,13 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Co-editing test: 2 browsers typing via real keyboard, verify convergence.
 // ALL input via keyboard/mouse — no TheFakeWebSocket.send() calls.
 // Expected: "ABCHello WorldXYZ" = 17 chars, identical on both browsers.
 //
 // Migrated to the viewer flow (lib/open-via-viewer.js).
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
-const env = require('./lib/test-env');
-const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
+const env = require('../../lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);

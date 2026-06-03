@@ -4,9 +4,9 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
-const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 

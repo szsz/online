@@ -12,8 +12,8 @@
 // Generates HTML report with screenshots.
 
 const puppeteer = require('puppeteer');
-const { launch, sleep } = require('./lib/browser');
-const env = require('./lib/test-env');
+const { launch, sleep } = require('../../lib/browser');
+const env = require('../../lib/test-env');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');

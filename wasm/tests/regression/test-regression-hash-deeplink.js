@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: per-file URL fragment deep links (v2 encryption).
 //
 // In the v2 model, the hash carries a 22-char base64url secret — the
@@ -16,8 +16,8 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-hash-deeplink';

@@ -25,8 +25,8 @@
 
 'use strict';
 
-const env = require('./lib/test-env');
-const __cl = require('./lib/inject-checklist');
+const env = require('../../lib/test-env');
+const __cl = require('../../lib/inject-checklist');
 
 const EDITOR = env.EDITOR_URL;
 const MAX_RATIO = 0.6; // .br must be < 60% of source — typical 16–28%

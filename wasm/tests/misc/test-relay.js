@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test the strict-ordering relay server v2:
 // - Two clients complete join protocol
 // - Both send messages
@@ -6,7 +6,7 @@ const __cl = require('./lib/inject-checklist');
 // - Verify: sequence numbers are monotonically increasing
 
 const WebSocket = require('ws');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const RELAY = env.RELAY_URL + '/room/test-room-' + Date.now();
 

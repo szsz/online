@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Bug 1 — font-size dropdown shows only one option.
 //
 // User-reported: in Notebookbar mode, when the font-size dropdown
@@ -33,11 +33,11 @@ const __cl = require('./lib/inject-checklist');
 // This test reproduces the bug by opening the dropdown and counting
 // visible entries. We assert ≥ 5 entries; the bug shows 1.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-fontsize-dropdown';

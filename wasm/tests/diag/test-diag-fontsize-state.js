@@ -2,11 +2,11 @@
 // `statechanged: .uno:FontHeight=24`? If yes, bug is JS-side (combobox
 // doesn't apply state). If no, bug is C++ (kit doesn't emit on
 // remote-applied edit) → #177.
-const __cl = require('./lib/inject-checklist');
-const { launch, sleep } = require('./lib/browser');
+const __cl = require('../../lib/inject-checklist');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
-const env = require('./lib/test-env');
-const v2 = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const v2 = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const T0 = Date.now();

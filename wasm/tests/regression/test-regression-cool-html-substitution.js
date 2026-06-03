@@ -28,7 +28,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 
 const REPO_WASM_DIR = path.resolve(__dirname);
 

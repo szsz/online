@@ -1,12 +1,12 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // E2E Test: Two browsers co-editing a Word document with tables via the viewer.
 // Tests: cell editing, adding rows/columns, deleting rows, convergence.
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
-const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-table-coedit';

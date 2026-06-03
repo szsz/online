@@ -1,7 +1,7 @@
 // Test whether online.wasm + soffice.data are cached across two page loads in
 // the same browser context. Pinpoints exactly why Chrome re-downloads.
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const EDITOR = env.EDITOR_URL;
 const DOC = 'cache-test.txt';

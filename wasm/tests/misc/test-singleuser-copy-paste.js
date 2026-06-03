@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // test-singleuser-copy-paste.js — exercise EVERY copy/paste flow in single-
 // user mode (no relay, no co-edit confound). Lets us isolate whether a
 // given copy/paste failure is kit-side (this test fails) or co-edit-side
@@ -17,11 +17,11 @@ const __cl = require('./lib/inject-checklist');
 //
 // Each case is a `check` so partial failures still show what works.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const RELAY_HOST = new URL(env.RELAY_URL).host;

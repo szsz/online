@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: xlsx → xlsx hot-switch must complete.
 //
 // The bug: wasm-loader's docPoll required the status-bar text to have
@@ -19,12 +19,12 @@ const __cl = require('./lib/inject-checklist');
 //   3. Asserts B became ready (App_LoadingStatus OR __wasmPrewarmReady)
 //      within a strict budget. Before the fix this timed out at 60s.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
-const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-xlsx-hotswitch';

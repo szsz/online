@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: heavy WASM assets must survive Chrome's disk-cache LRU
 // under realistic cache pressure.
 //
@@ -28,7 +28,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-wasm-cache-pressure';

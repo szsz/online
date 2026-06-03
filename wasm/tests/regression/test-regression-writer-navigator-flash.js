@@ -34,9 +34,9 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const __cl = require('./lib/inject-checklist');
-const env = require('./lib/test-env');
-const { openViaViewer } = require('./lib/open-via-viewer');
+const __cl = require('../../lib/inject-checklist');
+const env = require('../../lib/test-env');
+const { openViaViewer } = require('../../lib/open-via-viewer');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const DOC_NAME = 'navigator-flash-test.docx';

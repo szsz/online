@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Ctrl+S (uno .uno:Save) in WASM editing must not abort
 // the kit.
 //
@@ -34,8 +34,8 @@ const __cl = require('./lib/inject-checklist');
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx');

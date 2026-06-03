@@ -1,14 +1,14 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test: PPTX via viewer — slide rendering, navigation, slide panel visibility.
 // Opens a real multi-slide pptx through the viewer and verifies:
 // 1. Impress UI loads (docType=presentation, slide panel visible)
 // 2. All slides render
 // 3. Slide navigation works
 // ALL via real keyboard/mouse.
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const EDITOR = env.EDITOR_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-pptx-viewer-slides';

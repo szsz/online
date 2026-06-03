@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: right-click → Copy / Paste through the context menu.
 //
 // User-facing gap (ai/tasks/in-progress/rightclick-copy-paste-e2e-probe):
@@ -35,9 +35,9 @@ const __cl = require('./lib/inject-checklist');
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
-const { evalInFrame, waitInFrame } = require('./lib/two-tab');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { evalInFrame, waitInFrame } = require('../../lib/two-tab');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');

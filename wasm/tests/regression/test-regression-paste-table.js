@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: HTML <table> paste → docx <w:tbl> round-trip.
 //
 // Gap (ai/tasks/in-progress/paste-table-html-roundtrip): no existing
@@ -33,9 +33,9 @@ const os   = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
-const { uploadV2, downloadV2 } = require('./lib/v2-upload');
-const { evalInFrame, waitInFrame } = require('./lib/two-tab');
+const env = require('../../lib/test-env');
+const { uploadV2, downloadV2 } = require('../../lib/v2-upload');
+const { evalInFrame, waitInFrame } = require('../../lib/two-tab');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');

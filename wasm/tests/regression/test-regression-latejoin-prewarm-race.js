@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Late joiner prewarm race — the WASM Kit may still have the
 // blank prewarm doc when the late joiner activates. If saveAndUploadCheckpoint()
 // fires before the real doc is loaded, it overwrites the file with blank content.
@@ -6,10 +6,10 @@ const __cl = require('./lib/inject-checklist');
 // Test: A opens and edits. B opens the SAME doc rapidly (within seconds of
 // page load, before prewarm fully completes). Verify B doesn't overwrite A's work.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-latejoin-prewarm-race';
 

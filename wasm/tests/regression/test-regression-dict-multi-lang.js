@@ -35,8 +35,8 @@
 
 const fs = require('fs');
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
-const __cl = require('./lib/inject-checklist');
+const env = require('../../lib/test-env');
+const __cl = require('../../lib/inject-checklist');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-dict-multi-lang';

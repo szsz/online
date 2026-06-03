@@ -1,12 +1,12 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Late-join + copy/paste: Browser A types, copies, pastes (text + image),
 // saves. Browser B late-joins and must receive all of A's content.
 // ALL input via real keyboard/mouse.
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
-const { evalInFrame: _evalInFrame } = require('./lib/two-tab');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { evalInFrame: _evalInFrame } = require('../../lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-latejoin-copypaste';
 

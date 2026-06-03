@@ -38,12 +38,12 @@
 //   ROUND_SLEEP_MIN_MS=1000  min sleep between rounds
 //   ROUND_SLEEP_MAX_MS=4000  max sleep between rounds
 
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER     = env.FILE_STORAGE_URL;
 const SHOT_DIR   = '/tmp/static-deploy/public/shots-stress-multidoc';

@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: the viewer's document endpoints must serve cache headers
 // + honour conditional GET, so that opening the same document twice doesn't
 // re-fetch the bytes from the storage backend.
@@ -14,8 +14,8 @@ const __cl = require('./lib/inject-checklist');
 // every single time, even when the doc hasn't changed.
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { pickLib } = require('./lib/fetch-url');
+const env = require('../../lib/test-env');
+const { pickLib } = require('../../lib/fetch-url');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const PROBE_NAME = 'viewer-cache-probe-' + Date.now() + '.bin';

@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Bug iter 26 — preformatted style buttons in the
 // notebookbar's #stylesview render visually stacked on top of one
 // another instead of in distinct grid cells.
@@ -22,11 +22,11 @@ const __cl = require('./lib/inject-checklist');
 // rounding). With the bug the entries collapse onto rect#0 → all pairs
 // overlap.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-stylesview-overlap';

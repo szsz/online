@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test: Caching, compression, and multi-format load with document switching.
 //
 // Verifies:
@@ -13,12 +13,12 @@ const __cl = require('./lib/inject-checklist');
 // Post-FD the editor lives at <EDITOR>/<EDITOR_BUILD_ID>/browser/dist/...
 // The viewer's /config.js exposes EDITOR_DEPLOY_ID — we read it once to
 // build the asset paths.
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
-const { fetchUrl, headUrl } = require('./lib/fetch-url');
+const env = require('../../lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { fetchUrl, headUrl } = require('../../lib/fetch-url');
 
 const EDITOR = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;

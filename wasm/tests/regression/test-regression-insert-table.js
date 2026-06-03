@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: inserting a table into an empty Writer document crashed
 // Kit with:
 //   RuntimeError: memory access out of bounds
@@ -13,11 +13,11 @@ const __cl = require('./lib/inject-checklist');
 
 'use strict';
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { openViaViewer } = require('./lib/open-via-viewer');
+const env = require('../../lib/test-env');
+const { openViaViewer } = require('../../lib/open-via-viewer');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(180000);

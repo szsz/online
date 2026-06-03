@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Calc sheet TAB strip — visibility, click-to-activate,
 // double-click rename, right-click → "Rename Sheet…" rename.
 //
@@ -49,8 +49,8 @@ const __cl = require('./lib/inject-checklist');
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
-const { openViaViewer } = require('./lib/open-via-viewer');
+const env = require('../../lib/test-env');
+const { openViaViewer } = require('../../lib/open-via-viewer');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx');

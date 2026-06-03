@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: a user-initiated save (Ctrl+S) must:
 //   1. produce a fresh checkpoint on the relay
 //   2. upload the saved file to viewer storage (/api/v2/file/<fileId>)
@@ -12,12 +12,12 @@ const __cl = require('./lib/inject-checklist');
 //     checkpoint is registered after user save (room key is the encrypted
 //     name; viewer's relayRoom() derives it from the same docName the
 //     test uploaded)
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
-const env = require('./lib/test-env');
-const { uploadV2, downloadV2 } = require('./lib/v2-upload');
-const { openSecretInBrowser } = require('./lib/open-via-viewer');
-const { pickLib } = require('./lib/fetch-url');
+const env = require('../../lib/test-env');
+const { uploadV2, downloadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { pickLib } = require('../../lib/fetch-url');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const RELAY_BASE = env.RELAY_URL;

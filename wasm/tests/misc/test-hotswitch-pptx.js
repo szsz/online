@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // test-hotswitch-pptx.js — same-type Impress hot-switch.
 //
 // Open pptx-1, then switch to pptx-2 via location.hash change. Times:
@@ -11,11 +11,11 @@ const __cl = require('./lib/inject-checklist');
 // re-enables wasm_reload_doc_in_place, avoiding the full
 // loKit->documentLoad fall-through (~12-16 s).
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 

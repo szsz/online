@@ -27,8 +27,8 @@
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 // Allow overriding the viewer target via VIEWER env var so the test can
 // run against the internal Azure deploy when CI tests haven't yet

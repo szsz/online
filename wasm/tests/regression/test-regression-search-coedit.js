@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Bug 3 — search functionality in 2-browser co-edit context.
 //
 // Companion to test-regression-search.js (single-browser). Verifies BOTH
@@ -16,11 +16,11 @@ const __cl = require('./lib/inject-checklist');
 //      - a search-result indicator in the navigator panel.
 //   7. All input via real keyboard / mouse — DOM-only assertions.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-search-coedit';

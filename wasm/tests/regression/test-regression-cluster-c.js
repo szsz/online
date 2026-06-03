@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: cluster C cross-type cold-reload (iter 202).
 //
 // Three wires must remain in place for cross-type cold-reloads to
@@ -22,8 +22,8 @@ const __cl = require('./lib/inject-checklist');
 //
 // Static checks via curl — no browser needed. Fast (<1s).
 
-const env = require('./lib/test-env');
-const { fetchUrl } = require('./lib/fetch-url');
+const env = require('../../lib/test-env');
+const { fetchUrl } = require('../../lib/fetch-url');
 
 const BASE = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;

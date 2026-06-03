@@ -2,11 +2,11 @@
 // by CLICKING on file entries (no direct JS calls). Captures timings,
 // console output, network requests, and which path the viewer uses
 // (hot-switch vs cold-reload) for each switch.
-const __cl = require('./lib/inject-checklist');
-const { launch, sleep } = require('./lib/browser');
+const __cl = require('../../lib/inject-checklist');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER = env.VIEWER_URL || 'https://viewer.szebeni.hu';
 const FIXTURES = [

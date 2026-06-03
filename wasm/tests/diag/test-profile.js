@@ -7,7 +7,7 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const EDITOR = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;

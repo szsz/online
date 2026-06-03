@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: viewer + editor HTML routes must emit ETag and 304 on
 // If-None-Match. Iter 53 (editor cool.html), iter 58 (editor-static
 // cool.html), and iter 61 (viewer index/help/singleuser) added this.
@@ -10,8 +10,8 @@ const __cl = require('./lib/inject-checklist');
 // Curl-only test, no browser. Fast — runs in ~1s. Lives next to the
 // other infrastructure regression tests.
 
-const env = require('./lib/test-env');
-const { fetchUrl } = require('./lib/fetch-url');
+const env = require('../../lib/test-env');
+const { fetchUrl } = require('../../lib/fetch-url');
 
 const T0 = Date.now();
 const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`);

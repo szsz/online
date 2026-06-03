@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Late joiner with UNSAVED edits (no Ctrl+S from first browser).
 //
 // Bug scenario:
@@ -14,10 +14,10 @@ const __cl = require('./lib/inject-checklist');
 //   Case 2: A types, A CLOSES, B joins (tests message replay from relay log)
 //   Case 3: A types, A types MORE after B joins, both should converge
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-latejoin-unsaved';
 

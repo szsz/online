@@ -15,15 +15,15 @@
 // 11 transitions, every type-pair covered, each doc opened twice.
 'use strict';
 
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const {
     seedRecentFiles, waitForSidebar, clickSidebarFile,
-} = require('./lib/v2-test-helper');
+} = require('../../lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-cross-format-matrix';

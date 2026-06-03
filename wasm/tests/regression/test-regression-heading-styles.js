@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Bug 2 — preformatted style picker (Heading 1, Heading 2,
 // Title, Caption, Index, …) does nothing in Notebookbar mode.
 //
@@ -37,11 +37,11 @@ const __cl = require('./lib/inject-checklist');
 //   3. clicking on the "Heading 1" entry in #stylesview,
 //   4. checking the .uno:StyleApply state in the kit.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-heading-styles';

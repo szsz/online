@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: Calc and Impress edits must fire `invalidatetiles:`
 // AND the relay-adapter must forward those tiles to remote peers.
 //
@@ -24,11 +24,11 @@ const __cl = require('./lib/inject-checklist');
 //   If a future change to relay-adapter accidentally stops forwarding
 //   `invalidatetiles:` from remote peers, this test fails.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 // Map docName → { fileId, b64urlSecret } so open/click paths can use the

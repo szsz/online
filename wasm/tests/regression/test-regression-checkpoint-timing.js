@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: late-join checkpoint timing.
 //
 // The bug: the save-and-upload-checkpoint delay in relay-adapter.js used to
@@ -22,10 +22,10 @@ const __cl = require('./lib/inject-checklist');
 //
 // ALL input via keyboard/mouse — no TheFakeWebSocket.send() calls.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-checkpoint';
