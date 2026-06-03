@@ -61,7 +61,7 @@ async function getStatusOk(page, type) {
 }
 
 (async () => {
-    const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
+    const DATA_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
     const fileIds = {};
     for (const f of FIXTURES) {
         const bytes = fs.readFileSync(path.join(DATA_DIR, f.src));

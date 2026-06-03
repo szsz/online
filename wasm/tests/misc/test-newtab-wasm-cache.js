@@ -26,7 +26,7 @@ const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'test document.docx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'test document.docx');
 const NAME    = `newtab-cache-${Date.now()}.docx`;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));

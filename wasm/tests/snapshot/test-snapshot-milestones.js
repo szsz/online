@@ -126,7 +126,7 @@ const COLD_WIRE_BUDGET_BYTES = parseInt(process.env.COLD_WIRE_BUDGET_BYTES
 const WARM_WIRE_BUDGET_BYTES = parseInt(process.env.WARM_WIRE_BUDGET_BYTES
     || String(2 * 1024 * 1024), 10);
 
-const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
+const DATA_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
 
 // Per doc type: what status text and what selector prove the document
 // is actually rendered (not just a loading spinner).

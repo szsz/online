@@ -31,7 +31,7 @@ function check(label, cond, ev) {
 
     // Upload a real pptx file (v2 encrypted)
     const pptxName = 'slide-test.pptx';
-    const pptxBytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'rare-fonts.pptx'));
+    const pptxBytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'rare-fonts.pptx'));
     const upPptx = await uploadV2(VIEWER, pptxName, pptxBytes);
     console.log('[setup] Uploaded v2 ' + pptxName + ' → ' + upPptx.fileId.substring(0,8) + '…');
 

@@ -36,7 +36,7 @@ const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-shield-timing';
-const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
+const DATA_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
 const STAMP   = Date.now();
 const A_NAME  = `shield-${STAMP}-A.xlsx`;
 const B_NAME  = `shield-${STAMP}-B.xlsx`;

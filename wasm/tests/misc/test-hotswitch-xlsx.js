@@ -21,8 +21,8 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 
 const SHOT_DIR = '/tmp/static-deploy/public/shots-hotswitch-xlsx';
-const FIXTURE_1 = path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx');
-const FIXTURE_2 = path.join(__dirname, '..', 'test', 'data', 'convert-to.xlsx');
+const FIXTURE_1 = path.join(__dirname, '..', '..', '..', 'test', 'data', 'testdoc.xlsx');
+const FIXTURE_2 = path.join(__dirname, '..', '..', '..', 'test', 'data', 'convert-to.xlsx');
 const NAME_1 = 'hotswitch-xlsx-1-' + Date.now() + '.xlsx';
 const NAME_2 = 'hotswitch-xlsx-2-' + Date.now() + '.xlsx';
 

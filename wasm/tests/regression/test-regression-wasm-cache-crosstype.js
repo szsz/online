@@ -144,7 +144,7 @@ async function waitForDocLoaded(page, kind, timeoutMs) {
 
     // Verify fixtures
     for (const f of FORMATS) {
-        const src = path.join(__dirname, '..', 'test', 'data', f.src);
+        const src = path.join(__dirname, '..', '..', '..', 'test', 'data', f.src);
         if (!fs.existsSync(src)) { log('ERROR: fixture missing: ' + src); process.exit(1); }
     }
 
@@ -158,7 +158,7 @@ async function waitForDocLoaded(page, kind, timeoutMs) {
         // format for the click step below.
         const recentList = [];
         for (const f of FORMATS) {
-            const src = path.join(__dirname, '..', 'test', 'data', f.src);
+            const src = path.join(__dirname, '..', '..', '..', 'test', 'data', f.src);
             const bytes = fs.readFileSync(src);
             const up = await uploadV2(VIEWER, f.name, bytes);
             f.fileId = up.fileId;

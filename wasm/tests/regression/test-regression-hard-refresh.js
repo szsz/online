@@ -47,7 +47,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
 
     // Upload via v2 (encrypted): generate secret, derive keys, encrypt,
     // PUT /api/v2/file/<fileId>. Browser opens via /#file=<b64urlSecret>.
-    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const bytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
     const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
     console.log('[setup] Uploaded v2 ' + docName + ' as ' + fileId.substring(0,8) + '…');
 

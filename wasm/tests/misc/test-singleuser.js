@@ -153,7 +153,7 @@ async function runOne(browser, doctype, fixturePath, typeText) {
 (async () => {
     const { browser, cleanup } = await launch();
     try {
-        const dataDir = path.join(__dirname, '..', 'test', 'data');
+        const dataDir = path.join(__dirname, '..', '..', '..', 'test', 'data');
         await runOne(browser, 'writer',  path.join(dataDir, 'new.docx'),         'SingleUserDocx ');
         await runOne(browser, 'calc',    path.join(dataDir, 'testdoc.xlsx'),      'Hello123');
         await runOne(browser, 'impress', path.join(dataDir, 'rare-fonts.pptx'),   'SlideText');

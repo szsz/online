@@ -34,7 +34,7 @@ const { uploadV2 } = require('../../lib/v2-upload');
 // run against the internal Azure deploy when CI tests haven't yet
 // validated the fix locally.
 const VIEWER  = process.env.VIEWER_URL || env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data',
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data',
                           'mixed-lang-paragraphs.docx');
 const NAME    = `sidebar-de-${Date.now()}.docx`;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-sidebar-deck-lang';

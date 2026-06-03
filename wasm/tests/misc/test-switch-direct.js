@@ -32,8 +32,8 @@ async function waitForDoc(frame, timeout) {
         // Upload two docs
         const up = await browser.newPage();
         await up.goto(EDITOR, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
-        const doc1 = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'test document.docx'));
-        const doc2 = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', '3pages.odt'));
+        const doc1 = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'test document.docx'));
+        const doc2 = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', '3pages.odt'));
         await up.evaluate(async (u, arr1, arr2) => {
             await fetch(u + '/wasm/doc1.docx', { method: 'POST', body: new Blob([new Uint8Array(arr1)]) });
             await fetch(u + '/wasm/doc2.odt', { method: 'POST', body: new Blob([new Uint8Array(arr2)]) });

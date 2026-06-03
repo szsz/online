@@ -35,8 +35,8 @@ const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
-const FIXTURE_DOCX = path.join(__dirname, '..', 'test', 'data', 'test document.docx');
-const FIXTURE_XLSX = path.join(__dirname, '..', 'test', 'data', 'docStructure.docx');  // any second-doc that triggers a switch
+const FIXTURE_DOCX = path.join(__dirname, '..', '..', '..', 'test', 'data', 'test document.docx');
+const FIXTURE_XLSX = path.join(__dirname, '..', '..', '..', 'test', 'data', 'docStructure.docx');  // any second-doc that triggers a switch
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-event-driven-docready';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));

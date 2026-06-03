@@ -36,7 +36,7 @@ const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'heavy-50slides.pptx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'heavy-50slides.pptx');
 const NAME    = `regr-snap-survival-${Date.now()}.pptx`;
 
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-snapshot-survival';

@@ -29,9 +29,9 @@ const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-cross-format-matrix';
 
 const FIXTURE = {
-    writer:  path.join(__dirname, '..', 'test', 'data', 'test document.docx'),
-    calc:    path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx'),
-    impress: path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx'),
+    writer:  path.join(__dirname, '..', '..', '..', 'test', 'data', 'test document.docx'),
+    calc:    path.join(__dirname, '..', '..', '..', 'test', 'data', 'testdoc.xlsx'),
+    impress: path.join(__dirname, '..', '..', '..', 'test', 'data', 'testdoc.pptx'),
 };
 
 // Each entry has a stable id used for ordering, the doctype, and the

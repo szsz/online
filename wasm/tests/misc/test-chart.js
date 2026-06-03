@@ -36,7 +36,7 @@ async function clickCanvas(page) {
 }
 
 async function runOne(browser, doctype, name, typeText, readyCheck) {
-    const filePath = path.resolve(__dirname, '../test/data', name);
+    const filePath = path.resolve(__dirname, '../../../test/data', name);
     if (!fs.existsSync(filePath)) { log(`SKIP: ${name} not found`); return; }
     const bytes = fs.readFileSync(filePath);
 

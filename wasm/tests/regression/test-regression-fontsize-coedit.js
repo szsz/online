@@ -26,7 +26,7 @@ const crypto = require('crypto');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-fontsize-coedit';
 const DOC_NAME = 'fontsize-coedit-' + Date.now() + '.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`); }

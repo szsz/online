@@ -39,7 +39,7 @@ function check(label, cond, ev) {
 
     // Upload a unique test doc via v2 (encrypted)
     const docName = 'plaintext-paste-' + Date.now() + '.docx';
-    const docBytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const docBytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
     const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, docBytes);
 
     const page = await browser.newPage();

@@ -159,7 +159,7 @@ async function getDocInfo(frame) {
         // from openViaViewer return → editor doc-ready.
         // ============================================================
         log('\n--- Test 4: Cold vs warm visit ---');
-        const testDir = path.join(__dirname, '..', 'test', 'data');
+        const testDir = path.join(__dirname, '..', '..', '..', 'test', 'data');
         const docPath = path.join(testDir, 'new.docx');
         const docBytes = fs.readFileSync(docPath);
 

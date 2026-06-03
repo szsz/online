@@ -18,7 +18,7 @@ const VIEWER = env.FILE_STORAGE_URL;
     const ctx = await browser.createBrowserContext();
 
     const DOC = 'switchprofile.odt';
-    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', '3pages.odt'));
+    const bytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', '3pages.odt'));
     const upDoc = await uploadV2(VIEWER, DOC, bytes);
 
     const page = await ctx.newPage();

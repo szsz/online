@@ -31,7 +31,7 @@ const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = process.env.VIEWER_URL || env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data',
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data',
                           'mixed-lang-paragraphs.docx');
 const NAME    = `spell-squig-${Date.now()}.docx`;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-spellcheck-squiggle';

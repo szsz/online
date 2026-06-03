@@ -69,7 +69,7 @@ function check(label, condition) { __cl.recordCheck(label, condition);
         const up = await browser.newPage();
         await up.goto(BASE, { waitUntil: 'networkidle0' });
         for (const name of ['rare-fonts.docx', 'rare-fonts.xlsx', 'rare-fonts.pptx']) {
-            const filePath = path.resolve(__dirname, '../test/data', name);
+            const filePath = path.resolve(__dirname, '../../../test/data', name);
             if (!fs.existsSync(filePath)) { log(`SKIP: ${name}`); continue; }
             const buf = fs.readFileSync(filePath);
             await up.evaluate(async (url, n, arr) => {

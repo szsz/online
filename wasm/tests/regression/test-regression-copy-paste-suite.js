@@ -136,7 +136,7 @@ async function writeClipboardText(page, text) {
 // failures don't cascade.
 async function withFreshDoc() {
     const docName = 'cp-suite-' + Date.now() + '.docx';
-    const fixture = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+    const fixture = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
     const bytes = fs.readFileSync(fixture);
     const up = await uploadV2(VIEWER, docName, bytes);
 

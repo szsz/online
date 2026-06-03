@@ -30,7 +30,7 @@ const fs = require('fs');
 const path = require('path');
 const __cl = require('../../lib/inject-checklist');
 
-const REPO_WASM_DIR = path.resolve(__dirname);
+const REPO_WASM_DIR = path.resolve(__dirname, '..', '..');
 
 let allPassed = true;
 function check(label, cond, ev) {

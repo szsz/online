@@ -13,7 +13,7 @@ const puppeteer = require('puppeteer');
 const { uploadV2 } = require('../lib/v2-upload');
 
 const VIEWER = 'https://wasm-viewer-internal.azurewebsites.net';
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'mixed-lang-paragraphs.docx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'mixed-lang-paragraphs.docx');
 const OUT = '/tmp/probe-spellcheck-diag';
 
 fs.rmSync(OUT, { recursive: true, force: true });

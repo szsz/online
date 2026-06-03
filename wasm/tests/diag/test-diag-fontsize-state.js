@@ -18,7 +18,7 @@ async function getEditorFrame(page) {
 
 (async () => {
     log('=== Diag: B receives statechanged on remote FontHeight ===');
-    const FIXTURE = require('path').join(__dirname, '..', 'test', 'data', 'new.docx');
+    const FIXTURE = require('path').join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
     const bytes = fs.readFileSync(FIXTURE);
     const up = await v2.uploadV2(VIEWER, 'fhdiag-' + Date.now() + '.docx', bytes);
 

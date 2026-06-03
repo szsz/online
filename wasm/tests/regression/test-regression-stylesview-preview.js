@@ -32,7 +32,7 @@ const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'custom-styles.docx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'custom-styles.docx');
 const NAME    = `regression-stylesview-preview-${Date.now()}.docx`;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-stylesview-preview';
 

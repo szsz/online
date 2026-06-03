@@ -12,7 +12,7 @@ const env = require('../../lib/test-env');
 const EDITOR = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;
 const DOC_NAME = 'profile-doc.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'test document.docx');
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', 'test document.docx');
 const RENDER_TIMEOUT = 120000;
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

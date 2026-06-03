@@ -20,8 +20,8 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 
 const SHOT_DIR = '/tmp/static-deploy/public/shots-hotswitch-pptx';
-const FIXTURE_1 = path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx');
-const FIXTURE_2 = path.join(__dirname, '..', 'test', 'data', 'rare-fonts.pptx');
+const FIXTURE_1 = path.join(__dirname, '..', '..', '..', 'test', 'data', 'testdoc.pptx');
+const FIXTURE_2 = path.join(__dirname, '..', '..', '..', 'test', 'data', 'rare-fonts.pptx');
 const NAME_1 = 'hotswitch-pptx-1-' + Date.now() + '.pptx';
 const NAME_2 = 'hotswitch-pptx-2-' + Date.now() + '.pptx';
 

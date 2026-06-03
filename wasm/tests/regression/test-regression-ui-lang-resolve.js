@@ -52,7 +52,7 @@ function check(label, cond, ev) {
     // Load ui-lang.js in a fake-window context. The IIFE attaches
     // window.UILang. We don't need a DOM — just a plain object
     // with localStorage stubs (readPin / writePin won't be called).
-    const SCRIPT = path.join(__dirname, 'viewer-public', 'lib', 'ui-lang.js');
+    const SCRIPT = path.join(__dirname, '..', '..', 'viewer-public', 'lib', 'ui-lang.js');
     const src = fs.readFileSync(SCRIPT, 'utf8');
     const fakeWindow = {
         localStorage: {

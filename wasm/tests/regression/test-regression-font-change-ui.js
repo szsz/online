@@ -37,7 +37,7 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-font-change-ui';
 const DOC_NAME = 'fontchange-' + Date.now() + '.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 
 // Pick a font that is actually present in the deployed soffice.data.
 // The deployed WASM ships with Carlito + Liberation Sans/Serif/Mono.

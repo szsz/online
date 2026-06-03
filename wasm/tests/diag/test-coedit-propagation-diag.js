@@ -9,7 +9,7 @@ const env = require('../../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 const NAME = 'coedit-diag-' + Date.now() + '.docx';
 const ROOM = 'coedit-diag-' + Date.now();
 const relay = encodeURIComponent(`${RELAY_BASE}/room/${ROOM}`);

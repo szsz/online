@@ -15,7 +15,7 @@ const VIEWER = env.FILE_STORAGE_URL;
     const ctx = await browser.createBrowserContext();
 
     // Pre-upload doc via v2 (encrypted)
-    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'test document.docx'));
+    const bytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'test document.docx'));
     const up = await uploadV2(VIEWER, 'trace-doc.docx', bytes);
 
     const page = await ctx.newPage();

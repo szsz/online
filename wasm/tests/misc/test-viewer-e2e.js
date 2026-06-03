@@ -92,8 +92,8 @@ async function clickEditor(page) {
         // (for TEST 3 sidebar click to a different-type file).
         const docName = 'viewer-e2e-' + Date.now() + '.docx';
         const xlsxName = 'viewer-e2e-' + Date.now() + '.xlsx';
-        const docBytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
-        const xlsxSrc = path.join(__dirname, '..', 'test', 'data', 'convert-to.xlsx');
+        const docBytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
+        const xlsxSrc = path.join(__dirname, '..', '..', '..', 'test', 'data', 'convert-to.xlsx');
         const xlsxBytes = fs.existsSync(xlsxSrc) ? fs.readFileSync(xlsxSrc) : docBytes;
         const up1 = await uploadV2(VIEWER, docName, docBytes);
         const up2 = await uploadV2(VIEWER, xlsxName, xlsxBytes);

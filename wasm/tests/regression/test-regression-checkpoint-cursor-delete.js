@@ -34,7 +34,7 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-checkpoint-cursor';
 const DOC_NAME = 'cpcurs-' + Date.now() + '.docx';
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 
 const T0 = Date.now();
 function log(m) { console.log('[' + ((Date.now()-T0)/1000).toFixed(1) + 's] ' + m); }
