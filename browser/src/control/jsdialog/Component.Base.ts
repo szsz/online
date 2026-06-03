@@ -64,11 +64,11 @@ abstract class JSDialogComponent {
 
 		if (!this.builder) return false;
 
-		app.console.debug(
-			'Component ' + this.name + ' handles update message: ' + JSDialog.verbose
-				? this.model.safeStringify(data.control)
-				: data.control.id,
-		);
+		if (JSDialog.verbose)
+			app.console.debug(
+				'Component ' + this.name + ' handles update message: ' +
+					this.model.safeStringify(data.control),
+			);
 
 		this.builder.updateWidget(this.container, data.control);
 
@@ -87,11 +87,11 @@ abstract class JSDialogComponent {
 
 		if (!this.container) return false;
 
-		app.console.debug(
-			'Component ' + this.name + ' handles action message: ' + JSDialog.verbose
-				? this.model.safeStringify(data.data)
-				: data.data.control_id,
-		);
+		if (JSDialog.verbose)
+			app.console.debug(
+				'Component ' + this.name + ' handles action message: ' +
+					this.model.safeStringify(data.data),
+			);
 
 		this.builder.executeAction(this.container, data.data);
 
