@@ -124,9 +124,9 @@ covers the full batch.
 - `bash run-focused-tests.sh` — fast iter cycle (~15 min, 10 tests:
   hot-switch, copy/paste, co-edit cluster, snapshot-milestones).
   Use during active fix work; full suite for sign-off.
-- `test-regression-snapshot-injection.js` runs first; fails fast (<500ms)
+- `tests/regression/test-regression-snapshot-injection.js` runs first; fails fast (<500ms)
   if `deploy.sh` didn't apply the HEAPU8 injection to `online.js`.
-- Run flaky tests **solo** (`timeout 600 node wasm/test-X.js`) to
+- Run flaky tests **solo** (`timeout 600 node wasm/tests/<sub>/test-X.js`) to
   isolate from parallel-run noise — relay broker and viewer-server
   slow under load and 2-browser tests time out at 300s waiting for
   the second tab to render. `regression-paste-coedit` and
@@ -143,7 +143,7 @@ covers the full batch.
   enough") — those should fail when warm slows down. The wrapper
   timeout in `run-focused-tests.sh` and `run-all-tests-parallel.sh`
   also scales with JOBS_SCALE so internal patience can widen safely.
-  `test-regression-jobs-scale.js` enforces that the contention-flaky
+  `tests/regression/test-regression-jobs-scale.js` enforces that the contention-flaky
   tests keep their `env.scaleTimeout` calls.
 - Viewer tests use v2 uploads via `lib/v2-upload.js`, not legacy
   `/api/files/` POST. v2 files DO NOT appear in `/api/files`; query
@@ -152,16 +152,16 @@ covers the full batch.
   the ciphertext locally for change detection.
 - Tests that bypass the viewer and go direct to `cool.html` must also
   stage `/wasm/<fileId>` so Kit can read the file (pattern in
-  `test-caching.js`).
+  `tests/misc/test-caching.js`).
 - For hot-switch tests, **don't trust status text alone** —
   `#StatusDocPos` / `#SlideStatus` carries over from the previous doc
   so `/Sheet 1 of 1/` matches before AND after the switch. Capture a
   canvas pixel-hash before the hashchange and require it to differ
-  after (pattern in `test-hotswitch-xlsx.js`). Note: Impress uses
+  after (pattern in `tests/misc/test-hotswitch-xlsx.js`). Note: Impress uses
   `#SlideStatus`, Calc/Writer use `#StatusDocPos`.
 - For co-edit / single-user diagnosis, write a minimal repro that
   captures both browsers' relay-adapter logs and reads them as pairs
-  to find asymmetries (pattern in `test-coedit-propagation-diag.js`):
+  to find asymmetries (pattern in `tests/diag/test-coedit-propagation-diag.js`):
   ```js
   page.on('console', m => {
       if (/relay|processUI|remote client|queued|Flushing|preinit/.test(m.text()))

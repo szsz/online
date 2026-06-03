@@ -81,9 +81,9 @@ fi
 #    Skipped if --no-test or --no-deploy (no point running against stale
 #    artifacts).
 if [ "$NO_TEST" != true ] && [ "$NO_DEPLOY" != true ]; then
-    step "Running milestone report (test-snapshot-milestones.js)"
+    step "Running milestone report (tests/snapshot/test-snapshot-milestones.js)"
     cd "$SCRIPT_DIR"
-    node test-snapshot-milestones.js 2>&1 | tail -30 || {
+    node tests/snapshot/test-snapshot-milestones.js 2>&1 | tail -30 || {
         echo "[$(($(date +%s)-T0))s] WARNING: milestone report failed (see /tmp/hot-switch-report/snapshot-milestones/)"
     }
 fi

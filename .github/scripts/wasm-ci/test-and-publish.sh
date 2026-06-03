@@ -382,9 +382,9 @@ if [[ "$TEST_TARGET" == "local" ]] \
     # static asset routing for the viewer (pptx-viewer), and a
     # full single-user open/edit/save cycle (singleuser).
     SMOKE_TESTS=(
-        "azure-prewarm:test-prewarm.js"
-        "azure-pptx-viewer:test-pptx-viewer.js"
-        "azure-singleuser:test-singleuser.js"
+        "azure-prewarm:tests/misc/test-prewarm.js"
+        "azure-pptx-viewer:tests/misc/test-pptx-viewer.js"
+        "azure-singleuser:tests/misc/test-singleuser.js"
     )
 
     (
