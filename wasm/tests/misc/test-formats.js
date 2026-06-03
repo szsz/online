@@ -1,14 +1,14 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test: 2 browsers co-edit different file formats (docx, xlsx, pptx).
 // Verifies all formats open in their respective applications and
 // typing/co-edit work.
 //
 // Migrated to the viewer flow (lib/open-via-viewer.js).
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
+const env = require('../../lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);

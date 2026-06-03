@@ -1,12 +1,12 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test: Documents with embedded charts
 // Verifies chart rendering in both Writer (docx) and Calc (xlsx).
 // Migrated to the viewer flow (lib/open-via-viewer.js).
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { openViaViewer } = require('./lib/open-via-viewer');
+const env = require('../../lib/test-env');
+const { openViaViewer } = require('../../lib/open-via-viewer');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(180000);

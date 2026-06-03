@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: PPTX Transitions — clicking a transition tile must apply it.
 //
 // User report (2026-05-28, ai/tasks/todo/impress-transition-menu-doesnt-work):
@@ -37,8 +37,8 @@ const __cl = require('./lib/inject-checklist');
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx');

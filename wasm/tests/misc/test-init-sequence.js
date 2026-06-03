@@ -1,6 +1,6 @@
 // Capture the init message sequence sent by COOL JS to WASM
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 const URL = env.EDITOR_URL;
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

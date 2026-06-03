@@ -1,10 +1,10 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // E2E copy/paste — ALL interactions via real keyboard and mouse.
 // Runs in Xvfb + headful Chrome so native paste events fire correctly.
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-e2e-copypaste';
 const REPORT = '/tmp/static-deploy/public/reports/e2e-copypaste-detail.html';

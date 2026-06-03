@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Stress test: late join co-editing.
 // Phase 1: A opens doc, types ALPHA
 // Phase 2: B late-joins, gets saved state, types BETA
@@ -7,11 +7,11 @@ const __cl = require('./lib/inject-checklist');
 // ALL input via keyboard/mouse — no TheFakeWebSocket.send() calls.
 //
 // Migrated to the viewer flow (lib/open-via-viewer.js).
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
+const env = require('../../lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);

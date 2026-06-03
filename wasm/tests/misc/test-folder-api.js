@@ -3,7 +3,7 @@
 
 const http = require('http');
 const https = require('https');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 // The rest of the suite reads from lib/test-env (which loads wasm/.env).
 // Fall back to the on-host HTTPS port; the server binds TLS only, so plain
 // http:// would get TLS alert bytes back and crash the HTTP parser.

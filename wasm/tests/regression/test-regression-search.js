@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Bug 3 — search not finding text via Ctrl+F / search input.
 //
 // User-reported: invoke search (Ctrl+F or the status-bar search input),
@@ -45,11 +45,11 @@ const __cl = require('./lib/inject-checklist');
 //   5. Asserts a match was reported (.uno:ExecuteSearch went out;
 //      _searchResults populated).
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-search';

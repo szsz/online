@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Stress test: multiple browsers joining, leaving, reconnecting
 // Tests resilience of the co-editing system under dynamic conditions.
 //
@@ -12,10 +12,10 @@ const __cl = require('./lib/inject-checklist');
 // 7. A reconnects (new page, same room), types EPSILON (7 chars)
 // 8. Verify D and reconnected-A converge
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;

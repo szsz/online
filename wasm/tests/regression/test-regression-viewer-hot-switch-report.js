@@ -2,10 +2,10 @@
 // Drives real UI clicks (no JS injection), takes a screenshot at every
 // significant moment, records timestamps + per-switch measurements,
 // writes /tmp/hot-switch-report/index.html with all artifacts.
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER = env.VIEWER_URL || 'https://viewer.szebeni.hu';
 // Write the report under the editor-static's public root so it's

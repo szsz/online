@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: per-tab browser-context isolation for co-edit.
 //
 // Background: when two pages open the same file inside the SAME
@@ -21,10 +21,10 @@ const __cl = require('./lib/inject-checklist');
 // Migrated to the viewer flow (lib/open-via-viewer.js).
 'use strict';
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
-const env = require('./lib/test-env');
-const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
+const env = require('../../lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(180000);

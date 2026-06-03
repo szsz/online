@@ -24,7 +24,7 @@
 // later; (4) at that moment prewarmReady becomes true.
 
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER = env.FILE_STORAGE_URL || 'https://viewer.szebeni.hu';
 

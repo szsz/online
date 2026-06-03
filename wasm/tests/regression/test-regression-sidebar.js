@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: sidebar collapses to a thin bar when a file is opened, and
 // re-expands when the user moves the mouse to the left edge or clicks the bar.
 //
@@ -9,9 +9,9 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
-const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-sidebar';

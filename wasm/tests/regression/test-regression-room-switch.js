@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: viewer hot-switch (room switch) — late-join activation
 // and stale WebSocket handler cleanup.
 //
@@ -34,10 +34,10 @@ const __cl = require('./lib/inject-checklist');
 // bug (2) means B's char count after typing is wildly inflated by replayed
 // frames.
 
-const { launch, sleep, editorHelpers } = require('./lib/browser');
+const { launch, sleep, editorHelpers } = require('../../lib/browser');
 const fs = require('fs');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = 180000;

@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // test-hotswitch-xlsx.js — same-type Calc hot-switch.
 //
 // Open xlsx-1, then switch to xlsx-2 via the viewer's file list (the
@@ -12,11 +12,11 @@ const __cl = require('./lib/inject-checklist');
 // for xlsx (cap=1). Before fix, every same-type switch fell through to
 // loKit->documentLoad (full filter+model+view rebuild, ~12-16 s).
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 

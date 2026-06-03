@@ -2,10 +2,10 @@
 // capture full relay logs from both. Goal: identify where A→B propagation
 // breaks. NOT a checked test — pure observation.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;

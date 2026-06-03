@@ -1,15 +1,15 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test: PPTX via viewer — slide rendering, navigation, and Slide Show
 // Opens a multi-slide pptx through the viewer's cold-reload path and checks:
 // 1. All slides render content in the main canvas (not just thumbnails)
 // 2. Slide navigation (setPart) works for every slide
 // 3. Slide Show (presentation mode) starts
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
-const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('./lib/v2-test-helper');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib/v2-test-helper');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-pptx-viewer';

@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: iframe pool for cross-type (Bug iter 12).
 //
 // The viewer parks the previous-doctype iframe alive on cross-type
@@ -20,11 +20,11 @@ const __cl = require('./lib/inject-checklist');
 //   - JS race that loses the parked iframe's relay state and forces
 //     re-handshake.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const T0 = Date.now();

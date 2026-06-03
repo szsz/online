@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: hot-switch watchdog (iter 195).
 //
 // After 3+ consecutive in-iframe `#switchdoc` operations the kit can wedge:
@@ -19,8 +19,8 @@ const __cl = require('./lib/inject-checklist');
 //
 // Static-only — no browser launch needed. Fast (<1 s).
 
-const env = require('./lib/test-env');
-const { fetchUrl } = require('./lib/fetch-url');
+const env = require('../../lib/test-env');
+const { fetchUrl } = require('../../lib/fetch-url');
 
 const BASE = env.EDITOR_URL;
 const VIEWER = env.FILE_STORAGE_URL;

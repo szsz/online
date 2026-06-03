@@ -32,7 +32,7 @@
 
 'use strict';
 
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 
 const BASE = 'https://coolwasmfiles.z6.web.core.windows.net/app-builds/';
 

@@ -7,8 +7,8 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const { uploadV2 } = require('./lib/v2-upload');
-const { seedRecentFiles, waitForSidebar } = require('./lib/v2-test-helper');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { seedRecentFiles, waitForSidebar } = require('../../lib/v2-test-helper');
 
 const VIEWER = process.env.VIEWER_URL || 'https://viewer.szebeni.hu';
 const SHOT_DIR = '/tmp/static-deploy/public/shots-viewer-e2e';

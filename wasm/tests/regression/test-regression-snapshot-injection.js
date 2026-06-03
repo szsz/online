@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: the deployed online.js must contain deploy.sh's HEAPU8-
 // restore injection. If it's missing, "warm" visits run FULL_INIT
 // (Desktop::Main + module preload) again and save the snapshot a
@@ -16,7 +16,7 @@ const __cl = require('./lib/inject-checklist');
 
 'use strict';
 
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 const EDITOR = env.EDITOR_URL;
 
 const REQUIRED = [

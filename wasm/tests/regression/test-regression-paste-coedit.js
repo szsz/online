@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Comprehensive paste + copy test in 2-browser co-edit session.
 //
 // Tests:
@@ -16,13 +16,13 @@ const __cl = require('./lib/inject-checklist');
 //   8. External image paste AFTER internal text copy.
 //
 // Migrated to the viewer flow (lib/open-via-viewer.js).
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
-const { waitInFrame, evalInFrame, getActiveEditorFrame } = require('./lib/two-tab');
-const { downloadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { waitInFrame, evalInFrame, getActiveEditorFrame } = require('../../lib/two-tab');
+const { downloadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);

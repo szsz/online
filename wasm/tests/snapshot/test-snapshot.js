@@ -7,8 +7,8 @@
 // We measure the time from navigation to editor ready for both visits.
 
 const puppeteer = require('puppeteer');
-const { launch, sleep } = require('./lib/browser');
-const env = require('./lib/test-env');
+const { launch, sleep } = require('../../lib/browser');
+const env = require('../../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-snapshot';

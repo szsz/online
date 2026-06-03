@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Viewer single-user mode test — complement to test-pptx-viewer.js and
 // test-singleuser.js. Verifies the /singleuser.html entry point opens a
 // document end-to-end (file upload → viewer file list → iframe cold
@@ -21,11 +21,11 @@ const __cl = require('./lib/inject-checklist');
 //      grows (a non-empty save actually landed).
 //   6. No WebSocket is opened to the relay host.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const RELAY_HOST = new URL(env.RELAY_URL).host; // e.g. szebeni-wasm-relay.azurewebsites.net

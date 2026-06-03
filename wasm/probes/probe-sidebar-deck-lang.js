@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const { uploadV2 } = require('./lib/v2-upload');
+const { uploadV2 } = require('../lib/v2-upload');
 
 const VIEWER = 'https://wasm-viewer-internal.azurewebsites.net';
 const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'mixed-lang-paragraphs.docx');

@@ -1,10 +1,10 @@
 // Same-type hot-switch via the viewer UI. Upload 3 same-type files
 // (3 docx variants), then click between them — should hot-switch.
-const __cl = require('./lib/inject-checklist');
-const { launch, sleep } = require('./lib/browser');
+const __cl = require('../../lib/inject-checklist');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER = env.VIEWER_URL || 'https://viewer.szebeni.hu';
 // 3 visually-distinct docx files. We use real fixtures (not the

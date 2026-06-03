@@ -45,11 +45,11 @@
 // frame is the right surface: it's exactly the kit→viewer boundary
 // where the WASM short-circuit produces its observable effect.
 
-const { launch, sleep } = require('./lib/browser');
-const { openViaViewer } = require('./lib/open-via-viewer');
+const { launch, sleep } = require('../../lib/browser');
+const { openViaViewer } = require('../../lib/open-via-viewer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(120000);

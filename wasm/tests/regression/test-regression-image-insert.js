@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: inserting an image into a Writer document.
 //
 // In WASM mode (ThisIsTheEmscriptenApp), COOL's Map.FileInserter uses
@@ -12,11 +12,11 @@ const __cl = require('./lib/inject-checklist');
 // docx grew; we can't do that through the SW bridge from the test
 // page, so we rely on the editor's own DocumentRepair / canvas signal
 // after the insertfile message round-trips.
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { openViaViewer } = require('./lib/open-via-viewer');
+const env = require('../../lib/test-env');
+const { openViaViewer } = require('../../lib/open-via-viewer');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);

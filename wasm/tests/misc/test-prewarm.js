@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test: pre-warming on viewer open.
 // The viewer pre-loads a blank document as soon as it opens. This primes the
 // browser HTTP cache with the (large) WASM + soffice.data files and compiles
@@ -18,8 +18,8 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const EDITOR = env.EDITOR_URL;
@@ -130,7 +130,7 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
         // baseline runs through the viewer too — same code path as
         // the user takes when there's no pre-warmed iframe.
         log('\n--- Baseline: cold open (viewer flow, fresh context) ---');
-        const { openSecretInBrowser } = require('./lib/open-via-viewer');
+        const { openSecretInBrowser } = require('../../lib/open-via-viewer');
         const coldT0 = Date.now();
         const coldOpen = await openSecretInBrowser(browser, VIEWER, upMain.b64urlSecret,
             { iframeTimeout: RENDER_TIMEOUT, gotoTimeout: env.scaleTimeout(60000),

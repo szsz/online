@@ -1,7 +1,7 @@
 // Quick diagnostic: scan Emscripten VFS for fontconfig, config, cache, and timing files
 const puppeteer = require('puppeteer');
-const { launch, sleep } = require('./lib/browser');
-const env = require('./lib/test-env');
+const { launch, sleep } = require('../../lib/browser');
+const env = require('../../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const T0 = Date.now();

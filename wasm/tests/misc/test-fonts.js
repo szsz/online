@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Test: Font rendering, browser font access, and lazy loading
 // Verifies:
 // 1. Documents with rare fonts open (substituted with available fonts)
@@ -8,7 +8,7 @@ const __cl = require('./lib/inject-checklist');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const TIMEOUT = 300000;

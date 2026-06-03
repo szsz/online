@@ -28,8 +28,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const __cl = require('./lib/inject-checklist');
+const env = require('../../lib/test-env');
+const __cl = require('../../lib/inject-checklist');
 
 const VIEWER = env.VIEWER_URL;
 const REPO_WASM_DIR = path.resolve(__dirname);
@@ -62,7 +62,7 @@ function check(label, cond, ev) {
         /armWOPIReady\(newIframe\)/.test(src));
 
     // 5. End-to-end: boot the viewer and read WOPIPostmessageReady.
-    const { launch } = require('./lib/browser');
+    const { launch } = require('../../lib/browser');
     const { browser, cleanup } = await launch();
     try {
         const page = await browser.newPage();

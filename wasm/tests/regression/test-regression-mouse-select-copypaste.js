@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Mouse selection + copy/paste must propagate between browsers.
 //
 // Tests that:
@@ -10,11 +10,11 @@ const __cl = require('./lib/inject-checklist');
 //
 // Migrated to the viewer flow (lib/open-via-viewer.js).
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
-const env = require('./lib/test-env');
-const { openViaViewer, openSecretInBrowser } = require('./lib/open-via-viewer');
-const { evalInFrame } = require('./lib/two-tab');
+const env = require('../../lib/test-env');
+const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { evalInFrame } = require('../../lib/two-tab');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);

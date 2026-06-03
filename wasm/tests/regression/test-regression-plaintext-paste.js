@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: pasting UNFORMATTED plain text into a Writer document.
 //
 // Scenario the user reported:
@@ -14,10 +14,10 @@ const __cl = require('./lib/inject-checklist');
 //   E. Clipboard with rich HTML + text/plain → Ctrl+V
 //   F. Clipboard text/html ONLY (no text/plain companion) → Ctrl+V
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-plaintext-paste';
 const REPORT = '/tmp/static-deploy/public/reports/regression-plaintext-paste-detail.html';

@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression test: a return visit (closing the browser, coming back) must
 // NOT re-download online.wasm + soffice.data. The user reports that every
 // time they visit the site, the full 60+ MB downloads again — that's the
@@ -16,7 +16,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-wasm-cache-revisit';

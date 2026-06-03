@@ -26,8 +26,8 @@
 
 'use strict';
 
-const env = require('./lib/test-env');
-const __cl = require('./lib/inject-checklist');
+const env = require('../../lib/test-env');
+const __cl = require('../../lib/inject-checklist');
 
 const EDITOR = env.EDITOR_URL;
 const EXPECTED_CC = 'public, max-age=31536000, immutable';

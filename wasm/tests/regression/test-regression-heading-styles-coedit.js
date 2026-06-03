@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: Bug 2 — heading-style picker change in 2-browser co-edit.
 //
 // Companion to test-regression-heading-styles.js (single-browser).
@@ -18,11 +18,11 @@ const __cl = require('./lib/inject-checklist');
 //      (DOM check on iconview entry's active class / text).
 //   7. Assert canvas pixel-hash on B differs from baseline.
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 const crypto = require('crypto');
 
 const VIEWER = env.FILE_STORAGE_URL;

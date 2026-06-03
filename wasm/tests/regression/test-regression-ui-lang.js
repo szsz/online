@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: viewer detects browser UI language, applies it via
 // ?lang=<code> on the editor iframe, and exposes a switcher dropdown
 // in the sidebar that overrides via localStorage.
@@ -25,7 +25,7 @@ const __cl = require('./lib/inject-checklist');
 
 const fs = require('fs');
 const puppeteer = require('puppeteer');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-ui-lang';

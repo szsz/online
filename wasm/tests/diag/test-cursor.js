@@ -3,7 +3,7 @@
 // Expected: "AAAHello WorldBBB" (not "Hello WorldAAABBB")
 const puppeteer = require('puppeteer');
 const fs = require('fs');
-const env = require('./lib/test-env');
+const env = require('../../lib/test-env');
 
 const BASE = env.EDITOR_URL;
 const RELAY_BASE = env.RELAY_URL;

@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: JOBS_SCALE timeout multiplier is wired through the
 // stack. lib/test-env.js exports scaleTimeout, run-focused-tests.sh
 // and run-all-tests-parallel.sh export JOBS_SCALE from JOBS, and

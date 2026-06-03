@@ -41,12 +41,12 @@
 // On the bug: assertions fail because the timeline shows
 // A → fileIdA → B → fileIdB → ... → A → B → A → B → A.
 
-const __cl = require('./lib/inject-checklist');
-const { launch, sleep } = require('./lib/browser');
+const __cl = require('../../lib/inject-checklist');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-samedoc-flicker';

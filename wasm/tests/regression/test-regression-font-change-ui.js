@@ -1,4 +1,4 @@
-const __cl = require('./lib/inject-checklist');
+const __cl = require('../../lib/inject-checklist');
 // Regression: change font for a selected word via the notebookbar font
 // dropdown (fontnamecombobox).
 //
@@ -28,11 +28,11 @@ const __cl = require('./lib/inject-checklist');
 //      pixels can't change because the WASM bundle ships only Carlito
 //      + Liberation series, the UNO state must reflect the change).
 
-const { launch, sleep } = require('./lib/browser');
+const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const path = require('path');
-const env = require('./lib/test-env');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-font-change-ui';

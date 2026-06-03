@@ -37,9 +37,9 @@
 
 'use strict';
 
-const env = require('./lib/test-env');
-const __cl = require('./lib/inject-checklist');
-const { uploadV2 } = require('./lib/v2-upload');
+const env = require('../../lib/test-env');
+const __cl = require('../../lib/inject-checklist');
+const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 
