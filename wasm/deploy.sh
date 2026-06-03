@@ -272,10 +272,10 @@ echo ""
 echo "=== Deploy complete: fingerprint=$FINGERPRINT ==="
 
 # ── Smoke test ──
-if [ "$DO_SMOKE" = true ] && [ -f "$SCRIPT_DIR/test-deploy-smoke.js" ]; then
+if [ "$DO_SMOKE" = true ] && [ -f "$SCRIPT_DIR/tests/misc/test-deploy-smoke.js" ]; then
     echo ""
     echo "── Smoke test ──"
-    if (cd "$SCRIPT_DIR" && node test-deploy-smoke.js); then
+    if (cd "$SCRIPT_DIR" && node tests/misc/test-deploy-smoke.js); then
         :
     else
         echo "  WARNING: smoke test FAILED — deploy artefacts are live but may not work"
