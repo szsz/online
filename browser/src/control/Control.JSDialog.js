@@ -870,12 +870,12 @@ window.L.Control.JSDialog = window.L.Control.extend({
 
 		if (instance.action === 'fadeout')
 		{
-			app.console.debug('JSDialog: fadeout "' + (instance ? instance.id : '-') + '"');
+			if (JSDialog.verbose) app.console.debug('JSDialog: fadeout "' + (instance ? instance.id : '-') + '"');
 			this.fadeOutDialog(instance);
 		}
 		else if (instance.action === 'close')
 		{
-			app.console.debug('JSDialog: close "' + (instance ? instance.id : '-') + '"');
+			if (JSDialog.verbose) app.console.debug('JSDialog: close "' + (instance ? instance.id : '-') + '"');
 			const dialogs = Object.keys(this.dialogs);
 			const hadOpenedDialog = dialogs.length > 0;
 
@@ -887,7 +887,7 @@ window.L.Control.JSDialog = window.L.Control.extend({
 			}
 		}
 		else {
-			app.console.debug('JSDialog: full dialog "' + (instance ? instance.id : '-') + '"');
+			if (JSDialog.verbose) app.console.debug('JSDialog: full dialog "' + (instance ? instance.id : '-') + '"');
 
 			// There is no action, so we create a new dialogue.
 			if (instance.isModalPopUp || instance.isDocumentAreaPopup)
@@ -921,7 +921,7 @@ window.L.Control.JSDialog = window.L.Control.extend({
 			instance.updatePos = this.setPosition.bind(this, instance);
 
 			app.layoutingService.appendLayoutingTask(() => {
-				app.console.debug('JSDialog: put items inside container for "' + instance.id + '"');
+				if (JSDialog.verbose) app.console.debug('JSDialog: put items inside container for "' + instance.id + '"');
 
 				// dialog built - add to DOM now
 				if (existingNode) {
@@ -983,8 +983,10 @@ window.L.Control.JSDialog = window.L.Control.extend({
 		app.layoutingService.appendLayoutingTask(() => {
 			var dialogInfo = dialogInfos[data.id];
 			if (!dialogInfo) {
-				app.console.debug('JSDialog: dialog info with id: "' + data.id + '" not found.');
-				if (dialog) app.console.debug('JSDialog: old data was: ' + JSON.stringify(dialog));
+				if (JSDialog.verbose) {
+					app.console.debug('JSDialog: dialog info with id: "' + data.id + '" not found.');
+					if (dialog) app.console.debug('JSDialog: old data was: ' + JSON.stringify(dialog));
+				}
 				return;
 			}
 			if (dialogInfo.isDocumentAreaPopup) {
