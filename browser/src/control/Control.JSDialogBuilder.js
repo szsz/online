@@ -2510,8 +2510,24 @@ window.L.Control.JSDialogBuilder = window.L.Control.extend({
 		if (!control && data.control)
 			control = this._getItemById(container, this._removeMenuId(data.control.id));
 		if (!control) {
-			window.app.console.warn('executeAction: not found control with id: "' + data.control_id +
-				'" to perform action: "' + data.action_type + '"');
+			// Some control IDs are routinely missing from the DOM in builds
+			// that don't render them (Zotero items hidden when Zotero is
+			// off; server-audit hidden for non-admin users; etc). These
+			// fire on every cold open and bury real warnings. Downgrade
+			// to debug for the known-conditional set.
+			var id = String(data.control_id || '');
+			var isConditionalSaaSItem = (
+				(!window.zoteroEnabled && /^zotero/i.test(id)) ||
+				/^references-zoterosetdocprefs-break$/i.test(id) ||
+				/^serveraudit$/i.test(id) ||
+				/^help-serveraudit-break$/i.test(id)
+			);
+			if (isConditionalSaaSItem)
+				window.app.console.debug('executeAction: skipping conditional control id: "' + id +
+					'" action: "' + data.action_type + '"');
+			else
+				window.app.console.warn('executeAction: not found control with id: "' + id +
+					'" to perform action: "' + data.action_type + '"');
 			return;
 		}
 
