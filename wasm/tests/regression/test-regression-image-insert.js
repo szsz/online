@@ -43,7 +43,7 @@ const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m
     const { browser, cleanup } = await launch();
 
     const NAME = 'imgtest-' + Date.now() + '.docx';
-    const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+    const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 
     try {
         if (!fs.existsSync(FIXTURE)) { log('ERROR: fixture missing: ' + FIXTURE); process.exit(1); }

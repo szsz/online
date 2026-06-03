@@ -23,7 +23,7 @@ const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-stress';
 const DOC_NAME = 'test document.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', DOC_NAME);
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }

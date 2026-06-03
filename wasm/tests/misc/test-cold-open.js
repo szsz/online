@@ -37,8 +37,8 @@ async function snap(page, name) {
         // Use a real fixture from test/data — the original
         // /tmp/static-deploy/.wasm-docs/ path is the old
         // editor-static upload-staging dir, gone with the FD migration.
-        const fixturePath = path.join(__dirname, '..', 'test', 'data',
-            fs.existsSync(path.join(__dirname, '..', 'test', 'data', 'cache-test.docx'))
+        const fixturePath = path.join(__dirname, '..', '..', '..', 'test', 'data',
+            fs.existsSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'cache-test.docx'))
                 ? 'cache-test.docx'
                 : 'new.docx');
         const bytes = fs.readFileSync(fixturePath);

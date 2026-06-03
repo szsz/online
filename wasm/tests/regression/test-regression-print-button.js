@@ -69,7 +69,7 @@ const TIMEOUT = env.scaleTimeout(120000);
 
     try {
         const docBytes = fs.readFileSync(
-            path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+            path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
         const docName = 'print-' + Date.now() + '.docx';
 
         // Stub iframe.contentWindow.print so the OS print dialog never opens

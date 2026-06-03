@@ -18,7 +18,7 @@ const RELAY_BASE = env.RELAY_URL;
 const RELAY_HTTP = env.RELAY_HTTP_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-extreme';
-const TEST_DIR = path.join(__dirname, '..', 'test', 'data');
+const TEST_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }

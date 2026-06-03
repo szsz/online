@@ -25,7 +25,7 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-select-delete';
 const DOC_NAME = 'Simple small document.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', DOC_NAME);
 
 const T0 = Date.now();
 function log(m) { console.log(`[${((Date.now()-T0)/1000).toFixed(1)}s] ${m}`); }

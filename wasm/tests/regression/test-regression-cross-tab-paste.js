@@ -135,7 +135,7 @@ async function plantCoolClipboard(page, sentinel) {
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
-    const fixture = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const fixture = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
     const up = await uploadV2(VIEWER, 'crosspaste-' + Date.now() + '.docx', fixture);
 
     const browser = await puppeteer.launch({

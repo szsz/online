@@ -35,7 +35,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     }
 
     const docName = 'ljoffline-' + Date.now() + '.docx';
-    const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+    const bytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
     const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
     console.log('[setup] Uploaded v2 ' + docName + ' (initial ~19 chars) → ' + fileId.substring(0,8) + '…');
 

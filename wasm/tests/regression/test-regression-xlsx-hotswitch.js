@@ -28,7 +28,7 @@ const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-xlsx-hotswitch';
-const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
+const DATA_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
 const STAMP = Date.now();
 const A_NAME = `xlsx-hotswitch-${STAMP}-A.xlsx`;
 const B_NAME = `xlsx-hotswitch-${STAMP}-B.xlsx`;

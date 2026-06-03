@@ -33,7 +33,7 @@ const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'testdoc.pptx');
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-pptx-transitions-iconview';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));

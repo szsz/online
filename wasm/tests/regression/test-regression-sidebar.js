@@ -16,7 +16,7 @@ const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-sidebar';
 const DOC_NAME = 'sidebar-test.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();

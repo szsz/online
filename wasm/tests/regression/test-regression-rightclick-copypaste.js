@@ -40,7 +40,7 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const { evalInFrame, waitInFrame } = require('../../lib/two-tab');
 
 const VIEWER  = env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-rightclick-copypaste';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));

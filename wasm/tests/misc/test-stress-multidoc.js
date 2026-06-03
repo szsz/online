@@ -47,7 +47,7 @@ const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER     = env.FILE_STORAGE_URL;
 const SHOT_DIR   = '/tmp/static-deploy/public/shots-stress-multidoc';
-const FIXTURES_DIR = path.join(__dirname, '..', 'test', 'data');
+const FIXTURES_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
 const STAMP      = Date.now();
 
 const N_BROWSERS         = parseInt(process.env.N_BROWSERS || '10', 10);

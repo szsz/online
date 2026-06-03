@@ -54,7 +54,7 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-search';
 const DOC_NAME = 'search-' + Date.now() + '.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 // Token must already be present in the doc body. test/data/new.docx
 // contains "baseline newcontent" — "baseline" is our findable token.
 const SEARCH_TOKEN = 'baseline';

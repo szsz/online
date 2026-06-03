@@ -30,7 +30,7 @@ const PREWARM_TIMEOUT = 180000;
 const RENDER_TIMEOUT = 180000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-prewarm';
 const DOC_NAME = 'prewarm-doc.odt';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', '3pages.odt');
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', '3pages.odt');
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const T0 = Date.now();
@@ -391,7 +391,7 @@ async function openPageAndWaitForDoc(browser, url, label, errors, allLogs, timeo
             { name: 'fmt-test.pptx',  src: 'testdoc.pptx', hot: false, budgetMs: 90000, kind: 'impress'},
         ];
         for (const f of FORMATS) {
-            const srcPath = path.join(__dirname, '..', 'test', 'data', f.src);
+            const srcPath = path.join(__dirname, '..', '..', '..', 'test', 'data', f.src);
             if (!fs.existsSync(srcPath)) { log('  skip (missing) ' + f.src); continue; }
             const buf = fs.readFileSync(srcPath);
             // Upload via v2 and inject into the viewer's rf_v1 so the

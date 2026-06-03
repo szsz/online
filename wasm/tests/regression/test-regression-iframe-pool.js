@@ -66,7 +66,7 @@ async function waitForType(page, type, deadlineMs) {
 }
 
 (async () => {
-    const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
+    const DATA_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
     const fileIds = {};
     for (const f of FIXTURES) {
         const bytes = fs.readFileSync(path.join(DATA_DIR, f.src));

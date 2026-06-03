@@ -32,7 +32,7 @@ const RELAY_HOST = new URL(env.RELAY_URL).host; // e.g. szebeni-wasm-relay.azure
 
 const SHOT_DIR = '/tmp/static-deploy/public/shots-singleuser-viewer';
 const DOC_NAME = 'singleuser-viewer-' + Date.now() + '.docx';
-const BLANK_DOCX = path.join(__dirname, 'viewer-public', 'blank.docx');
+const BLANK_DOCX = path.join(__dirname, '..', '..', 'viewer-public', 'blank.docx');
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }

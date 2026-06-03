@@ -20,7 +20,7 @@ const SHOT_DIR = '/tmp/static-deploy/public/shots-latejoin';
 // file detached the iframe partway through load over the SW bridge.
 // Late-join semantics only need ANY writer doc.
 const DOC_NAME = 'new.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', DOC_NAME);
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }

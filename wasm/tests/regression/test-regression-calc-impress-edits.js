@@ -36,7 +36,7 @@ const VIEWER  = env.FILE_STORAGE_URL;
 const FILE_IDS = {};
 const FILE_SECRETS = {};
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-calc-impress';
-const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
+const DATA_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
 const STAMP = Date.now();
 
 const T0 = Date.now();

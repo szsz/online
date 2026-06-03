@@ -172,9 +172,9 @@ async function testFormat(browser, docName, docPath, formatLabel) {
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
     const formats = [
-        { name: 'new.docx',           path: path.join(__dirname, '..', 'test', 'data', 'new.docx'),           label: 'docx' },
-        { name: 'testdoc.xlsx',       path: path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx'),       label: 'xlsx' },
-        { name: 'testdoc.pptx',       path: path.join(__dirname, '..', 'test', 'data', 'testdoc.pptx'),       label: 'pptx' },
+        { name: 'new.docx',           path: path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'),           label: 'docx' },
+        { name: 'testdoc.xlsx',       path: path.join(__dirname, '..', '..', '..', 'test', 'data', 'testdoc.xlsx'),       label: 'xlsx' },
+        { name: 'testdoc.pptx',       path: path.join(__dirname, '..', '..', '..', 'test', 'data', 'testdoc.pptx'),       label: 'pptx' },
     ];
 
     let allPassed = true;

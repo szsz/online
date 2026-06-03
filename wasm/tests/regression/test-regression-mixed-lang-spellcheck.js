@@ -37,7 +37,7 @@ const __cl = require('../../lib/inject-checklist');
 const { uploadV2 } = require('../../lib/v2-upload');
 
 const VIEWER  = env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data',
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data',
                           'mixed-lang-paragraphs.docx');
 const NAME    = `mixed-lang-${Date.now()}.docx`;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-mixed-lang-spellcheck';

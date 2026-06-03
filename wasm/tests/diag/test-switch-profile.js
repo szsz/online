@@ -12,7 +12,7 @@ const { seedRecentFiles, waitForSidebar, clickSidebarFile } = require('../../lib
 const VIEWER = env.FILE_STORAGE_URL;
 const EDITOR = env.EDITOR_URL;
 const DOC_NAME = 'profile-switch.odt';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', '3pages.odt');
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', '3pages.odt');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

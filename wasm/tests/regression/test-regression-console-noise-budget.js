@@ -64,7 +64,7 @@ async function snap(page, name) {
     fs.mkdirSync(SHOT_DIR, { recursive: true });
 
     const docName = 'console-noise-' + Date.now() + '.docx';
-    const fixture = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+    const fixture = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
     const bytes = fs.readFileSync(fixture);
     const up = await uploadV2(VIEWER, docName, bytes);
 

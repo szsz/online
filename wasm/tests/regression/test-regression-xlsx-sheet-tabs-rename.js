@@ -53,7 +53,7 @@ const env = require('../../lib/test-env');
 const { openViaViewer } = require('../../lib/open-via-viewer');
 
 const VIEWER  = env.FILE_STORAGE_URL;
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'testdoc.xlsx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'testdoc.xlsx');
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-xlsx-sheet-tabs-rename';
 
 const CYCLES = parseInt(process.env.CYCLES || '3', 10);

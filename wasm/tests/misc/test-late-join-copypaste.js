@@ -34,7 +34,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     try {
         // Upload fresh doc (v2 encrypted upload)
         const docName = 'ljcp-' + Date.now() + '.docx';
-        const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+        const bytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
         const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
         console.log('[setup] Uploaded v2 ' + docName + ' as ' + fileId.substring(0,8) + '…');
 

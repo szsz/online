@@ -97,7 +97,8 @@ function loadEnv(scale) {
         'test-regression-mouse-select-copypaste.js',
     ];
     for (const t of SCALED_TESTS) {
-        const p = path.join(__dirname, t);
+        const sub = t.startsWith('test-snapshot-') ? 'snapshot' : 'regression';
+        const p = path.join(__dirname, '..', sub, t);
         const src = fs.readFileSync(p, 'utf8');
         check(`${t} uses env.scaleTimeout`,
               /env\.scaleTimeout\(/.test(src),
@@ -106,7 +107,7 @@ function loadEnv(scale) {
 
     // 6. Parallel runners must export JOBS_SCALE
     for (const sh of ['run-focused-tests.sh', 'run-all-tests-parallel.sh']) {
-        const src = fs.readFileSync(path.join(__dirname, sh), 'utf8');
+        const src = fs.readFileSync(path.join(__dirname, '..', '..', sh), 'utf8');
         check(`${sh} exports JOBS_SCALE`,
               /export JOBS_SCALE=/.test(src), 'present');
     }

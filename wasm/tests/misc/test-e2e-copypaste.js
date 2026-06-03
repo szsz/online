@@ -26,7 +26,7 @@ function check(label, cond, ev) {
     try {
         // Upload a fresh test doc (v2 encrypted upload)
         const docName = 'e2e-cp-' + Date.now() + '.docx';
-        const bytes = fs.readFileSync(path.join(__dirname, '..', 'test', 'data', 'new.docx'));
+        const bytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
         const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
 
         const page = await browser.newPage();

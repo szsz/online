@@ -50,7 +50,7 @@ async function waitForReady(frame, timeoutMs = 120000) {
     }
 
     try {
-        const docPath = path.join(__dirname, '..', 'test', 'data', 'new.docx');
+        const docPath = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
         const docName = 'snapshot-stale-' + Date.now() + '.docx';
         const bytes = fs.readFileSync(docPath);
 

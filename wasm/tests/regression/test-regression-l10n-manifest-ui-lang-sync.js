@@ -50,7 +50,7 @@ const env = require('../../lib/test-env');
 const __cl = require('../../lib/inject-checklist');
 
 const EDITOR = env.EDITOR_URL;
-const UI_LANG_SRC = path.join(__dirname, 'viewer-public', 'lib', 'ui-lang.js');
+const UI_LANG_SRC = path.join(__dirname, '..', '..', 'viewer-public', 'lib', 'ui-lang.js');
 
 let allPassed = true;
 function check(label, cond, ev) {

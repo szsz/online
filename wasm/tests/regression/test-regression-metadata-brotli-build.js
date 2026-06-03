@@ -35,7 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const __cl = require('../../lib/inject-checklist');
 
-const FINALIZE = path.join(__dirname, 'tools', 'finalize-build.sh');
+const FINALIZE = path.join(__dirname, '..', '..', 'tools', 'finalize-build.sh');
 
 let allPassed = true;
 function check(label, cond, ev) {

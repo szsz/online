@@ -11,7 +11,7 @@ const RELAY_BASE = env.RELAY_URL;
 const TIMEOUT = 300000;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-docx';
 const DOC_NAME = 'test document.docx';
-const DOC_PATH = path.join(__dirname, '..', 'test', 'data', DOC_NAME);
+const DOC_PATH = path.join(__dirname, '..', '..', '..', 'test', 'data', DOC_NAME);
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 

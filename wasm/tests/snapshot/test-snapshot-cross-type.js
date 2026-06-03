@@ -45,7 +45,7 @@ const T0 = Date.now();
 // upper bound, not a perf assertion.
 const TIMEOUT_MS = 180000;
 
-const DATA_DIR = path.join(__dirname, '..', 'test', 'data');
+const DATA_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
 const CASES = [
     { tag: 'cold-writer', kind: 'cold',
       doc: 'new.docx',          docType: 'writer',

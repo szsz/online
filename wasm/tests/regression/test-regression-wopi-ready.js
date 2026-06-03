@@ -32,7 +32,7 @@ const env = require('../../lib/test-env');
 const __cl = require('../../lib/inject-checklist');
 
 const VIEWER = env.VIEWER_URL;
-const REPO_WASM_DIR = path.resolve(__dirname);
+const REPO_WASM_DIR = path.resolve(__dirname, '..', '..');
 
 let allPassed = true;
 function check(label, cond, ev) {

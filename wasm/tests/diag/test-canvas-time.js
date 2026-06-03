@@ -12,7 +12,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const browser = await puppeteer.launch({
         headless: 'new', args: ['--no-sandbox','--ignore-certificate-errors','--enable-features=SharedArrayBuffer'],
     });
-    const bytes = fs.readFileSync(path.join(__dirname,'..','test','data','3pages.odt'));
+    const bytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test','data','3pages.odt'));
     const up = await uploadV2(VIEWER, DOC_NAME, bytes);
 
     const page = await browser.newPage();

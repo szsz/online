@@ -40,7 +40,7 @@ const VIEWER  = env.FILE_STORAGE_URL;
 // Reuse the existing custom-styles fixture — it has the most stylesview
 // entries (built-ins + 5 custom paragraph styles), which gives the
 // largest sample of cache-state events in one harvest run.
-const FIXTURE = path.join(__dirname, '..', 'test', 'data', 'custom-styles.docx');
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'custom-styles.docx');
 const NAME    = `iconview-rendercache-diag-${Date.now()}.docx`;
 const REPORT_PATH = '/tmp/static-deploy/public/reports/iconview-rendercache-diag.json';
 
