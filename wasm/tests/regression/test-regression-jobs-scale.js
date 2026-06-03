@@ -32,7 +32,7 @@ function loadEnv(scale) {
     if (scale != null) process.env.JOBS_SCALE = String(scale);
     else delete process.env.JOBS_SCALE;
     delete process.env.TIMEOUT_SCALE;
-    const p = require.resolve('./lib/test-env');
+    const p = require.resolve('../../lib/test-env');
     delete require.cache[p];
     return require(p);
 }
