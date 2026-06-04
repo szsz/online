@@ -248,7 +248,18 @@
 #                  Re-cherry-pick FRMLOAD strip onto the safe base
 #                  d1964f6d34a3 (parent of 64bb48e598bb) and re-bump
 #                  in a follow-up PR.
-#   2026-06-02-60  current pin — REVERTED back to this from -61 above
-#                  on 2026-06-04 after -61 caused 44 timeouts. See
-#                  history block right above.
-2026-06-02-60
+#   2026-06-02-60  REVERTED back to this from -61 on 2026-06-04 after
+#                  -61 caused 44 timeouts. See history block above.
+#   2026-06-04-62  current pin — git_sha e402ab28ba5a (branch cleanup/
+#                  dev-drop-poisoned-commit-2026-06-04 = LO PR #34's
+#                  cleanup branch HEAD). Functionally equivalent to
+#                  the cherry-pick branch we used for -60 PLUS the
+#                  FRMLOAD strip from LO PR #33, MINUS the poison
+#                  from 64bb48e598bb (whose effect was reverted in
+#                  the same PR). LO PR #34 dropped the -51 poison
+#                  from LO dev itself so future LO PRs branched off
+#                  raw dev now have a clean base — no more cherry-
+#                  pick workaround needed. Recovers the FRMLOAD strip
+#                  (-50 cold-open lines) that -61 was supposed to
+#                  ship but couldn't because its base was poisoned.
+2026-06-04-62
