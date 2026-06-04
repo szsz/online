@@ -53,6 +53,83 @@ START_TS="$(date -u +%s)"
 RUN_START_MARKER="$(mktemp)"
 export TEST_OUTPUT_ROOT="$TEST_OUTPUT"
 
+# Upload helper used both by the normal completion path and the
+# SIGTERM/SIGINT partial-publish trap. Defined here (above the traps)
+# so the trap can call it even if we're aborted before the original
+# success-path upload() definition (further down) is reached.
+upload() {
+    local src="$1" name="$2"
+    local ctype=""
+    case "$src" in
+        *.png) ctype="image/png" ;;
+        *.html) ctype="text/html; charset=utf-8" ;;
+        *.json) ctype="application/json" ;;
+        *.log|*.txt) ctype="text/plain; charset=utf-8" ;;
+        *.xml) ctype="application/xml; charset=utf-8" ;;
+    esac
+    local args=(--account-name "$ACCT" --container-name '$web'
+                --name "$name" --file "$src" --overwrite --no-progress)
+    [[ -n "$ctype" ]] && args+=(--content-type "$ctype")
+    az storage blob upload "${args[@]}" >/dev/null 2>&1 || return 1
+}
+
+# Aborted by SIGTERM (workflow timeout, manual `gh run cancel`,
+# self-hosted runner kill). Generate a partial summary.json from
+# whatever PASS/FAIL counts the parallel runner had emitted by the
+# time we got killed, then upload it before the EXIT trap removes
+# REPORT_DIR. Without this the app-builds index stays at "tests
+# aborted" forever with no visibility into which tests had run.
+publish_partial_on_term() {
+    local sig="${1:-SIGTERM}"
+    echo "[partial] $sig received; publishing partial test results..."
+    [[ -n "${REPORT_DIR:-}" && -d "${REPORT_DIR}" ]] || return 0
+    local end_ts dur p f
+    end_ts="$(date -u +%s)"
+    dur=$((end_ts - START_TS))
+    # Count PASS / FAIL markers the parallel runner writes to the log.
+    # `run-all-tests-parallel.sh` emits lines like "✓ PASS slug" and
+    # "✗ FAIL slug" as each worker finishes; missing markers = test
+    # didn't complete (queued or killed mid-flight).
+    p=$(grep -cE '✓ PASS|^PASS:' "$LOG" 2>/dev/null || echo 0)
+    f=$(grep -cE '✗ FAIL|^FAIL:' "$LOG" 2>/dev/null || echo 0)
+    cat > "$SUMMARY_JSON" <<JSON
+{
+  "app_build_id": "$APP_BID",
+  "exit_code": 130,
+  "aborted": true,
+  "abort_reason": "$sig (likely 360-min workflow timeout or manual cancel)",
+  "duration_seconds": $dur,
+  "pass_count_approx": $p,
+  "fail_count_approx": $f,
+  "completed_utc": "$(date -u -d "@$end_ts" +%Y-%m-%dT%H:%M:%SZ)"
+}
+JSON
+    # Minimal index.html so the partial report is browsable; the rich
+    # report (output/reports/index.html) is uploaded separately below
+    # if the parallel runner had time to emit it.
+    cat > "$REPORT_DIR/index.html" <<HTML
+<!doctype html>
+<meta charset=utf-8><title>tests for $APP_BID (aborted)</title>
+<style>body{font:14px system-ui;margin:2rem}.b{padding:.2rem .6rem;border-radius:4px;background:#ef6c00;color:white;font-weight:600}</style>
+<h1>Tests for online build <code>$APP_BID</code></h1>
+<p><span class=b>ABORTED ($sig)</span> · duration ${dur}s · partial: ${p}p / ${f}f</p>
+<p><a href="../">← back to build summary</a> · <a href="summary.json">summary.json</a> · <a href="run.log">raw run.log</a></p>
+<p>Tests were aborted by signal; results are partial. Whatever junit.xml + per-test reports the parallel runner had written to disk are uploaded alongside this page.</p>
+HTML
+    # Best-effort uploads. Each one is wrapped so a network error on
+    # one doesn't kill the others.
+    [[ -f "$LOG" ]] && upload "$LOG" "app-builds/$APP_BID/tests/run.log" || true
+    upload "$SUMMARY_JSON" "app-builds/$APP_BID/tests/summary.json" || true
+    upload "$REPORT_DIR/index.html" "app-builds/$APP_BID/tests/index.html" || true
+    # If the parallel runner had emitted a partial junit.xml or rich
+    # report at the host-side report path, upload those too.
+    local JUNIT_HOST="/tmp/static-deploy/public/reports/junit.xml"
+    [[ -f "$JUNIT_HOST" ]] && upload "$JUNIT_HOST" "app-builds/$APP_BID/tests/junit.xml" || true
+    local RICH="/tmp/static-deploy/public/reports/index.html"
+    [[ -f "$RICH" ]] && upload "$RICH" "app-builds/$APP_BID/tests/output/reports/index.html" || true
+    echo "[partial] uploaded summary.json (p=$p f=$f) + run.log + index.html"
+}
+
 # Track spawned PIDs for cleanup. Cleared on exit.
 LOCAL_SERVER_PIDS=()
 trap '
@@ -61,6 +138,9 @@ trap '
     done
     rm -rf "$REPORT_DIR" "$RUN_START_MARKER" "${STAGE_DIR:-}"
 ' EXIT
+
+trap 'publish_partial_on_term SIGTERM; exit 130' TERM
+trap 'publish_partial_on_term SIGINT; exit 130' INT
 
 # ── Install wasm/node_modules + puppeteer's Chromium (persistent cache) ──
 NODE_MODULES_HOST="${CI_STATE_DIR}/online-node-modules"
@@ -502,20 +582,10 @@ RICH
 </details>
 HTML
 
-upload() {
-    local src="$1" name="$2"
-    local ctype=""
-    case "$src" in
-        *.png) ctype="image/png" ;;
-        *.html) ctype="text/html; charset=utf-8" ;;
-        *.json) ctype="application/json" ;;
-        *.log|*.txt) ctype="text/plain; charset=utf-8" ;;
-    esac
-    local args=(--account-name "$ACCT" --container-name '$web'
-                --name "$name" --file "$src" --overwrite --no-progress)
-    [[ -n "$ctype" ]] && args+=(--content-type "$ctype")
-    az storage blob upload "${args[@]}" >/dev/null
-}
+# Note: upload() helper is defined near the top of this script (above
+# the SIGTERM trap that needs it). The trap publishes a partial
+# summary.json on abort so the app-builds index doesn't render "tests
+# aborted" forever with no visibility into what ran.
 
 upload "$LOG"                  "app-builds/$APP_BID/tests/run.log"
 upload "$SUMMARY_JSON"         "app-builds/$APP_BID/tests/summary.json"

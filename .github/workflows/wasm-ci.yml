@@ -236,16 +236,17 @@ jobs:
     needs: build-deploy
     if: ${{ github.event.inputs.skip_tests != 'true' }}
     runs-on: [self-hosted, wasm-build]
-    # 180 min ceiling — a clean run lands at ~118 min (see
-    # app-builds/2026-05-27-081253/tests/summary.json). Anything past
-    # this wall-clock is a hung test runner, not a legitimately long
-    # suite — kill the step cleanly so the cleanup step below can
-    # patch the manifest before the runner force-kills the job at the
-    # default 360 min. Without this ceiling a hung suite eats the full
-    # 6 h slot and leaves the app-builds index frozen on "no tests yet"
-    # (see PR #157's dev-merge run 26604583018 — 2:43 h stall, then
-    # external cancel, no manifest update).
-    timeout-minutes: 180
+    # 360 min ceiling — clean run lands at ~118 min (see
+    # app-builds/2026-05-27-081253/tests/summary.json), but post-LO-
+    # bump 2026-06-03-61 + recent test additions push frequent runs
+    # past the old 180-min cap (see 2026-06-04 runs 26919552567 +
+    # 26928709598 both killed at 3h with no published summary).
+    # Raised to 360 min — the GH Actions default job ceiling. On
+    # abort, test-and-publish.sh's SIGTERM trap now writes a partial
+    # summary.json + run.log + (whatever junit.xml the parallel
+    # runner had emitted) so the app-builds row shows partial
+    # PASS/FAIL counts instead of "no tests yet".
+    timeout-minutes: 360
     steps:
       - name: Reclaim workspace ownership
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
