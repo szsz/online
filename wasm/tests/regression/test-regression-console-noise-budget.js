@@ -32,14 +32,14 @@ const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-console-noise-budget';
 
 // Budget post Phases 1-3 + Component.Base verbose precedence fix
-// (PR #188). The FRMLOAD strip from LO PR #33 was REVERTED on
-// 2026-06-04 because the LO build was branched off a poisoned
-// base — see wasm/LO_BUILD_ID history. Without the -50 FRMLOAD
-// lines, the floor is back to ~436 lines / ~45 KB on new.docx
-// single-user cold open. Budget set with ~15% headroom; will
-// tighten once FRMLOAD strip re-lands on a safe LO base.
-const BUDGET_LINES = 500;
-const BUDGET_BYTES = 55 * 1024;
+// (PR #188) + LO PR #34 cleanup (re-includes FRMLOAD strip from
+// LO PR #33 on a clean base). Expected floor ~386 lines / ~42 KB
+// on new.docx single-user cold open (~50 lines below the no-
+// FRMLOAD baseline). Budget set with ~13% headroom; if any of
+// the closed sources comes back or the lok-* #196 diagnostics
+// re-grow, the wire trips.
+const BUDGET_LINES = 440;
+const BUDGET_BYTES = 48 * 1024;
 
 const T0 = Date.now();
 const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`);
