@@ -159,7 +159,11 @@ async function pressCtrl(page, key) {
         const dragEndX = clickX + 40;
         await page.mouse.move(dragStartX, clickY);
         await page.mouse.down();
-        await page.mouse.move(dragEndX, clickY, { steps: 8 });
+        // Let kit register the press before the drag begins — under
+        // contention an 8-step move can outpace the click-down handler
+        // and the kit never sees a drag-start.
+        await sleep(env.scaleTimeout(200));
+        await page.mouse.move(dragEndX, clickY, { steps: 30 });
         await page.mouse.up();
         await sleep(env.scaleTimeout(500));
         await snap(page, 'after_drag');
