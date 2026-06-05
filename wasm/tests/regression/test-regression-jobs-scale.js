@@ -97,8 +97,15 @@ function loadEnv(scale) {
         'test-regression-mouse-select-copypaste.js',
     ];
     for (const t of SCALED_TESTS) {
-        const sub = t.startsWith('test-snapshot-') ? 'snapshot' : 'regression';
-        const p = path.join(__dirname, '..', sub, t);
+        let p = null;
+        for (const sub of ['regression', 'snapshot', 'misc', 'diag']) {
+            const candidate = path.join(__dirname, '..', sub, t);
+            if (fs.existsSync(candidate)) { p = candidate; break; }
+        }
+        if (!p) {
+            check(`${t}: exists in tests/{regression,snapshot,misc,diag}/`, false, 'not found');
+            continue;
+        }
         const src = fs.readFileSync(p, 'utf8');
         check(`${t} uses env.scaleTimeout`,
               /env\.scaleTimeout\(/.test(src),
