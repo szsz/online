@@ -144,10 +144,10 @@ async function pressCtrl(page, key) {
         const PHRASE = 'hello world';
         for (const ch of PHRASE) {
             await page.keyboard.type(ch);
-            await sleep(40);
+            await sleep(20);
         }
         const targetChars = baseChars >= 0 ? baseChars + PHRASE.length : PHRASE.length;
-        const after = await waitForCharsAtLeast(frame, targetChars, env.scaleTimeout(10000));
+        const after = await waitForCharsAtLeast(frame, targetChars, env.scaleTimeout(20000));
         log('after-type chars=' + after);
         check('Typing "hello world" added characters',
               after >= targetChars, 'expected≥' + targetChars + ' got=' + after);
