@@ -222,9 +222,76 @@ wait_for_port() {
     return 1
 }
 
+# ── Flake taxonomy ───────────────────────────────────────────────────
+# Tests that fail unpredictably under contention but pass solo, OR are
+# blocked on an LO-side fix that hasn't landed yet. Failures in these
+# tests are bucketed separately in summary.json so the headline
+# pass/fail count reflects ONLY actionable regressions. Without this
+# split, ~12 long-standing flakes + 3-4 LO-blocked tests drown out
+# real signal — a new regression of 1-2 tests is invisible in the
+# noise.
+#
+# Adding to either set requires a paired ai/proposals/proposed/<slug>.md
+# entry; the regression-flake-budget.js tripwire asserts the lists
+# don't grow without a corresponding proposal. Removing from either
+# set requires the test to be observably stable for ≥10 dev-push runs
+# (or the LO fix to land for LO_BLOCKED_TESTS).
+KNOWN_FLAKE_TESTS=(
+    # 2-browser late-join flakes — known iframe-race issue, see
+    # ai/proposals/promoted/paste-coedit-jobs2-second-iframe-race.md
+    regression-latejoin-prewarm-race
+    regression-latejoin-unsaved
+    # Multi-case copy/paste suite flakes — see ai/tasks/in-progress/
+    # copy-paste-master.md Bucket C (Test-infra)
+    regression-rightclick-copypaste
+    regression-select-delete-coedit
+    regression-copy-paste-suite
+    # Hot-switch / snapshot flakes — see ai/proposals/promoted/
+    # snapshot-azure-deep-review.md
+    snapshot-cross-type
+    regression-xlsx-sheet-nav
+    # Multi-step user flows that flake under JOBS_SCALE=2
+    formats
+    e2e-upload
+    singleuser
+    # SAB context — environmental, see ai/proposals/promoted/
+    # runner-env-leaks-ci-into-relay.md
+    regression-sab-context
+    # Transitions iconview — see #193 thread (German tile rendering)
+    regression-pptx-transitions-iconview
+)
+
+LO_BLOCKED_TESTS=(
+    # Shape-area cluster — blocked on the unaligned-access RuntimeError
+    # documented in ai/proposals/proposed/shape-area-unaligned-access-
+    # after-growth.md (exposed by LO -60's allow_memory_growth).
+    regression-impress-area-dialog
+    regression-writer-insert-shape-area
+    regression-writer-shape-area-oom
+    # Spellcheck cluster — blocked on #196 LO-side paint enablement
+    # (DrawWaveLine emit path). See ai/tasks/in-progress/spellcheck-
+    # functionality-review.md and ai/proposals/promoted/console-log-
+    # cleanup.md Phase 5.
+    regression-spellcheck-squiggle
+    regression-mixed-lang-spellcheck
+    regression-dict-locale-resolve
+    # Ctrl+X TRIPWIRE — intentionally fails until kit .uno:Cut writes
+    # to OS clipboard. See ai/proposals/promoted/ctrl-x-isolated-
+    # single-user-clipboard.md
+    regression-ctrl-x-cut-restore
+)
+
+is_in_set() {
+    local needle="$1"; shift
+    for x in "$@"; do [[ "$x" == "$needle" ]] && return 0; done
+    return 1
+}
+
 # ── Phase 1 setup: stage + spawn local servers (default mode) ────────
 PHASE1_PASS=0
 PHASE1_FAIL=0
+PHASE1_FLAKE_FAIL=0
+PHASE1_BLOCKED_FAIL=0
 PHASE1_RC=0
 
 if [[ "$TEST_TARGET" == "local" ]]; then
@@ -427,10 +494,29 @@ fi
 if [[ -f "$TEST_OUTPUT/reports/index.html" ]]; then
     PHASE1_PASS=$(grep -oE 'badge-pass|<tr class="pass"' "$TEST_OUTPUT/reports/index.html" | wc -l)
     PHASE1_FAIL=$(grep -oE 'badge-fail|<tr class="fail"' "$TEST_OUTPUT/reports/index.html" | wc -l)
+
+    # Bucket failures into KNOWN_FLAKE / LO_BLOCKED / real. Slug names
+    # appear in the report as `<a href="<slug>.html">` inside a row
+    # with class="fail".
+    FAILED_SLUGS=$(grep -oE '<tr class="fail"><td>[0-9]+</td><td><a href="[^"]+\.html"' "$TEST_OUTPUT/reports/index.html" \
+                   | grep -oE 'href="[^"]+\.html"' | sed -E 's|href="([^"]+)\.html"|\1|' || true)
+    PHASE1_FLAKE_FAIL=0
+    PHASE1_BLOCKED_FAIL=0
+    PHASE1_REAL_FAIL=0
+    for slug in $FAILED_SLUGS; do
+        if is_in_set "$slug" "${KNOWN_FLAKE_TESTS[@]}"; then
+            PHASE1_FLAKE_FAIL=$((PHASE1_FLAKE_FAIL + 1))
+        elif is_in_set "$slug" "${LO_BLOCKED_TESTS[@]}"; then
+            PHASE1_BLOCKED_FAIL=$((PHASE1_BLOCKED_FAIL + 1))
+        else
+            PHASE1_REAL_FAIL=$((PHASE1_REAL_FAIL + 1))
+        fi
+    done
 fi
 if (( PHASE1_PASS == 0 && PHASE1_FAIL == 0 )); then
     PHASE1_PASS="$(grep -cE '^pass ' "$LOG" || true)"
     PHASE1_FAIL="$(grep -cE '^fail ' "$LOG" || true)"
+    PHASE1_REAL_FAIL=$PHASE1_FAIL   # can't slug-classify without rich report
 fi
 
 # ── Phase 2: Azure smoke (only when phase 1 was local + smoke is enabled) ──
@@ -537,7 +623,10 @@ cat > "$SUMMARY_JSON" <<JSON
   "duration_seconds": $DUR,
   "pass_count_approx": ${PASS_COUNT:-0},
   "fail_count_approx": ${FAIL_COUNT:-0},
-  "phase1": { "target": "$TEST_TARGET", "pass": $PHASE1_PASS, "fail": $PHASE1_FAIL, "rc": $PHASE1_RC },
+  "real_fail_count": ${PHASE1_REAL_FAIL:-0},
+  "flake_fail_count": ${PHASE1_FLAKE_FAIL:-0},
+  "lo_blocked_fail_count": ${PHASE1_BLOCKED_FAIL:-0},
+  "phase1": { "target": "$TEST_TARGET", "pass": $PHASE1_PASS, "fail": $PHASE1_FAIL, "real_fail": ${PHASE1_REAL_FAIL:-0}, "flake_fail": ${PHASE1_FLAKE_FAIL:-0}, "lo_blocked_fail": ${PHASE1_BLOCKED_FAIL:-0}, "rc": $PHASE1_RC },
   "phase2": { "ran": $PHASE2_RAN, "pass": $PHASE2_PASS, "fail": $PHASE2_FAIL, "rc": $PHASE2_RC },
   "completed_utc": "$(date -u -d "@$END_TS" +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -566,7 +655,7 @@ a{color:#0066cc}
 <h1>Tests for online build <code>$APP_BID</code></h1>
 <p>Status: <span class="badge">$STATUS_TEXT</span> · duration ${DUR}s</p>
 <p>
-  <span class="stat"><strong>Phase 1 (local, JOBS=$TEST_JOBS):</strong> ${PHASE1_PASS}p / ${PHASE1_FAIL}f</span>
+  <span class="stat"><strong>Phase 1 (local, JOBS=$TEST_JOBS):</strong> ${PHASE1_PASS}p / ${PHASE1_REAL_FAIL:-$PHASE1_FAIL}f$( [[ ${PHASE1_FLAKE_FAIL:-0} -gt 0 ]] && echo " · ${PHASE1_FLAKE_FAIL} known-flake" )$( [[ ${PHASE1_BLOCKED_FAIL:-0} -gt 0 ]] && echo " · ${PHASE1_BLOCKED_FAIL} LO-blocked" )</span>
   <span class="stat"><strong>Phase 2 (Azure smoke, JOBS=1):</strong> $( (( PHASE2_RAN )) && echo "${PHASE2_PASS}p / ${PHASE2_FAIL}f" || echo "skipped" )</span>
 </p>
 <p><a href="../">← back to build summary</a> · <a href="summary.json">summary.json</a> · <a href="run.log">raw run.log</a></p>
