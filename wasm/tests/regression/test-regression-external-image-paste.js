@@ -58,6 +58,18 @@ function check(label, cond, ev) {
 }
 
 async function writeClipboardImage(page, b64) {
+    // Seed permission on parent first (some headless setups don't
+    // propagate iframe grants on the first call).
+    try {
+        await page.evaluate(async (data) => {
+            const bin = atob(data);
+            const buf = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+            const blob = new Blob([buf], { type: 'image/png' });
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        }, b64);
+    } catch (_) { /* parent might lack permission; iframe write below is the real one */ }
+
     const writeBlobInContext = async (target) => {
         return target.evaluate(async (data) => {
             const bin = atob(data);
