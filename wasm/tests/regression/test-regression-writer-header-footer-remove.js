@@ -139,7 +139,10 @@ async function openPageDialog(frame, page) {
     }, { timeout: env.scaleTimeout(15000) });
 
     // Page Style bigtoolitem has a generated numeric id; the inner button's
-    // aria-label="Page Style" is the stable lookup.
+    // aria-label="Page Style" is the stable lookup. Clear any cached id
+    // from a previous openPageDialog call — the notebookbar re-renders
+    // after Apply+save and the button id may have changed.
+    await frame.evaluate(() => { delete window.__pageDialogBtnId; });
     await frame.waitForFunction(() => {
         const btns = [...document.querySelectorAll('button[aria-label="Page Style"]')];
         const v = btns.find(b => b.offsetWidth > 0 && b.offsetHeight > 0);
@@ -311,6 +314,9 @@ const headerEntries = (entries) => entries.filter(n => /^word\/header[0-9]*\.xml
 
         // ── Phase 2: header OFF (the bug surface; should now pass post-LO-fix) ──
         log('--- Phase 2: Format → Page Style → Header → untick Header on → Apply ---');
+        // Notebookbar re-renders after Phase 1 save; let the DOM settle
+        // before openPageDialog re-resolves the Page Style button id.
+        await sleep(env.scaleTimeout(1000));
         await openPageDialog(frame, up.page);
         await clickHeaderTab(frame, up.page);
         await snap(up.page, 'header_tab_p2');
