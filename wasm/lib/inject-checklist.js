@@ -42,6 +42,12 @@ const shotsDir = shotsName ? '/tmp/static-deploy/public/' + shotsName : '/tmp/st
 
 const checklist = new Checklist(scriptName, shotsDir);
 
+// Auto-install console-capture on the same shotsDir. Every puppeteer
+// Browser the test creates will dump page console + pageerror +
+// requestfailed into <shotsDir>/console.log on process exit.
+try { require('./console-capture').autoAttach(shotsDir); }
+catch (e) { /* console-capture is optional; silence if missing */ }
+
 function recordCheck(name, ok, evidence) { checklist.check(name, ok, evidence); return ok; }
 
 // Wrap an existing `function check(label, cond)` so it also records
