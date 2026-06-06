@@ -262,13 +262,12 @@ KNOWN_FLAKE_TESTS=(
 )
 
 LO_BLOCKED_TESTS=(
-    # Spellcheck cluster — blocked on #196 LO-side paint enablement
-    # (DrawWaveLine emit path). See ai/tasks/in-progress/spellcheck-
-    # functionality-review.md and ai/proposals/promoted/console-log-
-    # cleanup.md Phase 5.
+    # Spellcheck — squiggle paint blocked on #196 LO-side paint
+    # enablement (DrawWaveLine emit path). dict-locale-resolve and
+    # mixed-lang-spellcheck both started passing on LO build
+    # 2026-06-05-69 (post LO PR #36 MAXIMUM_MEMORY=2GB) — removed
+    # from this set 2026-06-06.
     regression-spellcheck-squiggle
-    regression-mixed-lang-spellcheck
-    regression-dict-locale-resolve
     # Ctrl+X TRIPWIRE — intentionally fails until kit .uno:Cut writes
     # to OS clipboard. See ai/proposals/promoted/ctrl-x-isolated-
     # single-user-clipboard.md
