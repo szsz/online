@@ -262,4 +262,21 @@
 #                  pick workaround needed. Recovers the FRMLOAD strip
 #                  (-50 cold-open lines) that -61 was supposed to
 #                  ship but couldn't because its base was poisoned.
-2026-06-04-62
+#   2026-06-05-69  git_sha edeb86df9f8c (branch fix/maximum-memory-
+#                  2gb-2026-06-06 = LO PR #36). One-line addition to
+#                  solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk:
+#                  `-s MAXIMUM_MEMORY=2GB`. PR #182's
+#                  ALLOW_MEMORY_GROWTH=1 was a silent no-op under
+#                  USE_PTHREADS: emscripten emits the SAB with
+#                  maximum=initial=1 GiB. Diagnostic probe (Online
+#                  wasm/probes/probe-shape-area-profile.js + brotli-
+#                  decoded import-section parse) showed
+#                  Module.HEAPU8.byteLength stayed at exactly 1 GiB
+#                  and env.memory in the wasm binary declared
+#                  initial=maximum=16384 pages. Adding
+#                  MAXIMUM_MEMORY=2GB makes growth actually engage up
+#                  to 2 GiB, unblocking the 3 shape-area Area-dialog
+#                  tests. Removes regression-impress-area-dialog /
+#                  regression-writer-insert-shape-area / regression-
+#                  writer-shape-area-oom from LO_BLOCKED_TESTS.
+2026-06-05-69
