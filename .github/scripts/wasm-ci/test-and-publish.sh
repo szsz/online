@@ -262,12 +262,6 @@ KNOWN_FLAKE_TESTS=(
 )
 
 LO_BLOCKED_TESTS=(
-    # Shape-area cluster — blocked on the unaligned-access RuntimeError
-    # documented in ai/proposals/proposed/shape-area-unaligned-access-
-    # after-growth.md (exposed by LO -60's allow_memory_growth).
-    regression-impress-area-dialog
-    regression-writer-insert-shape-area
-    regression-writer-shape-area-oom
     # Spellcheck cluster — blocked on #196 LO-side paint enablement
     # (DrawWaveLine emit path). See ai/tasks/in-progress/spellcheck-
     # functionality-review.md and ai/proposals/promoted/console-log-

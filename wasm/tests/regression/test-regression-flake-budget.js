@@ -19,7 +19,9 @@ const __cl = require('../../lib/inject-checklist');
 // Budgets. Bump in the SAME commit that adds a new flake/block entry.
 // Decreases are also fine and don't trip the wire (we celebrate them).
 const KNOWN_FLAKE_BUDGET = 12;
-const LO_BLOCKED_BUDGET = 7;
+// 2026-06-06: down from 7 — LO PR #36 (MAXIMUM_MEMORY=2GB) unblocked
+// 3 shape-area tests. New budget 4 = 3 spellcheck + 1 ctrl+x cut.
+const LO_BLOCKED_BUDGET = 4;
 
 const TEST_PUBLISH_SH = path.resolve(__dirname, '..', '..', '..',
     '.github', 'scripts', 'wasm-ci', 'test-and-publish.sh');
