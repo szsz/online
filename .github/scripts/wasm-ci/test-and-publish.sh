@@ -786,7 +786,7 @@ mirror_fresh_files "$SHOTS_HOST/reports" "$TEST_OUTPUT/reports" '*.html' '*.json
 for shotdir in "$SHOTS_HOST"/shots*; do
     [[ -d "$shotdir" ]] || continue
     name="$(basename "$shotdir")"
-    mirror_fresh_files "$shotdir" "$TEST_OUTPUT/$name" '*.png' 'checklist.json'
+    mirror_fresh_files "$shotdir" "$TEST_OUTPUT/$name" '*.png' 'checklist.json' 'console.log'
 done
 
 SNAPMS_SRC="$HOTSWITCH_HOST/snapshot-milestones"
