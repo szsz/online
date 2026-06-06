@@ -100,6 +100,32 @@ function escapeHtml(s) {
 }
 
 // ---------------------------------------------------------------------------
+// Browser console capture (written by lib/console-capture.js)
+// ---------------------------------------------------------------------------
+let consoleHTML = '';
+if (shotsDir) {
+    const consoleFile = path.join(shotsDir, 'console.log');
+    if (fs.existsSync(consoleFile)) {
+        try {
+            const raw = fs.readFileSync(consoleFile, 'utf8');
+            const lineCount = raw.split('\n').filter(Boolean).length;
+            // Highlight pageerror + Uncaught + RuntimeError lines.
+            const html = escapeHtml(raw).replace(
+                /^(.*(?:pageerror|Uncaught|RuntimeError|abort\(|jserror|requestfailed).*)$/gm,
+                '<span style="background:#fee;color:#900;">$1</span>');
+            consoleHTML = `
+    <h2 class="section-title">Browser console <span class="check-summary">(${lineCount} line${lineCount===1?'':'s'})</span></h2>
+    <details${status === 'fail' ? ' open' : ''}><summary style="cursor:pointer;color:#2563eb;font-size:0.9rem;margin-bottom:0.5rem;">Show/hide full capture</summary>
+    <pre class="console-log">${html}</pre>
+    </details>
+    <hr class="divider" />`;
+        } catch (e) {
+            consoleHTML = `<p style="color:#888;">Failed to read console capture: ${escapeHtml(e.message)}</p><hr class="divider" />`;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Screenshot HTML
 // ---------------------------------------------------------------------------
 let screenshotHTML = '';
@@ -165,6 +191,14 @@ const html = `<!DOCTYPE html>
     color: #666; max-width: 50%; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .console-log {
+    background: #1a1a1a; color: #e5e5e5;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.78rem; line-height: 1.45;
+    padding: 0.75rem 1rem; border-radius: 6px;
+    overflow: auto; max-height: 480px;
+    white-space: pre; tab-size: 4;
+  }
 </style>
 </head>
 <body>
@@ -176,6 +210,7 @@ const html = `<!DOCTYPE html>
   <div class="desc">${desc}</div>
   <hr class="divider" />
   ${checklistHTML}
+  ${consoleHTML}
   <h2 class="section-title">Screenshots</h2>
   ${screenshotHTML}
 </div>
