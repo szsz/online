@@ -18,7 +18,10 @@ const __cl = require('../../lib/inject-checklist');
 
 // Budgets. Bump in the SAME commit that adds a new flake/block entry.
 // Decreases are also fine and don't trip the wire (we celebrate them).
-const KNOWN_FLAKE_BUDGET = 12;
+// 2026-06-06: bumped 12 -> 14 — added regression-latejoin-offline-
+// unsaved + regression-first-client-overwrite (both pre-existing
+// latejoin-family flakes that were never categorized).
+const KNOWN_FLAKE_BUDGET = 14;
 // 2026-06-06: down from 7→4→2 — LO PR #36 (MAXIMUM_MEMORY=2GB)
 // unblocked 3 shape-area tests, then dict-locale-resolve and
 // mixed-lang-spellcheck also started passing on LO 2026-06-05-69.

@@ -241,6 +241,8 @@ KNOWN_FLAKE_TESTS=(
     # ai/proposals/promoted/paste-coedit-jobs2-second-iframe-race.md
     regression-latejoin-prewarm-race
     regression-latejoin-unsaved
+    regression-latejoin-offline-unsaved
+    regression-first-client-overwrite
     # Multi-case copy/paste suite flakes — see ai/tasks/in-progress/
     # copy-paste-master.md Bucket C (Test-infra)
     regression-rightclick-copypaste
