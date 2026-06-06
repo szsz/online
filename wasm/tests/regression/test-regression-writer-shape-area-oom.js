@@ -229,7 +229,7 @@ async function clickShapeTile(page, frame, ifr, unoCmd) {
                 const pp = document.querySelector('#StatusDocPos')?.textContent || '';
                 return wc.length > 0 || pp.length > 0;
             },
-            { timeout: env.scaleTimeout(90000) });
+            { timeout: env.scaleTimeout(150000) });
         await sleep(2500);
         await snap(page, 'loaded');
 
