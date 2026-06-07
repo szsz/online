@@ -23,10 +23,14 @@ const __cl = require('../../lib/inject-checklist');
 // latejoin-family flakes that were never categorized).
 const KNOWN_FLAKE_BUDGET = 14;
 // 2026-06-06: down from 7→4→2 — LO PR #36 (MAXIMUM_MEMORY=2GB)
-// unblocked 3 shape-area tests, then dict-locale-resolve and
-// mixed-lang-spellcheck also started passing on LO 2026-06-05-69.
-// Remaining 2 = #196 squiggle paint + ctrl+x kit-side cut.
-const LO_BLOCKED_BUDGET = 2;
+// unblocked Impress Area dialog + 2 spellcheck tests on LO 2026-06-
+// 05-69. 2026-06-07: bump back to 4 — the 2 Writer Area tests
+// (insert-shape-area + shape-area-oom) re-blocked on a different
+// LO bug. console-capture diagnosis showed Uncaught RuntimeError:
+// function signature mismatch on .uno:FormatArea dispatch (Writer-
+// specific, Impress sibling unaffected). See ai/proposals/proposed/
+// writer-area-dialog-function-signature-mismatch.md.
+const LO_BLOCKED_BUDGET = 4;
 
 const TEST_PUBLISH_SH = path.resolve(__dirname, '..', '..', '..',
     '.github', 'scripts', 'wasm-ci', 'test-and-publish.sh');
