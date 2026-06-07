@@ -279,4 +279,25 @@
 #                  tests. Removes regression-impress-area-dialog /
 #                  regression-writer-insert-shape-area / regression-
 #                  writer-shape-area-oom from LO_BLOCKED_TESTS.
-2026-06-05-69
+#   2026-06-07-70  git_sha b91240fa9d72 (LO PR #37). Removes 17 #196
+#                  diagnostic fprintf(stderr) clusters from sw/vcl
+#                  that were added across LO -35..-47 during the
+#                  spellcheck-squiggle investigation cycle and never
+#                  cleaned up. Each was gated on
+#                  comphelper::LibreOfficeKit::isActive() and fired
+#                  on every paint / idle tick / wrong-list lookup in
+#                  LOK mode — producing hundreds of stderr lines per
+#                  second on a live document. Emscripten routed
+#                  stderr to console.log via the pthread mailbox,
+#                  which is what the user saw as the
+#                  __emscripten_thread_mailbox_await stack-trace
+#                  spam (reported 2026-06-07: "more than 500000
+#                  lines"). Files cleaned: sw inftxt.cxx wrong.cxx
+#                  DocumentTimerManager.cxx fntcache.cxx txtedt.cxx
+#                  + vcl textline.cxx. 6 files, +1/-195 lines. See
+#                  ai/memory/project_196_root_cause.md — the
+#                  diagnoses these prints produced are preserved,
+#                  the prints themselves are not needed for the
+#                  open fix (DrawWaveLine pixel emission, separate
+#                  effort).
+2026-06-07-70
