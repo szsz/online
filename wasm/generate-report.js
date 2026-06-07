@@ -100,9 +100,22 @@ function escapeHtml(s) {
 }
 
 // ---------------------------------------------------------------------------
-// Browser console capture (written by lib/console-capture.js)
+// Browser console capture (written by lib/console-capture.js).
+//
+// Two-part rendering:
+//   1. ALWAYS emit a link to the relative console.log path. Even when
+//      the file isn't on local disk yet at the moment this generator
+//      runs (race: the test exits, mirror-uploads to azure later), the
+//      link resolves correctly once the upload completes. Worst case
+//      it 404s for a few minutes.
+//   2. If the local file is readable RIGHT NOW, also emit the inline
+//      embed with highlighting + collapsible details — convenient for
+//      reports that beat the upload race.
 // ---------------------------------------------------------------------------
-let consoleHTML = '';
+const consoleHref = relShotsDir ? relShotsDir + '/console.log' : null;
+const checklistHref = relShotsDir ? relShotsDir + '/checklist.json' : null;
+
+let consoleEmbedHTML = '';
 if (shotsDir) {
     const consoleFile = path.join(shotsDir, 'console.log');
     if (fs.existsSync(consoleFile)) {
@@ -113,16 +126,29 @@ if (shotsDir) {
             const html = escapeHtml(raw).replace(
                 /^(.*(?:pageerror|Uncaught|RuntimeError|abort\(|jserror|requestfailed).*)$/gm,
                 '<span style="background:#fee;color:#900;">$1</span>');
-            consoleHTML = `
-    <h2 class="section-title">Browser console <span class="check-summary">(${lineCount} line${lineCount===1?'':'s'})</span></h2>
-    <details${status === 'fail' ? ' open' : ''}><summary style="cursor:pointer;color:#2563eb;font-size:0.9rem;margin-bottom:0.5rem;">Show/hide full capture</summary>
+            consoleEmbedHTML = `
+    <details${status === 'fail' ? ' open' : ''}><summary style="cursor:pointer;color:#2563eb;font-size:0.9rem;margin:0.5rem 0;">Show/hide inline capture (${lineCount} line${lineCount===1?'':'s'})</summary>
     <pre class="console-log">${html}</pre>
-    </details>
-    <hr class="divider" />`;
+    </details>`;
         } catch (e) {
-            consoleHTML = `<p style="color:#888;">Failed to read console capture: ${escapeHtml(e.message)}</p><hr class="divider" />`;
+            consoleEmbedHTML = `<p style="color:#888;font-size:0.85rem;">Inline embed failed: ${escapeHtml(e.message)}</p>`;
         }
+    } else {
+        consoleEmbedHTML = `<p style="color:#888;font-size:0.85rem;">Inline embed unavailable (file not on local disk at report-gen time; use the link above to fetch from blob storage).</p>`;
     }
+}
+
+let consoleHTML = '';
+if (consoleHref) {
+    consoleHTML = `
+    <h2 class="section-title">Browser console</h2>
+    <p class="artefact-links">
+      <a href="${consoleHref}" download>📄 console.log</a> ·
+      <a href="${checklistHref}">checklist.json</a>
+      ${shotsDir ? `<span style="color:#888;font-size:0.85rem;">(raw artefacts — works even after the inline embed below)</span>` : ''}
+    </p>
+    ${consoleEmbedHTML}
+    <hr class="divider" />`;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +225,8 @@ const html = `<!DOCTYPE html>
     overflow: auto; max-height: 480px;
     white-space: pre; tab-size: 4;
   }
+  .artefact-links { font-size: 0.95rem; margin: 0.5rem 0 0.75rem; }
+  .artefact-links a { font-family: monospace; }
 </style>
 </head>
 <body>
