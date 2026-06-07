@@ -21,7 +21,10 @@ const __cl = require('../../lib/inject-checklist');
 // 2026-06-06: bumped 12 -> 14 — added regression-latejoin-offline-
 // unsaved + regression-first-client-overwrite (both pre-existing
 // latejoin-family flakes that were never categorized).
-const KNOWN_FLAKE_BUDGET = 14;
+// 2026-06-07: bumped 14 -> 16 — added pptx-coedit + regression-
+// cross-format-matrix (both flapped between runs under JOBS_SCALE=2:
+// passed in build 051447, failed in 002906 and 095121).
+const KNOWN_FLAKE_BUDGET = 16;
 // 2026-06-06: down from 7→4→2 — LO PR #36 (MAXIMUM_MEMORY=2GB)
 // unblocked Impress Area dialog + 2 spellcheck tests on LO 2026-06-
 // 05-69. 2026-06-07: bump back to 4 — the 2 Writer Area tests

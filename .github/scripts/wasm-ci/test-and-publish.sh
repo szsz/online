@@ -256,6 +256,8 @@ KNOWN_FLAKE_TESTS=(
     formats
     e2e-upload
     singleuser
+    pptx-coedit
+    regression-cross-format-matrix
     # SAB context — environmental, see ai/proposals/promoted/
     # runner-env-leaks-ci-into-relay.md
     regression-sab-context
