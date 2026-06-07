@@ -274,6 +274,17 @@ LO_BLOCKED_TESTS=(
     # to OS clipboard. See ai/proposals/promoted/ctrl-x-isolated-
     # single-user-clipboard.md
     regression-ctrl-x-cut-restore
+    # Writer Area dialog — WASM function-signature mismatch on
+    # .uno:FormatArea dispatch via SwDrawShell::ExecDrawDlg
+    # (drawdlg.cxx:121). NOT a memory issue — diagnosed 2026-06-07
+    # via console-capture: "Uncaught RuntimeError: function
+    # signature mismatch" at ~48s after the Area click, on a worker
+    # pthread. Impress sibling passes (same SvxAreaTabDialog ctor),
+    # so the bug is in the Writer-specific dispatch / async-dialog
+    # adapter. See ai/proposals/proposed/writer-area-dialog-
+    # function-signature-mismatch.md.
+    regression-writer-insert-shape-area
+    regression-writer-shape-area-oom
 )
 
 is_in_set() {
