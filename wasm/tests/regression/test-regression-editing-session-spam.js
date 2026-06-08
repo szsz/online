@@ -37,9 +37,18 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-editing-session-spam';
 
-// Budget — set with ~25% headroom over today's clean floor (~500 lines
-// / 70 KB). Bump the budget DOWN as cleanup phases land; bump UP only
-// with a paired ai/proposals/proposed/<slug>.md entry.
+// Budget — set with ~25% headroom over today's clean floor.
+//
+// Historical floor (measured against szebeni-wasm-viewer.azurewebsites.net):
+//   2026-06-07 (LO -69, pre Online #209):  1230 lines / 80 KB editing session
+//   2026-06-08 (LO -70 + PR #209):          290 lines / 15 KB editing session
+//                                           (zero growth over 5min idle)
+//
+// PR #210 cleanup (executeAction conditional debug + Component.Toolbar
+// explicitly-hiding/showing) expected to drop another ~25 lines.
+//
+// Bump the budget DOWN as cleanup phases land; bump UP only with a
+// paired ai/proposals/proposed/<slug>.md entry.
 const BUDGET_LINES = 650;
 const BUDGET_BYTES = 90 * 1024;
 

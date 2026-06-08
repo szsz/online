@@ -2513,8 +2513,8 @@ window.L.Control.JSDialogBuilder = window.L.Control.extend({
 			// Some control IDs are routinely missing from the DOM in builds
 			// that don't render them (Zotero items hidden when Zotero is
 			// off; server-audit hidden for non-admin users; etc). These
-			// fire on every cold open and bury real warnings. Downgrade
-			// to debug for the known-conditional set.
+			// fire on every cold open and bury real warnings. Suppress
+			// silently for the known-conditional set; warn for the rest.
 			var id = String(data.control_id || '');
 			var isConditionalSaaSItem = (
 				(!window.zoteroEnabled && /^zotero/i.test(id)) ||
@@ -2522,10 +2522,7 @@ window.L.Control.JSDialogBuilder = window.L.Control.extend({
 				/^serveraudit$/i.test(id) ||
 				/^help-serveraudit-break$/i.test(id)
 			);
-			if (isConditionalSaaSItem)
-				window.app.console.debug('executeAction: skipping conditional control id: "' + id +
-					'" action: "' + data.action_type + '"');
-			else
+			if (!isConditionalSaaSItem)
 				window.app.console.warn('executeAction: not found control with id: "' + id +
 					'" to perform action: "' + data.action_type + '"');
 			return;
