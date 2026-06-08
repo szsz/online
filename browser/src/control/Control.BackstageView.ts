@@ -169,7 +169,7 @@ class BackstageView extends window.L.Class {
 	private createHeader(): HTMLElement {
 		const header = this.createElement('div', 'backstage-header');
 		const title = this.createElement('span', 'backstage-header-title');
-		title.textContent = 'Collabora Office';
+		title.textContent = (typeof brandProductName !== 'undefined') ? brandProductName : '';
 
 		header.appendChild(title);
 
