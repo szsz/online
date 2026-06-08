@@ -48,12 +48,6 @@ using Poco::Exception;
 
 void KitWebSocketHandler::handleMessage(const std::vector<char>& data)
 {
-    {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "KitWS handleMessage (len=%zu): %.60s", data.size(),
-                 std::string(data.data(), std::min(data.size(), size_t(60))).c_str());
-        MAIN_THREAD_EM_ASM({ console.log(UTF8ToString($0)); }, buf);
-    }
     // To get A LOT of Trace Events, to exercise their handling, uncomment this:
     // ProfileZone profileZone("KitWebSocketHandler::handleMessage");
 

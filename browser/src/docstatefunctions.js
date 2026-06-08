@@ -182,19 +182,16 @@ app.getFollowedViewId = function () {
 };
 
 app.setFollowingOff = function () {
-	app.console.debug('user following: OFF');
 	app.following.mode = 'none';
 	app.following.viewId = -1;
 };
 
 app.setFollowingUser = function (viewId) {
-	app.console.debug('user following: USER - ' + viewId);
 	app.following.mode = 'user';
 	app.following.viewId = viewId;
 };
 
 app.setFollowingEditor = function (viewId = -1) {
-	app.console.debug('user following: EDITOR - ' + viewId);
 	app.following.mode = 'editor';
 	app.following.viewId = viewId;
 };
@@ -212,7 +209,6 @@ app.isFollowingEditor = function () {
 };
 
 app.updateFollowingUsers = function () {
-	app.console.debug('user following: update');
 	var isCellCursorVisible = app.calc.cellCursorVisible;
 	var isTextCursorVisible = app.file.textCursor.visible;
 
