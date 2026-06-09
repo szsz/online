@@ -250,8 +250,14 @@ async function withFreshDocTwoTabs() {
 
     const a = await openTab();
     const b = await openTab();
-    // Settle a little extra so both relay-adapters have joined the room.
-    await sleep(5000);
+    // Settle a long while so BOTH relay-adapters have fully joined the
+    // room. Pre-port standalone waited 25 s total (10 s after A loaded
+    // + 15 s after B); too short here lands A's first keystroke before
+    // the relay-side join handshake completes and B never sees A's
+    // edits → port reports `step1 A typed delta=0` (suite build
+    // 2026-06-09-164746 hit this with 5 s; 12 s is the proven-stable
+    // floor from the standalone's pre-edit dwell).
+    await sleep(12000);
 
     return {
         browser,
@@ -503,13 +509,20 @@ const USE_CASES = [
                 }).catch(() => -1);
 
                 // Step 1: A types "TEST " into the doc body, B should see it.
+                //
+                // Fixed PAGE coords (640, 400) — viewport is 1280×900 so
+                // the center always lands inside the doc canvas regardless
+                // of viewer sidebar layout. Earlier port used frame-local
+                // `getBoundingClientRect()` which in the 2-browser (non-
+                // `?singleuser`) flow the sidebar shifts the iframe right,
+                // so frame-local (centre.x = width/2) lands OFF the
+                // canvas → A's typing went to a non-doc target and
+                // step 1's char-count delta was 0 (suite build
+                // 2026-06-09-164746). Matches `test-regression-mouse-
+                // select-copypaste.js`'s pre-port pattern.
                 const wcA0 = await charA();
-                const canvasA = await ctx.frameA.evaluate(() => {
-                    const c = document.querySelector('#document-canvas');
-                    const r = c.getBoundingClientRect();
-                    return { x: r.left + r.width / 2, y: r.top + 200 };
-                });
-                await ctx.pageA.mouse.click(canvasA.x, canvasA.y);
+                const CLICK_X = 640, CLICK_Y = 400;
+                await ctx.pageA.mouse.click(CLICK_X, CLICK_Y);
                 await sleep(500);
                 await ctx.pageA.keyboard.type('TEST ', { delay: 60 });
                 await sleep(5000);
@@ -526,7 +539,7 @@ const USE_CASES = [
 
                 // Step 2: A Ctrl+A → Ctrl+C → Ctrl+End → Ctrl+V (double via
                 // selection). Both A and B must show the doubled doc.
-                await ctx.pageA.mouse.click(canvasA.x, canvasA.y);
+                await ctx.pageA.mouse.click(CLICK_X, CLICK_Y);
                 await sleep(300);
                 await pressShortcut(ctx.pageA, 'a');
                 await sleep(800);
