@@ -130,6 +130,28 @@ async function writeClipboardText(page, text) {
     await sleep(150);
 }
 
+// Plant exactly the HTML+plain payload that COOL's oncopy handler
+// would write in a real source tab. The `meta-origin=cool` marker is
+// what `wasm-loader.js`'s paste handler keys off to decide between
+// the same-tab (`uno:Paste`) and cross-tab (forward HTML bytes)
+// branches. Headless Chromium can't share a clipboard across two
+// browser instances and two pages in one browser hit a viewer prewarm
+// race, so synthesising the source-tab payload is the faithful way
+// to exercise the loader branch without those constraints.
+async function plantCoolClipboard(page, sentinel) {
+    const html = '<meta http-equiv="content-type" content="text/html; charset=utf-8"/>' +
+                 '<meta name="generator" content="LibreOffice"/>' +
+                 '<meta name="meta-origin" content="cool"/>' +
+                 '<div>' + sentinel + '</div>';
+    await page.evaluate(async (h, p) => {
+        await navigator.clipboard.write([new ClipboardItem({
+            'text/html':  new Blob([h], { type: 'text/html' }),
+            'text/plain': new Blob([p], { type: 'text/plain' }),
+        })]);
+    }, html, sentinel);
+    await sleep(300);
+}
+
 // ── Shared harness: open a fresh single-user Writer doc + grant ─────
 // clipboard perms. Returns { browser, page, frame, charCount(),
 // destroy() }. Each use-case calls this independently so use-case
@@ -263,6 +285,37 @@ const USE_CASES = [
                 return {
                     pass: grew,
                     ev: `before=${before} after=${after} sentinel.len=${SENTINEL.length}`,
+                };
+            } finally { await ctx.destroy(); }
+        },
+    },
+    {
+        slug: 'cross-tab-cool-to-cool-paste',
+        label: 'COOL-marker payload (no fingerprint match) takes cross-tab branch and lands in destination doc',
+        // Verifies the loader's cross-tab branch (PR #174, commit
+        // 95da5ac4): when a COOL `meta-origin` marker is in the
+        // clipboard HTML but `_lastCopiedPlain` is unset (destination
+        // never copied), the handler must forward the HTML bytes like
+        // Word→COOL does — NOT route to `uno:Paste` which reads the
+        // per-kit-process internal clipboard (empty here → no-op).
+        // Synthetic-source pattern: one fresh doc, plant the COOL
+        // oncopy-shaped payload, real Ctrl+V into the destination.
+        run: async () => {
+            const ctx = await withFreshDoc();
+            try {
+                const SENTINEL = 'CROSSTAB-PASTE-SENTINEL-' + Date.now();
+                await plantCoolClipboard(ctx.page, SENTINEL);
+                await focusDocBody(ctx.page);
+                const before = await ctx.charCount();
+                await ctrlEnd(ctx.page);
+                await pressShortcut(ctx.page, 'v');
+                const grew = await waitForCharCountAtLeast(
+                    ctx.page, before + SENTINEL.length, 12000);
+                const after = await ctx.charCount();
+                await snap(ctx.page, 'cross-tab-paste');
+                return {
+                    pass: grew && (after - before) >= SENTINEL.length,
+                    ev: `before=${before} after=${after} delta=${after - before} sentinel.len=${SENTINEL.length}`,
                 };
             } finally { await ctx.destroy(); }
         },
