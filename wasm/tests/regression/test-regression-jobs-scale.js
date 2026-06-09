@@ -94,7 +94,9 @@ function loadEnv(scale) {
         // Focused-suite known flakes (run-focused-tests.sh worker comment)
         'test-snapshot-milestones.js',
         'test-regression-paste-coedit.js',
-        'test-regression-mouse-select-copypaste.js',
+        // test-regression-mouse-select-copypaste.js retired 2026-06-09;
+        // ported into test-regression-copy-paste-suite.js as the
+        // `coedit-2browser-mouse-selection-paste` use-case.
     ];
     for (const t of SCALED_TESTS) {
         let p = null;
