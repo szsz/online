@@ -37,20 +37,22 @@ const { uploadV2 } = require('../../lib/v2-upload');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-editing-session-spam';
 
-// Budget — set with ~25% headroom over today's clean floor.
+// Budget — set with ~35% headroom over the measured floor.
 //
-// Historical floor (measured against szebeni-wasm-viewer.azurewebsites.net):
+// Historical floor (measured against szebeni-wasm-viewer.azurewebsites.net
+// via the test's own checklist.json output):
 //   2026-06-07 (LO -69, pre Online #209):  1230 lines / 80 KB editing session
 //   2026-06-08 (LO -70 + PR #209):          290 lines / 15 KB editing session
 //                                           (zero growth over 5min idle)
-//
-// PR #210 cleanup (executeAction conditional debug + Component.Toolbar
-// explicitly-hiding/showing) expected to drop another ~25 lines.
+//   2026-06-08 (PR #210/#211 merged, build  289 lines / 17.5 KB
+//               2026-06-08-225320):         (measured by this test —
+//                                            checklist.json lines=289
+//                                            bytes=17894 budget=650)
 //
 // Bump the budget DOWN as cleanup phases land; bump UP only with a
 // paired ai/proposals/proposed/<slug>.md entry.
-const BUDGET_LINES = 650;
-const BUDGET_BYTES = 90 * 1024;
+const BUDGET_LINES = 400;
+const BUDGET_BYTES = 30 * 1024;
 
 const TYPE_CHARS = 'Hello world this is an editing session spam regression test. '
                  + 'We type some text to exercise the layout pipeline and '
