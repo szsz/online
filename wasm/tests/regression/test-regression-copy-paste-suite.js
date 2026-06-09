@@ -39,10 +39,12 @@ const __cl = require('../../lib/inject-checklist');
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const puppeteer = require('puppeteer');
 const env = require('../../lib/test-env');
-const { uploadV2 } = require('../../lib/v2-upload');
+const { uploadV2, downloadV2 } = require('../../lib/v2-upload');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-copy-paste-suite';
@@ -322,7 +324,96 @@ const USE_CASES = [
     },
     { slug: 'external-rich-html-paste',                  pendingPort: 'test-singleuser-copy-paste.js case 6' },
     { slug: 'external-image-paste-embeds-in-docx',       pendingPort: 'test-singleuser-copy-paste.js case 7' },
-    { slug: 'html-table-paste-roundtrips-to-docx',       pendingPort: 'test-regression-paste-table.js' },
+    {
+        slug: 'html-table-paste-roundtrips-to-docx',
+        label: '2×2 HTML table on clipboard → Ctrl+V → save → saved docx has <w:tbl with the cell content',
+        // Verifies the kit's HTML-import filter on tables: external apps
+        // (Gmail, Word, browser-rendered HTML) routinely put `<table>` in
+        // text/html. wasm-loader writes the bytes via `paste mimetype=
+        // text/html`, the kit's HTML import runs, and the saved docx
+        // must contain `<w:tbl>` with the cell content. A regression where
+        // the filter drops cells / flattens to inline text shows up as a
+        // missing `<w:tbl` or wrong row/cell count.
+        run: async () => {
+            const TABLE_HTML = '<html><body><table border="1">' +
+                '<tr><td>R1C1</td><td>R1C2</td></tr>' +
+                '<tr><td>R2C1</td><td>R2C2</td></tr>' +
+                '</table></body></html>';
+            const TABLE_PLAIN = 'R1C1\tR1C2\nR2C1\tR2C2';
+            const ctx = await withFreshDoc();
+            try {
+                const wc0 = await ctx.charCount();
+                await ctx.page.evaluate(async ({ html, plain }) => {
+                    await navigator.clipboard.write([new ClipboardItem({
+                        'text/html':  new Blob([html],  { type: 'text/html' }),
+                        'text/plain': new Blob([plain], { type: 'text/plain' }),
+                    })]);
+                }, { html: TABLE_HTML, plain: TABLE_PLAIN });
+                await sleep(300);
+                await focusDocBody(ctx.page);
+                await ctrlEnd(ctx.page);
+                await pressShortcut(ctx.page, 'v');
+                await sleep(3000);
+                await snap(ctx.page, 'html-table-after-paste');
+                const wcAfter = await ctx.charCount();
+                const delta = wcAfter - wc0;
+                // 4 cells × 4 chars = 16; allow up to 64 for whitespace
+                // padding. A regression dropping the table lands at 0.
+                if (delta < 16 || delta > 64) return {
+                    pass: false,
+                    ev: `paste delta=${delta} expected 16..64 (table not landed)`,
+                };
+                // Capture pre-save baseline size, then Ctrl+S and poll
+                // downloadV2 until the size changes (the saved docx
+                // includes the table so it must differ from the empty
+                // fixture).
+                let initialLen = 0;
+                try {
+                    const baseline = await downloadV2(VIEWER, ctx.up.secret);
+                    initialLen = baseline.bytes.length;
+                } catch (_) { /* pre-save download optional */ }
+                await pressShortcut(ctx.page, 's');
+                let savedBytes = null;
+                for (let i = 0; i < 30 && !savedBytes; i++) {
+                    await sleep(1000);
+                    try {
+                        const d = await downloadV2(VIEWER, ctx.up.secret);
+                        if (d.bytes.length !== initialLen) {
+                            savedBytes = d.bytes;
+                        }
+                    } catch (_) { /* save still pending */ }
+                }
+                if (!savedBytes) return {
+                    pass: false,
+                    ev: `save did not complete within 30s after Ctrl+S`,
+                };
+                // unzip word/document.xml and grep for <w:tbl + cell strings.
+                const tmp = fs.mkdtempSync(path.join(os.tmpdir(),
+                    'cp-suite-paste-table-'));
+                const docxPath = path.join(tmp, 'saved.docx');
+                fs.writeFileSync(docxPath, savedBytes);
+                let docXml = '';
+                try {
+                    docXml = execFileSync('unzip',
+                        ['-p', docxPath, 'word/document.xml'],
+                        { maxBuffer: 16 * 1024 * 1024 }).toString();
+                } catch (_) { /* fall through with empty docXml */ }
+                try { fs.rmSync(tmp, { recursive: true, force: true }); }
+                catch (_) {}
+                const hasTbl = docXml.indexOf('<w:tbl') >= 0;
+                const trCount = (docXml.match(/<w:tr[ >\/]/g) || []).length;
+                const tcCount = (docXml.match(/<w:tc[ >\/]/g) || []).length;
+                const hasR1C1 = docXml.indexOf('R1C1') >= 0;
+                const hasR2C2 = docXml.indexOf('R2C2') >= 0;
+                const ok = hasTbl && trCount >= 2 && tcCount >= 4
+                        && hasR1C1 && hasR2C2;
+                return {
+                    pass: ok,
+                    ev: `delta=${delta} <w:tbl=${hasTbl} tr=${trCount} tc=${tcCount} R1C1=${hasR1C1} R2C2=${hasR2C2}`,
+                };
+            } finally { await ctx.destroy(); }
+        },
+    },
     { slug: 'rightclick-menu-copy-then-ctrl-v',          pendingPort: 'test-regression-rightclick-copypaste.js' },
     { slug: 'rightclick-menu-copy-populates-system-clipboard', pendingPort: 'test-regression-rightclick-copypaste.js (smoking gun)' },
     { slug: 'coedit-2browser-paste-propagates-A-to-B',   pendingPort: 'test-regression-paste-coedit.js' },
