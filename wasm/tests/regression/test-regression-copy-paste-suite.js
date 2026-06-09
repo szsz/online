@@ -202,6 +202,66 @@ async function withFreshDoc() {
              destroy: () => browser.close() };
 }
 
+// ── Two-tab harness: open ONE browser, TWO pages, both pointing at
+// the same v2 doc via the viewer's `?singleuser` shortcut. Returns
+// per-page contexts so use-cases that need bidirectional co-edit
+// (mouse-select copy/paste, late-join, paste-coedit, etc.) can drive
+// real keyboard + mouse on both pages without re-implementing the
+// open / grant-clipboard / wait-for-doc-loaded dance.
+async function withFreshDocTwoTabs() {
+    const docName = 'cp-suite-2tab-' + Date.now() + '.docx';
+    const fixture = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
+    const bytes = fs.readFileSync(fixture);
+    const up = await uploadV2(VIEWER, docName, bytes);
+
+    const browser = await puppeteer.launch({
+        headless: 'new', protocolTimeout: 600000,
+        args: ['--no-sandbox', '--ignore-certificate-errors',
+               '--enable-features=SharedArrayBuffer'],
+    });
+
+    async function openTab() {
+        const page = await browser.newPage();
+        const cdp = await page.createCDPSession();
+        await cdp.send('Browser.grantPermissions', {
+            permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+        });
+        await page.setViewport({ width: 1280, height: 900 });
+        // Note: 2-browser co-edit uses the default (relay-backed) flow,
+        // NOT `?singleuser`. Drop the param to let the viewer wire up
+        // a real WS to the relay so changes propagate page A → page B.
+        await page.goto(`${VIEWER}/#file=${up.b64urlSecret}`,
+            { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(120000) });
+        let frame = null;
+        for (let i = 0; i < 90 && !frame; i++) {
+            frame = page.frames().find(f => f.url().includes('cool.html'));
+            if (frame && !(await frame.$('#document-canvas').catch(() => null))) frame = null;
+            if (!frame) await sleep(1000);
+        }
+        if (!frame) throw new Error('editor frame never loaded');
+        await frame.waitForFunction(() => window.__wasmInitialDocLoaded === true,
+            { timeout: env.scaleTimeout(60000) });
+        await frame.waitForFunction(() =>
+            /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''),
+            { timeout: env.scaleTimeout(30000) });
+        await sleep(2500);
+        return { page, frame };
+    }
+
+    const a = await openTab();
+    const b = await openTab();
+    // Settle a little extra so both relay-adapters have joined the room.
+    await sleep(5000);
+
+    return {
+        browser,
+        pageA: a.page, frameA: a.frame,
+        pageB: b.page, frameB: b.frame,
+        up,
+        destroy: () => browser.close(),
+    };
+}
+
 // ── Use-case registry ──────────────────────────────────────────────
 // Each use-case is independently runnable; the runner catches per-
 // case exceptions so a hang in one doesn't kill the others.
@@ -417,7 +477,102 @@ const USE_CASES = [
     { slug: 'rightclick-menu-copy-then-ctrl-v',          pendingPort: 'test-regression-rightclick-copypaste.js' },
     { slug: 'rightclick-menu-copy-populates-system-clipboard', pendingPort: 'test-regression-rightclick-copypaste.js (smoking gun)' },
     { slug: 'coedit-2browser-paste-propagates-A-to-B',   pendingPort: 'test-regression-paste-coedit.js' },
-    { slug: 'coedit-2browser-mouse-selection-paste',     pendingPort: 'test-regression-mouse-select-copypaste.js' },
+    {
+        slug: 'coedit-2browser-mouse-selection-paste',
+        label: 'A types, A mouse-double-clicks + Ctrl+C + Ctrl+End + Ctrl+V, B converges on the same doubled doc',
+        // Verifies the full mouse-selection → copy → paste pipeline
+        // propagates through the relay to a second browser. Real
+        // puppeteer mouse-double-click on canvas places the selection
+        // (no `evaluate(()=>el.click())` shortcut); real Ctrl+C / Ctrl+V
+        // exercises kit clipboard handling; the second page reads its
+        // own #StateWordCount to confirm B converged. A regression
+        // where mouse-selection drops on the relay path, or paste
+        // doesn't propagate, lands as a B-side char-count mismatch.
+        run: async () => {
+            const ctx = await withFreshDocTwoTabs();
+            try {
+                const charA = () => ctx.frameA.evaluate(() => {
+                    const t = document.querySelector('#StateWordCount')?.textContent || '';
+                    const m = t.match(/(\d+)\s+character/i);
+                    return m ? parseInt(m[1], 10) : -1;
+                }).catch(() => -1);
+                const charB = () => ctx.frameB.evaluate(() => {
+                    const t = document.querySelector('#StateWordCount')?.textContent || '';
+                    const m = t.match(/(\d+)\s+character/i);
+                    return m ? parseInt(m[1], 10) : -1;
+                }).catch(() => -1);
+
+                // Step 1: A types "TEST " into the doc body, B should see it.
+                const wcA0 = await charA();
+                const canvasA = await ctx.frameA.evaluate(() => {
+                    const c = document.querySelector('#document-canvas');
+                    const r = c.getBoundingClientRect();
+                    return { x: r.left + r.width / 2, y: r.top + 200 };
+                });
+                await ctx.pageA.mouse.click(canvasA.x, canvasA.y);
+                await sleep(500);
+                await ctx.pageA.keyboard.type('TEST ', { delay: 60 });
+                await sleep(5000);
+                const wcA1 = await charA();
+                const wcB1 = await charB();
+                if (wcA1 - wcA0 !== 5) return {
+                    pass: false,
+                    ev: `step1 A typed delta=${wcA1 - wcA0} expected=5`,
+                };
+                if (wcB1 !== wcA1) return {
+                    pass: false,
+                    ev: `step1 B did not see A's typing: A=${wcA1} B=${wcB1}`,
+                };
+
+                // Step 2: A Ctrl+A → Ctrl+C → Ctrl+End → Ctrl+V (double via
+                // selection). Both A and B must show the doubled doc.
+                await ctx.pageA.mouse.click(canvasA.x, canvasA.y);
+                await sleep(300);
+                await pressShortcut(ctx.pageA, 'a');
+                await sleep(800);
+                await pressShortcut(ctx.pageA, 'c');
+                await sleep(2000);
+                await ctrlEnd(ctx.pageA);
+                await sleep(300);
+                await pressShortcut(ctx.pageA, 'v');
+                await sleep(8000);
+                const wcA2 = await charA();
+                const wcB2 = await charB();
+                await snap(ctx.pageA, 'mousesel-A-after-paste');
+                await snap(ctx.pageB, 'mousesel-B-after-paste');
+                if (wcA2 - wcA1 !== wcA1) return {
+                    pass: false,
+                    ev: `step2 A paste did not double: A delta=${wcA2 - wcA1} expected=${wcA1}`,
+                };
+                if (Math.abs(wcA2 - wcB2) > 1) return {
+                    pass: false,
+                    ev: `step2 B did not converge: A=${wcA2} B=${wcB2}`,
+                };
+
+                // Step 3: A double-clicks a word (real mouse, clickCount: 2)
+                // — exercises the mouse-selection path explicitly. Then
+                // copy + end + paste. Char-count must grow (some delta);
+                // B converges within ±3.
+                await ctx.pageA.mouse.click(400, 300, { clickCount: 2 });
+                await sleep(2000);
+                await pressShortcut(ctx.pageA, 'c');
+                await sleep(2000);
+                await ctrlEnd(ctx.pageA);
+                await sleep(400);
+                const wcAPrePaste = await charA();
+                await pressShortcut(ctx.pageA, 'v');
+                await sleep(8000);
+                const wcA3 = await charA();
+                const wcB3 = await charB();
+                const grew = wcA3 > wcAPrePaste;
+                const converged = Math.abs(wcA3 - wcB3) <= 3;
+                return {
+                    pass: grew && converged,
+                    ev: `step3 A pre=${wcAPrePaste} post=${wcA3} (grew=${grew}) | B=${wcB3} (converged=${converged})`,
+                };
+            } finally { await ctx.destroy(); }
+        },
+    },
     { slug: 'late-join-receives-copied-content',         pendingPort: 'test-late-join-copypaste.js' },
     {
         slug: 'save-and-reopen-persists-pasted-content',

@@ -32,7 +32,6 @@ mkdir -p "$REPORTS_DIR" "$LOG_DIR"
 # Focused test list. Each entry: slug|script|title|description|shots-dir
 TESTS=(
     # Copy/paste cluster
-    "regression-mouse-select-copypaste|tests/regression/test-regression-mouse-select-copypaste.js|Regression: Mouse Select + Copy/Paste|Mouse click/double-click selection + copy/paste between 2 browsers|shots-regression-mouse-select-copypaste"
     "regression-paste-coedit|tests/regression/test-regression-paste-coedit.js|Regression: Paste Co-Edit|Text and image paste in 2-browser co-edit|shots-regression-paste-coedit"
     "regression-checkpoint-cursor-delete|tests/regression/test-regression-checkpoint-cursor-delete.js|Regression: Checkpoint Rotation + Cursor + Late-Join Delete|A inserts B selects A saves checkpoint rotates with cursor snapshot C joins B deletes all converge|shots-regression-checkpoint-cursor"
     "regression-plaintext-paste|tests/regression/test-regression-plaintext-paste.js|Regression: Plaintext Paste|Plaintext-only paste path|shots-regression-plaintext-paste"
