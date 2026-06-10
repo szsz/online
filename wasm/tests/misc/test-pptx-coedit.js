@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('../../lib/test-env');
 const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { waitInFrame, evalInFrame } = require('../../lib/two-tab');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);
@@ -38,10 +39,14 @@ async function clickCanvas(page) {
     await sleep(500);
 }
 
-async function waitForImpress(frame, label) {
+// Take a page (not a frame). waitInFrame re-resolves the active editor
+// iframe on every poll, so a viewer-side replaceChild mid-test doesn't
+// strand stale frame refs (which previously caused
+// "Attempted to use detached Frame" mid-test failures here).
+async function waitForImpress(page, label) {
     log(`[${label}] Waiting for Impress...`);
     try {
-        await frame.waitForFunction(() => {
+        await waitInFrame(page, () => {
             var overlay = document.getElementById('wasm-loading-overlay');
             if (overlay && overlay.style.opacity !== '0') return false;
             var nav = document.querySelector('nav.main-nav') || document.querySelector('#content-keeper');
@@ -78,8 +83,8 @@ async function waitForImpress(frame, label) {
         const upA = await openViaViewer(browser, VIEWER, DOC_NAME, bytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true });
-        const pageA = upA.page, frameA = upA.editorFrame;
-        const loadedA = await waitForImpress(frameA, 'A');
+        const pageA = upA.page;
+        const loadedA = await waitForImpress(pageA, 'A');
         check('Browser A: Impress loaded', loadedA);
         await snap(pageA, 'A_loaded');
 
@@ -89,8 +94,8 @@ async function waitForImpress(frame, label) {
         const upB = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true });
-        const pageB = upB.page, frameB = upB.editorFrame;
-        const loadedB = await waitForImpress(frameB, 'B');
+        const pageB = upB.page;
+        const loadedB = await waitForImpress(pageB, 'B');
         check('Browser B: Impress loaded', loadedB);
         await snap(pageB, 'B_loaded');
 
@@ -125,15 +130,17 @@ async function waitForImpress(frame, label) {
         await snap(pageA, 'A_after_BBB');
         await snap(pageB, 'B_after_BBB');
 
-        // Final check - both still have Impress UI
-        const uiA = await frameA.evaluate(() => {
+        // Final check - both still have Impress UI. evalInFrame re-resolves
+        // the active editor iframe at call time, so any viewer-side
+        // replaceChild during the test doesn't strand stale frame refs.
+        const uiA = await evalInFrame(pageA, () => {
             var el = document.querySelector('nav.main-nav') || document.querySelector('#content-keeper');
             return el && el.textContent && el.textContent.includes('Slide Show');
-        });
-        const uiB = await frameB.evaluate(() => {
+        }).catch(() => false);
+        const uiB = await evalInFrame(pageB, () => {
             var el = document.querySelector('nav.main-nav') || document.querySelector('#content-keeper');
             return el && el.textContent && el.textContent.includes('Slide Show');
-        });
+        }).catch(() => false);
         check('A: Impress UI intact', uiA);
         check('B: Impress UI intact', uiB);
 
