@@ -18,6 +18,8 @@ const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { waitInFrame, evalInFrame, getCharCount } = require('../../lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-latejoin-unsaved';
 
@@ -50,80 +52,58 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     console.log('\n=== CASE 1: A types (no save), B joins while A is open ===');
 
     const { browser: browserA, cleanup: cleanupA } = await launch();
-    const pageA = await browserA.newPage();
-    await pageA.setViewport({ width: 1280, height: 900 });
-    await pageA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
-
-    let frameA;
-    for (let i = 0; i < 300; i++) {
-        await sleep(500);
-        frameA = pageA.frames().find(f => f.url().includes('cool.html'));
-        if (frameA) {
-            const wc = await frameA.evaluate(() =>
-                document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-            if (/\d+\s+character/i.test(wc)) {
-                const ws = await frameA.evaluate(() =>
-                    typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                if (ws) break;
-            }
-        }
-    }
-    if (!frameA) throw new Error('A did not load');
+    // openSecretInBrowser filters out the prewarm-blank bootstrap iframe and
+    // resolves to the FILE-loading iframe. two-tab helpers (waitInFrame,
+    // evalInFrame, getCharCount) re-resolve the active iframe on every
+    // poll so a mid-test viewer-side replaceChild doesn't detach our refs.
+    const upA = await openSecretInBrowser(browserA, VIEWER, b64urlSecret,
+        { iframeTimeout: env.scaleTimeout(60000),
+          gotoTimeout: env.scaleTimeout(60000),
+          viewport: { width: 1280, height: 900 } });
+    const pageA = upA.page;
+    await waitInFrame(pageA,
+        () => /\d+\s+character/i.test(
+                  document.querySelector('#StateWordCount')?.textContent || '')
+              && typeof globalThis.TheFakeWebSocket !== 'undefined',
+        { timeout: env.scaleTimeout(150000) });
     await sleep(5000);
 
-    async function getWcA() {
-        return frameA.evaluate(() =>
-            document.querySelector('#StateWordCount')?.textContent?.trim() || '').catch(() => '');
-    }
     async function clickA() {
         const el = await pageA.$('iframe#editor-frame');
         if (el) { const b = await el.boundingBox(); if (b) await pageA.mouse.click(b.x + b.width/2, b.y + b.height/2); }
         await sleep(300);
     }
 
-    const ccA0 = charCount(await getWcA());
+    const ccA0 = await getCharCount(pageA);
     console.log('  A initial: ' + ccA0 + ' chars');
 
     // A types — NO SAVE
     await clickA();
     await pageA.keyboard.type('UNSAVED_EDITS ', { delay: 60 });
     await sleep(3000);
-    const ccA1 = charCount(await getWcA());
+    const ccA1 = await getCharCount(pageA);
     check('CASE1: A typed 14 chars', ccA1 - ccA0 === 14, 'delta=' + (ccA1 - ccA0));
     await snap(pageA, 'case1_A_after_type');
 
     // DO NOT SAVE — B joins while A's edits are only in the relay message log
     console.log('  [A] NOT saving — B will join with unsaved edits in relay');
 
-    // B joins (same browser, different context)
-    const ctxB = await browserA.createBrowserContext();
-    const pageB = await ctxB.newPage();
-    await pageB.setViewport({ width: 1280, height: 900 });
-    await pageB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
-
-    let frameB;
-    for (let i = 0; i < 300; i++) {
-        await sleep(500);
-        frameB = pageB.frames().find(f => f.url().includes('cool.html'));
-        if (frameB) {
-            const wc = await frameB.evaluate(() =>
-                document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-            if (/\d+\s+character/i.test(wc)) {
-                const ws = await frameB.evaluate(() =>
-                    typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                if (ws) break;
-            }
-        }
-    }
-    if (!frameB) throw new Error('B did not load');
+    // B joins (same browser, different context). isolatedContext gives B its
+    // own localStorage / IndexedDB so the viewer sees it as a distinct client.
+    const upB = await openSecretInBrowser(browserA, VIEWER, b64urlSecret,
+        { iframeTimeout: env.scaleTimeout(60000),
+          gotoTimeout: env.scaleTimeout(60000),
+          isolatedContext: true,
+          viewport: { width: 1280, height: 900 } });
+    const pageB = upB.page;
+    await waitInFrame(pageB,
+        () => /\d+\s+character/i.test(
+                  document.querySelector('#StateWordCount')?.textContent || '')
+              && typeof globalThis.TheFakeWebSocket !== 'undefined',
+        { timeout: env.scaleTimeout(150000) });
     await sleep(10000); // generous settle for message replay
 
-    async function getWcB() {
-        return frameB.evaluate(() =>
-            document.querySelector('#StateWordCount')?.textContent?.trim() || '').catch(() => '');
-    }
-
-    const ccB0 = charCount(await getWcB());
+    const ccB0 = await getCharCount(pageB);
     await snap(pageB, 'case1_B_after_join');
     console.log('  B after join: ' + ccB0 + ' chars (A had ' + ccA1 + ')');
     check('CASE1: B sees A content (within ±5)', Math.abs(ccB0 - ccA1) <= 5,
@@ -132,7 +112,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
 
     // Verify A's content hasn't been corrupted by B joining
     await sleep(3000);
-    const ccA2 = charCount(await getWcA());
+    const ccA2 = await getCharCount(pageA);
     check('CASE1: A still has content after B joined', ccA2 >= ccA1,
         'A_now=' + ccA2 + ' A_before=' + ccA1);
 
@@ -157,29 +137,19 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     console.log('\n=== CASE 2: All browsers closed, C opens ===');
 
     const { browser: browserC, cleanup: cleanupC } = await launch();
-    const pageC = await browserC.newPage();
-    await pageC.setViewport({ width: 1280, height: 900 });
-    await pageC.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
-
-    let frameC;
-    for (let i = 0; i < 300; i++) {
-        await sleep(500);
-        frameC = pageC.frames().find(f => f.url().includes('cool.html'));
-        if (frameC) {
-            const wc = await frameC.evaluate(() =>
-                document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-            if (/\d+\s+character/i.test(wc)) {
-                const ws = await frameC.evaluate(() =>
-                    typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                if (ws) break;
-            }
-        }
-    }
-    if (!frameC) throw new Error('C did not load');
+    const upC = await openSecretInBrowser(browserC, VIEWER, b64urlSecret,
+        { iframeTimeout: env.scaleTimeout(60000),
+          gotoTimeout: env.scaleTimeout(60000),
+          viewport: { width: 1280, height: 900 } });
+    const pageC = upC.page;
+    await waitInFrame(pageC,
+        () => /\d+\s+character/i.test(
+                  document.querySelector('#StateWordCount')?.textContent || '')
+              && typeof globalThis.TheFakeWebSocket !== 'undefined',
+        { timeout: env.scaleTimeout(150000) });
     await sleep(5000);
 
-    const ccC0 = charCount(await frameC.evaluate(() =>
-        document.querySelector('#StateWordCount')?.textContent?.trim() || '').catch(() => ''));
+    const ccC0 = await getCharCount(pageC);
     await snap(pageC, 'case2_C_after_open');
     console.log('  C after open: ' + ccC0 + ' chars (A had ' + ccA1 + ')');
     check('CASE2: C sees A content (within ±5)', Math.abs(ccC0 - ccA1) <= 5,
