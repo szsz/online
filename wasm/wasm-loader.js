@@ -1420,6 +1420,14 @@
                             'text/html': html,
                             'text/plain;charset=utf-8': plain,
                         });
+                        // Seed the paste-fingerprint so a subsequent Ctrl+V
+                        // from the same tab classifies as same-tab (uno:Paste),
+                        // not cross-tab (HTML-bytes forward — which destroys
+                        // current doc content when source==destination kit).
+                        // The Ctrl+C path sets this from document.oncopy; the
+                        // right-click → Copy path goes through this fetch
+                        // stub and must do the same.
+                        globalThis._lastCopiedPlain = plain || null;
                         console.log('[wasm-loader] Clipboard GET stub — html=' +
                                     html.length + 'b plain=' + plain.length +
                                     'b waited=' + elapsed.toFixed(0) + 'ms');
