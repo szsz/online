@@ -29,6 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
+const { getActiveEditorFrame } = require('../../lib/two-tab');
 
 const VIEWER  = env.FILE_STORAGE_URL;
 // Map docName → { fileId, b64urlSecret } so open/click paths can use the
@@ -56,8 +57,13 @@ function check(label, cond, ev) {
     else { log(`  FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
+// Re-resolves the ACTIVE editor iframe on every call (skipping the
+// `__prewarm_blank` bootstrap). The viewer-side replaceChild on cross-
+// type open (writer→calc, writer→impress) parks the writer iframe and
+// installs a new one; a captured frame ref would detach. Re-querying
+// editor-frame.src each call follows the live element.
 async function getFrame(page) {
-    return page.frames().find(f => f.url().includes('cool.html'));
+    return getActiveEditorFrame(page);
 }
 
 // Hook ws.onmessage and count `invalidatetiles:` events. Wait until the
@@ -148,9 +154,12 @@ async function openViewer(browser) {
         }, rfList);
     }
     await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
+    // Prewarm runs INSIDE the bootstrap (__prewarm_blank) iframe before any
+    // file is opened, so we can't use the "active editor frame" filter here;
+    // poll any cool.html frame on the page for the readiness flag.
     for (let i = 0; i < 240; i++) {
         await sleep(500);
-        const fr = await getFrame(page);
+        const fr = page.frames().find(f => f.url().includes('cool.html'));
         if (fr && await fr.evaluate(() => !!window.__wasmPrewarmReady).catch(() => false)) {
             return { ctx, page, prewarmMs: i*500 };
         }
