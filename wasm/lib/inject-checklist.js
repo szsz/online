@@ -50,6 +50,10 @@ catch (e) { /* console-capture is optional; silence if missing */ }
 
 function recordCheck(name, ok, evidence) { checklist.check(name, ok, evidence); return ok; }
 
+// Explicit save trigger for tests that call __cl.flush(process.argv[1]).
+// Idempotent — the exit handler below saves again. Argument unused.
+function flush(_scriptPath) { checklist.save(); }
+
 // Wrap an existing `function check(label, cond)` so it also records
 function attachToCheckFn(originalFn) {
     return function(label, cond, ev) {
@@ -63,4 +67,4 @@ process.on('exit', () => { checklist.save(); });
 process.on('SIGINT',  () => { checklist.save(); process.exit(130); });
 process.on('SIGTERM', () => { checklist.save(); process.exit(143); });
 
-module.exports = { checklist, recordCheck, attachToCheckFn };
+module.exports = { checklist, recordCheck, attachToCheckFn, flush };
