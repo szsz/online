@@ -25,6 +25,7 @@ const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs');
 const env = require('../../lib/test-env');
 const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { evalInFrame } = require('../../lib/two-tab');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(180000);
@@ -47,21 +48,24 @@ function check(label, cond, ev) {
     else { log(`  ✗ FAIL: ${label}${ev?' ['+ev+']':''}`); allPassed = false; }
 }
 
-async function getStatus(frame) {
-    return frame.evaluate(() => {
+// Take page (not frame). evalInFrame re-resolves the active editor
+// iframe each call so a viewer-side replaceChild (cold-reload, hot-
+// switch) doesn't strand a stored frame ref mid-test.
+async function getStatus(page) {
+    return evalInFrame(page, () => {
         const el = document.querySelector('#StateWordCount');
         return el ? el.textContent.trim() : 'NOT FOUND';
-    });
+    }).catch(() => 'NOT FOUND');
 }
 function charCount(s) {
     const m = (s||'').match(/(\d+) characters/);
     return m ? parseInt(m[1]) : -1;
 }
 
-async function waitForCharCount(frame, expected, timeoutMs) {
+async function waitForCharCount(page, expected, timeoutMs) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
-        if (charCount(await getStatus(frame)) === expected) return true;
+        if (charCount(await getStatus(page)) === expected) return true;
         await sleep(500);
     }
     return false;
@@ -94,15 +98,15 @@ async function typeAt(page, text) {
         const upGoodA = await openViaViewer(browser, VIEWER, docName, bytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true });
-        await waitForCharCount(upGoodA.editorFrame, 5, TIMEOUT);
-        log(`[GOOD-A] Loaded: "${await getStatus(upGoodA.editorFrame)}"`);
+        await waitForCharCount(upGoodA.page, 5, TIMEOUT);
+        log(`[GOOD-A] Loaded: "${await getStatus(upGoodA.page)}"`);
         await sleep(8000);
 
         const upGoodB = await openSecretInBrowser(browser, VIEWER, upGoodA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true });
-        await waitForCharCount(upGoodB.editorFrame, 5, TIMEOUT);
-        log(`[GOOD-B] Loaded: "${await getStatus(upGoodB.editorFrame)}"`);
+        await waitForCharCount(upGoodB.page, 5, TIMEOUT);
+        log(`[GOOD-B] Loaded: "${await getStatus(upGoodB.page)}"`);
         await sleep(15000);
 
         await snap(upGoodA.page, 'iso_A_initial');
@@ -112,9 +116,9 @@ async function typeAt(page, text) {
         await typeAt(upGoodA.page, 'XYZ');
         // Wait up to 30s for B to converge — relay propagation can lag
         // on cold-start runs against wasm-viewer-test.
-        await waitForCharCount(upGoodB.editorFrame, 8, 30000);
-        const isoFinalA = charCount(await getStatus(upGoodA.editorFrame));
-        const isoFinalB = charCount(await getStatus(upGoodB.editorFrame));
+        await waitForCharCount(upGoodB.page, 8, 30000);
+        const isoFinalA = charCount(await getStatus(upGoodA.page));
+        const isoFinalB = charCount(await getStatus(upGoodB.page));
         await snap(upGoodA.page, 'iso_A_after_xyz');
         await snap(upGoodB.page, 'iso_B_after_xyz');
         log(`Separate contexts: A=${isoFinalA} B=${isoFinalB} (expected 8 = "Hello"+XYZ)`);
@@ -141,15 +145,15 @@ async function typeAt(page, text) {
         const upBadA = await openViaViewer(browser, VIEWER, docNameBad, bytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000) });
             // ^ no isolatedContext — falls into default browser context
-        await waitForCharCount(upBadA.editorFrame, 5, TIMEOUT);
-        log(`[BAD-A] Loaded: "${await getStatus(upBadA.editorFrame)}"`);
+        await waitForCharCount(upBadA.page, 5, TIMEOUT);
+        log(`[BAD-A] Loaded: "${await getStatus(upBadA.page)}"`);
         await sleep(8000);
 
         const upBadB = await openSecretInBrowser(browser, VIEWER, upBadA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000) });
             // ^ no isolatedContext — same default browser context as A
-        await waitForCharCount(upBadB.editorFrame, 5, TIMEOUT);
-        log(`[BAD-B] Loaded: "${await getStatus(upBadB.editorFrame)}"`);
+        await waitForCharCount(upBadB.page, 5, TIMEOUT);
+        log(`[BAD-B] Loaded: "${await getStatus(upBadB.page)}"`);
         await sleep(15000);
 
         await snap(upBadA.page, 'shared_A_initial');
@@ -160,9 +164,9 @@ async function typeAt(page, text) {
         // Same 30s budget as Scenario A so a slow relay doesn't fake a
         // win for the bug. If sharing the context broke things, A=8/B=8
         // will not happen within 30s either.
-        await waitForCharCount(upBadA.editorFrame, 8, 30000);
-        const badFinalA = charCount(await getStatus(upBadA.editorFrame));
-        const badFinalB = charCount(await getStatus(upBadB.editorFrame));
+        await waitForCharCount(upBadA.page, 8, 30000);
+        const badFinalA = charCount(await getStatus(upBadA.page));
+        const badFinalB = charCount(await getStatus(upBadB.page));
         await snap(upBadA.page, 'shared_A_after_xyz');
         await snap(upBadB.page, 'shared_B_after_xyz');
         log(`Shared context: A=${badFinalA} B=${badFinalB}`);
