@@ -60,7 +60,7 @@ async function clickIframe(page) {
         await sleep(3000);
         await snap(pageA, 'before_upload');
 
-        const docPath = path.resolve(__dirname, '../test/data/test document.docx');
+        const docPath = path.resolve(__dirname, '../../../test/data/test document.docx');
         const fileInput = await pageA.$('#file-input');
         await fileInput.uploadFile(docPath);
 
