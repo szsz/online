@@ -19,6 +19,8 @@ const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { waitInFrame, getCharCount } = require('../../lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-first-client-overwrite';
 
@@ -60,29 +62,21 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     // ═══ Phase 1: Browser A opens (prewarm → hot-switch) ═══
     console.log('\n=== Phase 1: A opens doc ===');
     const { browser: bA, cleanup: cA } = await launch();
-    const pA = await bA.newPage();
-    await pA.setViewport({ width: 1280, height: 900 });
-    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
-
-    let fA;
-    for (let i = 0; i < 300; i++) {
-        await sleep(500);
-        fA = pA.frames().find(f => f.url().includes('cool.html'));
-        if (fA) {
-            const wc = await fA.evaluate(() =>
-                document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-            if (/\d+\s+character/i.test(wc)) {
-                const ws = await fA.evaluate(() =>
-                    typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                if (ws) break;
-            }
-        }
-    }
-    if (!fA) throw new Error('A failed');
+    // openSecretInBrowser + two-tab helpers: re-resolves the active iframe
+    // each poll so the viewer's mid-test replaceChild doesn't strand stale refs.
+    const upA = await openSecretInBrowser(bA, VIEWER, b64urlSecret,
+        { iframeTimeout: env.scaleTimeout(60000),
+          gotoTimeout: env.scaleTimeout(60000),
+          viewport: { width: 1280, height: 900 } });
+    const pA = upA.page;
+    await waitInFrame(pA,
+        () => /\d+\s+character/i.test(
+                  document.querySelector('#StateWordCount')?.textContent || '')
+              && typeof globalThis.TheFakeWebSocket !== 'undefined',
+        { timeout: env.scaleTimeout(150000) });
     await sleep(10000); // Let activation checkpoint complete
 
-    const ccA = charCount(await fA.evaluate(() =>
-        document.querySelector('#StateWordCount')?.textContent?.trim() || ''));
+    const ccA = await getCharCount(pA);
     await snap(pA, 'A_loaded');
     console.log('  A loaded: ' + ccA + ' chars');
     check('A sees content (19 chars)', ccA === 19, 'cc=' + ccA);
@@ -102,29 +96,19 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     await sleep(5000);
 
     const { browser: bB, cleanup: cB } = await launch();
-    const pB = await bB.newPage();
-    await pB.setViewport({ width: 1280, height: 900 });
-    await pB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
-
-    let fB;
-    for (let i = 0; i < 300; i++) {
-        await sleep(500);
-        fB = pB.frames().find(f => f.url().includes('cool.html'));
-        if (fB) {
-            const wc = await fB.evaluate(() =>
-                document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-            if (/\d+\s+character/i.test(wc)) {
-                const ws = await fB.evaluate(() =>
-                    typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                if (ws) break;
-            }
-        }
-    }
-    if (!fB) throw new Error('B failed');
+    const upB = await openSecretInBrowser(bB, VIEWER, b64urlSecret,
+        { iframeTimeout: env.scaleTimeout(60000),
+          gotoTimeout: env.scaleTimeout(60000),
+          viewport: { width: 1280, height: 900 } });
+    const pB = upB.page;
+    await waitInFrame(pB,
+        () => /\d+\s+character/i.test(
+                  document.querySelector('#StateWordCount')?.textContent || '')
+              && typeof globalThis.TheFakeWebSocket !== 'undefined',
+        { timeout: env.scaleTimeout(150000) });
     await sleep(5000);
 
-    const ccB = charCount(await fB.evaluate(() =>
-        document.querySelector('#StateWordCount')?.textContent?.trim() || ''));
+    const ccB = await getCharCount(pB);
     await snap(pB, 'B_loaded');
     console.log('  B loaded: ' + ccB + ' chars');
     check('B sees content (19 chars, not blank)', ccB === 19, 'cc=' + ccB);
