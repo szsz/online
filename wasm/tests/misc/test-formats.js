@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('../../lib/test-env');
 const { openViaViewer, openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { waitInFrame, evalInFrame } = require('../../lib/two-tab');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const TIMEOUT = env.scaleTimeout(300000);
@@ -26,8 +27,13 @@ async function snap(page, name) {
     try { await page.screenshot({ path: `${SHOT_DIR}/${filename}` }); } catch(e) {}
 }
 
-async function getStatus(frame) {
-    return frame.evaluate(() => {
+// Take a page (not a captured frame ref). evalInFrame re-resolves the
+// LIVE editor iframe each call so a mid-test viewer-side replaceChild
+// (cold-reload / hot-switch / late prewarm shuffle) doesn't strand the
+// stored ref. Previously this used frame.evaluate() on a ref captured
+// at openSecretInBrowser-time, which broke as 'frame got detached'.
+async function getStatus(page) {
+    return evalInFrame(page, () => {
         const wc = document.querySelector('#StateWordCount');
         if (wc && wc.textContent) return wc.textContent.trim();
         const sd = document.querySelector('#StatusDocPos');
@@ -36,7 +42,7 @@ async function getStatus(frame) {
         if (ss && ss.textContent) return ss.textContent.trim();
         const sb = document.querySelector('.jsdialog.ui-statusbar');
         return sb ? sb.textContent.trim().substring(0, 80) : 'NOT FOUND';
-    });
+    }).catch(() => 'NOT FOUND');
 }
 
 function charCount(status) {
@@ -44,10 +50,10 @@ function charCount(status) {
     return m ? parseInt(m[1].replace(/,/g, '')) : -1;
 }
 
-async function waitForDocLoaded(frame, label) {
+async function waitForDocLoaded(page, label) {
     log(`[${label}] Waiting for document...`);
     const t0 = Date.now();
-    await frame.waitForFunction(() => {
+    await waitInFrame(page, () => {
         const wc = document.querySelector('#StateWordCount');
         if (wc && wc.textContent && wc.textContent.includes('characters')) return true;
         const sd = document.querySelector('#StatusDocPos');
@@ -79,15 +85,14 @@ async function testFormat(browser, docName, docPath, formatLabel) {
     const docBytes = fs.readFileSync(docPath);
     log(`Read ${docName} (${docBytes.length} bytes)`);
 
-    let pageA, frameA, pageB, frameB;
+    let pageA, pageB;
     try {
         log(`[A] Opening...`);
         const upA = await openViaViewer(browser, VIEWER, docName, docBytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true });
         pageA = upA.page;
-        frameA = upA.editorFrame;
-        await waitForDocLoaded(frameA, 'A');
+        await waitForDocLoaded(pageA, 'A');
         await sleep(10000);
 
         log(`[B] Opening...`);
@@ -95,15 +100,14 @@ async function testFormat(browser, docName, docPath, formatLabel) {
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
               isolatedContext: true });
         pageB = upB.page;
-        frameB = upB.editorFrame;
-        await waitForDocLoaded(frameB, 'B');
+        await waitForDocLoaded(pageB, 'B');
         await sleep(15000);
 
         await snap(pageA, `${formatLabel}_A_initial`);
         await snap(pageB, `${formatLabel}_B_initial`);
 
-        const initA = await getStatus(frameA);
-        const initB = await getStatus(frameB);
+        const initA = await getStatus(pageA);
+        const initB = await getStatus(pageB);
         log(`Initial: A="${initA}" B="${initB}"`);
         check('Both browsers loaded', initA !== 'NOT FOUND' && initB !== 'NOT FOUND');
 
@@ -125,8 +129,8 @@ async function testFormat(browser, docName, docPath, formatLabel) {
         await sleep(10000);
         await snap(pageA, `${formatLabel}_A_after_TEST1`);
         await snap(pageB, `${formatLabel}_B_after_TEST1`);
-        const afterA = await getStatus(frameA);
-        const afterB = await getStatus(frameB);
+        const afterA = await getStatus(pageA);
+        const afterB = await getStatus(pageB);
         log(`After TEST1: A="${afterA}" B="${afterB}"`);
 
         if (isCalc) {
@@ -145,8 +149,8 @@ async function testFormat(browser, docName, docPath, formatLabel) {
         await sleep(15000);
         await snap(pageA, `${formatLabel}_A_final`);
         await snap(pageB, `${formatLabel}_B_final`);
-        const finalA = await getStatus(frameA);
-        const finalB = await getStatus(frameB);
+        const finalA = await getStatus(pageA);
+        const finalB = await getStatus(pageB);
         log(`Final: A="${finalA}" B="${finalB}"`);
 
         const cA = charCount(finalA);
