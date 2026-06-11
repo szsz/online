@@ -30,24 +30,33 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // bootstrap blank-docx prewarm). Always queries the DOM fresh — never
 // hands back a stale ref. Returns null if not found yet.
 //
-// Uses ElementHandle.contentFrame() so the lookup is element-anchored,
-// not URL-anchored: after the kit emits a hashchange / postMessage that
-// updates editor-frame.src, page.frames() briefly contains TWO frames
-// whose url() doesn't match the new DOM .src (one stale, one not yet
-// committed). The element-handle path resolves the LIVE frame for the
-// iframe element regardless of url() lag — that's why migrated tests
-// still occasionally caught -1 from evalInFrame after a paste/state
-// transition.
+// Two lookup paths, tried in order:
+//   1. Element-anchored via ElementHandle.contentFrame() — survives the
+//      kit's url() lag after a paste / hash navigation, where
+//      page.frames() briefly has the stale URL.
+//   2. URL-match fallback via page.frames().find() — handles cases
+//      where contentFrame() returns null (e.g. mid-replaceChild the
+//      element exists but isn't yet bound to a Frame).
+// Either returning a non-null Frame is acceptable; both filter out the
+// __prewarm_blank bootstrap iframe by URL substring.
 async function getActiveEditorFrame(page) {
     try {
-        const el = await page.$('iframe#editor-frame');
-        if (!el) return null;
-        const src = await page.evaluate(e => e && e.src ? e.src : '', el)
-            .catch(() => '');
+        const src = await page.evaluate(() => {
+            const el = document.getElementById('editor-frame');
+            return el && el.src ? el.src : '';
+        }).catch(() => '');
         if (!src || src.indexOf('cool.html') < 0) return null;
         if (src.indexOf('__prewarm_blank') >= 0) return null;
-        const frame = await el.contentFrame().catch(() => null);
-        return frame || null;
+        // Path 1: element-anchored contentFrame().
+        try {
+            const el = await page.$('iframe#editor-frame');
+            if (el) {
+                const frame = await el.contentFrame().catch(() => null);
+                if (frame && !frame.isDetached?.()) return frame;
+            }
+        } catch (_) {}
+        // Path 2: URL-match fallback.
+        return page.frames().find(f => f.url() === src) || null;
     } catch (_) { return null; }
 }
 
