@@ -29,15 +29,25 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // Resolve the iframe that's currently displaying the FILE (not the
 // bootstrap blank-docx prewarm). Always queries the DOM fresh — never
 // hands back a stale ref. Returns null if not found yet.
+//
+// Uses ElementHandle.contentFrame() so the lookup is element-anchored,
+// not URL-anchored: after the kit emits a hashchange / postMessage that
+// updates editor-frame.src, page.frames() briefly contains TWO frames
+// whose url() doesn't match the new DOM .src (one stale, one not yet
+// committed). The element-handle path resolves the LIVE frame for the
+// iframe element regardless of url() lag — that's why migrated tests
+// still occasionally caught -1 from evalInFrame after a paste/state
+// transition.
 async function getActiveEditorFrame(page) {
     try {
-        const activeUrl = await page.evaluate(() => {
-            const el = document.getElementById('editor-frame');
-            return el && el.src ? el.src : null;
-        }).catch(() => null);
-        if (!activeUrl || activeUrl.indexOf('cool.html') < 0) return null;
-        if (activeUrl.indexOf('__prewarm_blank') >= 0) return null;
-        return page.frames().find(f => f.url() === activeUrl) || null;
+        const el = await page.$('iframe#editor-frame');
+        if (!el) return null;
+        const src = await page.evaluate(e => e && e.src ? e.src : '', el)
+            .catch(() => '');
+        if (!src || src.indexOf('cool.html') < 0) return null;
+        if (src.indexOf('__prewarm_blank') >= 0) return null;
+        const frame = await el.contentFrame().catch(() => null);
+        return frame || null;
     } catch (_) { return null; }
 }
 
