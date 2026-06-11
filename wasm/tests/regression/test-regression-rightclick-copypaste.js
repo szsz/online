@@ -37,6 +37,7 @@ const path = require('path');
 const puppeteer = require('puppeteer');
 const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
 const { evalInFrame, waitInFrame } = require('../../lib/two-tab');
 
 const VIEWER  = env.FILE_STORAGE_URL;
@@ -70,7 +71,7 @@ async function rightClickAt(page, x, y) {
 // Real puppeteer click on a context-menu item with a visible label
 // matching `labelRegex`. Returns true on success. Uses getBoundingClientRect
 // to derive coordinates — DOM-state read, not a synthetic .click().
-async function realClickMenuItem(page, _unusedFrame, labelRegex) {
+async function realClickMenuItem(page, labelRegex) {
     // Wait for the menu to materialise.
     let bbox = null;
     for (let i = 0; i < 30; i++) {
@@ -113,12 +114,20 @@ async function realClickMenuItem(page, _unusedFrame, labelRegex) {
                '--enable-features=SharedArrayBuffer'],
     });
     try {
-        const page = await browser.newPage();
+        // openSecretInBrowser filters __prewarm_blank and returns once the
+        // FILE-loading iframe exists. Previously this used a raw
+        // page.frames().find(f => f.url().includes('cool.html')) loop that
+        // would latch onto the bootstrap prewarm-blank iframe and fail
+        // with 'editor frame never loaded' under CI's JOBS_SCALE=2 load.
+        const upBrowser = await openSecretInBrowser(browser, VIEWER, up.b64urlSecret,
+            { iframeTimeout: env.scaleTimeout(120000),
+              gotoTimeout: env.scaleTimeout(120000),
+              viewport: { width: 1280, height: 900 } });
+        const page = upBrowser.page;
         const cdp = await page.createCDPSession();
         await cdp.send('Browser.grantPermissions', {
             permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
         });
-        await page.setViewport({ width: 1280, height: 900 });
 
         // Capture clipboard-related errors + the wasm-loader's clipboard
         // log lines (so we can see whether the GET stub actually fired).
@@ -136,22 +145,13 @@ async function realClickMenuItem(page, _unusedFrame, labelRegex) {
             }
         });
 
-        await page.goto(`${VIEWER}/#file=${up.b64urlSecret}`,
-            { waitUntil: 'domcontentloaded',
-              timeout: env.scaleTimeout(120000) });
-
-        // Wait for editor iframe, doc-loaded, canvas painted.
-        let frame = null;
-        for (let i = 0; i < 90 && !frame; i++) {
-            frame = page.frames().find(f => f.url().includes('cool.html'));
-            if (frame && !(await frame.$('#document-canvas').catch(() => null))) frame = null;
-            if (!frame) await sleep(1000);
-        }
-        if (!frame) throw new Error('editor frame never loaded');
+        // Wait for doc loaded + canvas painted. waitInFrame re-resolves
+        // the active editor iframe each poll so a mid-load replaceChild
+        // doesn't strand stale refs.
         await waitInFrame(page,
-            () => window.__wasmInitialDocLoaded === true,
-            { timeout: env.scaleTimeout(60000) });
-        // Wait for word count indicator (proxy for "doc fully ready").
+            () => window.__wasmInitialDocLoaded === true
+                  && !!document.querySelector('#document-canvas'),
+            { timeout: env.scaleTimeout(120000) });
         await waitInFrame(page,
             () => /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''),
             { timeout: env.scaleTimeout(30000) });
@@ -236,7 +236,7 @@ async function realClickMenuItem(page, _unusedFrame, labelRegex) {
             // Real-click the 'Copy' menu item. The label may include
             // a shortcut suffix like "Copy\tCtrl+C" — match the leading
             // word boundary.
-            const copy = await realClickMenuItem(page, frame, /\bCopy\b/);
+            const copy = await realClickMenuItem(page, /\bCopy\b/);
             check('"Copy" menu item present + clickable',
                   copy.ok === true,
                   copy.item || copy.why);
