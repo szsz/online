@@ -22,6 +22,8 @@ const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { waitInFrame, getCharCount } = require('../../lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-hard-refresh';
 
@@ -54,29 +56,26 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     // ═══ Phase 1: Open, type, NO save ═══
     console.log('\n=== Phase 1: Open doc, type XYZ, do NOT save ===');
     const { browser: bA, cleanup: cA } = await launch();
-    const pA = await bA.newPage();
-    await pA.setViewport({ width: 1280, height: 900 });
-    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
+    // openSecretInBrowser routes through the viewer, filters the bootstrap
+    // __prewarm_blank iframe, and returns once the FILE-loading iframe
+    // exists. Previously this used a raw page.frames().find() loop that
+    // could latch onto the prewarm-blank frame whose StateWordCount
+    // never propagates the user doc.
+    const upA = await openSecretInBrowser(bA, VIEWER, b64urlSecret,
+        { iframeTimeout: env.scaleTimeout(120000),
+          gotoTimeout: env.scaleTimeout(60000),
+          viewport: { width: 1280, height: 900 } });
+    const pA = upA.page;
 
-    let fA;
-    for (let i = 0; i < 300; i++) {
-        await sleep(500);
-        fA = pA.frames().find(f => f.url().includes('cool.html'));
-        if (fA) {
-            const wc = await fA.evaluate(() =>
-                document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-            if (/\d+\s+character/i.test(wc)) {
-                const ws = await fA.evaluate(() =>
-                    typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                if (ws) break;
-            }
-        }
-    }
-    if (!fA) throw new Error('Phase 1: editor failed');
+    // waitInFrame re-resolves the live editor iframe on every poll.
+    await waitInFrame(pA,
+        () => /\d+\s+character/i.test(
+                  document.querySelector('#StateWordCount')?.textContent || '')
+              && typeof globalThis.TheFakeWebSocket !== 'undefined',
+        { timeout: env.scaleTimeout(150000) });
     await sleep(5000);
 
-    const cc0 = charCount(await fA.evaluate(() =>
-        document.querySelector('#StateWordCount')?.textContent?.trim() || ''));
+    const cc0 = await getCharCount(pA);
     console.log('  Initial: ' + cc0 + ' chars');
 
     // Click and type
@@ -85,8 +84,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     await sleep(500);
     await pA.keyboard.type('XYZ', { delay: 80 });
     await sleep(3000);
-    const cc1 = charCount(await fA.evaluate(() =>
-        document.querySelector('#StateWordCount')?.textContent?.trim() || ''));
+    const cc1 = await getCharCount(pA);
     console.log('  After typing: ' + cc1 + ' chars');
     check('Typed 3 chars', cc1 - cc0 === 3, 'delta=' + (cc1 - cc0));
     await snap(pA, 'before_refresh');
@@ -98,26 +96,16 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
     console.log('  Page reloaded');
 
-    // Wait for editor to load again
-    let fA2;
-    for (let i = 0; i < 300; i++) {
-        await sleep(500);
-        fA2 = pA.frames().find(f => f.url().includes('cool.html'));
-        if (fA2) {
-            const wc = await fA2.evaluate(() =>
-                document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-            if (/\d+\s+character/i.test(wc)) {
-                const ws = await fA2.evaluate(() =>
-                    typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
-                if (ws) break;
-            }
-        }
-    }
-    if (!fA2) throw new Error('Phase 2: editor failed after refresh');
+    // Wait for editor to load again (via the LIVE iframe lookup, not a
+    // raw frames().find() that can latch onto __prewarm_blank).
+    await waitInFrame(pA,
+        () => /\d+\s+character/i.test(
+                  document.querySelector('#StateWordCount')?.textContent || '')
+              && typeof globalThis.TheFakeWebSocket !== 'undefined',
+        { timeout: env.scaleTimeout(150000) });
     await sleep(10000); // generous settle for message replay
 
-    const cc2 = charCount(await fA2.evaluate(() =>
-        document.querySelector('#StateWordCount')?.textContent?.trim() || ''));
+    const cc2 = await getCharCount(pA);
     await snap(pA, 'after_refresh');
     console.log('  After refresh: ' + cc2 + ' chars (expected ' + cc1 + ')');
 
