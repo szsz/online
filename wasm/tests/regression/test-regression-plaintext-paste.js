@@ -18,6 +18,8 @@ const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { evalInFrame, waitInFrame } = require('../../lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-regression-plaintext-paste';
 const REPORT = '/tmp/static-deploy/public/reports/regression-plaintext-paste-detail.html';
@@ -42,48 +44,28 @@ function check(label, cond, ev) {
     const docBytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
     const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, docBytes);
 
-    const page = await browser.newPage();
+    // openSecretInBrowser filters out __prewarm_blank and uses
+    // ElementHandle.contentFrame() to resolve the file-loading iframe.
+    // Previously we used a raw `page.frames().find()` loop that often
+    // latched onto the bootstrap prewarm-blank iframe — getWc() then
+    // read "" (empty StateWordCount) from a doomed frame and reported
+    // -1 across every step.
+    const up = await openSecretInBrowser(browser, VIEWER, b64urlSecret,
+        { iframeTimeout: env.scaleTimeout(120000),
+          gotoTimeout: env.scaleTimeout(60000),
+          viewport: { width: 1280, height: 900 } });
+    const page = up.page;
     const cdp = await page.createCDPSession();
     await cdp.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
-    await page.setViewport({ width: 1280, height: 900 });
-    await page.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
-    // Wait for editor to fully load. Re-resolve the iframe each tick:
-    // the viewer's cold-reload path replaces #editor-frame with a new
-    // <iframe> element, so a cached reference becomes stale.
-    let editorFrame;
-    for (let i = 0; i < 300; i++) {
-        await sleep(500);
-        editorFrame = page.frames().find(f => f.url().includes('cool.html'));
-        if (editorFrame) {
-            // Probe both __wasmPrewarmReady (set after the user doc is
-            // painted) and the canvas. StateWordCount alone fires for
-            // the prewarm-blank doc and races us into using the wrong
-            // frame.
-            const ready = await editorFrame.evaluate(() => !!window.__wasmPrewarmReady)
-                .catch(() => false);
-            if (ready) {
-                const wc = await editorFrame.evaluate(() =>
-                    document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-                if (/\d+\s+character/i.test(wc)) {
-                    const canvasOk = await editorFrame.evaluate(() =>
-                        !!document.querySelector('.leaflet-tile-container canvas, #document-container canvas')
-                    ).catch(() => false);
-                    if (canvasOk) break;
-                }
-            }
-        }
-    }
-    if (!editorFrame) { console.log('ERROR: no editor'); await cleanup(); process.exit(1); }
-
-    // Wait for TheFakeWebSocket
-    for (let i = 0; i < 60; i++) {
-        const ready = await editorFrame.evaluate(() =>
-            typeof globalThis.TheFakeWebSocket !== 'undefined' &&
-            globalThis.TheFakeWebSocket !== null).catch(() => false);
-        if (ready) break;
-        await sleep(500);
-    }
+    // Wait until status bar reports a character count + TheFakeWebSocket
+    // is ready. waitInFrame re-resolves the active editor iframe on
+    // every poll so any mid-load replaceChild doesn't strand stale refs.
+    await waitInFrame(page,
+        () => /\d+\s+character/i.test(
+                  document.querySelector('#StateWordCount')?.textContent || '')
+              && typeof globalThis.TheFakeWebSocket !== 'undefined',
+        { timeout: env.scaleTimeout(180000) });
     await sleep(5000);
 
     // Click the iframe canvas to focus for keyboard input
@@ -106,16 +88,12 @@ function check(label, cond, ev) {
     }
     function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? parseInt(m[1]) : -1; }
     async function getWc() {
-        // Re-resolve the iframe each call. Viewer recreates the editor
-        // iframe on cold-reload (the path our `page.goto + #file=`
-        // triggers when prewarm wasn't ready), so the editorFrame
-        // captured during setup may be the now-detached prewarm-blank
-        // frame whose StateWordCount still reads "0 characters" but
-        // that the user-visible document never propagates to.
-        const fr = page.frames().find(f => f.url().includes('cool.html'));
-        if (!fr) return '';
-        return fr.evaluate(() =>
-            document.querySelector('#StateWordCount')?.textContent?.trim() || '').catch(() => '');
+        // evalInFrame re-resolves the LIVE editor iframe (via
+        // ElementHandle.contentFrame()) so a viewer-side replaceChild
+        // mid-test doesn't strand a stale ref.
+        return evalInFrame(page, () =>
+            document.querySelector('#StateWordCount')?.textContent?.trim() || ''
+        ).catch(() => '');
     }
     async function logStep(title) {
         const wc = await getWc();
