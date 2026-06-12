@@ -58,6 +58,8 @@ TESTS=(
     "regression-event-driven-docready|tests/regression/test-regression-event-driven-docready.js|Regression: Event-Driven Doc-Ready|kit emits docready: text frame; wasm-loader fireDocReady() routes through existing fan-out. Phase 1: polling parallel + [event-vs-poll] telemetry.|shots-regression-event-driven-docready"
     # Bulk corpus open + type smoke (local-only — sample dir is gitignored)
     "regression-bulk-open-ignored|tests/regression/test-regression-bulk-open-ignored.js|Regression: Bulk Open (test/samples/ignored)|Single-browser walk over every file in test/samples/ignored/, real-keyboard types 'hello world', canvas pixel-diff + StateWordCount delta verify, HTML report at /reports/regression-bulk-open-ignored.html|shots-regression-bulk-open-ignored"
+    # Multi-stage open progress on the viewer shield
+    "regression-open-progress-stages|tests/regression/test-regression-open-progress-stages.js|Feature: multi-stage open progress|Shield stage checklist (#shield-stages) driven by WasmOpenStage postMessages; >=5 stages done before shield drop, monotonic bar, doc opens|shots-regression-open-progress-stages"
     # Perf gate
     "snapshot-milestones|tests/snapshot/test-snapshot-milestones.js|Snapshot Milestones|Per-doc cold/warm × N=3 trials (writer calc impress)|none"
     "regression-snapshot-survival|tests/regression/test-regression-snapshot-survival.js|Regression: Snapshot Survival across watchdog cycle|Heavy 50-slide pptx that exceeds the cross-type canvas-paint watchdog: snapshot must survive in Cache Storage so the next visit can warm-restore. See incident 2026-05-06.|shots-regression-snapshot-survival"
