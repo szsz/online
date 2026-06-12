@@ -153,13 +153,38 @@ async function pressCtrl(page, key) {
               after >= targetChars, 'expected≥' + targetChars + ' got=' + after);
         await snap(page, 'after_type');
 
-        // Double-click on a word. We aimed our caret at roughly the
-        // centre-ish of the doc; the freshly-typed text lands at the
-        // caret, so a double-click somewhere near the same Y line and
-        // a bit to the left of the click point should hit one of the
-        // words in "hello world".
-        await page.mouse.click(clickX - 30, clickY, { clickCount: 2 });
-        await sleep(env.scaleTimeout(500));
+        // Double-click on a word. Two pitfalls solved here (2026-06-12,
+        // root-caused via kit mouse-frame trace):
+        //
+        // 1. GEOMETRY: in a near-blank doc the typed text lands at the
+        //    document TOP regardless of where we clicked (the caret
+        //    snaps to the nearest valid position), so clicking at the
+        //    original mid-page coords hits empty space and selects
+        //    nothing. Aim at the visible blinking-cursor marker instead
+        //    — it sits right after the text we just typed.
+        // 2. IDIOM: puppeteer's click({clickCount: 2}) dispatches ONE
+        //    press/release pair (a single DOM `click` with detail=2).
+        //    COOL's MouseControl.onClick detects double-clicks by
+        //    COUNTING discrete click events inside a 250 ms window —
+        //    it never sees detail — so the kit gets count=1 and never
+        //    word-selects. A real user's double-click IS two click
+        //    events; simulate it as two discrete clicks 80 ms apart.
+        const cursorBox = await frame.evaluate(() => {
+            const el = document.querySelector('.blinking-cursor');
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { x: r.x, y: r.y, h: r.height };
+        });
+        check('Blinking cursor visible after typing', !!cursorBox,
+              cursorBox ? '' : 'no .blinking-cursor element');
+        const dcX = ifBox.x + (cursorBox ? cursorBox.x - 20 : clickX - 30);
+        const dcY = cursorBox ? ifBox.y + cursorBox.y + cursorBox.h / 2 : clickY;
+        await page.mouse.click(dcX, dcY);
+        await sleep(80);
+        await page.mouse.click(dcX, dcY);
+        // MouseControl's click-counter timer fires 250 ms after the
+        // second click; give it room before copying.
+        await sleep(env.scaleTimeout(700));
         await snap(page, 'word_double_clicked');
 
         // Copy → ctrl-end → paste.

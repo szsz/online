@@ -153,17 +153,31 @@ async function pressCtrl(page, key) {
         await pressCtrl(page, 'Home');
         await sleep(env.scaleTimeout(500));
 
-        // Drag-select a horizontal span at roughly the same Y as where
-        // we clicked + typed. The typed text lives near clickY.
-        const dragStartX = clickX - 40;
-        const dragEndX = clickX + 40;
-        await page.mouse.move(dragStartX, clickY);
+        // Drag-select a horizontal span across the FIRST LINE of text.
+        // GEOMETRY (2026-06-12 root-cause): in a near-blank doc the
+        // typed text lands at the document TOP — the original drag at
+        // mid-page clickY crossed empty space and selected nothing
+        // (verified via kit mouse-frame trace). After the Ctrl+Home
+        // above, the visible blinking cursor sits at the start of the
+        // first line; drag rightwards from it across the text.
+        const cursorBox = await frame.evaluate(() => {
+            const el = document.querySelector('.blinking-cursor');
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { x: r.x, y: r.y, h: r.height };
+        });
+        check('Blinking cursor visible after Ctrl+Home', !!cursorBox,
+              cursorBox ? '' : 'no .blinking-cursor element');
+        const dragY = cursorBox ? ifBox.y + cursorBox.y + cursorBox.h / 2 : clickY;
+        const dragStartX = cursorBox ? ifBox.x + cursorBox.x + 2 : clickX - 40;
+        const dragEndX = dragStartX + 80;
+        await page.mouse.move(dragStartX, dragY);
         await page.mouse.down();
         // Let kit register the press before the drag begins — under
         // contention an 8-step move can outpace the click-down handler
         // and the kit never sees a drag-start.
         await sleep(env.scaleTimeout(200));
-        await page.mouse.move(dragEndX, clickY, { steps: 30 });
+        await page.mouse.move(dragEndX, dragY, { steps: 30 });
         await page.mouse.up();
         await sleep(env.scaleTimeout(500));
         await snap(page, 'after_drag');
