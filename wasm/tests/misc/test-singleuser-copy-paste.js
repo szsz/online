@@ -436,15 +436,31 @@ async function openSingleUser(browser, secretB64) {
         const newLogs = page.__capturedLogs.slice(logsBeforeImgPaste);
         const sawLocalKitInsert = newLogs.some(l =>
             /\[relay\] insertfile → local Kit/.test(l));
-        const sawKitHandle = newLogs.some(l =>
-            /KitWS handleMessage.*insertfile.*type=graphic/.test(l));
         check('Case 7a: image insertfile dispatched to local Kit (single-user)',
               sawLocalKitInsert,
               sawLocalKitInsert ? 'present' : 'no "[relay] insertfile → local Kit" log');
-        check('Case 7b: Kit received the insertfile message',
-              sawKitHandle,
-              sawKitHandle ? 'present' : 'no KitWS handleMessage insertfile log');
+        // Visible outcome: a freshly inserted image is auto-selected,
+        // flipping the notebookbar to the Picture context tab. (Was a
+        // 'KitWS handleMessage' log-grep — that line is not emitted by
+        // the single-user direct dispatch, so the check failed even
+        // when the image landed; 2026-06-12. Same fix as the isolated
+        // test-regression-external-image-paste.js.)
+        let pictureTab7 = false;
+        try {
+            const fr7 = page.frames().find(f => f.url().includes('cool.html'));
+            await fr7.waitForFunction(() => {
+                const el = document.querySelector('#Picture-tab-label');
+                return !!el && el.offsetParent !== null;
+            }, { timeout: 10000 });
+            pictureTab7 = true;
+        } catch (_) {}
+        check('Case 7b: Picture context tab appeared (image inserted + selected)',
+              pictureTab7,
+              pictureTab7 ? 'visible' : '#Picture-tab-label not visible');
         await snap(page, 'case7_external_image');
+        // Deselect the image so case 8 types into the text body again.
+        await page.keyboard.press('Escape');
+        await sleep(400);
 
         // ─── Case 8: plaintext-only paste (unique sentinel) ──────────
         // Use plain Ctrl+V — the clipboard is plaintext-only, so this
@@ -460,19 +476,16 @@ async function openSingleUser(browser, secretB64) {
         await waitForCharCountAtLeast(page, before8 + SENTINEL_PLAIN.length, 10000);
         await sleep(600);
         const after8 = await getCharCount(page);
-        const newLogs8 = page.__capturedLogs.slice(logsBeforePlainPaste);
-        // Verify the exact sentinel reached Kit's paste handler. After
-        // case 7 inserts an image, the SelectAll/gettextselection probe
-        // becomes unreliable, but the Kit message log is direct evidence
-        // the bytes traveled the dispatchPaste → sendToKit path.
-        const sawPlainSentinelInKit = newLogs8.some(l =>
-            /KitWS handleMessage[\s\S]*paste mimetype=text\/plain[\s\S]*PASTED-PLAIN-67890/
-                .test(l));
         check('Case 8a: plaintext paste did not crash editor',
               after8 >= 0, 'after=' + after8);
-        check('Case 8b: plaintext sentinel reached Kit paste handler',
-              sawPlainSentinelInKit,
-              sawPlainSentinelInKit ? 'present' : 'no Kit paste log with sentinel');
+        // Visible outcome: the sentinel's characters landed in the doc.
+        // (Was a 'KitWS handleMessage' log-grep — not emitted by the
+        // single-user direct dispatch path, so the check failed even
+        // when the paste landed; 2026-06-12.)
+        check('Case 8b: plaintext sentinel grew the char count',
+              after8 >= before8 + SENTINEL_PLAIN.length,
+              'before=' + before8 + ' after=' + after8 +
+              ' need +' + SENTINEL_PLAIN.length);
         await snap(page, 'case8_plaintext');
 
         // ─── Case 9: save round-trip ─────────────────────────────────
