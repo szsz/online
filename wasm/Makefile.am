@@ -116,8 +116,21 @@ online_LDADD = \
 # codebase grows the binary instead of shrinking it (measured: 278
 # → 302 MB). -Oz is the correct level for size; size also matters
 # more than speed for cold-load latency over the wire.
+#
+# ALLOW_MEMORY_GROWTH=1 + MAXIMUM_MEMORY=2GB (2026-06-12): under
+# USE_PTHREADS, growth is a silent no-op unless MAXIMUM_MEMORY is
+# explicit — Emscripten emits the SharedArrayBuffer with max==initial
+# and any allocation past TOTAL_MEMORY traps with "memory access out
+# of bounds". LO PR #36 set these flags on the LO side, but
+# online.wasm is linked HERE with its own -s flags, so the LO-side
+# fix never reached the shipped binary (verified: deployed wasm
+# header read initial=16384 pages, max=16384 pages). The 1 GB cap
+# was crashing every late-join in-place doc switch (prewarm blank +
+# real doc + checkpoint replay in one runtime) → the entire
+# "second browser never loads" test cluster, plus the shape-area
+# OOM tripwires. Mirrors LO PR #36's values: initial 1 GB, max 2 GB.
 online_LDFLAGS = \
-	-Oz -g0 -pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
+	-Oz -g0 -pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1 -s MAXIMUM_MEMORY=2GB -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
 	--pre-js @LOSOURCEDIR@/static/emscripten/environment.js \
 	--pre-js @LOBUILDDIR@/workdir/CustomTarget/static/emscripten_fs_image/soffice.data.js.link \
 	--post-js @LOBUILDDIR@/workdir/CustomTarget/static/unoembind/bindings_uno.js \
