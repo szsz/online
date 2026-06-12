@@ -78,6 +78,16 @@ body.docs-collapsed #sidebar-hover-zone { display: block; }
 @keyframes shspin { to { transform: rotate(360deg); } }
 #editor-shield-label { font-size: 15px; font-weight: 500; color: #333; margin-bottom: 6px; }
 #editor-shield-detail { font-size: 12px; color: #666; }
+#shield-stages {
+    list-style: none; margin: 10px 0 0; padding: 0;
+    font-size: 12px; color: #888; width: 300px;
+}
+#shield-stages li { padding: 1px 0; display: flex; align-items: center; gap: 6px; }
+#shield-stages li .sg-icon { width: 14px; text-align: center; flex: none; }
+#shield-stages li[data-state="pending"] { color: #bbb; }
+#shield-stages li[data-state="in-progress"] { color: #1a56c4; font-weight: 600; }
+#shield-stages li[data-state="done"] { color: #2e7d32; }
+#shield-stages li .sg-pct { margin-left: auto; font-variant-numeric: tabular-nums; color: #666; }
 .file { padding: 6px 8px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 13px; }
 .file:hover { background: #e8f4ff; }
 .file.active { background: #d0e8ff; }
@@ -136,6 +146,7 @@ h3 { margin: 5px 0; }
                  style="height:100%;background:linear-gradient(90deg,#4a90e2,#357abd);width:0%;transition:width 0.3s;"></div>
         </div>
         <div id="editor-shield-detail"></div>
+        <ol id="shield-stages"></ol>
     </div>
     <div id="status-bar">Ready</div>
     <div id="save-toast">Document saved</div>
@@ -419,10 +430,77 @@ window.__viewerState = {
 function setStatus(msg) {
     document.getElementById('status-bar').textContent = msg;
 }
+// ── Multi-stage open progress (feature 2026-06-12) ─────────────────
+// The iframe's wasm-loader forwards its mark() pipeline milestones as
+// WasmOpenStage postMessages; we render them as a live stage checklist
+// under the shield's progress bar. 'import' is special: the kit's own
+// statusindicator percent (0-100) for the document import filter — the
+// dominant phase of any big-file open.
+var SHIELD_STAGES = [
+    { id: 'loader:start',                 label: 'Editor engine starting' },
+    { id: 'sw-bridge:ready',              label: 'Connection ready' },
+    { id: 'net:fetch_start',              label: 'Downloading editor' },
+    { id: 'net:fetch_end',                label: 'Download complete' },
+    { id: 'emscripten:module_defined',    label: 'Initializing engine' },
+    { id: 'snapshot:signal',              label: 'Session check' },
+    { id: 'emscripten:wasmExports_ready', label: 'Engine compiled' },
+    { id: 'emscripten:FS_ready',          label: 'Filesystem ready' },
+    { id: 'emscripten:calledRun',         label: 'Engine running' },
+    { id: 'dom:status_appeared',          label: 'Interface loaded' },
+    { id: 'dom:first_canvas',             label: 'Canvas ready' },
+    { id: 'import',                       label: 'Opening document' },
+    { id: 'doc:loaded',                   label: 'Document loaded' },
+];
+function buildShieldStages() {
+    var ol = document.getElementById('shield-stages');
+    if (!ol) return;
+    ol.innerHTML = '';
+    SHIELD_STAGES.forEach(function(s) {
+        var li = document.createElement('li');
+        li.setAttribute('data-stage', s.id);
+        li.setAttribute('data-state', 'pending');
+        li.innerHTML = '<span class="sg-icon">·</span><span class="sg-label"></span><span class="sg-pct"></span>';
+        li.querySelector('.sg-label').textContent = s.label;
+        ol.appendChild(li);
+    });
+}
+function setShieldStage(stageId, state, pctText) {
+    var li = document.querySelector('#shield-stages li[data-stage="' + stageId + '"]');
+    if (!li) return;
+    // done is terminal — never demote (late duplicate signals).
+    if (li.getAttribute('data-state') === 'done' && state !== 'done') return;
+    li.setAttribute('data-state', state);
+    li.querySelector('.sg-icon').textContent =
+        state === 'done' ? '✓' : state === 'in-progress' ? '⟳' : '·';
+    li.querySelector('.sg-pct').textContent = pctText || '';
+    // Every earlier stage in pipeline order is implicitly complete —
+    // warm restores skip download/compile signals entirely.
+    if (state === 'done' || state === 'in-progress') {
+        for (var i = 0; i < SHIELD_STAGES.length; i++) {
+            var s = SHIELD_STAGES[i];
+            if (s.id === stageId) break;
+            var prevLi = document.querySelector('#shield-stages li[data-stage="' + s.id + '"]');
+            if (prevLi && prevLi.getAttribute('data-state') === 'pending') {
+                prevLi.setAttribute('data-state', 'done');
+                prevLi.querySelector('.sg-icon').textContent = '✓';
+            }
+        }
+    }
+}
+function shieldStagePct() {
+    // Stage completion drives a coarse 0-95% floor for the bar.
+    var done = document.querySelectorAll('#shield-stages li[data-state="done"]').length;
+    return Math.round(done / SHIELD_STAGES.length * 95);
+}
+// The boot shield is up from initial HTML (class="active") before any
+// showShield() call — populate its stage list immediately.
+buildShieldStages();
 function showShield(label, detail) {
     document.getElementById('editor-shield-label').textContent = label || 'Working…';
     document.getElementById('editor-shield-detail').textContent = detail || '';
     document.getElementById('editor-shield-bar-fill').style.width = '0%';
+    window.__shieldMaxPct = 0;   // reset the monotonic-bar guard per open
+    buildShieldStages();
     var sh = document.getElementById('editor-shield');
     sh.classList.add('active');
     sh.style.display = 'flex';
@@ -438,8 +516,17 @@ function hideShield() {
 }
 function updateShieldProgress(label, pct, detail) {
     if (label) document.getElementById('editor-shield-label').textContent = label;
-    if (pct != null) document.getElementById('editor-shield-bar-fill').style.width =
-        Math.max(0, Math.min(100, pct)) + '%';
+    if (pct != null) {
+        // Monotonic guard: progress signals arrive from several
+        // independent sources (download %, stage count, kit import %,
+        // late-join phases) whose remapped ranges overlap — without the
+        // guard the bar visibly jumps backwards between phases.
+        var clamped = Math.max(0, Math.min(100, pct));
+        if (clamped >= (window.__shieldMaxPct || 0)) {
+            window.__shieldMaxPct = clamped;
+            document.getElementById('editor-shield-bar-fill').style.width = clamped + '%';
+        }
+    }
     if (detail != null) document.getElementById('editor-shield-detail').textContent = detail;
 }
 
@@ -570,6 +657,25 @@ window.addEventListener('message', function(event) {
                     openFileBySecret(entry.secret);
                 }
             } catch(e) { console.error('[viewer] HotSwitchFailed retry failed', e); }
+            return;
+        }
+        // Fine-grained pipeline stage from the iframe's wasm-loader
+        // mark() stream (or the kit's import % for stage 'import').
+        // Drives the shield's stage checklist + nudges the bar.
+        if (msg.MessageId === 'WasmOpenStage' && msg.Values && msg.Values.stage) {
+            var stg = msg.Values.stage;
+            if (stg === 'import') {
+                var ipct = Math.max(0, Math.min(100, msg.Values.pct || 0));
+                setShieldStage('import', ipct >= 100 ? 'done' : 'in-progress',
+                    ipct > 0 && ipct < 100 ? ipct + '%' : '');
+                // Import owns the 55-95% band of the bar — it is the
+                // long phase; stages before it land below 55.
+                updateShieldProgress(null, 55 + ipct * 0.4, null);
+            } else {
+                setShieldStage(stg, 'done', '');
+                if (stg === 'doc:loaded') setShieldStage('import', 'done', '');
+                updateShieldProgress(null, shieldStagePct(), null);
+            }
             return;
         }
         // Live progress from the iframe's wasm-loader.
