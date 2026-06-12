@@ -762,6 +762,17 @@
                         return;
                     }
                 }
+                // Same for Ctrl+X: Map.Keyboard's eager keydown uno:Cut
+                // would delete the selection before wasm-loader's oncut
+                // captures its content for the system clipboard. oncut
+                // sends the (only) .uno:Cut itself after the capture.
+                if (globalThis._suppressNextCut) {
+                    if (text === 'uno .uno:Cut') {
+                        console.log('[relay] Suppressing Map.Keyboard cut (oncut owns the sequence)');
+                        globalThis._suppressNextCut = false;
+                        return;
+                    }
+                }
                 // `uno .uno:Save` and `.uno:SaveAs` must NOT be forwarded
                 // to the kit. The kit's wsd/DocumentBroker.cpp:5284 has
                 // an assertion specifically to catch this — the save flow

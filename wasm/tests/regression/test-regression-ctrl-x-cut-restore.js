@@ -160,10 +160,15 @@ async function pressCtrl(page, key) {
         await sleep(env.scaleTimeout(400));
         await snap(page, 'after_select');
 
-        const beforeCut = await readCharCount(frame);
-        log('before-cut chars=' + beforeCut);
+        // NOTE (2026-06-12): with an active selection, #StateWordCount
+        // shows "Selected: … N characters", so reading it HERE returns
+        // the SELECTION size, not the doc total. Use the after-type
+        // total captured above as the authoritative before-cut count.
+        const beforeCut = afterType;
+        log('before-cut chars=' + beforeCut + ' (from after-type total)');
 
-        // Ctrl+X: cut the selection.
+        // Ctrl+X: cut the selection. The selection collapses, so the
+        // status bar shows the doc total again.
         await pressCtrl(page, 'x');
         const afterCut = await waitForChars(frame, beforeCut - 3,
             env.scaleTimeout(8000), (c, t) => c >= 0 && c <= t);
@@ -174,10 +179,16 @@ async function pressCtrl(page, key) {
               afterCut >= 0 && afterCut <= beforeCut - 3,
               'before=' + beforeCut + ' after=' + afterCut);
 
+        // Give the oncut clipboard capture time to settle — the handler
+        // polls for the selection content before writing the system
+        // clipboard (capture happens BEFORE the cut is applied, but the
+        // async navigator.clipboard.write can land just after).
+        await sleep(env.scaleTimeout(800));
+
         // Ctrl+V: paste the cut content back. THIS is the tripwire.
-        // If the kit's .uno:Cut wrote to the OS clipboard, this restores
-        // the char count to beforeCut. If the bug is still present,
-        // the OS clipboard is stale and the count won't recover.
+        // If the cut path wrote the OS clipboard, this restores the
+        // char count to beforeCut. If the bug is still present, the
+        // OS clipboard is stale/empty and the count won't recover.
         await pressCtrl(page, 'v');
         const afterPaste = await waitForChars(frame, beforeCut,
             env.scaleTimeout(8000), (c, t) => c >= t);
@@ -187,7 +198,7 @@ async function pressCtrl(page, key) {
         check('Ctrl+V restored chars to before-cut count (TRIPWIRE)',
               afterPaste >= beforeCut,
               'expected≥' + beforeCut + ' got=' + afterPaste +
-              ' → kit-side .uno:Cut likely not writing to OS clipboard');
+              ' → cut path not writing the OS clipboard');
 
         log('\n' + (allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'));
     } catch (e) {
