@@ -372,6 +372,71 @@ docker exec "$CONTAINER" bash -c "
 
 echo ""
 echo "=== Build complete ==="
+
+# ---------- Locate the real link output ----------
+# Depending on how the in-container configure resolved its build tree,
+# make's output lands either in the bind-mounted $ONLINE_BUILD_DIR/wasm
+# or in a container-internal /wasm (observed 2026-06-12: the configured
+# tree was rooted at '/' and three successive local builds silently
+# left STALE artifacts on the host while the fresh growth/limited-opt
+# binaries sat inside the container). Detect the freshest online.wasm
+# of the two and, if it's container-internal, copy it out.
+HOST_WASM="$REPO_DIR/wasm/online-build/wasm"
+CONTAINER_INTERNAL_NEWER=$(docker exec "$CONTAINER" bash -c "
+    [ -f /wasm/online.wasm ] || exit 1
+    [ ! -f '$ONLINE_BUILD_DIR/wasm/online.wasm' ] && exit 0
+    [ /wasm/online.wasm -nt '$ONLINE_BUILD_DIR/wasm/online.wasm' ] && exit 0 || exit 1
+" && echo yes || echo no)
+if [ "$CONTAINER_INTERNAL_NEWER" = "yes" ]; then
+    echo "  NOTE: link output found at container-internal /wasm — extracting"
+fi
+
+# ---------- Strip the name section (in-container, wasm-opt) ----------
+# Only relevant for DIAGNOSTIC builds where --profiling-funcs was added
+# to online_LDFLAGS in wasm/Makefile.am (symbolized stacks; +99 MB raw).
+# Strip the names back out before any deploy (277 MB → 178 MB) unless
+# WASM_KEEP_NAMES=1 explicitly keeps them for local stack debugging.
+# Stripping is metadata-only — code stays byte-identical (verified:
+# strip output is invariant under feature-flag sets, and a stripped vs
+# named pair behave the same modulo the probabilistic SECOND_INIT race
+# documented in ai/proposals/proposed/second-init-wild-pointer-oob.md).
+# The default `-Oz -g0` link emits no name section, so skip the
+# multi-minute wasm-opt round-trip entirely in that case.
+if ! grep -q -- '--profiling-funcs' "$REPO_DIR/wasm/Makefile.am"; then
+    : # default link has no name section — nothing to strip
+elif [ "${WASM_KEEP_NAMES:-0}" = "1" ]; then
+    echo "  WASM_KEEP_NAMES=1 — skipping name-section strip (diagnostic build)"
+else
+echo "  Stripping wasm name section (post-link, code unchanged)…"
+docker exec "$CONTAINER" bash -c "
+    set -e
+    SRC='$ONLINE_BUILD_DIR/wasm/online.wasm'
+    [ '$CONTAINER_INTERNAL_NEWER' = 'yes' ] && SRC=/wasm/online.wasm
+    WOPT=\$(find /home/builder/emsdk -name wasm-opt -type f 2>/dev/null | head -1)
+    \$WOPT --strip-debug --strip-producers \"\$SRC\" -o /tmp/online.stripped.wasm \
+        --enable-threads --enable-bulk-memory --enable-exception-handling \
+        --enable-sign-ext --enable-mutable-globals --enable-nontrapping-float-to-int
+    mv /tmp/online.stripped.wasm \"\$SRC\"
+    ls -la \"\$SRC\"
+" || echo "  WARNING: name-strip failed — shipping with name section"
+fi
+
+# ---------- Extract artifacts if the build tree was container-internal ──
+if [ "$CONTAINER_INTERNAL_NEWER" = "yes" ]; then
+    mkdir -p "$HOST_WASM" "$REPO_DIR/wasm/online-build/browser/dist"
+    # Browser assets FIRST (cool.html, bundle.js, …) — this tree contains
+    # an UNSTRIPPED copy of online.wasm made during make, so the stripped
+    # /wasm/* copies below must come AFTER to win. Shipping the browser
+    # tree's unstripped wasm next to /wasm's fresh online.js produced a
+    # mismatched glue/wasm pair on the first pipeline validation — the
+    # pair MUST come from the same post-strip /wasm state.
+    docker cp "$CONTAINER:/browser/dist/." "$REPO_DIR/wasm/online-build/browser/dist/" 2>/dev/null || true
+    for f in online.js online.wasm online.worker.js; do
+        docker cp "$CONTAINER:/wasm/$f" "$HOST_WASM/$f" 2>/dev/null || true
+        docker cp "$CONTAINER:/wasm/$f" "$REPO_DIR/wasm/online-build/browser/dist/$f" 2>/dev/null || true
+    done
+fi
+
 echo ""
 echo "  Artifacts:"
 ls -lh "$REPO_DIR/wasm/online-build/wasm"/online.* 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
@@ -380,6 +445,8 @@ ls -lh "$REPO_DIR/wasm/online-build/wasm"/online.* 2>/dev/null | awk '{print "  
 # emcc runs as root inside the container; chown back so finalize-build.sh
 # (which runs on the host below) can edit the outputs without sudo.
 docker exec "$CONTAINER" chown -R "$(id -u):$(id -g)" "$ONLINE_BUILD_DIR" 2>/dev/null || true
+chown -R "$(id -u):$(id -g)" "$REPO_DIR/wasm/online-build" 2>/dev/null || \
+    sudo chown -R "$(id -u):$(id -g)" "$REPO_DIR/wasm/online-build" 2>/dev/null || true
 
 # ---------- Stop container ----------
 echo ""
