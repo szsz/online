@@ -153,5 +153,8 @@ done
 echo
 echo "[OK] Deploy to TEST Azure done."
 echo "    Tail viewer:  az webapp log tail --resource-group $RESOURCE_GROUP --name $VIEWER_APP_NAME"
-echo "    Tail editor:  az webapp log tail --resource-group $RESOURCE_GROUP --name $EDITOR_APP_NAME"
+# Editor is Front-Door-served from the wasmeditor storage static website
+# since the per-deploy-folder migration — there is no editor App Service
+# to tail (a stale $EDITOR_APP_NAME reference here made the script exit 1
+# AFTER a successful deploy, under set -u).
 echo "    Tail relay:   az webapp log tail --resource-group $RESOURCE_GROUP --name $RELAY_APP_NAME"
