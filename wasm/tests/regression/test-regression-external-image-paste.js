@@ -159,17 +159,30 @@ async function writeClipboardImage(page, b64) {
         const newLogs = capturedLogs.slice(logsBeforePaste);
         const sawLocalKitInsert = newLogs.some(l =>
             /\[relay\]\s+insertfile\s*→\s*local\s+Kit/i.test(l));
-        const sawKitHandle = newLogs.some(l =>
-            /KitWS\s+handleMessage[\s\S]*insertfile[\s\S]*type=graphic/i.test(l));
 
         check('relay-adapter dispatched insertfile to local Kit',
               sawLocalKitInsert,
               sawLocalKitInsert ? 'present' :
                   'no "[relay] insertfile → local Kit" log in ' + newLogs.length + ' new lines');
-        check('Kit received insertfile (graphic)',
-              sawKitHandle,
-              sawKitHandle ? 'present' :
-                  'no KitWS handleMessage insertfile log');
+
+        // Visible outcome: a freshly inserted image is auto-selected,
+        // which flips the notebookbar to the Picture context tab. The
+        // old assertion grepped for a "KitWS handleMessage" console
+        // line, but the single-user direct dispatch (postMobileMessage
+        // straight into the kit) never emits that log — the test failed
+        // even though the image landed in the doc (2026-06-12, verified
+        // via screenshot: Picture tab + selection handles present).
+        let pictureTab = false;
+        try {
+            await frame.waitForFunction(() => {
+                const el = document.querySelector('#Picture-tab-label');
+                return !!el && el.offsetParent !== null;
+            }, { timeout: env.scaleTimeout(10000) });
+            pictureTab = true;
+        } catch (_) {}
+        check('Picture context tab appeared (image inserted + selected)',
+              pictureTab,
+              pictureTab ? 'visible' : '#Picture-tab-label not visible within budget');
 
         log('\n' + (allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'));
     } catch (e) {
