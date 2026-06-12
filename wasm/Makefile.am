@@ -117,6 +117,14 @@ online_LDADD = \
 # → 302 MB). -Oz is the correct level for size; size also matters
 # more than speed for cold-load latency over the wire.
 #
+# Diagnostic builds: add --profiling-funcs to the flags below to keep
+# the wasm name section (symbolized stack traces; +99 MB raw, and it
+# forces binaryen into limited post-link opts). build-wasm.sh strips
+# the names again before deploy unless WASM_KEEP_NAMES=1. Do NOT ship
+# the flag: the late-join SECOND_INIT OOB it was once thought to fix
+# is a probabilistic runtime race, not an opt-level miscompilation —
+# see ai/proposals/proposed/second-init-wild-pointer-oob.md.
+#
 # ALLOW_MEMORY_GROWTH=1 + MAXIMUM_MEMORY=2GB (2026-06-12): under
 # USE_PTHREADS, growth is a silent no-op unless MAXIMUM_MEMORY is
 # explicit — Emscripten emits the SharedArrayBuffer with max==initial
