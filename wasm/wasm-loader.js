@@ -1563,6 +1563,18 @@
             globalThis._suppressNextPaste = true;
             setTimeout(function() { globalThis._suppressNextPaste = false; }, 3000);
         }
+        // Ctrl+X: Map.Keyboard sends `uno .uno:Cut` on keydown (mobile/
+        // Emscripten path) BEFORE the DOM cut event fires. That deletes
+        // the selection before our oncut handler can fetch its content,
+        // so the system-clipboard write always captured nothing and an
+        // isolated Ctrl+X → Ctrl+V restored nothing. Suppress the eager
+        // cut (relay-adapter drops it); oncut owns the sequence:
+        // capture selection content FIRST, then send the cut itself.
+        if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey &&
+            (ev.key === 'x' || ev.key === 'X')) {
+            globalThis._suppressNextCut = true;
+            setTimeout(function() { globalThis._suppressNextCut = false; }, 3000);
+        }
     }, true);
 
     // ── PASTE handler (capture phase, registered EARLY) ──────────
@@ -2311,17 +2323,29 @@
                         };
                         document.oncut = function(ev) {
                             ev.preventDefault();
-                            // Cut = copy to system clipboard + delete from doc
-                            if (globalThis.TheFakeWebSocket) {
-                                globalThis.TheFakeWebSocket.send('uno .uno:Cut');
-                            }
-                            // Also write to system clipboard (same as copy)
+                            // ORDER MATTERS (2026-06-12 fix): capture the
+                            // selection content BEFORE the cut deletes it.
+                            // The old code sent `uno .uno:Cut` first (and
+                            // Map.Keyboard sent its own on keydown — now
+                            // suppressed via _suppressNextCut), so the
+                            // 200 ms-later gettextselection read always saw
+                            // an empty selection and the system clipboard
+                            // never received the cut bytes.
+                            // Clear the cached content so we only accept a
+                            // FRESH reply to this request — not leftovers
+                            // from an earlier copy.
+                            clip._selectionContent = '';
+                            clip._selectionPlainTextContent = '';
                             if (globalThis.postMobileMessage) {
                                 globalThis.postMobileMessage('gettextselection mimetype=text/html');
                             }
-                            setTimeout(function() {
+                            var cutT0 = performance.now();
+                            var cutIv = setInterval(function() {
                                 var html = clip._selectionContent || '';
                                 var plain = clip._selectionPlainTextContent || '';
+                                var elapsed = performance.now() - cutT0;
+                                if (!(html || plain) && elapsed <= 1500) return;
+                                clearInterval(cutIv);
                                 if (!plain && html) {
                                     var d = document.createElement('div');
                                     d.innerHTML = html;
@@ -2334,9 +2358,18 @@
                                     navigator.clipboard.write([new ClipboardItem({
                                         'text/html': new Blob([html], {type: 'text/html'}),
                                         'text/plain': new Blob([plain], {type: 'text/plain'}),
-                                    })]).catch(function() {});
+                                    })]).then(function() {
+                                        console.log('[wasm-loader] Cut: captured to system clipboard (' + plain.length + ' chars)');
+                                    }).catch(function() {});
+                                } else if (!html && !plain) {
+                                    console.log('[wasm-loader] Cut: no selection content after ' +
+                                        elapsed.toFixed(0) + 'ms — cutting anyway');
                                 }
-                            }, 200);
+                                // NOW delete the selection from the doc.
+                                if (globalThis.TheFakeWebSocket) {
+                                    globalThis.TheFakeWebSocket.send('uno .uno:Cut');
+                                }
+                            }, 25);
                             return false;
                         };
 
