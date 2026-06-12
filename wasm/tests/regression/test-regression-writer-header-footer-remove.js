@@ -142,13 +142,32 @@ async function openPageDialog(frame, page) {
     // aria-label="Page Style" is the stable lookup. Clear any cached id
     // from a previous openPageDialog call — the notebookbar re-renders
     // after Apply+save and the button id may have changed.
+    //
+    // RETRY LOOP (2026-06-12): after Phase 1's Apply + save round-trip
+    // the notebookbar can re-render into a state where the Format tab
+    // reads `selected` but its toolbar CONTENT never painted — the
+    // Page Style button exists with zero size and a single long wait
+    // times out (CI builds 2026-06-10..12, line-146 TimeoutError).
+    // Re-clicking the tab forces a content render; three short rounds
+    // beat one long wait against a render that will never happen.
     await frame.evaluate(() => { delete window.__pageDialogBtnId; });
-    await frame.waitForFunction(() => {
-        const btns = [...document.querySelectorAll('button[aria-label="Page Style"]')];
-        const v = btns.find(b => b.offsetWidth > 0 && b.offsetHeight > 0);
-        if (v) { window.__pageDialogBtnId = v.id; return true; }
-        return false;
-    }, { timeout: env.scaleTimeout(15000) });
+    let pageStyleVisible = false;
+    for (let attempt = 0; attempt < 3 && !pageStyleVisible; attempt++) {
+        if (attempt > 0) {
+            await clickInFrame(frame, page, '#Format-tab-label');
+            await sleep(env.scaleTimeout(800));
+        }
+        pageStyleVisible = await frame.waitForFunction(() => {
+            const btns = [...document.querySelectorAll('button[aria-label="Page Style"]')];
+            const v = btns.find(b => b.offsetWidth > 0 && b.offsetHeight > 0);
+            if (v) { window.__pageDialogBtnId = v.id; return true; }
+            return false;
+        }, { timeout: env.scaleTimeout(8000) }).then(() => true).catch(() => false);
+    }
+    if (!pageStyleVisible) {
+        throw new Error('openPageDialog: Page Style button never became visible '
+            + 'after 3 tab re-click attempts (notebookbar content render stuck)');
+    }
     const sel = await frame.evaluate(() => '#' + window.__pageDialogBtnId);
     await clickInFrame(frame, page, sel);
 
