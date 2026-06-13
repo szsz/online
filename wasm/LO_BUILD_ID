@@ -300,4 +300,18 @@
 #                  the prints themselves are not needed for the
 #                  open fix (DrawWaveLine pixel emission, separate
 #                  effort).
-2026-06-07-70
+#   2026-06-13-72  git_sha (LO PR #38, branch instrument/second-init-
+#                  racetrace-2026-06-13). Adds the SECOND_INIT
+#                  race-trace ring buffer (sal/osl/all/racetrace.cxx)
+#                  + wasm_race_mark/wasm_dump_race_trace, with LO-core
+#                  marks at the audited candidate sites (yield-mutex
+#                  reset 11/12, SECOND_INIT stage 20, pre-
+#                  reInitDictionaryList 21, Timer::startThread 22,
+#                  timer-callback dispatch 30). DIAGNOSTIC ONLY —
+#                  additive, no logic change, no-op on non-Emscripten.
+#                  Paired with online kit-side marks (this PR) to
+#                  pinpoint which (tid, site) is live across the
+#                  SECOND_INIT boundary when the late-join OOB fires,
+#                  before committing the g_serverFreshlyReady gating
+#                  fix. See ai/tasks/todo/fix-second-init-race.md.
+2026-06-13-72
