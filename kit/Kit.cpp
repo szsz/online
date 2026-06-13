@@ -33,6 +33,9 @@
 #include <emscripten/threading.h>
 extern "C" int wasm_is_warm_restored();
 extern "C" void wasm_set_warm_restored(int);
+// SECOND_INIT race trace (diagnostic, defined in LO-core
+// sal/osl/all/racetrace.cxx; resolved at the online.wasm static link).
+extern "C" void wasm_race_mark(unsigned site);
 #endif
 
 #ifdef __linux__
@@ -4184,10 +4187,12 @@ void lokit_main(
         }
 
         MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 starting'); });
+        wasm_race_mark(40); // SECOND_INIT: before lok_init_2 (main/kit thread)
         // NOT static — must re-run on restore to reinitialize VCL/fontconfig.
         // On first visit: FULL_INIT. On restore: bInitialized=true → returns 1 (fast).
         // But InitVCL is called in the unipoll else-branch regardless.
         LibreOfficeKit *kit = lok_init_2(nullptr, nullptr);
+        wasm_race_mark(41); // SECOND_INIT: after lok_init_2
         MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 done'); });
 #elif (defined(__linux__) && !defined(__ANDROID__) && !defined(QTAPP)) || defined(__FreeBSD__)
         Poco::URI userInstallationURI("file", LO_PATH);
@@ -4298,6 +4303,9 @@ void lokit_main(
 #endif
 
 #if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
+#ifdef __EMSCRIPTEN__
+        wasm_race_mark(42); // SECOND_INIT: immediately before startMainLoop (trap fires ~here)
+#endif
         startMainLoop(kit, loKit, mainKit);
 
         // Trap the signal handler, if invoked,

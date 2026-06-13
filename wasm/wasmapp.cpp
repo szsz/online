@@ -96,6 +96,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE const char* get_temp_dir_path()
 // even though the captured `coolwsd_server_socket_fd` is non-zero.
 static std::atomic<int> g_serverFreshlyReady{0};
 
+// SECOND_INIT race trace (diagnostic, defined in LO-core racetrace.cxx;
+// resolved at the online.wasm static link). wasmapp is wasm-only.
+extern "C" void wasm_race_mark(unsigned site);
+
 extern "C" EMSCRIPTEN_KEEPALIVE int is_preinit_done()
 {
     // Both gates must be satisfied: the C++ fd has been set AND the
@@ -372,6 +376,7 @@ int create_remote_client()
 
                     // Forwarding loop
                     int closePipe1 = client.closeNotificationPipe[1];
+                    wasm_race_mark(60); // remote-client relay thread entering forward loop (detached; candidate #3)
                     while (true)
                     {
                         struct pollfd pollfd[2];

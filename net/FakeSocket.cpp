@@ -89,6 +89,16 @@ static void (*loggingCallback)(const std::string&) = nullptr;
 static std::mutex theMutex;
 static std::condition_variable theCV;
 
+// SECOND_INIT race trace (diagnostic, defined in LO-core racetrace.cxx;
+// resolved at the online.wasm static link). Candidate #3: a detached
+// remote-client relay thread holding pointers into `fds` while
+// insertNewFakeSocket → fakeSocketAllocate resizes the vector.
+#ifdef __EMSCRIPTEN__
+extern "C" void wasm_race_mark(unsigned site);
+#else
+#define wasm_race_mark(x) ((void)0)
+#endif
+
 static int fakeSocketLogLevel = -1;
 
 static void fakeSocketDumpStateImpl();
@@ -161,6 +171,7 @@ static FakeSocketPair& fakeSocketAllocate()
     // scenario.
 
     const int i = fds.size();
+    wasm_race_mark(50); // fds vector resize (candidate #3 — reallocation under relay threads)
     fds.resize(i + 1);
 
     fds[i] = std::make_unique<FakeSocketPair>();
