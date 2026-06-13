@@ -32,6 +32,17 @@ if (!allEnvSet) {
     }
 }
 
+// The Azure deploy env files (~/ENV/online-*-deploy.env,
+// wasm/.env.deploy.*.example) name the viewer URL `VIEWER_URL`, but
+// test-env resolves it as `FILE_STORAGE_URL`. Without this alias,
+// running a test with ENV_FILE pointed at a deploy env file fails the
+// required-check below even though the viewer URL is right there under
+// a different name (bit us repeatedly when running the Azure snapshot
+// gate by hand). Treat VIEWER_URL as a fallback alias.
+if (!process.env.FILE_STORAGE_URL && process.env.VIEWER_URL) {
+    process.env.FILE_STORAGE_URL = process.env.VIEWER_URL;
+}
+
 for (const key of required) {
     if (!process.env[key]) {
         console.error(`ERROR: ${key} not set (neither in ${envPath} nor in process.env)`);
