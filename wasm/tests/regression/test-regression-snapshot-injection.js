@@ -46,16 +46,21 @@ function check(label, cond, ev) {
     // Iter 207: cache-bust ships online.js as online.<hash>.js. Resolve
     // the hashed name via cool.html's __assetMap; fall back to the
     // un-hashed path for dev trees without a cache-bust step.
+    // Per-deploy stacks (the PR CI lane) serve the editor under
+    // /<EDITOR_DEPLOY_ID>/browser/...; flat dev-push/local servers serve
+    // /browser/... directly. env.EDITOR_DEPLOY_PREFIX is '' for flat and
+    // '/<id>' for per-deploy — without it this test 404s on the PR lane.
+    const EDITOR_BASE = EDITOR + env.EDITOR_DEPLOY_PREFIX;
     let url;
     try {
-        const cool = await fetch(EDITOR + '/browser/cool.html');
+        const cool = await fetch(EDITOR_BASE + '/browser/cool.html');
         const html = await cool.text();
         const m = html.match(/window\.__assetMap\s*=\s*(\{[^}]+\})/);
         const assetMap = m ? JSON.parse(m[1]) : {};
         const onlineJs = assetMap['online.js'] || 'online.js';
-        url = EDITOR + '/browser/' + onlineJs;
+        url = EDITOR_BASE + '/browser/' + onlineJs;
     } catch (e) {
-        url = EDITOR + '/browser/online.js';
+        url = EDITOR_BASE + '/browser/online.js';
     }
     let body;
     try {
