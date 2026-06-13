@@ -76,7 +76,17 @@ function check(label, cond, ev) {
         let sawStagesEl = false;
         let shotTaken = false;
 
+        // Terminate the poll on ACTUAL doc-open, not on the shield's
+        // `active` class. On a cold load the editor iframe's first asset
+        // fetch can ERR_ABORT and the frame reloads; the shield briefly
+        // loses `active` during that gap. The old `break on !shieldUp`
+        // exited after ~1-2 s — before any stage fired — so seenDone was
+        // empty even though the open later succeeded at ~40 s. Poll until
+        // the document reports characters (the same signal step 5 uses),
+        // accumulating stage transitions across the whole load (including
+        // across an iframe reload — seenDone is cumulative by design).
         const pollDeadline = Date.now() + env.scaleTimeout(120000);
+        let docOpen = false;
         while (Date.now() < pollDeadline) {
             const snap = await page.evaluate(() => {
                 const sh = document.getElementById('editor-shield');
@@ -107,8 +117,17 @@ function check(label, cond, ev) {
                         try { await page.screenshot({ path: SHOTS + '/01_shield_stages.png' }); } catch (_) {}
                     }
                 }
-                if (snap.pct >= 0) barSamples.push(snap.pct);
-                if (!snap.shieldUp && barSamples.length > 0) break;  // shield dropped — open finished
+                if (snap.pct >= 0 && snap.shieldUp) barSamples.push(snap.pct);
+            }
+
+            // Doc-open is the real terminator. Check the iframe's word
+            // count; once chars are visible the open is done and stages
+            // have all fired. Give one extra poll after detection so the
+            // final "done" transitions land.
+            const cc = await getCharCount(page).catch(() => -1);
+            if (cc > 0) {
+                if (docOpen) break;   // saw it open last poll too — settle
+                docOpen = true;
             }
             await sleep(300);
         }
