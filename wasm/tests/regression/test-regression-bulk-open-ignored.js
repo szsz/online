@@ -50,15 +50,15 @@ const REPORT_PATH = '/tmp/static-deploy/public/reports/regression-bulk-open-igno
 //
 // Per-MB perf budget.
 //
-//   warm:  size_MB * 5000 ms   (~5 s per MB. Measured kit warm rate for
-//                               large pptx is ~3.6 s/MB solo; under the
-//                               CI's JOBS=2 contention the same file
-//                               needs >4 s/MB (CI build 2026-06-12-081035:
-//                               12.42 MB Docaposte exceeded its 49.7 s
-//                               4 s/MB budget). 5 s/MB clears the
-//                               contention noise floor while still
-//                               failing on a ~40%+ regression.)
-//   cold:  size_MB * 5000 ms + 60000 ms  (first file pays the SW install
+//   warm:  size_MB * 4000 ms   (4 s per MB — user-set target 2026-06-12.
+//                               Measured kit warm rate for large pptx is
+//                               ~3.6 s/MB solo, so 4 passes solo with
+//                               ~10% headroom. Under the CI's JOBS=2
+//                               contention the Docaposte deck has been
+//                               observed to need >4 s/MB — if it trips
+//                               on CI, that's the perf gap the gate is
+//                               meant to surface, not a test bug.)
+//   cold:  size_MB * 4000 ms + 60000 ms  (first file pays the SW install
 //                                         / online.wasm download / V8
 //                                         compile tax on top of parse)
 //
@@ -69,8 +69,8 @@ const REPORT_PATH = '/tmp/static-deploy/public/reports/regression-bulk-open-igno
 //
 // These are absolute wall-clock budgets — do NOT route through
 // env.scaleTimeout. They are the perf gate (deliberately NOT scaled by
-// JOBS_SCALE — the 5 s/MB rate already absorbs measured JOBS=2 noise).
-const MS_PER_MB        = 5000;
+// JOBS_SCALE).
+const MS_PER_MB        = 4000;
 const COLD_OVERHEAD_MS = 60000;
 const MIN_OPEN_MS      = 15000;
 function computeOpenBudgetMs(sizeBytes, isFirstFile) {
@@ -110,29 +110,69 @@ function listFiles() {
         .sort((a, b) => a.localeCompare(b));
 }
 
-// Progress-aware document-loaded wait. Polls the editor iframe DOM every
-// ~1 s, prints a progress line per poll, and returns when the per-doctype
-// ready predicate is satisfied. Captures the total slide / sheet / page
-// count and how many tiles rendered when ready, so the report can show
-// "ready at 6 of 24 slides rendered" style progress.
+// ── Multi-stage open-progress tracker ────────────────────────────────
 //
-// Returns { loadMs, total, rendered, kind } where:
-//   kind = 'slide'   (pptx, total = N slides)
-//        | 'sheet'   (xlsx, total = N sheets)
-//        | 'page'    (docx, total = N pages if found)
-//        | 'unknown' (no count discoverable, but ready predicate fired)
+// The wasm-loader stamps every boot milestone into
+// `window.__prewarmTimings.events` (see wasm-loader.js `mark()`), so a
+// poll of the iframe gives a full pipeline trace with millisecond
+// timestamps — pure observation, no driving. The ordered stages we
+// surface (a file-open walks them roughly top to bottom; warm restores
+// skip the download/compile stages):
+//
+//    loader:start                 wasm-loader.js booted in the iframe
+//    sw-bridge:ready              service-worker bridge handshake done
+//    net:fetch_start online.wasm  154 MB binary download started
+//    net:fetch_end online.wasm    … download finished
+//    emscripten:module_defined    online.js glue parsed
+//    snapshot:signal              warm-restore vs cold decision
+//    emscripten:wasmExports_ready wasm compiled + instantiated
+//    emscripten:FS_ready          virtual FS populated (soffice.data)
+//    emscripten:calledRun         WASM runtime running (main())
+//    dom:status_appeared          COOL UI chrome alive
+//    dom:first_canvas             first paint surface created
+//    doc:loaded                   kit reports the document loaded
+//    <ready predicate>            status bar shows chars/Sheet/Slide
+//    <thumbs>                     (pptx) slide previews rendered N/M
+//
+// On top of the stage trace, two live progress numbers:
+//   - kit import %: the kit's own statusindicator (`progress:` frames,
+//     setvalue 0-100) drives the snackbar progress bar — when that
+//     element is visible we read its value. This is the import
+//     filter's real progress for the slow middle of a big-file open.
+//   - slide thumbs N/M (pptx): incremental render progress after load.
+//
+// Returns { loadMs, total, rendered, kind, stages } where stages is an
+// ordered [{name, tMs}] of when each pipeline stage was first seen
+// (tMs relative to wait start; negative = happened before we started
+// watching, e.g. warm iframe reuse).
+const PIPELINE_STAGES = [
+    'loader:start',
+    'sw-bridge:ready',
+    'net:fetch_start',
+    'net:fetch_end',
+    'emscripten:module_defined',
+    'snapshot:signal',
+    'emscripten:wasmExports_ready',
+    'emscripten:FS_ready',
+    'emscripten:calledRun',
+    'dom:status_appeared',
+    'dom:first_canvas',
+    'doc:loaded',
+];
+
 async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
     log(`[${idx}] [${label}] Waiting for document...`);
     const t0 = Date.now();
     const deadline = t0 + timeoutMs;
 
-    let lastPctReported = -1;
+    const stageSeen = new Map();   // stage name -> tMs (first seen)
+    let lastLine = '';
     let probe = null;
 
     while (Date.now() < deadline) {
         const frame = await getActiveEditorFrame(page);
         if (frame) {
-            probe = await frame.evaluate(() => {
+            probe = await frame.evaluate((stageNames) => {
                 const wc      = document.querySelector('#StateWordCount')?.textContent || '';
                 const docPos  = document.querySelector('#StatusDocPos')?.textContent  || '';
                 const slide   = document.querySelector('#SlideStatus')?.textContent   || '';
@@ -142,7 +182,24 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                 const wcMatch    = wc.match(/([\d,]+)\s+character/i);
                 const slideThumbs = document.querySelectorAll(
                     '#slide-sorter img, #slide-sorter canvas, .preview-frame img').length;
+                // Pipeline trace from the wasm-loader's mark() stream.
+                const events = (window.__prewarmTimings && window.__prewarmTimings.events) || [];
+                const stages = {};
+                for (const ev of events) {
+                    for (const want of stageNames) {
+                        if (stages[want] === undefined && ev.name.indexOf(want) === 0) {
+                            stages[want] = ev.tNav || ev.t || 0;
+                        }
+                    }
+                }
+                // Kit import % — the statusindicator-driven snackbar
+                // progress (visible during big-file import).
+                let importPct = -1;
+                const prog = document.querySelector('.jsdialog progress, #snackbar progress, progress');
+                if (prog && prog.max > 0) importPct = Math.round(prog.value / prog.max * 100);
                 return {
+                    stages,
+                    importPct,
                     slide_total:    slideMatch ? +slideMatch[2] : 0,
                     sheet_total:    sheetMatch ? +sheetMatch[2] : 0,
                     page_total:     pageMatch  ? +pageMatch[2]  : 0,
@@ -150,38 +207,48 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                     slide_ready:    !!slideMatch,
                     sheet_ready:    !!sheetMatch,
                     slide_thumbs:   slideThumbs,
-                    statusbar_text: (slide || docPos || wc).substring(0, 80),
+                    statusbar_text: (slide || docPos || wc).substring(0, 60),
                 };
-            }).catch(() => null);
+            }, PIPELINE_STAGES).catch(() => null);
         }
 
         if (probe) {
-            const isReady =
-                probe.wc_ready    // docx (StateWordCount has 'N characters')
-             || probe.slide_ready // pptx (SlideStatus has 'Slide N of M')
-             || probe.sheet_ready;// xlsx (StatusDocPos has 'Sheet N of M')
-
-            // Progress %: prefer slides-rendered / slides-total for pptx,
-            // fall back to "ready / not ready" for others.
-            let pct = -1;
-            if (probe.slide_total > 0) {
-                pct = Math.min(100, Math.round(probe.slide_thumbs / probe.slide_total * 100));
-            } else if (isReady) {
-                pct = 100;
+            const nowMs = Date.now() - t0;
+            // Register newly-reached stages (timestamped at first sighting).
+            for (const name of PIPELINE_STAGES) {
+                if (probe.stages[name] !== undefined && !stageSeen.has(name)) {
+                    stageSeen.set(name, nowMs);
+                    log(`[${idx}]     ✦ stage ${stageSeen.size}/${PIPELINE_STAGES.length + 1}: ${name}  t=${(nowMs/1000).toFixed(1)}s`);
+                }
             }
-            const elapsed = (Date.now() - t0) / 1000;
-            if (pct !== lastPctReported || isReady) {
-                const bar = pct >= 0 ? renderProgressBar(pct) : '[ ...spinning... ]';
-                const extra = probe.slide_total > 0
-                    ? ` ${probe.slide_thumbs}/${probe.slide_total} slides`
-                    : '';
-                log(`[${idx}]   ${bar} ${pct >= 0 ? pct + '%' : '?'} t=${elapsed.toFixed(1)}s${extra}  "${probe.statusbar_text}"`);
-                lastPctReported = pct;
+
+            const isReady =
+                probe.wc_ready
+             || probe.slide_ready
+             || probe.sheet_ready;
+
+            // Composite progress: stage index carries 0..80%, kit import
+            // % and slide thumbs refine the slow middle / tail.
+            const stagePct = Math.round(stageSeen.size / (PIPELINE_STAGES.length + 1) * 80);
+            let pct = stagePct;
+            if (probe.importPct >= 0) pct = Math.max(pct, Math.round(60 + probe.importPct * 0.2));
+            if (isReady) pct = probe.slide_total > 0
+                ? Math.max(80, Math.round(80 + probe.slide_thumbs / probe.slide_total * 20))
+                : 100;
+
+            const extra =
+                (probe.importPct >= 0 ? ` import=${probe.importPct}%` : '') +
+                (probe.slide_total > 0 ? ` slides=${probe.slide_thumbs}/${probe.slide_total}` : '');
+            const line = `${renderProgressBar(pct)} ${pct}%${extra} "${probe.statusbar_text}"`;
+            if (line !== lastLine) {
+                log(`[${idx}]   ${line} t=${(nowMs/1000).toFixed(1)}s`);
+                lastLine = line;
             }
 
             if (isReady) {
                 const loadMs = Date.now() - t0;
-                log(`[${idx}] [${label}] Loaded in ${(loadMs/1000).toFixed(2)}s`);
+                stageSeen.set('ready', loadMs);
+                log(`[${idx}] [${label}] Loaded in ${(loadMs/1000).toFixed(2)}s (${stageSeen.size} stages traced)`);
                 let kind = 'unknown';
                 let total = 0;
                 let rendered = 0;
@@ -196,20 +263,22 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                 } else if (probe.wc_ready) {
                     kind = probe.page_total > 0 ? 'page' : 'unknown';
                     total = probe.page_total;
-                    rendered = probe.page_total; // docx renders all pages on first paint
+                    rendered = probe.page_total;
                 }
-                return { loadMs, kind, total, rendered };
+                const stages = [...stageSeen.entries()].map(([name, tMs]) => ({ name, tMs }));
+                return { loadMs, kind, total, rendered, stages };
             }
         }
 
         await sleep(1000);
     }
-    throw new Error(`waitForDocLoadedWithProgress: timeout after ${timeoutMs}ms`);
+    throw new Error(`waitForDocLoadedWithProgress: timeout after ${timeoutMs}ms`
+        + (stageSeen.size ? ` (last stage reached: ${[...stageSeen.keys()].pop()})` : ''));
 }
 
 function renderProgressBar(pct) {
     const width = 24;
-    const filled = Math.round(width * pct / 100);
+    const filled = Math.max(0, Math.min(width, Math.round(width * pct / 100)));
     return '[' + '#'.repeat(filled) + '-'.repeat(width - filled) + ']';
 }
 
@@ -298,6 +367,8 @@ async function openAndTypeOne(browser, fileName, idx) {
         progressKind: '',     // 'slide' / 'sheet' / 'page' / 'unknown'
         progressTotal: 0,
         progressRendered: 0,
+        // Ordered [{name, tMs}] pipeline-stage trace from the open wait.
+        stages: [],
     };
 
     let bytes;
@@ -367,6 +438,7 @@ async function openAndTypeOne(browser, fileName, idx) {
         result.progressKind     = loadInfo.kind;
         result.progressTotal    = loadInfo.total;
         result.progressRendered = loadInfo.rendered;
+        result.stages           = loadInfo.stages || [];
         log(`[${idx}] open total = ${(result.tOpenMs/1000).toFixed(2)}s (predicate=${(loadInfo.loadMs/1000).toFixed(2)}s, budget=${(openBudgetMs/1000).toFixed(1)}s) — ${loadInfo.kind === 'slide' ? loadInfo.rendered + '/' + loadInfo.total + ' slides rendered' : loadInfo.kind === 'sheet' ? '1/' + loadInfo.total + ' sheets' : loadInfo.kind === 'page' ? loadInfo.total + ' pages' : 'ready'}`);
 
         // Let canvas tiles paint before we screenshot.
@@ -550,6 +622,17 @@ function renderReport(results, walltimeMs, allFiles) {
         } else if (r.tOpenMs > 0 && !r.budgetExceeded) {
             progressCol = 'ready';
         }
+        // Per-file pipeline-stage trace — inline expandable. Each stage
+        // shows the time it was first observed (relative to open start)
+        // so a reader can see where the open time went (download vs
+        // compile vs import vs paint).
+        let stagesCell = '—';
+        if (r.stages && r.stages.length) {
+            const items = r.stages
+                .map(s => `<li><code>${escHtml(s.name)}</code> <span class="st">+${(s.tMs/1000).toFixed(1)}s</span></li>`)
+                .join('');
+            stagesCell = `<details><summary>${r.stages.length} stages</summary><ol class="stages">${items}</ol></details>`;
+        }
         return `<tr class="${statusCls}">
   <td>${r.idx}</td>
   <td class="file">${escHtml(r.fileName)}</td>
@@ -558,6 +641,7 @@ function renderReport(results, walltimeMs, allFiles) {
   <td class="num tOpen">${tSec}</td>
   <td class="num">${budgetCol}</td>
   <td class="content">${escHtml(progressCol)}</td>
+  <td class="stagecol">${stagesCell}</td>
   <td class="v">${escHtml(vLabel)}</td>
   <td class="detail">${escHtml(r.verifyDetail || '')}</td>
   <td>${before} / ${after}</td>
@@ -570,6 +654,7 @@ function renderReport(results, walltimeMs, allFiles) {
   <td class="num tOpen">—</td>
   <td class="num">—</td>
   <td class="content">—</td>
+  <td class="stagecol">—</td>
   <td class="v">not run</td>
   <td class="detail">aborted: prior file exceeded open budget</td>
   <td>—</td>
@@ -607,6 +692,11 @@ tr.notrun td{color:#999;background:#f6f6f6;font-style:italic}
 tr.notrun td.v{background:#eee;color:#999;font-style:italic;font-weight:normal}
 td.detail{color:#666;font-size:12px;max-width:380px}
 td.content{text-align:center;font-size:12px;color:#555;font-family:monospace}
+td.stagecol{font-size:11px;max-width:170px}
+td.stagecol details summary{cursor:pointer;color:#0a58ca}
+ol.stages{margin:4px 0 4px 16px;padding:0}
+ol.stages li{white-space:nowrap;line-height:1.5}
+ol.stages .st{color:#888;font-variant-numeric:tabular-nums}
 .card{display:inline-block;vertical-align:top;margin:0 12px 18px 0;padding:8px;border:1px solid #ddd;border-radius:4px;background:#fafafa}
 .card h3{font-size:13px;margin:0 0 6px 0;font-family:monospace}
 .shotpair{display:flex;gap:8px}
@@ -632,7 +722,7 @@ td.content{text-align:center;font-size:12px;color:#555;font-family:monospace}
 <table>
 <thead><tr>
   <th>#</th><th>File</th><th>Fmt</th><th>Size (MiB)</th>
-  <th>Open (s)</th><th>Budget</th><th>Content</th><th>Verify</th><th>Detail</th><th>Shots</th>
+  <th>Open (s)</th><th>Budget</th><th>Content</th><th>Stages</th><th>Verify</th><th>Detail</th><th>Shots</th>
 </tr></thead>
 <tbody>
 ${rows}

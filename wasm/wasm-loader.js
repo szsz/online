@@ -33,13 +33,89 @@
     var t0 = performance.now(); // kept for backward compat with test code
     window.__prewarmTimings = { t0Wall: Date.now(), t0Nav: t0Nav, events: [] };
     function msSinceNav() { return Date.now() - t0Nav; }
+    // Pipeline stages forwarded to the parent viewer as WasmOpenStage
+    // postMessages — the viewer's shield renders them as a live stage
+    // checklist during file open (feature 2026-06-12). Keys are mark()
+    // name PREFIXES; first mark matching each prefix fires one message.
+    var STAGE_FORWARD = [
+        'loader:start',
+        'sw-bridge:ready',
+        'net:fetch_start',
+        'net:fetch_end',
+        'emscripten:module_defined',
+        'snapshot:signal',
+        'emscripten:wasmExports_ready',
+        'emscripten:FS_ready',
+        'emscripten:calledRun',
+        'dom:status_appeared',
+        'dom:first_canvas',
+        'doc:loaded',
+    ];
+    var _stageSent = {};
+    function forwardStage(name, detail) {
+        for (var i = 0; i < STAGE_FORWARD.length; i++) {
+            var pfx = STAGE_FORWARD[i];
+            if (!_stageSent[pfx] && name.indexOf(pfx) === 0) {
+                _stageSent[pfx] = true;
+                try {
+                    parent.postMessage(JSON.stringify({
+                        MessageId: 'WasmOpenStage',
+                        Values: { stage: pfx, tMs: msSinceNav(), detail: detail || '' },
+                    }), '*');
+                } catch (e) {}
+                return;
+            }
+        }
+    }
     function mark(name, detail) {
         var dt = (performance.now() - t0).toFixed(1);
         var navMs = msSinceNav();
         window.__prewarmTimings.events.push({ t: +dt, tNav: navMs, name: name, detail: detail || '' });
         console.log('[profile +' + dt + 'ms] ' + name + (detail ? ' ' + detail : ''));
+        forwardStage(name, detail);
     }
     window.__prewarmMark = mark;
+
+    // Forward the kit's own document-import progress (`progress:` frames,
+    // statusindicator id=setvalue value=0..100) to the parent shield. The
+    // import filter is the dominant phase of a big-file open — without
+    // this the shield sits at a fixed % for the whole parse. Wire-level
+    // tap: wrap TheFakeWebSocket.onmessage once it exists; pure
+    // observation, the original handler always runs.
+    (function installImportProgressTap() {
+        function wrap(fws) {
+            var orig = fws.onmessage;
+            var tap = function(ev) {
+                try {
+                    var txt = typeof ev.data === 'string' ? ev.data : '';
+                    if (txt.indexOf('progress:') === 0) {
+                        var info = JSON.parse(txt.substring(txt.indexOf('{')));
+                        if (info && info.id === 'setvalue' && typeof info.value === 'number'
+                            && info.type !== 'bg') {
+                            parent.postMessage(JSON.stringify({
+                                MessageId: 'WasmOpenStage',
+                                Values: { stage: 'import', pct: info.value, tMs: msSinceNav() },
+                            }), '*');
+                        }
+                    }
+                } catch (e) {}
+                return orig.apply(this, arguments);
+            };
+            tap.__isImportTap = true;
+            fws.onmessage = tap;
+        }
+        var tries = 0;
+        // Keep polling (cheap) for the whole boot window: the relay-
+        // adapter and the switchdoc hook both REPLACE onmessage, which
+        // would silently drop a one-shot tap. Re-wrap whenever the
+        // current handler isn't ours.
+        var iv = setInterval(function() {
+            tries++;
+            var fws = globalThis.TheFakeWebSocket;
+            if (fws && fws.onmessage && !fws.onmessage.__isImportTap) wrap(fws);
+            if (tries > 1200) clearInterval(iv);  // stop after ~2 min
+        }, 100);
+    })();
 
     // ── Human-readable timing (from navigation start, visible in console) ──
     var _timingMilestones = {};
