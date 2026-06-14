@@ -380,9 +380,24 @@ if [[ "$TEST_TARGET" == "local" ]]; then
     # user's host-side dir, root-owned). Without this the CI process
     # gets EACCES on every document upload and the tests time out
     # waiting for the doc to load.
+    #
+    # SSL_CERT/SSL_KEY/HTTPS_PORT are FORCED EMPTY so this ephemeral
+    # Phase-1 editor-static binds ONLY its free HTTP port ($EDITOR_PORT)
+    # and skips the HTTPS listener entirely (editor-static-server.js only
+    # binds HTTPS when both cert+key are set+readable). Phase-1 tests hit
+    # http://127.0.0.1:$EDITOR_PORT, so HTTPS is never needed. Without
+    # this override the process inherits SSL_CERT/SSL_KEY + HTTPS_PORT=7932
+    # from the job env (online-ci.env) and binds the SHARED ci HTTPS port
+    # 7932 — and if the run is hard-killed before the cleanup trap fires,
+    # it orphans on a now-deleted PUB ($REPORT_DIR is mktemp'd) and 404s
+    # everything, shadowing the real ci editor-static and breaking the
+    # whole dev test lane. See ai/proposals/promoted/fix-dev-ci-test-lane.md.
     PUB="$STAGE_DIR/public" \
     DOCS="$STAGE_DIR/wasm-docs" \
     HTTP_PORT="$EDITOR_PORT" \
+    HTTPS_PORT="" \
+    SSL_CERT="" \
+    SSL_KEY="" \
     FILE_STORAGE_URL="$VIEWER_URL_LOCAL" \
         node "$WORKSPACE/wasm/editor-static-server.js" \
         > "$REPORT_DIR/editor.log" 2>&1 &
