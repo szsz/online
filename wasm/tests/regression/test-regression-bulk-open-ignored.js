@@ -99,6 +99,11 @@ function formatOf(name) {
 }
 
 function listFiles() {
+    // The corpus (test/samples/ignored/) is gitignored — present on a dev
+    // box, ABSENT on a CI checkout. Treat a missing dir as an empty corpus
+    // so this local-only test skips cleanly (empty report + exit 0) instead
+    // of crashing with ENOENT on every CI run (the "persistent fail ×3").
+    if (!fs.existsSync(SAMPLES_DIR)) return [];
     const entries = fs.readdirSync(SAMPLES_DIR);
     return entries
         .filter(n => !n.startsWith('.'))
