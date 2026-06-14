@@ -33,7 +33,11 @@ const KNOWN_FLAKE_BUDGET = 16;
 // function signature mismatch on .uno:FormatArea dispatch (Writer-
 // specific, Impress sibling unaffected). See ai/proposals/proposed/
 // writer-area-dialog-function-signature-mismatch.md.
-const LO_BLOCKED_BUDGET = 4;
+// 2026-06-14: bump 4→5 — add regression-writer-header-footer-remove
+// (removed header still exported; root-caused model-side in the LOK
+// Page Style apply path, awaiting an LO fix). Drop back when that LO
+// fix lands. See fix-header-footer-docx-export-keeps-part.md.
+const LO_BLOCKED_BUDGET = 5;
 
 const TEST_PUBLISH_SH = path.resolve(__dirname, '..', '..', '..',
     '.github', 'scripts', 'wasm-ci', 'test-and-publish.sh');
