@@ -15,3 +15,30 @@ ensure_storage_key() {
         export AZURE_STORAGE_KEY
     fi
 }
+
+# Install wasm/node_modules (+ puppeteer's Chromium) from the persistent
+# host cache under $CI_STATE_DIR, symlinked into the workspace. Idempotent:
+# re-installs only when package-lock.json changed or puppeteer is missing.
+# Shared by test-critical.sh (the merge gate) and test-local.sh (full
+# suite) so both resolve `require('puppeteer')`. Exports PUPPETEER_CACHE_DIR.
+ensure_node_modules() {
+    local ws="${1:-${GITHUB_WORKSPACE:-$(pwd)}}"
+    : "${CI_STATE_DIR:?CI_STATE_DIR must be set}"
+    local nm="$CI_STATE_DIR/online-node-modules"
+    local npmc="$CI_STATE_DIR/npm-cache"
+    local pupc="$CI_STATE_DIR/puppeteer-cache"
+    mkdir -p "$nm" "$npmc" "$pupc"
+    export PUPPETEER_CACHE_DIR="$pupc"
+    rm -rf "$ws/wasm/node_modules"
+    ln -s "$nm" "$ws/wasm/node_modules"
+    local lock="$ws/wasm/package-lock.json"
+    local stamp="$nm/.installed-from-lock"
+    if [[ ! -f "$stamp" ]] || ! cmp -s "$lock" "$stamp" || [[ ! -d "$nm/puppeteer" ]]; then
+        echo "--- Installing wasm/node_modules ---"
+        find "$nm" -mindepth 1 -delete 2>/dev/null || true
+        ( cd "$ws/wasm" && npm ci --cache "$npmc" --prefer-offline --no-audit --no-fund 2>&1 | tail -8 )
+        cp "$lock" "$stamp"
+    else
+        echo "[OK] node_modules cache hit."
+    fi
+}

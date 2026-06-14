@@ -70,22 +70,8 @@ RUN_START_MARKER="$(mktemp)"
 trap 'rm -rf "$REPORT_DIR" "$RUN_START_MARKER"' EXIT
 
 # ── Install puppeteer/node_modules from the persistent cache ────────
-NODE_MODULES_HOST="$CI_STATE_DIR/online-node-modules"
-NPM_CACHE_HOST="$CI_STATE_DIR/npm-cache"
-PUPPETEER_CACHE_HOST="$CI_STATE_DIR/puppeteer-cache"
-mkdir -p "$NODE_MODULES_HOST" "$NPM_CACHE_HOST" "$PUPPETEER_CACHE_HOST"
-export PUPPETEER_CACHE_DIR="$PUPPETEER_CACHE_HOST"
-
-rm -rf "$WORKSPACE/wasm/node_modules"
-ln -s "$NODE_MODULES_HOST" "$WORKSPACE/wasm/node_modules"
-LOCK="$WORKSPACE/wasm/package-lock.json"
-INSTALLED_FROM="$NODE_MODULES_HOST/.installed-from-lock"
-if [[ ! -f "$INSTALLED_FROM" ]] || ! cmp -s "$LOCK" "$INSTALLED_FROM" || [[ ! -d "$NODE_MODULES_HOST/puppeteer" ]]; then
-    echo "--- Installing wasm/node_modules ---"
-    find "$NODE_MODULES_HOST" -mindepth 1 -delete 2>/dev/null || true
-    (cd "$WORKSPACE/wasm" && npm ci --cache "$NPM_CACHE_HOST" --prefer-offline --no-audit --no-fund 2>&1 | tail -8)
-    cp "$LOCK" "$INSTALLED_FROM"
-fi
+# (shared with test-critical.sh — see _lib.sh)
+ensure_node_modules "$WORKSPACE"
 
 # ── Apply test profile filter to the canonical TESTS array ──────────
 # Each profile picks a regex over test slugs and either keeps matches
