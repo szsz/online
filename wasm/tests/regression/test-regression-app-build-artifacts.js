@@ -106,9 +106,16 @@ function check(label, cond, ev) {
                   r.ok, `HTTP ${r.status}`);
             if (r.ok) {
                 const j = await r.json();
-                check('summary.json has integer "passed" field',
-                      typeof j.passed === 'number',
-                      `passed=${j.passed} type=${typeof j.passed}`);
+                // Field name varies by lane: the dev-push/app-builds two-phase
+                // summary (test-and-publish.sh) uses `pass_count_approx`; the
+                // PR-lane local-builds summary (test-local.sh) uses `pass_count`.
+                // The old assertion checked `j.passed`, which NEITHER writes →
+                // always undefined → guaranteed fail. Accept any of them.
+                const passVal = [j.pass_count_approx, j.pass_count, j.passed]
+                                  .find(v => typeof v === 'number');
+                check('summary.json has integer pass-count field',
+                      typeof passVal === 'number',
+                      `pass_count_approx=${j.pass_count_approx} pass_count=${j.pass_count} passed=${j.passed}`);
             }
         } catch (e) {
             check('tests/summary.json reachable', false, e.message);
