@@ -213,6 +213,27 @@ if [ "$DO_RESTART" = true ]; then
             # / EDITOR_SSL_CERT / EDITOR_SSL_KEY / PUB / DOCS are the
             # ones launch-editor-static.sh reads.
             ENVS=$(sudo -n cat "/proc/$PID/environ" 2>/dev/null | tr '\0' '\n' | grep -E '^(ENV_FILE|HTTP_PORT|HTTPS_PORT|EDITOR_SSL_CERT|EDITOR_SSL_KEY|PUB|DOCS|FILE_STORAGE_URL)=' | sort -u | tr '\n' ' ')
+            # ── Reap orphans instead of relaunching them ──
+            # test-deploy / worktree runs launch editor-static against an
+            # ephemeral PUB (/tmp/tmp.XXX/stage/public) and don't always
+            # tear it down. Those leftovers share fixed HTTPS ports (e.g.
+            # 7932 with the ci stack), so an orphan can win the port bind
+            # and shadow the real server with 404s — which silently broke
+            # the whole CI test lane (every E2E test 404s on cool.html).
+            # Before this guard, "restart EACH detected process" relaunched
+            # those dead-PUB orphans every deploy, perpetuating the
+            # collision. If a process's PUB no longer exists on disk, kill
+            # it and DO NOT relaunch — it's an orphan, not a live tier.
+            PROC_PUB=$(printf '%s\n' "$ENVS" | tr ' ' '\n' | grep -E '^PUB=' | cut -d= -f2-)
+            if [ -n "$PROC_PUB" ] && [ ! -d "$PROC_PUB" ]; then
+                echo "  Reaping orphan editor-static PID $PID (PUB=$PROC_PUB no longer exists)"
+                sudo -n kill "$PID" 2>/dev/null || true
+                PARENT=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+                if [ -n "$PARENT" ] && [ "$PARENT" != "1" ]; then
+                    sudo -n kill "$PARENT" 2>/dev/null || true
+                fi
+                continue
+            fi
             echo "  Restarting editor-static PID $PID with env: $ENVS"
             sudo -n kill "$PID" 2>/dev/null || true
             # Also kill the sudo parent if present (launch-editor-static
