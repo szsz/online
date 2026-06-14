@@ -74,6 +74,8 @@ namespace wasmshim {
     void waitForCoolwsdResume();
 }
 extern "C" void wasm_coolwsd_parked();
+// Single-LO-loop owner gate reset on warm-restore (defined in wasm/wasmapp.cpp).
+extern "C" void wasm_reset_lo_init_owner();
 
 // Plan C — published by COOLWSD::innerMain so wasm_quiesce_wake_main
 // can break the COOLWSD thread out of its mainWait->poll(256s) call.
@@ -1015,6 +1017,11 @@ void COOLWSD::leakSnapshotPolls()
     // Set phase=2 so Desktop::Main skips Phase 1 (already in snapshot).
     extern int g_wasmDesktopPhase;
     g_wasmDesktopPhase = 2;
+
+    // Reset the single-LO-loop owner gate. The snapshot carries
+    // g_loInitOwnerClaimed=true from the cold visit; the restored lokit_main
+    // must re-claim ownership and re-run lok_init_2 to reinitialise VCL.
+    wasm_reset_lo_init_owner();
 
     std::cout << "leakSnapshotPolls: full snapshot cleanup done" << std::endl;
 }

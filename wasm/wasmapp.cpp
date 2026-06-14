@@ -136,6 +136,66 @@ extern "C" EMSCRIPTEN_KEEPALIVE void notify_coolwsd_server_socket_ready()
     g_coolwsdSocketCV.notify_all();
 }
 
+// ── Single-LO-init guard (2026-06-13) ──────────────────────────────
+// Confirmed via race-trace: on WASM, two DocumentBrokers in one COOLWSD
+// instance (the prewarm-blank broker + the late-join real-doc broker)
+// each spawn a detached lokit_main thread, and BOTH run lok_init_2 +
+// startMainLoop concurrently — racing process-global LO/VCL init state →
+// "memory access out of bounds". The iOS path (Kit.cpp:4357) already
+// notes "we want just one LO main loop"; the EMSCRIPTEN path lacked the
+// guard. Serialize so the FIRST lokit_main owns lok_init_2 + the single
+// runLoop; concurrent lokit_main wait for init-complete then attach
+// their socket to the running loop (no 2nd lok_init_2, no 2nd runLoop).
+// Same lost-wakeup-safe atomic+CV shape as g_serverFreshlyReady above.
+static std::mutex              g_loInitMutex;
+static std::condition_variable g_loInitCV;
+static std::atomic<bool>       g_loInitComplete{false};
+static bool                    g_loInitOwnerClaimed = false; // guarded by g_loInitMutex
+
+// Returns true exactly once, to the first caller — it owns LO init.
+// All later callers get false and must wasm_wait_lo_init_complete().
+extern "C" EMSCRIPTEN_KEEPALIVE bool wasm_try_become_lo_init_owner()
+{
+    std::lock_guard<std::mutex> lk(g_loInitMutex);  // O(1) — never held across init/runLoop
+    if (g_loInitOwnerClaimed)
+        return false;
+    g_loInitOwnerClaimed = true;
+    return true;
+}
+
+// Block until the owner has finished LO init and its single main loop is
+// live. Atomic-gated predicate so a signal that fires before we start
+// waiting is not lost.
+extern "C" EMSCRIPTEN_KEEPALIVE void wasm_wait_lo_init_complete()
+{
+    std::unique_lock<std::mutex> lk(g_loInitMutex);
+    g_loInitCV.wait(lk, [] { return g_loInitComplete.load(std::memory_order_acquire); });
+}
+
+// Owner calls this immediately BEFORE entering runLoop (which blocks
+// forever) — releasing any waiting concurrent lokit_main. Must be on the
+// always-taken path so waiters never hang.
+extern "C" EMSCRIPTEN_KEEPALIVE void wasm_signal_lo_init_complete()
+{
+    g_loInitComplete.store(true, std::memory_order_release);
+    g_loInitCV.notify_all();
+}
+
+// Warm-restore reset. The snapshot heap carries g_loInitOwnerClaimed=true
+// and g_loInitComplete=true from the cold visit, but the restored COOLWSD
+// spawns a FRESH lokit_main that must re-run lok_init_2 (it reinitialises
+// VCL/fontconfig post-restore — see kit/Kit.cpp). Without this reset the
+// restored lokit_main would see ownership already claimed, skip lok_init_2,
+// and the warm document never paints (snapshot-milestones: verified=false).
+// Called from COOLWSD::leakSnapshotPolls() on the restore side, before the
+// new lokit_main spawns, so there is no concurrent waiter to strand.
+extern "C" EMSCRIPTEN_KEEPALIVE void wasm_reset_lo_init_owner()
+{
+    std::lock_guard<std::mutex> lk(g_loInitMutex);
+    g_loInitOwnerClaimed = false;
+    g_loInitComplete.store(false, std::memory_order_release);
+}
+
 // Owning copies of main()'s argv[1..2] (docKind + docDesc). These are
 // std::string (not const char*) so the bytes are safe even if the
 // underlying argv pointer is invalidated, e.g. across snapshot restore
