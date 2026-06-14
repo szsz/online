@@ -153,11 +153,26 @@ jobs:
           APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
         run: bash .github/scripts/wasm-ci/deploy-local.sh
 
-      # Auto-merge runs BEFORE tests so dev advances as soon as the
-      # build + deploy are known good. Tests still run (informational)
-      # and the report goes up; their outcome is visible on the
-      # published report at coolwasmfiles/local-builds/<id>/tests/
-      # but doesn't gate the merge.
+      # Critical-subset gate — BLOCKING. Runs a small curated list of
+      # E2E tests (editor-loads smoke + warm-restore + co-edit late-join).
+      # If any fails, the job fails here and the auto-merge step below is
+      # skipped (it requires success()). This is the merge gate that the
+      # build+deploy-only gate lacked: a stack that builds + deploys but
+      # serves a 404 editor (orphan editor-static squatting the ci port)
+      # used to merge anyway because the full suite was informational and
+      # ran AFTER the merge. The full suite stays informational below;
+      # this gate is the fast, stable subset that must be green to merge.
+      - name: Critical-subset gate (blocking — editor-loads + warm + co-edit)
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/test-critical.sh
+
+      # Auto-merge runs after the critical gate (which must have passed —
+      # see success() below) but before the full informational suite, so
+      # dev advances as soon as build + deploy + critical tests are green.
+      # The full suite still runs (informational) and the report goes up;
+      # its outcome is visible on the published report at
+      # coolwasmfiles/local-builds/<id>/tests/ but doesn't gate the merge.
       #
       # The merge uses a GitHub App installation token (minted on the
       # runner via wasm/tools/gh-app/token.js) — pushes done by the
@@ -165,8 +180,10 @@ jobs:
       # (anti-recursion), but App-token pushes do. Without this the
       # post-merge `push: dev` event in wasm-ci.yml never fires, so
       # staging doesn't auto-deploy.
-      - name: Auto-merge PR (build + deploy succeeded; tests informational)
-        if: github.event_name == 'pull_request'
+      - name: Auto-merge PR (build + deploy + critical gate succeeded)
+        # success() ensures a failed critical-subset gate (above) skips
+        # the merge — the gate is now a hard merge requirement.
+        if: success() && github.event_name == 'pull_request'
         # Don't fail the job on auto-merge failures (e.g. draft PR
         # rejected by `gh pr merge --admin`, or bot lacking permission).
         # Without this guard the subsequent test step is silently
