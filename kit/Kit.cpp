@@ -33,6 +33,18 @@
 #include <emscripten/threading.h>
 extern "C" int wasm_is_warm_restored();
 extern "C" void wasm_set_warm_restored(int);
+// Single-LO-main-loop guard. Two DocumentBrokers in one COOLWSD instance
+// (prewarm-blank + late-join real-doc) each spawn a lokit_main thread.
+// Two LO main loops (loKit->runLoop) in one process race process-global
+// LO/VCL state → "memory access out of bounds" (confirmed via race trace;
+// serializing the init alone did NOT help — the 2nd init still overlaps
+// the 1st's running loop). Mirror the iOS "just one LO main loop"
+// discipline (Kit.cpp iOS comment): the FIRST lokit_main owns lok_init_2 +
+// the single runLoop; concurrent ones wait for init-complete, attach their
+// socket to the running loop, and return. Helpers defined in wasm/wasmapp.cpp.
+extern "C" bool wasm_try_become_lo_init_owner();
+extern "C" void wasm_wait_lo_init_complete();
+extern "C" void wasm_signal_lo_init_complete();
 #endif
 
 #ifdef __linux__
@@ -3247,6 +3259,16 @@ std::mutex KitSocketPoll::KSPollsMutex;
 std::condition_variable KitSocketPoll::KSPollsCV;
 std::vector<std::weak_ptr<KitSocketPoll>> KitSocketPoll::KSPolls;
 
+#if defined(__EMSCRIPTEN__)
+// Strong refs to late-join (non-owner) KitSocketPolls. KSPolls above holds
+// only weak_ptrs, so a non-owner lokit_main that attaches its socket and
+// returns would have its KitSocketPoll freed the instant the thread exits
+// — the single runLoop would then drop the late-join doc's socket. Holding
+// a strong ref here keeps it alive and serviced for the instance lifetime.
+static std::mutex g_attachedKitPollsMutex;
+static std::vector<std::shared_ptr<KitSocketPoll>> g_attachedKitPolls;
+#endif
+
 #endif
 
 void documentViewCallback(const int type, const char* payload, void* data)
@@ -4153,7 +4175,17 @@ void lokit_main(
 #endif // !MOBILEAPP
 
         auto mainKit = KitSocketPoll::create();
+#if defined(__EMSCRIPTEN__)
+        // First lokit_main to arrive owns LO init + the single runLoop;
+        // concurrent ones (the other broker) attach + return (see below).
+        const bool isLoInitOwner = wasm_try_become_lo_init_owner();
+        if (isLoInitOwner)
+            mainKit->runOnClientThread(); // owner drives the one inline loop
+        // A non-owner does NOT runOnClientThread: its KitSocketPoll stays a
+        // plain pollable in KSPolls, serviced by the owner's runLoop.
+#else
         mainKit->runOnClientThread(); // We will do the polling on this thread.
+#endif
 
 #if MOBILEAPP && !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
         // For iOS we call it in -[AppDelegate application: didFinishLaunchingWithOptions:]
@@ -4183,11 +4215,24 @@ void lokit_main(
             }
         }
 
-        MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 starting'); });
-        // NOT static — must re-run on restore to reinitialize VCL/fontconfig.
-        // On first visit: FULL_INIT. On restore: bInitialized=true → returns 1 (fast).
-        // But InitVCL is called in the unipoll else-branch regardless.
-        LibreOfficeKit *kit = lok_init_2(nullptr, nullptr);
+        // Only the owner runs lok_init_2 + the single runLoop. A concurrent
+        // non-owner waits for the owner's init to complete, then reuses the
+        // shared static `loKit` below, attaches its socket, and returns —
+        // it never starts a 2nd lok_init_2/runLoop (that's what crashed).
+        LibreOfficeKit *kit = nullptr;
+        if (isLoInitOwner)
+        {
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 starting (owner)'); });
+            // NOT static — must re-run on restore to reinitialize VCL/fontconfig.
+            // On first visit: FULL_INIT. On restore: bInitialized=true → returns 1 (fast).
+            // But InitVCL is called in the unipoll else-branch regardless.
+            kit = lok_init_2(nullptr, nullptr);
+        }
+        else
+        {
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: non-owner lokit_main waiting for LO init'); });
+            wasm_wait_lo_init_complete(); // blocks until owner signals (before its runLoop)
+        }
         MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 done'); });
 #elif (defined(__linux__) && !defined(__ANDROID__) && !defined(QTAPP)) || defined(__FreeBSD__)
         Poco::URI userInstallationURI("file", LO_PATH);
@@ -4202,7 +4247,13 @@ void lokit_main(
         static LibreOfficeKit *kit = lok_init_2(nullptr, nullptr);
 #endif
 
+#if defined(__EMSCRIPTEN__)
+        // A non-owner skipped lok_init_2 (kit==nullptr); it reuses the shared
+        // static `loKit` built by the owner before it signalled init-complete.
+        assert(kit || !isLoInitOwner);
+#else
         assert(kit);
+#endif
 
 #ifdef __EMSCRIPTEN__
         MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 done (SECOND_INIT)'); });
@@ -4298,6 +4349,25 @@ void lokit_main(
 #endif
 
 #if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
+#ifdef __EMSCRIPTEN__
+        if (!isLoInitOwner)
+        {
+            // Non-owner: its socket is attached (insertNewFakeSocket above)
+            // and its KitSocketPoll is in KSPolls. KSPolls holds only a
+            // weak_ptr, so we MUST keep a strong ref alive past this thread's
+            // return — otherwise the poll (and the late-join doc's socket) is
+            // freed the instant we return and the owner's runLoop drops it.
+            {
+                std::lock_guard<std::mutex> lk(g_attachedKitPollsMutex);
+                g_attachedKitPolls.push_back(mainKit);
+            }
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: non-owner lokit_main attached socket + kept poll alive, returning (single loop services it)'); });
+            return; // do NOT start a 2nd lok_init_2/runLoop
+        }
+        // Owner: release any waiting non-owner BEFORE blocking in runLoop
+        // (signal is on the always-taken path so waiters never hang).
+        wasm_signal_lo_init_complete();
+#endif
         startMainLoop(kit, loKit, mainKit);
 
         // Trap the signal handler, if invoked,
