@@ -365,30 +365,19 @@
         var fws = globalThis.TheFakeWebSocket;
         if (!fws) { setTimeout(waitForCoolwsd, 100); return; }
 
-        // Writer: StateWordCount has "word"
-        var statusEl = document.querySelector('#StateWordCount');
-        var writerReady = statusEl && statusEl.textContent && statusEl.textContent.includes('word');
-        // Calc: StatusDocPos has "Sheet"
-        var calcEl = document.querySelector('#StatusDocPos');
-        var calcReady = calcEl && calcEl.textContent && calcEl.textContent.includes('Sheet');
-        // Impress: any of these signals it's ready
-        var impressReady = false;
-        // Check for "Slide Show" in menu
-        var navEl = document.querySelector('nav.main-nav') || document.querySelector('#content-keeper');
-        if (navEl && navEl.textContent && navEl.textContent.includes('Slide Show')) {
-            impressReady = true;
-        }
-        // Or check for slide status (e.g., "Slide 1 of 3")
-        var sbEl = document.querySelector('.jsdialog.ui-statusbar');
-        if (sbEl && sbEl.textContent && sbEl.textContent.length > 3) {
-            impressReady = true;
-        }
-        // Or check that canvas + map div exist (Impress rendering started)
-        if (document.querySelector('#map') && document.querySelector('canvas')) {
-            impressReady = true;
-        }
-
-        if (!writerReady && !calcReady && !impressReady) {
+        // Authoritative readiness: the editor sets app.map._docLoaded=true
+        // ONLY when the 'docloaded' event fires with status:true — i.e. the
+        // kit has actually loaded the document (it is also the gate the
+        // editor uses to emit App_LoadingStatus=Document_Loaded). Earlier
+        // this polled UI heuristics (#StateWordCount text, statusbar length,
+        // #map+canvas presence) which give FALSE POSITIVES during a
+        // cold-reload late-join: the shell status bar / canvas appear ~1s
+        // before the kit finishes loading. A premature coolwsdReady flushes
+        // A's buffered relay edits into a not-yet-loaded kit → the kit
+        // rejects them (cmd=uno kind=nodocloaded) so they are lost (B never
+        // converges to A's unsaved edits) and the in-flight load can derail
+        // into faileddocloading. Gating on the real flag fixes both.
+        if (!(window.app && window.app.map && window.app.map._docLoaded === true)) {
             setTimeout(waitForCoolwsd, 200);
             return;
         }
@@ -1552,17 +1541,37 @@
                             return origFetch(editorWopiUrl, { method: 'POST', body: new Blob([buf]) });
                         });
                     }).then(function() {
-                        console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
                         try { parent.postMessage(JSON.stringify({
                             MessageId: 'RelayLateJoinPhase',
                             Values: { phase: 'loading' }
                         }), '*'); } catch(e) {}
-                    }).then(function() {
-                        console.log('[relay] WOPI file updated — waiting for COOLWSD to load it');
-                        try { parent.postMessage(JSON.stringify({
-                            MessageId: 'RelayLateJoinPhase',
-                            Values: { phase: 'loading' }
-                        }), '*'); } catch(e) {}
+                        // Step A (2026-06-14, fix-second-init-race): route the
+                        // late-join's real doc onto the EXISTING (prewarm) kit via
+                        // switchdocument, instead of letting COOLWSD do a fresh
+                        // `load url=<fileId>` of a NEW docKey — which spawns a 2nd
+                        // DocumentBroker → 2nd lokit_main → two LO main loops in one
+                        // process → "memory access out of bounds" on every late-join.
+                        // switchdocument reuses the single kit/loKit
+                        // (wasm_reload_doc_in_place), exactly like a cold same-type
+                        // open. Setting the hash drives the proven checkHashSwitch →
+                        // trySendSwitch path in wasm-loader.js (gated there on
+                        // __wasmInitialDocLoaded + postMobileMessage). We require an
+                        // QUEUE the switch unconditionally: set #switchdoc so
+                        // wasm-loader's checkHashSwitch records pendingSwitchFilename,
+                        // and its trySendSwitch retry-poll (every 300ms) FIRES it the
+                        // moment the initial/prewarm doc finishes loading
+                        // (__wasmInitialDocLoaded). The 0x05 join-response commonly
+                        // arrives BEFORE the editor's initial doc is ready (~46s vs
+                        // ~40-50s prewarm), so a one-shot check raced and fell through
+                        // to the legacy COOLWSD load (the 2nd-broker crash path). The
+                        // queue+retry is gated kit-side so the switch is never sent as
+                        // the first socket message (which would be a new docKey).
+                        try {
+                            window.location.hash = '#switchdoc=' + encodeURIComponent(wopiSrc);
+                            console.log('[relay] late-join → queued switchdocument on existing kit (single LO main loop): ' + wopiSrc);
+                        } catch (e) {
+                            console.error('[relay] switchdoc trigger failed: ' + e.message);
+                        }
                     }).catch(function(e) {
                         console.error('[relay] Late-join file sync failed: ' + e.message);
                     });
