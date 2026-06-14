@@ -36,7 +36,20 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Default container name varies by mode so the two paths don't fight over
 # /lo mount layout. --container-name=NAME overrides for both.
 CONTAINER=""
-IMAGE="public.ecr.aws/allotropia/libo-builders/wasm"
+# Prefer the locally-patched image (lo-wasm-ci:latest) which carries the
+# Poco patch online's wsd/COOLWSD.cpp needs (Application::clearInstancePointer).
+# The upstream public image lacks it — building against it fails with
+# "no member named 'clearInstancePointer' in Poco::Util::Application"
+# (hit 2026-06-13 after a fresh container was created from the public
+# image). Fall back to the public image only if the patched one is absent.
+# Override with WASM_BUILD_IMAGE=<image>.
+if [ -n "${WASM_BUILD_IMAGE:-}" ]; then
+    IMAGE="$WASM_BUILD_IMAGE"
+elif docker image inspect lo-wasm-ci:latest >/dev/null 2>&1; then
+    IMAGE="lo-wasm-ci:latest"
+else
+    IMAGE="public.ecr.aws/allotropia/libo-builders/wasm"
+fi
 LO_CORE_BRANCH="wasm-coediting"
 LO_CORE_REPO="https://github.com/szsz/libreoffice-core-wasm.git"
 LO_CORE_HOST_DIR="${LO_CORE_HOST_DIR-$HOME/libreoffice-core-wasm}"  # default bind-mount
@@ -153,6 +166,27 @@ else
     # under /lo/core-build/workdir/CustomTarget/desktop/.../exports if absent.
     LO_CORE_MOUNT_ARGS=(-v "$LO_PUBLISHED_DIR":/lo)
     echo "[OK] LO Core (published): $LO_PUBLISHED_DIR → /lo"
+fi
+
+# Detect a STALE /lo mount on an existing container. The /lo bind-mount
+# is fixed at container-creation time; if a prior build created the
+# container against an older LO extraction, reusing it links online
+# against the OLD LO libs — e.g. `wasm-ld: undefined symbol: <new LO
+# symbol>` when this build's LO_BUILD_ID added a symbol the stale /lo
+# lacks (cost a full build cycle 2026-06-13). In published mode, if the
+# container's /lo source != the LO_PUBLISHED_DIR we just fetched, force a
+# fresh container so the correct LO mount takes effect.
+lo_mount_is_stale() {
+    [ -z "$LO_PUBLISHED_DIR" ] && return 1   # only meaningful in published mode
+    local cur
+    cur="$(docker inspect "$CONTAINER" \
+        --format '{{range .Mounts}}{{if eq .Destination "/lo"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)"
+    [ -n "$cur" ] && [ "$cur" != "$LO_PUBLISHED_DIR" ]
+}
+
+if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$" && lo_mount_is_stale; then
+    echo "  NOTE: container '$CONTAINER' has a STALE /lo mount; recreating against $LO_PUBLISHED_DIR"
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 fi
 
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
