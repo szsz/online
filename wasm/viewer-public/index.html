@@ -499,7 +499,7 @@ var SHIELD_STEPS = [
     { id: 'compile',  label: 'Compiling engine',  marks: ['emscripten:module_defined', 'snapshot:signal', 'emscripten:wasmExports_ready'], band: [30, 38], track: 'ease' },
     { id: 'runtime',  label: 'Starting runtime',  marks: ['emscripten:FS_ready', 'emscripten:calledRun', 'dom:status_appeared'], band: [38, 45], track: 'ticks' },
     { id: 'import',   label: 'Opening document',  marks: [],                                           band: [45, 88], track: 'import' },
-    { id: 'render',   label: 'Rendering',         marks: ['dom:first_canvas'],                         band: [88, 96], track: 'render' },
+    { id: 'render',   label: 'Rendering',         marks: [],                                           band: [88, 96], track: 'render' },
     { id: 'ready',    label: 'Ready',             marks: ['doc:loaded'],                               band: [96, 100],track: 'tick' },
 ];
 // Map each granular wasm-loader mark prefix → the user-facing step it
@@ -729,16 +729,18 @@ function hideShield() {
 // never pull it backward or latch it. This preserves every call site
 // while removing the scattered absolute writers that caused the park.
 function updateShieldProgress(label, pct, detail) {
+    // SINGLE OWNER (C1, completed 2026-06-15): label/detail ONLY. The bar
+    // value is owned exclusively by the step model (enterStep + setIntra +
+    // time-ease). The `pct` argument is now IGNORED — it used to raise a
+    // `_lastBar` soft floor, but legacy callers pass hardcoded high values
+    // (tryDropShield's premature 'Joining session… 96' fired by the PREWARM
+    // doc's early docReady, the openFile 15/30/50/90 nudges, late-join 85/90/
+    // 95) which pinned the bar near the top for the whole open — the real
+    // "stuck at 94/96%". Dropping the floor makes those calls label-only and
+    // lets the bar reflect the genuine step state. Signature kept so the ~12
+    // call sites need no churn; pct is intentionally unused.
     if (label != null) ProgressModel.label = label;
     if (detail != null) ProgressModel.detail = detail;
-    if (pct != null) {
-        var clamped = Math.max(0, Math.min(100, pct));
-        // Floor hint: only ever raise the model's last bar (e.g. a
-        // late-join phase or the final 'Ready' 100). Never a latch.
-        if (clamped > ProgressModel._lastBar) {
-            ProgressModel._lastBar = clamped;
-        }
-    }
     ProgressModel.recompute();
 }
 
@@ -922,8 +924,26 @@ window.addEventListener('message', function(event) {
                     if (def && def.coldOnly) ProgressModel._coldSeen[stepId] = true;
                     ProgressModel.enterStep(stepId);
                     setShieldStage(stepId, 'in-progress', '');
-                    if (stg === 'dom:first_canvas') setShieldStage('render', 'in-progress', '');
+                    // DEAD-ZONE EASE: once the runtime is up, the next thing
+                    // is the document import — but for a big doc there's a
+                    // long (~30s cold) silent warmup/snapshot gap before the
+                    // first import % frame arrives (measured: Docaposte 53-
+                    // slide pptx, calledRun t=3s → import 5% t=36s). Enter the
+                    // import step NOW so its band time-eases continuously
+                    // through that gap (honest: no number surfaced, sub-bar
+                    // shimmers) instead of freezing at the runtime band end.
+                    // The real import % hands off seamlessly the moment the
+                    // first frame lands (soft monotone floor → no backwards).
+                    if (stepId === 'runtime') ProgressModel.enterStep('import');
                 }
+                // NOTE: dom:first_canvas deliberately does NOT advance the
+                // render step. The first canvas is the PREWARM blank-doc
+                // bootstrap paint (~2s), not the user's document render —
+                // entering the render band [88,96] on it pinned the bar at
+                // ~96% for the whole open (the "stuck at 94/96%" bug). The
+                // render step opens only on the REAL post-import signals:
+                // the pptx slide-render tap (stage:'render'), WasmSwitchVisible,
+                // or doc:loaded. first_canvas now maps to no step (no-op).
             }
             return;
         }
