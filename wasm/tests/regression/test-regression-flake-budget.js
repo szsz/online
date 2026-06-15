@@ -37,7 +37,10 @@ const KNOWN_FLAKE_BUDGET = 16;
 // (removed header still exported; root-caused model-side in the LOK
 // Page Style apply path, awaiting an LO fix). Drop back when that LO
 // fix lands. See fix-header-footer-docx-export-keeps-part.md.
-const LO_BLOCKED_BUDGET = 5;
+// 2026-06-15: bump 5→6 — add regression-impress-transition-click (fails
+// deterministically: transition click emits no dialogevents; LO-core,
+// awaiting an LO fix). Drop back when fixed.
+const LO_BLOCKED_BUDGET = 6;
 
 const TEST_PUBLISH_SH = path.resolve(__dirname, '..', '..', '..',
     '.github', 'scripts', 'wasm-ci', 'test-and-publish.sh');
