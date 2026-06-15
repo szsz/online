@@ -113,9 +113,15 @@ function listFiles() {
     // of crashing with ENOENT on every CI run (the "persistent fail ×3").
     if (!fs.existsSync(SAMPLES_DIR)) return [];
     const entries = fs.readdirSync(SAMPLES_DIR);
+    // Optional focus filter: BULK_OPEN_FILTER=<substr> opens only the files
+    // whose name contains <substr> (case-insensitive). Lets you target one
+    // problem file (e.g. a specific slow pptx) for a per-tick timeline review
+    // without sitting through the whole corpus. No effect when unset.
+    const focus = (process.env.BULK_OPEN_FILTER || '').toLowerCase();
     return entries
         .filter(n => !n.startsWith('.'))
         .filter(n => n !== '.gitignore')
+        .filter(n => !focus || n.toLowerCase().includes(focus))
         .filter(n => {
             const full = path.join(SAMPLES_DIR, n);
             try { return fs.statSync(full).isFile(); } catch (_) { return false; }
