@@ -235,6 +235,15 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
     // time the bar sat at a given value before advancing). Pure observation —
     // we read the percent text COOL itself renders, we do not drive it.
     const progressSeen = new Map();   // import % -> tMs (first seen)
+    // FINE-GRAINED raw progress stream (Feature B): EVERY distinct import
+    // percent observation in arrival order, each with the ms (from open
+    // start) it was first seen. Finer than the de-duped Progress-bar Δ
+    // summary — this is the raw, ordered, timestamped value stream.
+    const progressStream = [];        // [{ t (ms from open start), pct }]
+    // The most-complete wasm-loader event array seen so far. The array
+    // grows as marks land; we keep the latest snapshot (each entry already
+    // carries its OWN exact tNav, so we don't need per-poll timestamps).
+    let latestEvents = [];
     let lastLine = '';
     let probe = null;
 
@@ -261,6 +270,15 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                         }
                     }
                 }
+                // FINE-GRAINED raw event stream (Feature B): EVERY mark()
+                // the wasm-loader recorded, with its exact tNav (ms from
+                // navigation). This is the unabridged timeline — finer than
+                // the de-duped per-stage trace above. Pure observation.
+                const allEvents = events.map(ev => ({
+                    t: (ev.tNav != null ? ev.tNav : (ev.t || 0)),
+                    name: ev.name,
+                    detail: (ev.detail || '').substring(0, 80),
+                }));
                 // Kit import % — the statusindicator-driven OPEN progress
                 // bar. COOL's L.ProgressOverlay (the spinner+bar shown over
                 // #document-container while the import filter runs) is driven
@@ -290,6 +308,7 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                 }
                 return {
                     stages,
+                    allEvents,
                     importPct,
                     slide_total:    slideMatch ? +slideMatch[2] : 0,
                     sheet_total:    sheetMatch ? +sheetMatch[2] : 0,
@@ -313,10 +332,16 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                 }
             }
 
+            // Fine-grained (Feature B): keep the most-complete event array.
+            if (probe.allEvents && probe.allEvents.length >= latestEvents.length) {
+                latestEvents = probe.allEvents;
+            }
+
             // Register newly-observed open-progress-bar values (each distinct
             // percent the bar steps to, timestamped at first sighting).
             if (probe.importPct >= 0 && !progressSeen.has(probe.importPct)) {
                 progressSeen.set(probe.importPct, nowMs);
+                progressStream.push({ t: nowMs, pct: probe.importPct });  // raw ordered stream
                 log(`[${idx}]     ▸ progress ${probe.importPct}%  t=${(nowMs/1000).toFixed(1)}s`);
             }
 
@@ -378,8 +403,47 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                 const stageBreakdown = withDeltas(stages, 'name', loadMs);
                 const progressBreakdown = withDeltas(progressSteps, 'pct', loadMs);
                 logBreakdown(idx, label, stageBreakdown, progressBreakdown);
+
+                // ── FINE-GRAINED EVENT TIMELINE (Feature B) ──────────────
+                // The raw, timestamped stream of EVERY progress event:
+                //   - every wasm-loader mark() (from __prewarmTimings.events,
+                //     each carrying its own exact tNav = ms from navigation);
+                //   - every observed statusindicator/import % change (the
+                //     COOL .leaflet-progress / kit `progress:` value), at the
+                //     ms it was first seen.
+                // Both are normalized onto ONE clock (ms from open start).
+                // The loader marks use a navigation-origin clock (tNav); the
+                // poll-observed % uses the test's wait-start clock (t0). We
+                // align them via a matched stage seen on BOTH clocks
+                // (stageSeen[name] is t0-clock, probe.stages[name] is tNav):
+                // offset = t0clock − tNav. Falls back to 0 if no match.
+                let evOffset = 0;
+                for (const name of PIPELINE_STAGES) {
+                    if (stageSeen.has(name) && probe.stages[name] != null) {
+                        evOffset = stageSeen.get(name) - probe.stages[name];
+                        break;
+                    }
+                }
+                const timeline = [];
+                for (const ev of latestEvents) {
+                    timeline.push({
+                        t: Math.max(0, Math.round(ev.t + evOffset)),
+                        kind: 'event',
+                        text: ev.name + (ev.detail ? ' ' + ev.detail : ''),
+                    });
+                }
+                for (const p of progressStream) {
+                    timeline.push({ t: Math.round(p.t), kind: 'progress', text: 'import ' + p.pct + '%' });
+                }
+                timeline.sort((a, b) => a.t - b.t || (a.kind === 'event' ? -1 : 1));
+                // Console: the full raw stream, finer than the Δ summaries.
+                log(`[${idx}] [${label}] fine-grained timeline (${timeline.length} entries):`);
+                for (const e of timeline) {
+                    log(`[${idx}]       t=${String(e.t).padStart(6)}ms  ${e.kind === 'progress' ? '▸ ' : '· '}${e.text}`);
+                }
+
                 return { loadMs, kind, total, rendered, stages, progressSteps,
-                         stageBreakdown, progressBreakdown };
+                         stageBreakdown, progressBreakdown, timeline };
             }
         }
 
@@ -486,6 +550,10 @@ async function openAndTypeOne(browser, fileName, idx) {
         // progress bar / pipeline stage changes). Each row {label,tMs,deltaMs}.
         stageBreakdown: [],
         progressBreakdown: [],
+        // Fine-grained raw event timeline (Feature B): chronological
+        // [{t (ms from open start), kind:'event'|'progress', text}] of EVERY
+        // wasm-loader mark + EVERY observed import-% change.
+        timeline: [],
     };
 
     let bytes;
@@ -503,7 +571,7 @@ async function openAndTypeOne(browser, fileName, idx) {
 
     log(`\n${'='.repeat(60)}`);
     log(`[${idx}] ${fileName}  (${fmt}, ${(bytes.length/1024/1024).toFixed(2)} MB)`);
-    log(`[${idx}] open budget = ${(openBudgetMs/1000).toFixed(1)}s (${(bytes.length/(1024*1024)).toFixed(2)} MB × 5 s/MB${isFirstFile ? ' + 60 s cold tax' : ''})`);
+    log(`[${idx}] open budget = ${(openBudgetMs/1000).toFixed(1)}s (${(bytes.length/(1024*1024)).toFixed(2)} MB × ${(MS_PER_MB/1000)} s/MB${isFirstFile ? ` + ${COLD_OVERHEAD_MS/1000} s cold tax` : ''})`);
     log('='.repeat(60));
 
     let page = null;
@@ -558,6 +626,7 @@ async function openAndTypeOne(browser, fileName, idx) {
         result.stages           = loadInfo.stages || [];
         result.stageBreakdown    = loadInfo.stageBreakdown || [];
         result.progressBreakdown = loadInfo.progressBreakdown || [];
+        result.timeline          = loadInfo.timeline || [];
         log(`[${idx}] open total = ${(result.tOpenMs/1000).toFixed(2)}s (predicate=${(loadInfo.loadMs/1000).toFixed(2)}s, budget=${(openBudgetMs/1000).toFixed(1)}s) — ${loadInfo.kind === 'slide' ? loadInfo.rendered + '/' + loadInfo.total + ' slides rendered' : loadInfo.kind === 'sheet' ? '1/' + loadInfo.total + ' sheets' : loadInfo.kind === 'page' ? loadInfo.total + ' pages' : 'ready'}`);
 
         // Let canvas tiles paint before we screenshot.
@@ -732,6 +801,23 @@ function renderBreakdownCell(breakdown, fallback, noun, tMark) {
          + `<ol class="stages">${items}</ol></details>`;
 }
 
+// FINE-GRAINED EVENT TIMELINE cell (Feature B): an expandable per-file
+// list of EVERY progress event + EVERY observed import-% change, each as
+// `t=NNNNms  <event-or-progress-value>`, in chronological order. This is
+// the raw, timestamped stream — finer than the de-duped Stage Δ /
+// Progress-bar Δ summaries (which only show first-seen transitions).
+function renderTimelineCell(timeline) {
+    if (!timeline || !timeline.length) return '—';
+    const items = timeline.map(e =>
+        `<li class="tl-${e.kind}">`
+      + `<span class="st">t=${String(e.t).padStart(6)}ms</span> `
+      + `<code>${e.kind === 'progress' ? '▸ ' : ''}${escHtml(e.text)}</code></li>`).join('');
+    const nProg = timeline.filter(e => e.kind === 'progress').length;
+    return `<details><summary>${timeline.length} events `
+         + `(${nProg} progress)</summary>`
+         + `<ol class="timeline">${items}</ol></details>`;
+}
+
 function renderReport(results, walltimeMs, allFiles) {
     const passed = results.filter(r => r.verify === 'pass').length;
     const budgetFailed = results.filter(r => r.budgetExceeded).length;
@@ -778,6 +864,8 @@ function renderReport(results, walltimeMs, allFiles) {
         // progress bar sat at each percent before advancing (Δms per step).
         const progressCell = renderBreakdownCell(
             r.progressBreakdown, null, 'progress steps', '@');
+        // Per-file FINE-GRAINED timeline — the raw timestamped event stream.
+        const timelineCell = renderTimelineCell(r.timeline);
         return `<tr class="${statusCls}">
   <td>${r.idx}</td>
   <td class="file">${escHtml(r.fileName)}</td>
@@ -788,6 +876,7 @@ function renderReport(results, walltimeMs, allFiles) {
   <td class="content">${escHtml(progressCol)}</td>
   <td class="stagecol">${stagesCell}</td>
   <td class="stagecol">${progressCell}</td>
+  <td class="stagecol">${timelineCell}</td>
   <td class="v">${escHtml(vLabel)}</td>
   <td class="detail">${escHtml(r.verifyDetail || '')}</td>
   <td>${before} / ${after}</td>
@@ -800,6 +889,7 @@ function renderReport(results, walltimeMs, allFiles) {
   <td class="num tOpen">—</td>
   <td class="num">—</td>
   <td class="content">—</td>
+  <td class="stagecol">—</td>
   <td class="stagecol">—</td>
   <td class="stagecol">—</td>
   <td class="v">not run</td>
@@ -845,6 +935,12 @@ ol.stages{margin:4px 0 4px 16px;padding:0}
 ol.stages li{white-space:nowrap;line-height:1.5}
 ol.stages .st{color:#888;font-variant-numeric:tabular-nums}
 ol.stages .dt{color:#0a58ca;font-weight:600;font-variant-numeric:tabular-nums}
+ol.timeline{margin:4px 0 4px 12px;padding:0;list-style:none;max-height:320px;overflow:auto;border-left:2px solid #eee}
+ol.timeline li{white-space:nowrap;line-height:1.45;font-size:11px;padding-left:6px}
+ol.timeline li .st{color:#888;font-variant-numeric:tabular-nums;margin-right:6px}
+ol.timeline li code{color:#333}
+ol.timeline li.tl-progress{background:#eef4ff}
+ol.timeline li.tl-progress code{color:#0a58ca;font-weight:600}
 .card{display:inline-block;vertical-align:top;margin:0 12px 18px 0;padding:8px;border:1px solid #ddd;border-radius:4px;background:#fafafa}
 .card h3{font-size:13px;margin:0 0 6px 0;font-family:monospace}
 .shotpair{display:flex;gap:8px}
@@ -864,13 +960,17 @@ ol.stages .dt{color:#0a58ca;font-weight:600;font-variant-numeric:tabular-nums}
   Not run: <strong style="color:#999">${notRunRows.length}</strong>
 </div>
 <div class="meta" style="margin-bottom:.8rem">
-  Open budget: warm = <code>size × 5 s/MB</code>, cold (first file) adds <code>+60 s</code>; floor <code>15 s</code>.
+  Open budget: warm = <code>size × ${MS_PER_MB/1000} s/MB</code>, cold (first file) adds <code>+${COLD_OVERHEAD_MS/1000} s</code>; floor <code>${MIN_OPEN_MS/1000} s</code>.
   Test aborts immediately on first budget overrun.
+  <br/>The <strong>Timeline (raw)</strong> column expands to the fine-grained
+  per-file event stream: every <code>__prewarmTimings</code> mark + every
+  observed import/statusindicator % change, each as <code>t=NNNNms&nbsp;event</code>
+  — finer than the de-duped Stage&nbsp;Δ / Progress-bar&nbsp;Δ summaries.
 </div>
 <table>
 <thead><tr>
   <th>#</th><th>File</th><th>Fmt</th><th>Size (MiB)</th>
-  <th>Open (s)</th><th>Budget</th><th>Content</th><th>Stage Δ</th><th>Progress-bar Δ</th><th>Verify</th><th>Detail</th><th>Shots</th>
+  <th>Open (s)</th><th>Budget</th><th>Content</th><th>Stage Δ</th><th>Progress-bar Δ</th><th>Timeline (raw)</th><th>Verify</th><th>Detail</th><th>Shots</th>
 </tr></thead>
 <tbody>
 ${rows}
