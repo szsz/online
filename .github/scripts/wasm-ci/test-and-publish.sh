@@ -473,6 +473,20 @@ if [[ "$TEST_TARGET" == "local" ]]; then
     export EDITOR_DEPLOY_ID="$APP_BID"
     export TEST_TARGET="local"
 
+    # bulk-open-ignored corpus on this self-hosted runner. The corpus is
+    # gitignored, so it can't live in the checkout (actions/checkout's
+    # `git clean -ffdx` wipes it). We keep a PERSISTENT copy outside the
+    # checkout; when present, point the test at it and run REPORT-ONLY: the
+    # published CI report then carries the real per-update open timings for
+    # the whole corpus, WITHOUT the per-MB perf gate (which flakes under the
+    # CI's JOBS=2 contention — the reason PR #236 made the corpus dev-only).
+    # bulk-open is NOT a smoke/critical test, so this never blocks the gate.
+    if [[ -d /home/localadmin/ci-corpus/bulk-open-ignored ]]; then
+        export BULK_OPEN_SAMPLES_DIR=/home/localadmin/ci-corpus/bulk-open-ignored
+        export BULK_OPEN_REPORT_ONLY=1
+        echo "  bulk-open: corpus present → $BULK_OPEN_SAMPLES_DIR (report-only)"
+    fi
+
 elif [[ "$TEST_TARGET" == "azure-deploy" ]]; then
     # Legacy mode: source Azure URLs from the host-managed .env.deploy.
     if [[ ! -f "$ENV_DEPLOY_HOST" ]]; then

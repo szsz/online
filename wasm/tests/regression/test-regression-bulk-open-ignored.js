@@ -46,7 +46,15 @@ const VIEWER = env.FILE_STORAGE_URL;
 // hardcoded `/home/localadmin/online/...` always resolved on this
 // self-hosted box (shared with the dev repo), so the test ran the gate
 // on CI and perf-flaked under host contention. local-only by design.
-const SAMPLES_DIR = path.join(__dirname, '..', '..', '..', 'test', 'samples', 'ignored');
+// Default: the gitignored corpus inside this checkout (present on a dev box,
+// absent on CI). Override with BULK_OPEN_SAMPLES_DIR to point at a PERSISTENT
+// corpus that lives OUTSIDE the checkout — needed on the CI runner, where
+// actions/checkout's `git clean -ffdx` wipes gitignored paths at the start
+// of every run, so an in-checkout corpus can't survive. Set this in the
+// runner .env (paired with BULK_OPEN_REPORT_ONLY=1) to publish the real
+// corpus timings on CI without re-arming the per-MB perf flake.
+const SAMPLES_DIR = process.env.BULK_OPEN_SAMPLES_DIR
+    || path.join(__dirname, '..', '..', '..', 'test', 'samples', 'ignored');
 // In-repo fixture corpus (COMMITTED → present on every CI checkout). Used
 // ONLY when SAMPLES_DIR is absent (i.e. on CI), so the published report is
 // COMPLETE — full per-step Δ + fine-grained timeline for one doc of each
@@ -1035,6 +1043,16 @@ ${previews}
         files = listFixtures();
         SRC_DIR = FIXTURES_DIR; GATED = false;
         log(`No corpus at ${SAMPLES_DIR} — using ${files.length} in-repo fixtures from ${FIXTURES_DIR} (report-only, perf gate OFF)`);
+    }
+    // BULK_OPEN_REPORT_ONLY=1 forces report-only mode even with the corpus
+    // present: disables the per-MB gate abort (uses the generous patience
+    // budget) so the run opens EVERY file and produces a complete per-update
+    // timing report instead of stopping at the first budget overrun. Use
+    // this to inspect the detailed open timeline of the whole corpus; use the
+    // default (gated) mode for the CI/dev perf assertion.
+    if (process.env.BULK_OPEN_REPORT_ONLY && GATED) {
+        GATED = false;
+        log('BULK_OPEN_REPORT_ONLY=1 → perf gate OFF; opening ALL files for a complete timing report');
     }
     if (!files.length) {
         log('Nothing to do — exiting 0');
