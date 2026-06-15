@@ -551,11 +551,21 @@ function setShieldStage(stageId, state, pctText) {
         var myIdx = stepIndex(stageId);
         for (var i = 0; i < myIdx; i++) {
             var prevLi = document.querySelector('#shield-stages li[data-stage="' + SHIELD_STEPS[i].id + '"]');
-            if (prevLi && prevLi.getAttribute('data-state') === 'pending') {
+            if (!prevLi) continue;
+            var ps = prevLi.getAttribute('data-state');
+            // Any earlier step that hasn't already finished is complete once a
+            // LATER step starts — promote it to done whether it was 'pending'
+            // OR 'in-progress'. (Previously only 'pending' was promoted, so a
+            // step that briefly went 'in-progress' and was then skipped over —
+            // e.g. boot/compile/runtime when the dead-zone ease jumps the model
+            // straight to 'import' — got stuck at 'in-progress' forever and
+            // never counted as a reached stage. That regressed
+            // regression-open-progress-stages' ">=5 stages done" check.)
+            if (ps !== 'done' && ps !== 'skipped') {
                 prevLi.setAttribute('data-state', 'done');
                 prevLi.querySelector('.sg-icon').textContent = '✓';
-                // a step that was never even started on a warm open is
-                // collapsed if it's cold-only (e.g. download on cache hit)
+                // a cold-only step that never fired a mark (e.g. download on a
+                // warm cache hit) is collapsed to 'skipped', not 'done'.
                 if (SHIELD_STEPS[i].coldOnly && !ProgressModel._coldSeen[SHIELD_STEPS[i].id]) {
                     prevLi.setAttribute('data-state', 'skipped');
                 }
