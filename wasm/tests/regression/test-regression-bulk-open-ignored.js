@@ -165,12 +165,68 @@ const PIPELINE_STAGES = [
     'doc:loaded',
 ];
 
+// Turn an ordered [{<labelKey>, tMs}] trace into per-step rows annotated with
+// the Δms spent IN each step = gap from this step's timestamp to the next
+// step's (or to `endMs` for the last). Each row: { label, tMs, deltaMs }.
+// This is the "time spent at each step where the progress bar changes"
+// breakdown the report surfaces per document.
+function withDeltas(trace, labelKey, endMs) {
+    if (!trace || !trace.length) return [];
+    return trace.map((step, i) => {
+        const next = i + 1 < trace.length ? trace[i + 1].tMs : endMs;
+        return {
+            label:   labelKey === 'pct' ? step.pct + '%' : String(step[labelKey]),
+            tMs:     step.tMs,
+            deltaMs: Math.max(0, Math.round(next - step.tMs)),
+        };
+    });
+}
+
+function fmtMs(ms) {
+    return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms';
+}
+
+// Emit the per-step breakdowns (pipeline-stage Δ + open-progress-bar Δ) to the
+// console as compact `step→next Δ` lines, e.g.
+//   loader:start→sw-bridge:ready 120ms, …, doc:loaded→ready 2.1s
+//   bar 0%→25% 2.1s, 25%→60% 3.0s, 60%→100% 4.4s
+function logBreakdown(idx, label, stageBreakdown, progressBreakdown) {
+    if (stageBreakdown.length) {
+        const parts = [];
+        for (let i = 0; i < stageBreakdown.length; i++) {
+            const cur = stageBreakdown[i];
+            const nxt = stageBreakdown[i + 1];
+            const arrow = nxt ? `${cur.label}→${nxt.label}` : `${cur.label}→ready`;
+            parts.push(`${arrow} ${fmtMs(cur.deltaMs)}`);
+        }
+        log(`[${idx}] [${label}] stage Δ: ${parts.join(', ')}`);
+    }
+    if (progressBreakdown.length) {
+        const parts = [];
+        for (let i = 0; i < progressBreakdown.length; i++) {
+            const cur = progressBreakdown[i];
+            const nxt = progressBreakdown[i + 1];
+            const arrow = nxt ? `${cur.label}→${nxt.label}` : `${cur.label}→ready`;
+            parts.push(`${arrow} ${fmtMs(cur.deltaMs)}`);
+        }
+        log(`[${idx}] [${label}] progress-bar Δ: ${parts.join(', ')}`);
+    } else {
+        log(`[${idx}] [${label}] progress-bar Δ: (no open-progress-bar transitions observed)`);
+    }
+}
+
 async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
     log(`[${idx}] [${label}] Waiting for document...`);
     const t0 = Date.now();
     const deadline = t0 + timeoutMs;
 
     const stageSeen = new Map();   // stage name -> tMs (first seen)
+    // Open-progress-bar transition trace: every distinct import % value the
+    // bar is observed at, with the wall-clock ms (relative to open start) it
+    // was FIRST seen. From this we compute the Δms spent in each step (the
+    // time the bar sat at a given value before advancing). Pure observation —
+    // we read the percent text COOL itself renders, we do not drive it.
+    const progressSeen = new Map();   // import % -> tMs (first seen)
     let lastLine = '';
     let probe = null;
 
@@ -197,11 +253,33 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                         }
                     }
                 }
-                // Kit import % — the statusindicator-driven snackbar
-                // progress (visible during big-file import).
+                // Kit import % — the statusindicator-driven OPEN progress
+                // bar. COOL's L.ProgressOverlay (the spinner+bar shown over
+                // #document-container while the import filter runs) is driven
+                // by foreground `statusindicator setvalue` frames via
+                // _onUpdateProgress → _progressBar.setValue(v): it writes the
+                // percent into `.leaflet-progress > span > span` as "NN%" and
+                // sets the bar span's width to "NN%". That element is the
+                // canonical "open progress bar"; read it first. Fall back to
+                // any <progress> (older jsdialog snackbar) for robustness.
                 let importPct = -1;
-                const prog = document.querySelector('.jsdialog progress, #snackbar progress, progress');
-                if (prog && prog.max > 0) importPct = Math.round(prog.value / prog.max * 100);
+                const ovl = document.querySelector('.leaflet-progress-layer .leaflet-progress');
+                if (ovl) {
+                    const m = (ovl.textContent || '').match(/(\d+)\s*%/);
+                    if (m) {
+                        importPct = +m[1];
+                    } else {
+                        // No text yet — derive from the bar span's width style.
+                        const barSpan = ovl.querySelector('span');
+                        const w = barSpan && barSpan.style && barSpan.style.width;
+                        const wm = w && w.match(/(\d+)\s*%/);
+                        if (wm) importPct = +wm[1];
+                    }
+                }
+                if (importPct < 0) {
+                    const prog = document.querySelector('.jsdialog progress, #snackbar progress, progress');
+                    if (prog && prog.max > 0) importPct = Math.round(prog.value / prog.max * 100);
+                }
                 return {
                     stages,
                     importPct,
@@ -225,6 +303,13 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                     stageSeen.set(name, nowMs);
                     log(`[${idx}]     ✦ stage ${stageSeen.size}/${PIPELINE_STAGES.length + 1}: ${name}  t=${(nowMs/1000).toFixed(1)}s`);
                 }
+            }
+
+            // Register newly-observed open-progress-bar values (each distinct
+            // percent the bar steps to, timestamped at first sighting).
+            if (probe.importPct >= 0 && !progressSeen.has(probe.importPct)) {
+                progressSeen.set(probe.importPct, nowMs);
+                log(`[${idx}]     ▸ progress ${probe.importPct}%  t=${(nowMs/1000).toFixed(1)}s`);
             }
 
             const isReady =
@@ -271,7 +356,22 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                     rendered = probe.page_total;
                 }
                 const stages = [...stageSeen.entries()].map(([name, tMs]) => ({ name, tMs }));
-                return { loadMs, kind, total, rendered, stages };
+                // Open-progress-bar steps, sorted ascending by value, each
+                // carrying the ms it was first seen. The final synthetic step
+                // pins 100% at the ready instant so the last Δ is captured even
+                // when the bar never explicitly hit 100 before doc:loaded.
+                const progressSteps = [...progressSeen.entries()]
+                    .map(([pct, tMs]) => ({ pct, tMs }))
+                    .sort((a, b) => a.tMs - b.tMs);
+                if (!progressSeen.has(100)) progressSteps.push({ pct: 100, tMs: loadMs });
+                // Per-step breakdowns: Δms is time spent IN a step = gap to the
+                // next transition (the pipeline stage / progress value the open
+                // sat at before advancing). Surfaced in the console + report.
+                const stageBreakdown = withDeltas(stages, 'name', loadMs);
+                const progressBreakdown = withDeltas(progressSteps, 'pct', loadMs);
+                logBreakdown(idx, label, stageBreakdown, progressBreakdown);
+                return { loadMs, kind, total, rendered, stages, progressSteps,
+                         stageBreakdown, progressBreakdown };
             }
         }
 
@@ -374,6 +474,10 @@ async function openAndTypeOne(browser, fileName, idx) {
         progressRendered: 0,
         // Ordered [{name, tMs}] pipeline-stage trace from the open wait.
         stages: [],
+        // Per-step Δms breakdowns (time spent at each step where the open
+        // progress bar / pipeline stage changes). Each row {label,tMs,deltaMs}.
+        stageBreakdown: [],
+        progressBreakdown: [],
     };
 
     let bytes;
@@ -444,6 +548,8 @@ async function openAndTypeOne(browser, fileName, idx) {
         result.progressTotal    = loadInfo.total;
         result.progressRendered = loadInfo.rendered;
         result.stages           = loadInfo.stages || [];
+        result.stageBreakdown    = loadInfo.stageBreakdown || [];
+        result.progressBreakdown = loadInfo.progressBreakdown || [];
         log(`[${idx}] open total = ${(result.tOpenMs/1000).toFixed(2)}s (predicate=${(loadInfo.loadMs/1000).toFixed(2)}s, budget=${(openBudgetMs/1000).toFixed(1)}s) — ${loadInfo.kind === 'slide' ? loadInfo.rendered + '/' + loadInfo.total + ' slides rendered' : loadInfo.kind === 'sheet' ? '1/' + loadInfo.total + ' sheets' : loadInfo.kind === 'page' ? loadInfo.total + ' pages' : 'ready'}`);
 
         // Let canvas tiles paint before we screenshot.
@@ -591,6 +697,33 @@ function escHtml(s) {
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Render a per-step breakdown as an inline <details> table. `breakdown` is
+// the [{label,tMs,deltaMs}] from withDeltas(); each row shows
+// `step  Δms  (@t)` so a reader sees how long the open sat at that step.
+// `fallback` (the raw stage trace) is used only to keep a count when no
+// breakdown is present yet (incremental partial-report writes). `tMark` is
+// the absolute-time prefix ('+' for stages relative to open start, '@' for
+// progress timestamps).
+function renderBreakdownCell(breakdown, fallback, noun, tMark) {
+    const rows = breakdown && breakdown.length ? breakdown : null;
+    if (!rows) {
+        if (fallback && fallback.length) {
+            return `<details><summary>${fallback.length} ${noun}</summary>`
+                 + `<ol class="stages">`
+                 + fallback.map(s => `<li><code>${escHtml(s.name)}</code> `
+                     + `<span class="st">${tMark}${(s.tMs/1000).toFixed(1)}s</span></li>`).join('')
+                 + `</ol></details>`;
+        }
+        return '—';
+    }
+    const items = rows.map(s =>
+        `<li><code>${escHtml(s.label)}</code> `
+      + `<span class="dt">Δ${fmtMs(s.deltaMs)}</span> `
+      + `<span class="st">${tMark}${(s.tMs/1000).toFixed(1)}s</span></li>`).join('');
+    return `<details><summary>${rows.length} ${noun}</summary>`
+         + `<ol class="stages">${items}</ol></details>`;
+}
+
 function renderReport(results, walltimeMs, allFiles) {
     const passed = results.filter(r => r.verify === 'pass').length;
     const budgetFailed = results.filter(r => r.budgetExceeded).length;
@@ -627,17 +760,16 @@ function renderReport(results, walltimeMs, allFiles) {
         } else if (r.tOpenMs > 0 && !r.budgetExceeded) {
             progressCol = 'ready';
         }
-        // Per-file pipeline-stage trace — inline expandable. Each stage
-        // shows the time it was first observed (relative to open start)
-        // so a reader can see where the open time went (download vs
-        // compile vs import vs paint).
-        let stagesCell = '—';
-        if (r.stages && r.stages.length) {
-            const items = r.stages
-                .map(s => `<li><code>${escHtml(s.name)}</code> <span class="st">+${(s.tMs/1000).toFixed(1)}s</span></li>`)
-                .join('');
-            stagesCell = `<details><summary>${r.stages.length} stages</summary><ol class="stages">${items}</ol></details>`;
-        }
+        // Per-file pipeline-stage breakdown — inline expandable. Each row
+        // shows the step transition and the Δms SPENT in that step (gap to
+        // the next transition), plus the absolute t it was first seen. This
+        // is where the open time went: download vs compile vs import vs paint.
+        const stagesCell = renderBreakdownCell(
+            r.stageBreakdown, r.stages, 'stages', '+');
+        // Per-file OPEN-PROGRESS-BAR breakdown — the time the visible
+        // progress bar sat at each percent before advancing (Δms per step).
+        const progressCell = renderBreakdownCell(
+            r.progressBreakdown, null, 'progress steps', '@');
         return `<tr class="${statusCls}">
   <td>${r.idx}</td>
   <td class="file">${escHtml(r.fileName)}</td>
@@ -647,6 +779,7 @@ function renderReport(results, walltimeMs, allFiles) {
   <td class="num">${budgetCol}</td>
   <td class="content">${escHtml(progressCol)}</td>
   <td class="stagecol">${stagesCell}</td>
+  <td class="stagecol">${progressCell}</td>
   <td class="v">${escHtml(vLabel)}</td>
   <td class="detail">${escHtml(r.verifyDetail || '')}</td>
   <td>${before} / ${after}</td>
@@ -659,6 +792,7 @@ function renderReport(results, walltimeMs, allFiles) {
   <td class="num tOpen">—</td>
   <td class="num">—</td>
   <td class="content">—</td>
+  <td class="stagecol">—</td>
   <td class="stagecol">—</td>
   <td class="v">not run</td>
   <td class="detail">aborted: prior file exceeded open budget</td>
@@ -702,6 +836,7 @@ td.stagecol details summary{cursor:pointer;color:#0a58ca}
 ol.stages{margin:4px 0 4px 16px;padding:0}
 ol.stages li{white-space:nowrap;line-height:1.5}
 ol.stages .st{color:#888;font-variant-numeric:tabular-nums}
+ol.stages .dt{color:#0a58ca;font-weight:600;font-variant-numeric:tabular-nums}
 .card{display:inline-block;vertical-align:top;margin:0 12px 18px 0;padding:8px;border:1px solid #ddd;border-radius:4px;background:#fafafa}
 .card h3{font-size:13px;margin:0 0 6px 0;font-family:monospace}
 .shotpair{display:flex;gap:8px}
@@ -727,7 +862,7 @@ ol.stages .st{color:#888;font-variant-numeric:tabular-nums}
 <table>
 <thead><tr>
   <th>#</th><th>File</th><th>Fmt</th><th>Size (MiB)</th>
-  <th>Open (s)</th><th>Budget</th><th>Content</th><th>Stages</th><th>Verify</th><th>Detail</th><th>Shots</th>
+  <th>Open (s)</th><th>Budget</th><th>Content</th><th>Stage Δ</th><th>Progress-bar Δ</th><th>Verify</th><th>Detail</th><th>Shots</th>
 </tr></thead>
 <tbody>
 ${rows}
