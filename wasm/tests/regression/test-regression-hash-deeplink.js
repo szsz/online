@@ -93,7 +93,7 @@ async function seedRecentFiles(page, entries) {
         await seedRecentFiles(p1, recentList);
         await p1.goto(VIEWER + '/', { waitUntil: 'domcontentloaded' });
         await p1.waitForFunction(id => !!document.querySelector(`.file[data-fileid="${id}"]`),
-            { timeout: 15000 }, a.fileId);
+            { timeout: env.scaleTimeout(15000) }, a.fileId);
         const before = await currentState(p1);
         log(`Before click: hash="${before.hash}", currentFile=${before.currentFile}`);
         check('Hash empty before any click', before.hash === '' || before.hash === '#');
@@ -102,9 +102,9 @@ async function seedRecentFiles(page, entries) {
         // The click sets location.hash synchronously; wait for the hashchange
         // listener + openFileBySecret to update currentFile.
         await p1.waitForFunction(() => location.hash.startsWith('#file='),
-            { timeout: 5000 });
+            { timeout: env.scaleTimeout(5000) });
         await p1.waitForFunction(id => window.__viewerState && window.__viewerState.currentFile === id,
-            { timeout: 30000 }, a.fileId);
+            { timeout: env.scaleTimeout(30000) },a.fileId);
         const afterClick = await currentState(p1);
         log(`After click:  hash="${afterClick.hash}", currentFile=${afterClick.currentFile}`);
         await snap(p1, 'after_click');
@@ -123,7 +123,7 @@ async function seedRecentFiles(page, entries) {
         await p2.goto(VIEWER + '/#file=' + b.b64urlSecret,
             { waitUntil: 'domcontentloaded' });
         await p2.waitForFunction(id => window.__viewerState && window.__viewerState.currentFile === id,
-            { timeout: 30000 }, b.fileId);
+            { timeout: env.scaleTimeout(30000) },b.fileId);
         const s2 = await currentState(p2);
         log(`Deep-link load: hash="${s2.hash}", currentFile=${s2.currentFile}, openMode=${s2.openMode}`);
         await snap(p2, 'deeplink_load');
@@ -135,7 +135,7 @@ async function seedRecentFiles(page, entries) {
         log('\n--- Case 3: changing hash to a different secret re-opens ---');
         await p2.evaluate(s => { location.hash = '#file=' + s; }, a.b64urlSecret);
         await p2.waitForFunction(id => window.__viewerState.currentFile === id,
-            { timeout: 30000 }, a.fileId);
+            { timeout: env.scaleTimeout(30000) },a.fileId);
         const afterNav = await currentState(p2);
         log(`After hash nav: currentFile=${afterNav.currentFile}, hash="${afterNav.hash}"`);
         await snap(p2, 'hash_navigation');
