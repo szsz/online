@@ -117,6 +117,43 @@
         }, 100);
     })();
 
+    // Forward pptx PER-SLIDE render progress to the parent shield's
+    // render step. Impress import is silent in sd's render finalize (no
+    // statusindicator), but the slide-sorter thumbnail strip fills
+    // incrementally as COOL renders previews — a real, DOM-observable
+    // signal. We run INSIDE the iframe so we can read it directly (the
+    // cross-origin parent cannot). Once #SlideStatus shows "Slide N of M"
+    // we poll the thumb count and emit WasmOpenStage{stage:'render',pct}.
+    // Pure observation; honesty rule honored (only emits a real count).
+    (function installSlideRenderTap() {
+        var lastPct = -1, stableCount = 0;
+        var iv = setInterval(function() {
+            try {
+                var ss = document.querySelector('#SlideStatus');
+                var m = ss && ss.textContent && ss.textContent.match(/Slide\s+\d+\s+of\s+(\d+)/i);
+                if (!m) return;                       // not a presentation (or not ready)
+                var total = +m[1];
+                if (!(total > 0)) return;
+                var thumbs = document.querySelectorAll(
+                    '#slide-sorter img, #slide-sorter canvas, .preview-frame img').length;
+                var pct = Math.max(0, Math.min(100, Math.round(thumbs / total * 100)));
+                if (pct !== lastPct) {
+                    lastPct = pct;
+                    try {
+                        parent.postMessage(JSON.stringify({
+                            MessageId: 'WasmOpenStage',
+                            Values: { stage: 'render', pct: pct, tMs: msSinceNav() },
+                        }), '*');
+                    } catch (e) {}
+                }
+                // Stop polling once all thumbs have rendered and held for
+                // a few ticks (or after a bounded window — render-tail only).
+                if (pct >= 100 && ++stableCount > 3) clearInterval(iv);
+            } catch (e) {}
+        }, 300);
+        setTimeout(function() { clearInterval(iv); }, 120000);
+    })();
+
     // ── Human-readable timing (from navigation start, visible in console) ──
     var _timingMilestones = {};
     // Dedupe labels — logTiming is called from multiple signal paths
