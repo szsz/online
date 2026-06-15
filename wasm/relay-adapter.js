@@ -19,6 +19,12 @@
     // before initiateJoin() runs. Without this declaration the free lookup
     // throws ReferenceError under `use strict` and aborts encryption init.
     var wopiSrc = params.get('WOPISrc') || '';
+    // Latest hot-switch target room (updated by RelaySwitchRoom). Used to
+    // gate the late-join switchdoc (0x05 handler) against stale 0x05s from
+    // rapid A→B→A switches — see the switchdoc-storm fix there. Distinct
+    // module-scope name so the 0x05 handler's local `wopiSrc` doesn't
+    // shadow it.
+    var currentRoomDoc = wopiSrc;
     // Even without a relay URL (single-user mode), we still set up
     // the save/hash tracking so conflict detection works. We just
     // skip the WebSocket connection and relay-specific messaging.
@@ -232,6 +238,7 @@
                 var m = /\/room\/([^?#]+)/.exec(newRoom || '');
                 if (m) wopiSrc = decodeURIComponent(m[1]);
             }
+            currentRoomDoc = wopiSrc; // latest hot-switch target (stale-switchdoc gate)
             console.log('[relay] Encryption state cleared; wopiSrc=' + wopiSrc);
             // Keep remoteClients — they'll be cleaned up when new room announces joins
             for (var vid in remoteClients) {
@@ -1567,8 +1574,22 @@
                         // queue+retry is gated kit-side so the switch is never sent as
                         // the first socket message (which would be a new docKey).
                         try {
-                            window.location.hash = '#switchdoc=' + encodeURIComponent(wopiSrc);
-                            console.log('[relay] late-join → queued switchdocument on existing kit (single LO main loop): ' + wopiSrc);
+                            // Stale-switchdoc gate (fix-hotswitch-switchdoc-storm,
+                            // 2026-06-15): only queue if THIS 0x05's target is still the
+                            // current room. On a rapid hot-switch (A→B→A) several 0x05
+                            // chains race and a late one would otherwise queue a stale
+                            // switchdoc (e.g. B) that overrides the intended A — the kit
+                            // then loads the wrong doc. `wopiSrc` here is this 0x05's local
+                            // target (line ~1400); `currentRoomDoc` is the latest
+                            // RelaySwitchRoom target. For a genuine cold-reload late-join
+                            // (no RelaySwitchRoom) they're equal, so #230's late-join path
+                            // is unchanged.
+                            if (wopiSrc && wopiSrc === currentRoomDoc) {
+                                window.location.hash = '#switchdoc=' + encodeURIComponent(wopiSrc);
+                                console.log('[relay] late-join → queued switchdocument on existing kit (single LO main loop): ' + wopiSrc);
+                            } else {
+                                console.log('[relay] skip stale switchdoc (join=' + wopiSrc + ' currentRoom=' + currentRoomDoc + ')');
+                            }
                         } catch (e) {
                             console.error('[relay] switchdoc trigger failed: ' + e.message);
                         }
