@@ -282,6 +282,16 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
     // start) it was first seen. Finer than the de-duped Progress-bar Δ
     // summary — this is the raw, ordered, timestamped value stream.
     const progressStream = [];        // [{ t (ms from open start), pct }]
+    // VIEWER SHIELD bar — the top-window "Opening… NN%" the USER actually
+    // sees (#editor-shield-bar-fill width / __shieldMaxPct), distinct from
+    // the iframe's leaflet import bar. We record every INTEGER-% step + every
+    // label change as a screen-change event. This is the primary signal for
+    // the "largest no-change gap" metric: the user perceives a freeze
+    // whenever this bar (and the canvas) sit still.
+    const shieldStream = [];          // [{ t, pct }]   integer-% steps
+    const shieldSeen = new Set();     // integer pct already recorded
+    const labelStream = [];           // [{ t, label }] shield label changes
+    let lastShieldLabel = null;
     // The most-complete wasm-loader event array seen so far. The array
     // grows as marks land; we keep the latest snapshot (each entry already
     // carries its OWN exact tNav, so we don't need per-poll timestamps).
@@ -290,6 +300,30 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
     let probe = null;
 
     while (Date.now() < deadline) {
+        // VIEWER shield poll (top window) — the bar + label the user sees.
+        // Cheap; runs every tick so we catch each integer-% step the bar
+        // moves to (the ease timer steps it ~5×/s) and every label change.
+        const tickMs = Date.now() - t0;
+        const shield = await page.evaluate(() => {
+            const fill = document.getElementById('editor-shield-bar-fill');
+            const w = fill && fill.style && fill.style.width;
+            const m = w && w.match(/([\d.]+)%/);
+            const lbl = document.getElementById('editor-shield-label');
+            return {
+                pct: m ? parseFloat(m[1])
+                       : (typeof window.__shieldMaxPct === 'number' ? window.__shieldMaxPct : -1),
+                label: lbl ? (lbl.textContent || '') : '',
+            };
+        }).catch(() => null);
+        if (shield && shield.pct >= 0) {
+            const ip = Math.round(shield.pct);
+            if (!shieldSeen.has(ip)) { shieldSeen.add(ip); shieldStream.push({ t: tickMs, pct: ip }); }
+            if (shield.label && shield.label !== lastShieldLabel) {
+                lastShieldLabel = shield.label;
+                labelStream.push({ t: tickMs, label: shield.label });
+            }
+        }
+
         const frame = await getActiveEditorFrame(page);
         if (frame) {
             probe = await frame.evaluate((stageNames) => {
@@ -477,19 +511,49 @@ async function waitForDocLoadedWithProgress(page, label, idx, timeoutMs) {
                 for (const p of progressStream) {
                     timeline.push({ t: Math.round(p.t), kind: 'progress', text: 'import ' + p.pct + '%' });
                 }
+                // VIEWER shield bar steps + label changes — what the user sees.
+                for (const s of shieldStream) {
+                    timeline.push({ t: Math.round(s.t), kind: 'bar', text: 'BAR ' + s.pct + '%' });
+                }
+                for (const l of labelStream) {
+                    timeline.push({ t: Math.round(l.t), kind: 'label', text: 'label "' + l.label + '"' });
+                }
                 timeline.sort((a, b) => a.t - b.t || (a.kind === 'event' ? -1 : 1));
+
+                // ── LARGEST NO-CHANGE GAP ────────────────────────────────
+                // The metric to MINIMIZE: the longest stretch where NOTHING
+                // visible changed — no bar step, no label change, no import %,
+                // no boot mark. Measured over the on-screen change events
+                // (bar/label/import/event) from the first change to ready.
+                const screenTs = timeline.map(e => e.t).concat([loadMs]).sort((a, b) => a - b);
+                let maxGap = 0, gapFrom = 0, gapTo = 0;
+                for (let g = 1; g < screenTs.length; g++) {
+                    const d = screenTs[g] - screenTs[g - 1];
+                    if (d > maxGap) { maxGap = d; gapFrom = screenTs[g - 1]; gapTo = screenTs[g]; }
+                }
+                // Label the gap with the events that bracket it.
+                const before = [...timeline].reverse().find(e => e.t <= gapFrom);
+                const after  = timeline.find(e => e.t >= gapTo);
+
                 // Console: the full raw stream, finer than the Δ summaries.
                 log(`[${idx}] [${label}] fine-grained timeline (${timeline.length} entries):`);
                 for (const e of timeline) {
-                    log(`[${idx}]       t=${String(e.t).padStart(6)}ms  ${e.kind === 'progress' ? '▸ ' : '· '}${e.text}`);
+                    const glyph = e.kind === 'progress' ? '▸ ' : e.kind === 'bar' ? '█ ' : e.kind === 'label' ? '✎ ' : '· ';
+                    log(`[${idx}]       t=${String(e.t).padStart(6)}ms  ${glyph}${e.text}`);
                 }
+                log(`[${idx}] [${label}] LARGEST no-change gap = ${(maxGap/1000).toFixed(1)}s `
+                    + `(t=${(gapFrom/1000).toFixed(1)}s→${(gapTo/1000).toFixed(1)}s, `
+                    + `between [${before ? before.text : 'start'}] and [${after ? after.text : 'ready'}])`);
 
                 return { loadMs, kind, total, rendered, stages, progressSteps,
-                         stageBreakdown, progressBreakdown, timeline };
+                         stageBreakdown, progressBreakdown, timeline,
+                         maxGapMs: maxGap, gapFromMs: gapFrom, gapToMs: gapTo,
+                         gapBefore: before ? before.text : 'start',
+                         gapAfter: after ? after.text : 'ready' };
             }
         }
 
-        await sleep(1000);
+        await sleep(220);
     }
     throw new Error(`waitForDocLoadedWithProgress: timeout after ${timeoutMs}ms`
         + (stageSeen.size ? ` (last stage reached: ${[...stageSeen.keys()].pop()})` : ''));
@@ -675,6 +739,11 @@ async function openAndTypeOne(browser, fileName, idx) {
         result.stageBreakdown    = loadInfo.stageBreakdown || [];
         result.progressBreakdown = loadInfo.progressBreakdown || [];
         result.timeline          = loadInfo.timeline || [];
+        result.maxGapMs          = loadInfo.maxGapMs || 0;
+        result.gapFromMs         = loadInfo.gapFromMs || 0;
+        result.gapToMs           = loadInfo.gapToMs || 0;
+        result.gapBefore         = loadInfo.gapBefore || '';
+        result.gapAfter          = loadInfo.gapAfter || '';
         log(`[${idx}] open total = ${(result.tOpenMs/1000).toFixed(2)}s (predicate=${(loadInfo.loadMs/1000).toFixed(2)}s, budget=${(openBudgetMs/1000).toFixed(1)}s) — ${loadInfo.kind === 'slide' ? loadInfo.rendered + '/' + loadInfo.total + ' slides rendered' : loadInfo.kind === 'sheet' ? '1/' + loadInfo.total + ' sheets' : loadInfo.kind === 'page' ? loadInfo.total + ' pages' : 'ready'}`);
 
         // Let canvas tiles paint before we screenshot.
@@ -856,13 +925,15 @@ function renderBreakdownCell(breakdown, fallback, noun, tMark) {
 // Progress-bar Δ summaries (which only show first-seen transitions).
 function renderTimelineCell(timeline) {
     if (!timeline || !timeline.length) return '—';
+    const glyph = k => k === 'progress' ? '▸ ' : k === 'bar' ? '█ ' : k === 'label' ? '✎ ' : '· ';
     const items = timeline.map(e =>
         `<li class="tl-${e.kind}">`
       + `<span class="st">t=${String(e.t).padStart(6)}ms</span> `
-      + `<code>${e.kind === 'progress' ? '▸ ' : ''}${escHtml(e.text)}</code></li>`).join('');
+      + `<code>${glyph(e.kind)}${escHtml(e.text)}</code></li>`).join('');
+    const nBar = timeline.filter(e => e.kind === 'bar').length;
     const nProg = timeline.filter(e => e.kind === 'progress').length;
     return `<details><summary>${timeline.length} events `
-         + `(${nProg} progress)</summary>`
+         + `(${nBar} bar, ${nProg} import)</summary>`
          + `<ol class="timeline">${items}</ol></details>`;
 }
 
@@ -914,6 +985,18 @@ function renderReport(results, walltimeMs, allFiles) {
             r.progressBreakdown, null, 'progress steps', '@');
         // Per-file FINE-GRAINED timeline — the raw timestamped event stream.
         const timelineCell = renderTimelineCell(r.timeline);
+        // LARGEST no-change gap — the metric to minimize. Color-coded.
+        const gapSec = r.maxGapMs ? (r.maxGapMs / 1000).toFixed(1) + 's' : '—';
+        const gapCls = !r.maxGapMs ? '' : r.maxGapMs >= 8000 ? 'gapbad'
+                     : r.maxGapMs >= 3000 ? 'gapwarn' : 'gapok';
+        const gapDetail = r.maxGapMs
+            ? `${(r.gapFromMs / 1000).toFixed(1)}→${(r.gapToMs / 1000).toFixed(1)}s`
+            : '';
+        const gapTitle = r.maxGapMs
+            ? `between [${r.gapBefore}] and [${r.gapAfter}]` : '';
+        const gapCell = `<strong>${gapSec}</strong>`
+            + (gapDetail ? `<br><span class="gapd">${gapDetail}</span>` : '')
+            + (gapTitle ? `<br><span class="gapd">${escHtml(gapTitle)}</span>` : '');
         return `<tr class="${statusCls}">
   <td>${r.idx}</td>
   <td class="file">${escHtml(r.fileName)}</td>
@@ -921,6 +1004,7 @@ function renderReport(results, walltimeMs, allFiles) {
   <td class="num">${sizeMb}</td>
   <td class="num tOpen">${tSec}</td>
   <td class="num">${budgetCol}</td>
+  <td class="num ${gapCls}">${gapCell}</td>
   <td class="content">${escHtml(progressCol)}</td>
   <td class="stagecol">${stagesCell}</td>
   <td class="stagecol">${progressCell}</td>
@@ -935,6 +1019,7 @@ function renderReport(results, walltimeMs, allFiles) {
   <td>${escHtml(formatOf(name))}</td>
   <td class="num">—</td>
   <td class="num tOpen">—</td>
+  <td class="num">—</td>
   <td class="num">—</td>
   <td class="content">—</td>
   <td class="stagecol">—</td>
@@ -988,6 +1073,12 @@ ol.timeline li{white-space:nowrap;line-height:1.45;font-size:11px;padding-left:6
 ol.timeline li .st{color:#888;font-variant-numeric:tabular-nums;margin-right:6px}
 ol.timeline li code{color:#333}
 ol.timeline li.tl-progress{background:#eef4ff}
+ol.timeline li.tl-bar{background:#e9fbe9}
+ol.timeline li.tl-label{background:#fff7e6}
+.gapbad{background:#fdecea;color:#b3261e;font-weight:bold}
+.gapwarn{background:#fff4e5;color:#9a5b00}
+.gapok{background:#eafaea;color:#1b7e1b}
+.gapd{color:#888;font-size:10px;font-weight:normal}
 ol.timeline li.tl-progress code{color:#0a58ca;font-weight:600}
 .card{display:inline-block;vertical-align:top;margin:0 12px 18px 0;padding:8px;border:1px solid #ddd;border-radius:4px;background:#fafafa}
 .card h3{font-size:13px;margin:0 0 6px 0;font-family:monospace}
@@ -1018,7 +1109,7 @@ ol.timeline li.tl-progress code{color:#0a58ca;font-weight:600}
 <table>
 <thead><tr>
   <th>#</th><th>File</th><th>Fmt</th><th>Size (MiB)</th>
-  <th>Open (s)</th><th>Budget</th><th>Content</th><th>Stage Δ</th><th>Progress-bar Δ</th><th>Timeline (raw)</th><th>Verify</th><th>Detail</th><th>Shots</th>
+  <th>Open (s)</th><th>Budget</th><th>Max gap</th><th>Content</th><th>Stage Δ</th><th>Progress-bar Δ</th><th>Timeline (raw)</th><th>Verify</th><th>Detail</th><th>Shots</th>
 </tr></thead>
 <tbody>
 ${rows}
