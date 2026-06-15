@@ -47,6 +47,24 @@ const VIEWER = env.FILE_STORAGE_URL;
 // self-hosted box (shared with the dev repo), so the test ran the gate
 // on CI and perf-flaked under host contention. local-only by design.
 const SAMPLES_DIR = path.join(__dirname, '..', '..', '..', 'test', 'samples', 'ignored');
+// In-repo fixture corpus (COMMITTED → present on every CI checkout). Used
+// ONLY when SAMPLES_DIR is absent (i.e. on CI), so the published report is
+// COMPLETE — full per-step Δ + fine-grained timeline for one doc of each
+// format — instead of the empty "0 files" report the gitignored corpus
+// produces on CI. These run REPORT-ONLY (no per-MB perf-gate abort): they're
+// small and would flake the gate under CI's JOBS=2 contention (the exact
+// reason the big corpus is dev-only). heavy-50slides.pptx exercises the
+// pptx slide-render path. On a dev box (corpus present) these are NOT used —
+// the strict per-MB gate runs on the big corpus, behaviour 100% unchanged.
+const FIXTURES_DIR = path.join(__dirname, '..', '..', '..', 'test', 'data');
+// Light, fast-opening, one per format (docx/xlsx/pptx) so the CI report is
+// complete + quick. rare-fonts.pptx still exercises the pptx slide-render
+// path. Kept small on purpose — the heavy decks live in the dev-only corpus.
+const IN_REPO_FIXTURES = ['new.docx', 'convert-to.xlsx', 'rare-fonts.pptx'];
+// Resolved at startup: which dir the current run reads from, and whether the
+// per-MB budget is a hard gate (corpus) or informational (fixtures).
+let SRC_DIR = SAMPLES_DIR;
+let GATED = true;
 const SHOTS_DIR = '/tmp/static-deploy/public/shots-regression-bulk-open-ignored';
 const REPORT_PATH = '/tmp/static-deploy/public/reports/regression-bulk-open-ignored.html';
 
@@ -126,6 +144,16 @@ function listFiles() {
             const full = path.join(SAMPLES_DIR, n);
             try { return fs.statSync(full).isFile(); } catch (_) { return false; }
         })
+        .sort((a, b) => a.localeCompare(b));
+}
+
+// The committed in-repo fixtures that exist on this checkout, honoring the
+// same BULK_OPEN_FILTER focus env as listFiles().
+function listFixtures() {
+    const focus = (process.env.BULK_OPEN_FILTER || '').toLowerCase();
+    return IN_REPO_FIXTURES
+        .filter(n => !focus || n.toLowerCase().includes(focus))
+        .filter(n => fs.existsSync(path.join(FIXTURES_DIR, n)))
         .sort((a, b) => a.localeCompare(b));
 }
 
@@ -530,7 +558,7 @@ function pixelDiffCount(a, b) {
 }
 
 async function openAndTypeOne(browser, fileName, idx) {
-    const filePath = path.join(SAMPLES_DIR, fileName);
+    const filePath = path.join(SRC_DIR, fileName);
     const fmt = formatOf(fileName);
     const isFirstFile = (idx === 1);
     const result = {
@@ -571,8 +599,14 @@ async function openAndTypeOne(browser, fileName, idx) {
         return result;
     }
 
-    // Per-MB budget: warm = size_MB * 3 s, cold = warm + 60 s.
-    const openBudgetMs = computeOpenBudgetMs(bytes.length, isFirstFile);
+    // Per-MB budget: warm = size_MB * 3 s, cold = warm + 60 s. This is a
+    // PERF GATE only for the local corpus (GATED). For the in-repo fixture
+    // fallback (report-only) the budget is just a generous patience window
+    // — long enough that even a cold first-visit reaches the ready predicate
+    // and captures a COMPLETE timeline, never a perf assertion.
+    const openBudgetMs = GATED
+        ? computeOpenBudgetMs(bytes.length, isFirstFile)
+        : env.scaleTimeout(150000);
     result.budgetMs = openBudgetMs;
 
     log(`\n${'='.repeat(60)}`);
@@ -989,8 +1023,19 @@ ${previews}
 
 (async () => {
     log('=== bulk-open-ignored — discovery ===');
-    const files = listFiles();
-    log(`Found ${files.length} files in ${SAMPLES_DIR}`);
+    let files = listFiles();
+    if (files.length) {
+        SRC_DIR = SAMPLES_DIR; GATED = true;
+        log(`Found ${files.length} files in ${SAMPLES_DIR} — per-MB perf GATE active`);
+    } else {
+        // No local corpus (the CI case). Fall back to the committed in-repo
+        // fixtures so the published report is COMPLETE (full timeline per
+        // format) rather than empty. Report-only — the per-MB budget is NOT
+        // a hard gate here (small files + CI contention would flake it).
+        files = listFixtures();
+        SRC_DIR = FIXTURES_DIR; GATED = false;
+        log(`No corpus at ${SAMPLES_DIR} — using ${files.length} in-repo fixtures from ${FIXTURES_DIR} (report-only, perf gate OFF)`);
+    }
     if (!files.length) {
         log('Nothing to do — exiting 0');
         // Still write an empty report so the URL exists.
@@ -1037,7 +1082,10 @@ ${previews}
             // PERF GATE — if this file blew its open budget, the whole
             // test fails IMMEDIATELY. No further files are run; the
             // remaining entries will be rendered as "not run" (grey).
-            if (r.budgetExceeded) {
+            // Only enforced for the gated (local corpus) run — the in-repo
+            // fixture fallback is report-only (GATED=false) so it never
+            // aborts/fails CI on a slow small-file open under contention.
+            if (GATED && r.budgetExceeded) {
                 budgetFailure = r;
                 log(`\n!!! OPEN BUDGET EXCEEDED on file ${idx}/${files.length}: ${r.fileName}`);
                 log(`!!! observed open time = ${(r.tOpenMs/1000).toFixed(2)}s, budget = ${(r.budgetMs ? (r.budgetMs/1000).toFixed(0) : '?')}s`);
