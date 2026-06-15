@@ -95,6 +95,10 @@ function loadEnv(scale) {
         'test-snapshot-milestones.js',
         'test-regression-paste-coedit.js',
         'test-regression-mouse-select-copypaste.js',
+        // 2026-06-15: hash-deeplink routes its patience waitForFunction
+        // timeouts through env.scaleTimeout (was hardcoded → JOBS=2
+        // timeout-flake). Enforce so it can't silently regress.
+        'test-regression-hash-deeplink.js',
     ];
     for (const t of SCALED_TESTS) {
         let p = null;

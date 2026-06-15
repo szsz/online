@@ -39,6 +39,19 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 //      element exists but isn't yet bound to a Frame).
 // Either returning a non-null Frame is acceptable; both filter out the
 // __prewarm_blank bootstrap iframe by URL substring.
+
+// Widen the helper DEFAULT timeouts under parallel-run contention. These
+// are PATIENCE waits (2-browser tests are slow when the runner runs
+// JOBS≥2 Chromes on one host), not perf-budget assertions. Mirrors
+// env.scaleTimeout's JOBS_SCALE; read process.env directly to keep this
+// lib dependency-free. Callers that pass an explicit opts.timeout keep
+// full control (only the DEFAULTS scale). Fixes the 2-browser
+// contention-timeout flakes (latejoin-copypaste, etc.) that pass solo.
+const JOBS_SCALE = (() => {
+    const n = Number(process.env.JOBS_SCALE || process.env.TIMEOUT_SCALE || 1);
+    return Number.isFinite(n) && n >= 1 ? n : 1;
+})();
+
 async function getActiveEditorFrame(page) {
     try {
         const src = await page.evaluate(() => {
@@ -66,7 +79,7 @@ async function getActiveEditorFrame(page) {
 // editor frame and must return truthy when the condition is met.
 async function waitInFrame(page, predicate, opts) {
     opts = opts || {};
-    const timeout = opts.timeout || 60000;
+    const timeout = opts.timeout || (60000 * JOBS_SCALE);
     const pollInterval = opts.pollInterval || 250;
     const deadline = Date.now() + timeout;
     const predStr = predicate.toString();
@@ -118,14 +131,14 @@ async function evalInFrame(page, fn, ...args) {
 //         /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''));
 async function waitForDocReady(page, opts) {
     opts = opts || {};
-    const timeout = opts.timeout || 90000;
+    const timeout = opts.timeout || (90000 * JOBS_SCALE);
     await waitInFrame(page,
         () => window.__wasmInitialDocLoaded === true,
         { timeout });
     await waitInFrame(page,
         () => /character/i.test(
             document.querySelector('#StateWordCount')?.textContent || ''),
-        { timeout: Math.min(timeout, 30000) });
+        { timeout: Math.min(timeout, 30000 * JOBS_SCALE) });
 }
 
 // Read the current character count from the state bar. -1 if the
@@ -142,7 +155,7 @@ async function getCharCount(page) {
 // "doc grew by at least N" assertions after paste / type.
 async function waitForCharCount(page, pred, opts) {
     opts = opts || {};
-    const timeout = opts.timeout || 12000;
+    const timeout = opts.timeout || (12000 * JOBS_SCALE);
     const deadline = Date.now() + timeout;
     let last = -1;
     while (Date.now() < deadline) {
