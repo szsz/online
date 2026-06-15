@@ -295,6 +295,12 @@ LO_BLOCKED_TESTS=(
     # (Batch B). Counted as LO-blocked, not a real online regression.
     # See ai/tasks/todo/fix-header-footer-docx-export-keeps-part.md.
     regression-writer-header-footer-remove
+    # Impress transition click — fails DETERMINISTICALLY (locally + CI):
+    # the two dialogevents come back with distinct lengths / no cmd values,
+    # i.e. the transition panel's click doesn't emit the expected
+    # dialogevents. LO-core (transitions UI event emission), awaiting an LO
+    # fix. See ai/tasks/todo/fix-impress-transition-click-no-dialogevents.md.
+    regression-impress-transition-click
 )
 
 is_in_set() {
