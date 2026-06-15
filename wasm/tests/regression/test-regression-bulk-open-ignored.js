@@ -38,7 +38,15 @@ const { openViaViewer } = require('../../lib/open-via-viewer');
 const { waitInFrame, evalInFrame, getCharCount, getActiveEditorFrame } = require('../../lib/two-tab');
 
 const VIEWER = env.FILE_STORAGE_URL;
-const SAMPLES_DIR = '/home/localadmin/online/test/samples/ignored';
+// Corpus path RELATIVE to this test's own checkout (not a hardcoded
+// absolute path). On a dev box the main repo's test/samples/ignored/
+// exists → the per-MB perf gate runs. On a CI runner the corpus is
+// gitignored and absent from the runner's checkout → listFiles()'s
+// existsSync guard returns [] → the test skips (exit 0). The previous
+// hardcoded `/home/localadmin/online/...` always resolved on this
+// self-hosted box (shared with the dev repo), so the test ran the gate
+// on CI and perf-flaked under host contention. local-only by design.
+const SAMPLES_DIR = path.join(__dirname, '..', '..', '..', 'test', 'samples', 'ignored');
 const SHOTS_DIR = '/tmp/static-deploy/public/shots-regression-bulk-open-ignored';
 const REPORT_PATH = '/tmp/static-deploy/public/reports/regression-bulk-open-ignored.html';
 
