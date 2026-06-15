@@ -412,6 +412,20 @@ let docReady = false;
 // docLayer is type-specific; switching types in-place corrupts state, so we
 // force a cold iframe reload for cross-type opens.
 let currentDocType = 'writer'; // pre-warm starts with blank.docx
+// Monotonic open-request counter. Each openFile() call takes a ticket;
+// after its `await filePromise` it checks it's still the latest before
+// mutating shared editor state (EditorBridge.stage / RelaySwitchRoom /
+// iframe.src#switchdoc). Fixes the rapid hot-switch race where a SLOWER
+// earlier click (uncached doc B) resolves AFTER a faster later click
+// (cached doc A) and re-sets the iframe to the stale doc — the kit then
+// loads / the title shows the wrong document (regression-samedoc-flicker,
+// regression-docname-switch). Single-owner: latest user click wins.
+let __openReqSeq = 0;
+// fileId/name of the most recent open the user actually requested. A stale
+// HotSwitchFailed event must NOT re-open a doc the user already switched
+// away from (rapid A→B→A: B's watchdog fires HotSwitchFailed(B) after the
+// user moved to A → re-opening B loaded the wrong doc).
+let __latestRequestedFile = null;
 
 function docTypeFor(filename) {
     const ext = filename.split('.').pop().toLowerCase().split('?')[0];
@@ -653,8 +667,18 @@ window.addEventListener('message', function(event) {
                 var entry = rec.find(function(r) {
                     return r.cachedName === stuckFile || r.fileId === stuckFile;
                 });
-                if (entry && typeof openFileBySecret === 'function') {
+                // Only recover the stuck file if the user hasn't since moved
+                // on. On a rapid A→B→A, a late HotSwitchFailed(B) must not
+                // re-open B once A is the latest request — otherwise the
+                // recovery re-loads the wrong doc (samedoc-flicker/docname).
+                var stillWanted = entry && (entry.fileId === __latestRequestedFile
+                    || entry.cachedName === __latestRequestedFile
+                    || stuckFile === __latestRequestedFile);
+                if (entry && stillWanted && typeof openFileBySecret === 'function') {
                     openFileBySecret(entry.secret);
+                } else {
+                    console.log('[viewer] HotSwitchFailed recovery of ' + stuckFile +
+                        ' skipped — user moved to ' + __latestRequestedFile);
                 }
             } catch(e) { console.error('[viewer] HotSwitchFailed retry failed', e); }
             return;
@@ -1246,6 +1270,8 @@ function currentHashFile() {
 
 async function openFile(name, opts) {
     opts = opts || {};
+    const __myOpenSeq = ++__openReqSeq; // ticket for the latest-request-wins guard
+    __latestRequestedFile = name;       // newest user-requested doc (stale-re-open guard)
     viewerLog('Opening file: ' + name);
     const t0 = Date.now();
     currentFile = name;
@@ -1330,6 +1356,14 @@ async function openFile(name, opts) {
         // Kit re-fetches /wasm/<name>.
         updateShieldProgress('Opening document…', 30, 'Downloading ' + name);
         const buf = await filePromise;
+        // Latest-request-wins: if a newer openFile() started while we were
+        // downloading, abandon this stale switch — otherwise its
+        // RelaySwitchRoom + iframe.src#switchdoc below would override the
+        // newer doc (rapid A→B→A loaded/showed the wrong doc).
+        if (__myOpenSeq !== __openReqSeq) {
+            console.log('[viewer] openFile(' + name + ') superseded by newer open #' + __openReqSeq + ' — abandoning stale hot-switch');
+            return;
+        }
         updateShieldProgress('Opening document…', 50, 'Transferring to editor');
         if (buf) {
             EditorBridge.stage(name, buf);
