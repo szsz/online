@@ -82,12 +82,33 @@ body.docs-collapsed #sidebar-hover-zone { display: block; }
     list-style: none; margin: 10px 0 0; padding: 0;
     font-size: 12px; color: #888; width: 300px;
 }
-#shield-stages li { padding: 1px 0; display: flex; align-items: center; gap: 6px; }
+#shield-stages li { padding: 1px 0; display: grid; grid-template-columns: 14px 1fr auto; align-items: center; gap: 0 6px; }
 #shield-stages li .sg-icon { width: 14px; text-align: center; flex: none; }
 #shield-stages li[data-state="pending"] { color: #bbb; }
 #shield-stages li[data-state="in-progress"] { color: #1a56c4; font-weight: 600; }
 #shield-stages li[data-state="done"] { color: #2e7d32; }
+#shield-stages li[data-state="skipped"] { display: none; }
 #shield-stages li .sg-pct { margin-left: auto; font-variant-numeric: tabular-nums; color: #666; }
+/* Intra-step sub-bar: a thin per-step fill for the trackable steps
+   (download %, import %, pptx per-slide). Honesty rule — a real % fill
+   is shown ONLY when the step has a real signal; steps with no signal
+   show the indeterminate shimmer (never a fabricated number). */
+#shield-stages li .sg-subbar {
+    grid-column: 2 / 4; height: 3px; background: #e0e0e0; border-radius: 2px;
+    overflow: hidden; margin: 2px 0 1px; display: none;
+}
+#shield-stages li .sg-subbar > span {
+    display: block; height: 100%; width: 0%;
+    background: #1a56c4; transition: width 0.25s ease;
+}
+#shield-stages li[data-substate="active"] .sg-subbar { display: block; }
+/* Indeterminate (time-eased / no real signal) — shimmer, no number. */
+#shield-stages li .sg-subbar.indeterminate { position: relative; }
+#shield-stages li .sg-subbar.indeterminate > span {
+    width: 35% !important; background: linear-gradient(90deg,#cdd9f5,#1a56c4,#cdd9f5);
+    animation: sgshimmer 1.1s linear infinite;
+}
+@keyframes sgshimmer { from { transform: translateX(-130%); } to { transform: translateX(330%); } }
 .file { padding: 6px 8px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 13px; }
 .file:hover { background: #e8f4ff; }
 .file.active { background: #d0e8ff; }
@@ -444,77 +465,248 @@ window.__viewerState = {
 function setStatus(msg) {
     document.getElementById('status-bar').textContent = msg;
 }
-// ── Multi-stage open progress (feature 2026-06-12) ─────────────────
-// The iframe's wasm-loader forwards its mark() pipeline milestones as
-// WasmOpenStage postMessages; we render them as a live stage checklist
-// under the shield's progress bar. 'import' is special: the kit's own
-// statusindicator percent (0-100) for the document import filter — the
-// dominant phase of any big-file open.
-var SHIELD_STAGES = [
-    { id: 'loader:start',                 label: 'Editor engine starting' },
-    { id: 'sw-bridge:ready',              label: 'Connection ready' },
-    { id: 'net:fetch_start',              label: 'Downloading editor' },
-    { id: 'net:fetch_end',                label: 'Download complete' },
-    { id: 'emscripten:module_defined',    label: 'Initializing engine' },
-    { id: 'snapshot:signal',              label: 'Session check' },
-    { id: 'emscripten:wasmExports_ready', label: 'Engine compiled' },
-    { id: 'emscripten:FS_ready',          label: 'Filesystem ready' },
-    { id: 'emscripten:calledRun',         label: 'Engine running' },
-    { id: 'dom:status_appeared',          label: 'Interface loaded' },
-    { id: 'dom:first_canvas',             label: 'Canvas ready' },
-    { id: 'import',                       label: 'Opening document' },
-    { id: 'doc:loaded',                   label: 'Document loaded' },
+// ── Per-step open progress (single-owner model, 2026-06-15) ────────
+//
+// SINGLE OWNER (proposal C1): ProgressModel is the ONLY writer of the
+// shield bar. Every legacy signal source — the loader's WasmProgress
+// milestones (incl. the old hard "Compiling… 90"), the kit import
+// frames, relay phases, late-join replay, tryDropShield — now feeds the
+// model as STEP EVENTS via setShieldStage()/import-pct, never a direct
+// bar write. The model derives one monotone bar value from the active
+// step's band + its intra-step fraction. This kills the "stuck at 90%"
+// park (an absolute milestone used to latch the monotonic guard above
+// the import band's reachable range, silently rejecting every genuine
+// import update).
+//
+// STEPPER: the 12 granular wasm-loader marks (forwarded as WasmOpenStage)
+// collapse into the 8 user-facing steps below. Each step renders a row
+// (pending → active → done) plus an optional intra-step sub-bar:
+//   - real % fill   when a genuine signal exists (download %, import %,
+//                   pptx per-slide render);
+//   - indeterminate shimmer when the step has NO signal (viewer prep,
+//                   WASM compile, FS+runtime, docx render) — HONESTY
+//                   RULE: never a fabricated number.
+// Cold-only steps (download) collapse out of the list on warm opens.
+//
+// Each step owns a [bandStart, bandEnd] slice of the 0..100 bar. Import
+// dominates open time, so it owns the largest band; the fast boot/render
+// steps share the head, Ready snaps to 100.
+var SHIELD_STEPS = [
+    // id          label                marks that ADVANCE this step              band   track-mode
+    { id: 'prep',     label: 'Preparing…',        marks: [],                                           band: [0, 5],   track: 'none' },
+    { id: 'boot',     label: 'Starting editor',   marks: ['loader:start', 'sw-bridge:ready'],          band: [5, 12],  track: 'ticks' },
+    { id: 'download', label: 'Downloading editor',marks: ['net:fetch_start', 'net:fetch_end'],         band: [12, 30], track: 'bytes', coldOnly: true },
+    { id: 'compile',  label: 'Compiling engine',  marks: ['emscripten:module_defined', 'snapshot:signal', 'emscripten:wasmExports_ready'], band: [30, 38], track: 'ease' },
+    { id: 'runtime',  label: 'Starting runtime',  marks: ['emscripten:FS_ready', 'emscripten:calledRun', 'dom:status_appeared'], band: [38, 45], track: 'ticks' },
+    { id: 'import',   label: 'Opening document',  marks: [],                                           band: [45, 88], track: 'import' },
+    { id: 'render',   label: 'Rendering',         marks: ['dom:first_canvas'],                         band: [88, 96], track: 'render' },
+    { id: 'ready',    label: 'Ready',             marks: ['doc:loaded'],                               band: [96, 100],track: 'tick' },
 ];
+// Map each granular wasm-loader mark prefix → the user-facing step it
+// advances. Several marks collapse into one step (e.g. the three
+// compile marks all live in 'compile'). 'dom:first_canvas' opens the
+// render step; 'doc:loaded' completes everything.
+var MARK_TO_STEP = {};
+SHIELD_STEPS.forEach(function(st) {
+    (st.marks || []).forEach(function(m) { MARK_TO_STEP[m] = st.id; });
+});
+function stepDef(id) {
+    for (var i = 0; i < SHIELD_STEPS.length; i++) if (SHIELD_STEPS[i].id === id) return SHIELD_STEPS[i];
+    return null;
+}
+function stepIndex(id) {
+    for (var i = 0; i < SHIELD_STEPS.length; i++) if (SHIELD_STEPS[i].id === id) return i;
+    return -1;
+}
 function buildShieldStages() {
     var ol = document.getElementById('shield-stages');
     if (!ol) return;
     ol.innerHTML = '';
-    SHIELD_STAGES.forEach(function(s) {
+    SHIELD_STEPS.forEach(function(s) {
         var li = document.createElement('li');
         li.setAttribute('data-stage', s.id);
         li.setAttribute('data-state', 'pending');
-        li.innerHTML = '<span class="sg-icon">·</span><span class="sg-label"></span><span class="sg-pct"></span>';
+        li.innerHTML = '<span class="sg-icon">·</span>'
+            + '<span class="sg-label"></span>'
+            + '<span class="sg-pct"></span>'
+            + '<div class="sg-subbar"><span></span></div>';
         li.querySelector('.sg-label').textContent = s.label;
         ol.appendChild(li);
     });
 }
+// Set a step's row state. `state` ∈ pending|in-progress|done|skipped.
+// Advancing a step to in-progress/done implicitly completes every
+// earlier step (warm restores skip the cold download marks entirely).
 function setShieldStage(stageId, state, pctText) {
     var li = document.querySelector('#shield-stages li[data-stage="' + stageId + '"]');
     if (!li) return;
+    var cur = li.getAttribute('data-state');
     // done is terminal — never demote (late duplicate signals).
-    if (li.getAttribute('data-state') === 'done' && state !== 'done') return;
+    if (cur === 'done' && state !== 'done') return;
     li.setAttribute('data-state', state);
     li.querySelector('.sg-icon').textContent =
         state === 'done' ? '✓' : state === 'in-progress' ? '⟳' : '·';
     li.querySelector('.sg-pct').textContent = pctText || '';
-    // Every earlier stage in pipeline order is implicitly complete —
-    // warm restores skip download/compile signals entirely.
     if (state === 'done' || state === 'in-progress') {
-        for (var i = 0; i < SHIELD_STAGES.length; i++) {
-            var s = SHIELD_STAGES[i];
-            if (s.id === stageId) break;
-            var prevLi = document.querySelector('#shield-stages li[data-stage="' + s.id + '"]');
+        var myIdx = stepIndex(stageId);
+        for (var i = 0; i < myIdx; i++) {
+            var prevLi = document.querySelector('#shield-stages li[data-stage="' + SHIELD_STEPS[i].id + '"]');
             if (prevLi && prevLi.getAttribute('data-state') === 'pending') {
                 prevLi.setAttribute('data-state', 'done');
                 prevLi.querySelector('.sg-icon').textContent = '✓';
+                // a step that was never even started on a warm open is
+                // collapsed if it's cold-only (e.g. download on cache hit)
+                if (SHIELD_STEPS[i].coldOnly && !ProgressModel._coldSeen[SHIELD_STEPS[i].id]) {
+                    prevLi.setAttribute('data-state', 'skipped');
+                }
             }
         }
     }
+    ProgressModel.recompute();
 }
-function shieldStagePct() {
-    // Stage completion drives a coarse 0-95% floor for the bar.
-    var done = document.querySelectorAll('#shield-stages li[data-state="done"]').length;
-    return Math.round(done / SHIELD_STAGES.length * 95);
-}
+
+// ── The single-owner progress model ───────────────────────────────
+//
+// Holds the active step + per-step intra fraction and derives the one
+// bar value. Real-signal fractions (download bytes %, import %, render
+// thumbs N/M) come from their feeders; signal-less steps (compile,
+// runtime, prep) are TIME-EASED (1 − e^(−t/budget)) — monotone, smooth
+// at any timer rate, can never reach the band end early, and is never
+// surfaced as a digit (the sub-bar shows the indeterminate shimmer).
+var ProgressModel = {
+    activeStep: 'prep',
+    intra: {},            // stepId → 0..1 real fraction (only for track:bytes/import/render)
+    easeT0: {},           // stepId → performance.now() when the step went active (for ease)
+    _coldSeen: {},        // stepId → true if a cold-only step actually fired a mark
+    label: '',
+    detail: '',
+    importBudgetMs: 18000,
+    _lastBar: 0,
+    _easeTimer: null,
+    reset: function() {
+        this.activeStep = 'prep';
+        this.intra = {};
+        this.easeT0 = {};
+        this._coldSeen = {};
+        this.label = '';
+        this.detail = '';
+        this._lastBar = 0;
+        window.__shieldMaxPct = 0;
+        if (this._easeTimer) { clearInterval(this._easeTimer); this._easeTimer = null; }
+    },
+    now: function() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); },
+    // Mark a step active; start its time-ease clock if it has no real signal.
+    enterStep: function(id) {
+        var idx = stepIndex(id), curIdx = stepIndex(this.activeStep);
+        if (idx < curIdx) return;            // never go backwards
+        this.activeStep = id;
+        if (this.easeT0[id] == null) this.easeT0[id] = this.now();
+        this._ensureEaseTimer();
+        this.recompute();
+    },
+    setIntra: function(id, frac) {
+        this.intra[id] = Math.max(0, Math.min(1, frac));
+        this.recompute();
+    },
+    // Time-ease fraction for a signal-less step. budget chosen per step.
+    _easeFrac: function(id) {
+        var t0 = this.easeT0[id];
+        if (t0 == null) return 0;
+        var budget = id === 'import' ? this.importBudgetMs
+                   : id === 'compile' ? 4000
+                   : id === 'runtime' ? 2500
+                   : id === 'render'  ? 3000
+                   : 2000;
+        var t = this.now() - t0;
+        return 1 - Math.exp(-t / budget);
+    },
+    // The fraction (0..1) FILLED within the active step's band.
+    _activeFrac: function() {
+        var st = stepDef(this.activeStep);
+        if (!st) return 0;
+        var real = this.intra[this.activeStep];
+        if ((st.track === 'bytes' || st.track === 'import' || st.track === 'render')
+            && real != null) {
+            return real;                       // byte/percent mode — real signal
+        }
+        // No real signal yet → time-ease (never claims "done").
+        return this._easeFrac(this.activeStep);
+    },
+    _ensureEaseTimer: function() {
+        if (this._easeTimer) return;
+        var self = this;
+        this._easeTimer = setInterval(function() { self.recompute(); }, 200);
+    },
+    // Derive the bar value: completed steps contribute their full band;
+    // the active step contributes bandStart + frac*(bandEnd-bandStart).
+    // Single owner → monotone by construction (activeStep never regresses,
+    // ease is monotone, real fractions feed forward). A soft floor guard
+    // catches only transient jitter; it CANNOT latch above the band
+    // because the floor itself moves with the active step.
+    recompute: function() {
+        var st = stepDef(this.activeStep);
+        if (!st) return;
+        var frac = this._activeFrac();
+        var bar = st.band[0] + (st.band[1] - st.band[0]) * frac;
+        if (this.activeStep === 'ready') bar = 100;
+        if (bar < this._lastBar) bar = this._lastBar;   // soft monotone (no global latch)
+        this._lastBar = bar;
+        window.__shieldMaxPct = bar;
+        var fill = document.getElementById('editor-shield-bar-fill');
+        if (fill) fill.style.width = Math.max(0, Math.min(100, bar)) + '%';
+        if (this.label) {
+            var lbl = document.getElementById('editor-shield-label');
+            if (lbl) lbl.textContent = this.label;
+        }
+        if (this.detail != null) {
+            var d = document.getElementById('editor-shield-detail');
+            if (d) d.textContent = this.detail;
+        }
+        this._renderSubbars();
+    },
+    // Render each step's sub-bar. Trackable active step → real %; a
+    // signal-less active step → indeterminate shimmer; done steps full;
+    // pending steps hidden.
+    _renderSubbars: function() {
+        for (var i = 0; i < SHIELD_STEPS.length; i++) {
+            var st = SHIELD_STEPS[i];
+            var li = document.querySelector('#shield-stages li[data-stage="' + st.id + '"]');
+            if (!li) continue;
+            var sub = li.querySelector('.sg-subbar');
+            var span = sub ? sub.querySelector('span') : null;
+            if (!sub || !span) continue;
+            var state = li.getAttribute('data-state');
+            var isActive = (st.id === this.activeStep) && state !== 'done';
+            if (!isActive) { li.removeAttribute('data-substate'); sub.classList.remove('indeterminate'); continue; }
+            var real = this.intra[st.id];
+            var hasReal = (st.track === 'bytes' || st.track === 'import' || st.track === 'render') && real != null;
+            li.setAttribute('data-substate', 'active');
+            if (hasReal) {
+                sub.classList.remove('indeterminate');
+                span.style.width = Math.round(real * 100) + '%';
+                var pctCell = li.querySelector('.sg-pct');
+                if (pctCell) pctCell.textContent = Math.round(real * 100) + '%';
+            } else {
+                // HONESTY RULE: no real signal → shimmer, no number.
+                sub.classList.add('indeterminate');
+            }
+        }
+    },
+};
+window.ProgressModel = ProgressModel;
+
 // The boot shield is up from initial HTML (class="active") before any
 // showShield() call — populate its stage list immediately.
 buildShieldStages();
 function showShield(label, detail) {
-    document.getElementById('editor-shield-label').textContent = label || 'Working…';
-    document.getElementById('editor-shield-detail').textContent = detail || '';
+    ProgressModel.reset();
+    ProgressModel.label = label || 'Working…';
+    ProgressModel.detail = detail || '';
+    document.getElementById('editor-shield-label').textContent = ProgressModel.label;
+    document.getElementById('editor-shield-detail').textContent = ProgressModel.detail;
     document.getElementById('editor-shield-bar-fill').style.width = '0%';
-    window.__shieldMaxPct = 0;   // reset the monotonic-bar guard per open
     buildShieldStages();
+    ProgressModel.enterStep('prep');
     var sh = document.getElementById('editor-shield');
     sh.classList.add('active');
     sh.style.display = 'flex';
@@ -523,25 +715,31 @@ function hideShield() {
     var sh = document.getElementById('editor-shield');
     sh.classList.remove('active');
     sh.style.display = 'none';
+    if (ProgressModel._easeTimer) { clearInterval(ProgressModel._easeTimer); ProgressModel._easeTimer = null; }
     // Iter 196: monotonic counter so tests polling at ≥100 ms can
     // detect cross-revive same-file open events whose shield goes
     // up→down within microseconds (faster than poll cadence).
     window.__shieldDropCount = (window.__shieldDropCount || 0) + 1;
 }
+// SINGLE OWNER shim. All legacy callers (tryDropShield, relay phases,
+// WasmProgress fallback) used to write the bar directly through this.
+// They now route through the model: a `label`/`detail` updates text,
+// and a `pct` is treated as a FLOOR HINT only — the model owns the real
+// value, so a hint can nudge the bar forward (e.g. 'Ready' 100) but can
+// never pull it backward or latch it. This preserves every call site
+// while removing the scattered absolute writers that caused the park.
 function updateShieldProgress(label, pct, detail) {
-    if (label) document.getElementById('editor-shield-label').textContent = label;
+    if (label != null) ProgressModel.label = label;
+    if (detail != null) ProgressModel.detail = detail;
     if (pct != null) {
-        // Monotonic guard: progress signals arrive from several
-        // independent sources (download %, stage count, kit import %,
-        // late-join phases) whose remapped ranges overlap — without the
-        // guard the bar visibly jumps backwards between phases.
         var clamped = Math.max(0, Math.min(100, pct));
-        if (clamped >= (window.__shieldMaxPct || 0)) {
-            window.__shieldMaxPct = clamped;
-            document.getElementById('editor-shield-bar-fill').style.width = clamped + '%';
+        // Floor hint: only ever raise the model's last bar (e.g. a
+        // late-join phase or the final 'Ready' 100). Never a latch.
+        if (clamped > ProgressModel._lastBar) {
+            ProgressModel._lastBar = clamped;
         }
     }
-    if (detail != null) document.getElementById('editor-shield-detail').textContent = detail;
+    ProgressModel.recompute();
 }
 
 // Drop the shield only when BOTH the doc is rendered AND the relay-adapter
@@ -685,55 +883,102 @@ window.addEventListener('message', function(event) {
         }
         // Fine-grained pipeline stage from the iframe's wasm-loader
         // mark() stream (or the kit's import % for stage 'import').
-        // Drives the shield's stage checklist + nudges the bar.
+        // SINGLE OWNER: each granular mark advances its user-facing step
+        // in ProgressModel; import drives the import step's intra %. No
+        // direct bar writes — the model owns the value.
         if (msg.MessageId === 'WasmOpenStage' && msg.Values && msg.Values.stage) {
             var stg = msg.Values.stage;
             if (stg === 'import') {
+                // Real kit statusindicator % (0..100). Feeds the import
+                // step's intra sub-bar (byte/percent mode); the model maps
+                // it into the import band — now reachable after C1.
                 var ipct = Math.max(0, Math.min(100, msg.Values.pct || 0));
-                setShieldStage('import', ipct >= 100 ? 'done' : 'in-progress',
-                    ipct > 0 && ipct < 100 ? ipct + '%' : '');
-                // Import owns the 55-95% band of the bar — it is the
-                // long phase; stages before it land below 55.
-                updateShieldProgress(null, 55 + ipct * 0.4, null);
+                setShieldStage('import', ipct >= 100 ? 'done' : 'in-progress', '');
+                ProgressModel.enterStep('import');
+                ProgressModel.setIntra('import', ipct / 100);
+            } else if (stg === 'render') {
+                // pptx per-slide render thumbs N/M (real DOM signal from
+                // the loader's slide-render tap). Feeds the render step's
+                // intra sub-bar (byte/percent mode).
+                var rpct = Math.max(0, Math.min(100, msg.Values.pct || 0));
+                setShieldStage('import', 'done', '');
+                ProgressModel.enterStep('render');
+                setShieldStage('render', rpct >= 100 ? 'done' : 'in-progress', '');
+                ProgressModel.setIntra('render', rpct / 100);
+            } else if (stg === 'doc:loaded') {
+                // Open complete — everything done; snap to 100.
+                setShieldStage('import', 'done', '');
+                setShieldStage('render', 'done', '');
+                setShieldStage('ready', 'done', '');
+                ProgressModel.enterStep('ready');
             } else {
-                setShieldStage(stg, 'done', '');
-                if (stg === 'doc:loaded') setShieldStage('import', 'done', '');
-                updateShieldProgress(null, shieldStagePct(), null);
+                // A granular boot/render mark → advance its user-facing
+                // step. The step it maps to becomes active (and earlier
+                // steps complete implicitly). Track which cold-only steps
+                // actually fired a mark so warm opens can collapse them.
+                var stepId = MARK_TO_STEP[stg];
+                if (stepId) {
+                    var def = stepDef(stepId);
+                    if (def && def.coldOnly) ProgressModel._coldSeen[stepId] = true;
+                    ProgressModel.enterStep(stepId);
+                    setShieldStage(stepId, 'in-progress', '');
+                    if (stg === 'dom:first_canvas') setShieldStage('render', 'in-progress', '');
+                }
             }
             return;
         }
-        // Live progress from the iframe's wasm-loader.
+        // Live progress from the iframe's wasm-loader. SINGLE OWNER: these
+        // were the scattered absolute writers (incl. the hard "Compiling…
+        // 90" that latched the park). Now they only feed the stepper:
+        //   - download → real bytes % into the 'download' step's sub-bar;
+        //   - 'Opening/Switching/Compiling/Initializing' → label/step nudge
+        //     only (NO absolute pct — the relevant step's band + ease own
+        //     the bar). The hard 90/93/95 are dropped here at the source.
         if (msg.MessageId === 'WasmProgress' && msg.Values) {
             var pct = msg.Values.pct;
             var label = msg.Values.label || '';
             var detail = msg.Values.detail || '';
-            // Map generic wasm-loader labels to user-friendly ones.
-            // For the download phase: REUSE the wasm-loader's detail
-            // (`online.wasm 12.3/35.6 MB · soffice.data 8.0/20 MB · …`).
-            // 2026-05-28 — user wants the per-file MB breakdown visible,
-            // not just a generic "Downloading editor components" line.
             if (label.includes('Downloading editor')) {
-                label = 'Downloading editor…';
+                // Real download bytes % (Content-Length-driven aggregate,
+                // ~0..88 from the loader). Feed it into the download step's
+                // intra sub-bar (byte mode) — a genuine % the whole way.
+                ProgressModel._coldSeen['download'] = true;
+                ProgressModel.enterStep('download');
+                setShieldStage('download', 'in-progress', '');
+                if (pct != null) ProgressModel.setIntra('download', Math.min(1, pct / 88));
                 // detail passes through unmodified — already MB-formatted
-                // by wasm-loader's renderDetail().
-                // Scale wasm-loader's 0-90% into our 30-80% range
-                if (pct != null) pct = 30 + (pct * 0.55);
-            } else if (label.includes('Opening') || label.includes('Switching')) {
-                label = 'Opening document…';
-                detail = currentFile || '';
-                if (pct != null) pct = Math.max(80, pct);
+                // by wasm-loader's renderDetail(); show it as the subtitle.
+                updateShieldProgress('Downloading editor…', null, detail);
             } else if (label === 'Ready') {
-                pct = 100;
+                // The loader posts 'Ready'/100 from its prewarm
+                // fireDocReady/docPoll path BEFORE the user's real doc has
+                // loaded (premature Ready, proposal §B3). Treat it as a
+                // LABEL-ONLY nudge here — NOT a 100 floor — so it can't
+                // latch the bar at 100 before import. The genuine 100 is
+                // owned by the 'ready' step (doc:loaded) + tryDropShield,
+                // which gate on real doc-load AND relay activation.
+                updateShieldProgress(null, null, null);
+            } else if (label.includes('Opening') || label.includes('Switching')) {
+                // Label-only nudge — the import step's band owns the bar.
+                updateShieldProgress('Opening document…', null, currentFile || detail);
+            } else {
+                // Compiling…/Initializing runtime… — label-only. The hard
+                // absolute pct (90/93/95) is intentionally DROPPED here so
+                // it can no longer latch the bar above the import band.
+                updateShieldProgress(label || null, null, detail || null);
             }
-            updateShieldProgress(label, pct, detail);
         }
         // Iframe canvas first paint after switchdocument — doc is visible
         // but the toolbar / word-count / status bar may still be loading.
-        // Keep the shield up; just update the progress message.
+        // Single owner: open the render step (label-only); the render
+        // step's band + ease own the bar, no absolute 90 jump.
         if (msg.MessageId === 'WasmSwitchVisible' && msg.Values && currentFile) {
             var ms = msg.Values.ms;
             console.log('[viewer] Switch visible after ' + ms + 'ms (waiting for doc-ready)');
-            updateShieldProgress('Rendering document…', 90, currentFile);
+            setShieldStage('import', 'done', '');
+            ProgressModel.enterStep('render');
+            setShieldStage('render', 'in-progress', '');
+            updateShieldProgress('Rendering document…', null, currentFile);
         }
 
         // Iframe reports the document is fully loaded (canvas pixels
@@ -1229,6 +1474,19 @@ async function openFileBySecret(secretB64, callerOpts) {
         } catch(e) { console.warn('[v2] decryptName failed', e); }
     }
     RecentFiles.remember({ secret: secretB64, fileId, cachedName });
+    // Size the import time-ease budget from the (known) plaintext size +
+    // doc type. Import dominates open time at a few s/MB; the ease
+    // asymptotes so a rough estimate is fine (a wrong budget only changes
+    // the curve shape, never overshoots). Real kit % overrides the ease
+    // when frames arrive. Rates from the bulk-open measurements (pptx
+    // ~3.1 s/MB; docx ~10.7 s/MB; xlsx floor-bound).
+    try {
+        var __sizeMB = plainBytes.byteLength / (1024 * 1024);
+        var __dt = cachedName ? docTypeFor(cachedName) : 'writer';
+        var __rate = __dt === 'writer' ? 10700 : __dt === 'impress' ? 3100 : 2000; // ms/MB
+        ProgressModel.importBudgetMs = Math.max(6000, Math.round(4000 + __rate * __sizeMB));
+        window.__importBudgetMs = ProgressModel.importBudgetMs;
+    } catch (e) { ProgressModel.importBudgetMs = 18000; }
     // Stage plaintext in the in-memory bridge cache under the opaque
     // fileId. When the editor iframe (cross-origin) boots and Kit
     // fetches /wasm/<fileId>, the editor's bridge SW catches the fetch
