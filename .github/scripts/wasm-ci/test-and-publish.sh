@@ -473,19 +473,15 @@ if [[ "$TEST_TARGET" == "local" ]]; then
     export EDITOR_DEPLOY_ID="$APP_BID"
     export TEST_TARGET="local"
 
-    # bulk-open-ignored corpus on this self-hosted runner. The corpus is
-    # gitignored, so it can't live in the checkout (actions/checkout's
-    # `git clean -ffdx` wipes it). We keep a PERSISTENT copy outside the
-    # checkout; when present, point the test at it and run REPORT-ONLY: the
-    # published CI report then carries the real per-update open timings for
-    # the whole corpus, WITHOUT the per-MB perf gate (which flakes under the
-    # CI's JOBS=2 contention — the reason PR #236 made the corpus dev-only).
-    # bulk-open is NOT a smoke/critical test, so this never blocks the gate.
-    if [[ -d /home/localadmin/ci-corpus/bulk-open-ignored ]]; then
-        export BULK_OPEN_SAMPLES_DIR=/home/localadmin/ci-corpus/bulk-open-ignored
-        export BULK_OPEN_REPORT_ONLY=1
-        echo "  bulk-open: corpus present → $BULK_OPEN_SAMPLES_DIR (report-only)"
-    fi
+    # NOTE: the bulk-open-ignored 30-file corpus is NOT run in the parallel
+    # pool — its ~32-min, 30-doc run starved the timing-sensitive
+    # snapshot-milestones when both ran under JOBS=2 (the 072939 regression:
+    # impress warm "no verified trial"). Instead it's excluded from the
+    # parallel run below and run SERIALLY (uncontended) AFTER Phase 1, with
+    # the corpus env set inline (see "Phase 1b"). The corpus is gitignored so
+    # it can't live in the checkout (git clean wipes it) — it's a persistent
+    # copy at /home/localadmin/ci-corpus/bulk-open-ignored. Report-only, never
+    # gates (bulk-open is not a smoke/critical test).
 
 elif [[ "$TEST_TARGET" == "azure-deploy" ]]; then
     # Legacy mode: source Azure URLs from the host-managed .env.deploy.
@@ -526,9 +522,33 @@ TEST_JOBS="${TEST_JOBS_OVERRIDE:-2}"
 # Pass the eventual public URL of the per-test reports through to the
 # JUnit emitter so each <testcase> has a clickable deep-link.
 JUNIT_BASE_URL="$SITE/app-builds/$APP_BID/tests/output/reports"
+
+# Pull bulk-open-ignored OUT of the parallel pool — it runs serially in
+# Phase 1b below (uncontended) so its ~32-min/30-doc corpus run can't starve
+# snapshot-milestones (the 072939 regression). Remove it from the TESTS array
+# the parallel runner reads.
+if grep -q '^[[:space:]]*"regression-bulk-open-ignored|' "$WORKSPACE/wasm/run-all-tests.sh"; then
+    echo "[CI] bulk-open-ignored deferred to serial Phase 1b (not parallel)"
+    sed -i '/^[[:space:]]*"regression-bulk-open-ignored|/d' "$WORKSPACE/wasm/run-all-tests.sh"
+fi
+
 set +e
 ( cd "$WORKSPACE/wasm" && JOBS="$TEST_JOBS" JUNIT_BASE_URL="$JUNIT_BASE_URL" bash run-all-tests-parallel.sh ) >> "$LOG" 2>&1
 PHASE1_RC=$?
+
+# ── Phase 1b — bulk-open corpus, SERIAL + uncontended ───────────────
+# Runs AFTER the parallel suite (incl. snapshot-milestones) has finished, so
+# the 30-file corpus open never competes for CPU with the warm-timing gate.
+# Report-only (BULK_OPEN_REPORT_ONLY) — publishes the per-update timeline for
+# all 30 docs; exits 0 regardless, never gates. Local servers are still up
+# here (torn down just below).
+if [[ -d /home/localadmin/ci-corpus/bulk-open-ignored ]]; then
+    echo "--- Phase 1b: bulk-open corpus (serial, report-only, uncontended) ---" >> "$LOG"
+    ( cd "$WORKSPACE/wasm" \
+        && BULK_OPEN_SAMPLES_DIR=/home/localadmin/ci-corpus/bulk-open-ignored \
+           BULK_OPEN_REPORT_ONLY=1 \
+           timeout 3000 node tests/regression/test-regression-bulk-open-ignored.js ) >> "$LOG" 2>&1 || true
+fi
 set -e
 
 # Tear down the local servers as soon as Phase 1 is done so they don't
