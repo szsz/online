@@ -5,6 +5,8 @@ const { launch, sleep } = require('../../lib/browser');
 const fs = require('fs'), path = require('path');
 const env = require('../../lib/test-env');
 const { uploadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { waitForDocReady, getActiveEditorFrame } = require('../../lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOTS = '/tmp/static-deploy/public/shots-e2e-copypaste';
 const REPORT = '/tmp/static-deploy/public/reports/e2e-copypaste-detail.html';
@@ -29,40 +31,42 @@ function check(label, cond, ev) {
         const bytes = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx'));
         const { b64urlSecret, fileId } = await uploadV2(VIEWER, docName, bytes);
 
-        const page = await browser.newPage();
-        const cdp = await page.createCDPSession();
-        await cdp.send('Browser.grantPermissions', {
-            permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
+        // Open via the shared viewer helper. It does newPage + goto, resolves
+        // the FILE-loading iframe past the prewarm bootstrap (handling the
+        // cold-reload iframe-replace), and runs onPage BEFORE navigation so we
+        // can grant clipboard permissions on the right page.
+        //
+        // Why the rewrite: the previous setup hand-rolled a frame-find +
+        // readiness loop with HARDCODED, un-scaled waits (sleep(500)×300 for
+        // the editor, fixed relay wait + sleep(5000)). Under CI's JOBS=2
+        // contention the open is slow, so setup failed before STEP 1 — the
+        // dev-CI "no checklist recorded" flake. openSecretInBrowser +
+        // waitForDocReady widen automatically with JOBS_SCALE.
+        const { page } = await openSecretInBrowser(browser, VIEWER, b64urlSecret, {
+            viewport: { width: 1280, height: 900 },
+            onPage: async (p) => {
+                const cdp = await p.createCDPSession();
+                await cdp.send('Browser.grantPermissions', {
+                    permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+                });
+            },
         });
-        await page.setViewport({ width: 1280, height: 900 });
-        await page.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
-        // Wait for editor to fully load
-        let editorFrame;
-        for (let i = 0; i < 300; i++) {
-            await sleep(500);
-            editorFrame = page.frames().find(f => f.url().includes('cool.html'));
-            if (editorFrame) {
-                const wc = await editorFrame.evaluate(() =>
-                    document.querySelector('#StateWordCount')?.textContent || '').catch(() => '');
-                if (/\d+\s+character/i.test(wc)) {
-                    const canvasOk = await editorFrame.evaluate(() =>
-                        !!document.querySelector('.leaflet-tile-container canvas, #document-container canvas')
-                    ).catch(() => false);
-                    if (canvasOk) break;
-                }
-            }
-        }
+        // Doc fully loaded + state bar populated (JOBS_SCALE-aware timeouts).
+        await waitForDocReady(page);
+        let editorFrame = await getActiveEditorFrame(page);
         if (!editorFrame) { console.log('ERROR: no editor'); await cleanup(); process.exit(1); }
 
-        // Wait for relay activation
-        for (let i = 0; i < 60; i++) {
+        // Relay (co-edit socket) activation — scaled patience, then a short
+        // settle so the clipboard bridge is wired before we drive keys.
+        const relayTries = Math.round(60 * env.JOBS_SCALE);
+        for (let i = 0; i < relayTries; i++) {
             const ready = await editorFrame.evaluate(() =>
                 typeof globalThis.TheFakeWebSocket !== 'undefined').catch(() => false);
             if (ready) break;
             await sleep(500);
         }
-        await sleep(5000);
+        await sleep(env.scaleTimeout(5000));
 
         // ── DOM inspection helpers (read-only, no side effects) ──────
         function charCount(s) {
