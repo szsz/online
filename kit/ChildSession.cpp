@@ -450,21 +450,39 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         // ordering issue we're avoiding for docx.
         static int s_consecutiveInPlace = 0;
 
-        // Map fileUrl extension → expected doc type FIRST so the cap
-        // decision can read it.
-        int desiredType = LOK_DOCTYPE_OTHER;
-        const auto dotPos = fileUrl.find_last_of('.');
-        if (dotPos != std::string::npos)
-        {
-            std::string ext = fileUrl.substr(dotPos + 1);
+        // Map the target doc → expected doc type FIRST so the cap decision
+        // can read it. Source of truth is the explicit `type=<ext>` token
+        // the viewer sends on the switchdocument command: the production
+        // url= switch writes the fetched bytes to an EXTENSION-LESS temp
+        // file (/tempdoc_switch<N>), and the v2 opaque fileId in the remote
+        // URL has no extension either, so sniffing the path yields
+        // LOK_DOCTYPE_OTHER and the per-doctype in-place cap never engages.
+        // Fall back to sniffing the fileUrl extension (covers the test-only
+        // `else` branch that passes a real file://….ext path).
+        auto extToDoctype = [](std::string ext) -> int {
             std::transform(ext.begin(), ext.end(), ext.begin(),
                            [](unsigned char c) { return std::tolower(c); });
             if (ext == "docx" || ext == "doc" || ext == "odt" || ext == "rtf" || ext == "txt")
-                desiredType = LOK_DOCTYPE_TEXT;
-            else if (ext == "xlsx" || ext == "xls" || ext == "ods" || ext == "csv" || ext == "tsv")
-                desiredType = LOK_DOCTYPE_SPREADSHEET;
-            else if (ext == "pptx" || ext == "ppt" || ext == "odp")
-                desiredType = LOK_DOCTYPE_PRESENTATION;
+                return LOK_DOCTYPE_TEXT;
+            if (ext == "xlsx" || ext == "xls" || ext == "ods" || ext == "csv" || ext == "tsv")
+                return LOK_DOCTYPE_SPREADSHEET;
+            if (ext == "pptx" || ext == "ppt" || ext == "odp")
+                return LOK_DOCTYPE_PRESENTATION;
+            return LOK_DOCTYPE_OTHER;
+        };
+        int desiredType = LOK_DOCTYPE_OTHER;
+        std::string typeToken;
+        if (getTokenString(tokens, "type", typeToken) && !typeToken.empty())
+        {
+            desiredType = extToDoctype(typeToken);
+            LOG_INF("SWITCHDOC: desiredType from type=" << typeToken
+                    << " => " << desiredType);
+        }
+        if (desiredType == LOK_DOCTYPE_OTHER)
+        {
+            const auto dotPos = fileUrl.find_last_of('.');
+            if (dotPos != std::string::npos)
+                desiredType = extToDoctype(fileUrl.substr(dotPos + 1));
         }
 
         // Iter A7 reverted: cap=1 for TEXT regressed cold cross-type
@@ -474,14 +492,36 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         // to documentLoad. The "docx 3rd-click hang" comment from
         // before A3 may have been the original cause, but disposeOld
         // alone didn't unlock docx in-place. Cap stays 0 for TEXT.
+        // Iter B2: lift the per-doctype cap for calc/impress from 1 to a
+        // high ceiling. The cap=1 was a leftover throttle from when the
+        // warm-restore clamp (now removed in B1) meant in-place only ever
+        // ran once anyway; with B1 the in-place reload succeeds (rc==0) on
+        // warm-restored instances on EVERY switch, so cap=1 was forcing
+        // every OTHER same-type open back onto the slow documentLoad path.
+        // A non-trivial ceiling (rather than unbounded) keeps a periodic
+        // full documentLoad as a safety valve that flushes any frame/view
+        // back-ref state accumulated across many consecutive in-place
+        // reloads (the historical concern that motivated the cap). TEXT
+        // stays 0 — LO Core's in-place loadComponentFromURL returns -1 for
+        // docx targets, so attempting it only wastes a round-trip.
         int kInPlaceCap = 0;
         if (desiredType == LOK_DOCTYPE_SPREADSHEET ||
             desiredType == LOK_DOCTYPE_PRESENTATION)
         {
-            kInPlaceCap = 1;
+            kInPlaceCap = 64;
         }
 #ifdef __EMSCRIPTEN__
-        if (wasm_is_warm_restored()) kInPlaceCap = 0;
+        // Iter B1: previously this unconditionally zeroed the cap when
+        // wasm_is_warm_restored() — but the viewer ALWAYS boots from the
+        // prewarm snapshot, so the flag is ~always 1 on the very first
+        // switchdocument and the in-place path was perma-disabled. The
+        // intended clear in the `load` re-attach branch never ran (that
+        // branch early-returns before reaching the clear at line ~817).
+        // The flag is now cleared in the warm-restore re-attach branch
+        // itself (loadDocument `load` handler), so by the time a real
+        // switchdocument arrives warm_restored is already 0. Keep no
+        // extra clamp here; rely on wasm_reload_doc_in_place's rc==-1
+        // fallback if LO Core genuinely can't do in-place.
 #endif
 
         std::shared_ptr<lok::Document> existing = _docManager->getLOKitDocument();
@@ -701,6 +741,22 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 sendTextFrame("docready: viewid=" + std::to_string(_viewId)
                               + " type=" + LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get())
                               + " path=warm");
+                // Iter B1: consume the warm-restore one-shot HERE. The
+                // cold-load clear at line ~817 lives in the full load
+                // path, which this early-return never reaches — so on a
+                // warm-booted viewer (the common case) the flag stayed 1
+                // forever and the in-place switchdoc optimisation was
+                // perma-disabled (ChildSession switchdocument clamped
+                // kInPlaceCap=0 on warm_restored). The re-attach has now
+                // completed: the JS view is bound to the restored model,
+                // so the warm-restore special-casing is done. Subsequent
+                // switchdocument commands are ordinary same-session
+                // switches and should use the in-place fast path.
+                if (wasm_is_warm_restored())
+                {
+                    LOG_INF("SWITCHDOC: clearing warm_restored after warm-restore re-attach");
+                    wasm_set_warm_restored(0);
+                }
                 return true;
             }
 #endif

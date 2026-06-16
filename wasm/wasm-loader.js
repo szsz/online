@@ -976,7 +976,20 @@
         pendingSwitchFilename = null;
         // Update __wasmDocType to reflect the new file's expected doc class
         // so anything else querying it gets the right value.
-        var newExt = filename.split('.').pop().toLowerCase().split('?')[0];
+        //
+        // CRITICAL: derive the extension from displayName, NOT filename.
+        // In the v2 flow `filename` is the OPAQUE fileId (64-hex, no
+        // extension), so filename.split('.').pop() yields the whole id and
+        // never matches calc/impress — newDocType silently defaulted to
+        // 'writer' and the type= token below was always 'docx'. The kit
+        // then resolved desiredType=LOK_DOCTYPE_TEXT, kInPlaceCap stayed 0
+        // (per-doctype cap only lifts for SPREADSHEET/PRESENTATION), and
+        // every warm pptx/xlsx re-open fell to the slow documentLoad path
+        // instead of the fast in-place reload. displayName carries the
+        // real user filename (e.g. "deck.pptx") on v2 opens; fall back to
+        // filename for the legacy `#switchdoc=<name.ext>` form.
+        var extSrc = (displayName || filename);
+        var newExt = extSrc.split('.').pop().toLowerCase().split('?')[0];
         var newDocType = 'writer';
         if (['xlsx','xls','ods','csv','tsv'].indexOf(newExt) >= 0) newDocType = 'calc';
         else if (['pptx','ppt','odp','ppsx','pps'].indexOf(newExt) >= 0) newDocType = 'impress';
@@ -986,8 +999,21 @@
         // the parent the moment we see one — this lets the viewer drop its
         // shield far earlier than waiting for #StateWordCount metadata.
         canvasBaseline = snapshotCanvas();
+        // Map the new doc class to an explicit doctype token. The v2 opaque
+        // fileId in /wasm/<fileId> has NO extension, and the kit's
+        // switchdocument writes the fetched bytes to an extension-LESS temp
+        // file, so the kit cannot infer the doctype from the URL/temp path.
+        // Without this token the kit's desiredType resolves to
+        // LOK_DOCTYPE_OTHER, kInPlaceCap stays 0, and every warm same-type
+        // re-open falls to the slow documentLoad model rebuild instead of the
+        // fast in-place reload (see kit/ChildSession.cpp switchdocument).
+        // The token values match the kit's extension-sniffing set.
+        var switchTypeToken = 'docx';
+        if (newDocType === 'calc') switchTypeToken = 'xlsx';
+        else if (newDocType === 'impress') switchTypeToken = 'pptx';
         try {
-            var cmd = 'switchdocument url=' + window.location.origin + '/wasm/' + encodeURIComponent(filename);
+            var cmd = 'switchdocument url=' + window.location.origin + '/wasm/' + encodeURIComponent(filename)
+                + ' type=' + switchTypeToken;
             // Intercept incoming messages from the WASM/C++ side to log exact
             // arrival times of status:, loaded:, invalidatetiles, and tiles.
             // This tells us how long each phase of the C++ switchdocument takes.
