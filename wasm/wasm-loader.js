@@ -320,6 +320,31 @@
     })();
     mark('sw-bridge:viewerOrigin', __viewerOrigin || '(unknown)');
 
+    // Journey recorder (?record): forward in-canvas user input to the parent
+    // viewer over the trusted __viewerOrigin channel so journey-recorder.js
+    // can capture clicks/keys/scroll that land inside this cross-origin editor
+    // iframe (the parent can't see them otherwise). No-op without ?record.
+    if (params.has('record') && __viewerOrigin && window.parent !== window) {
+        var __jrPost = function(v) {
+            try { parent.postMessage(JSON.stringify({ MessageId: 'JourneyInput', Values: v }), __viewerOrigin); }
+            catch (e) {}
+        };
+        ['pointerdown', 'pointerup'].forEach(function(type) {
+            document.addEventListener(type, function(e) {
+                __jrPost({ type: type, x: e.clientX, y: e.clientY,
+                    ifW: window.innerWidth, ifH: window.innerHeight, button: e.button || 0 });
+            }, true);
+        });
+        document.addEventListener('keydown', function(e) {
+            __jrPost({ type: 'keydown', key: e.key, code: e.code,
+                ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
+        }, true);
+        window.addEventListener('wheel', function(e) {
+            __jrPost({ type: 'wheel', dx: e.deltaX, dy: e.deltaY });
+        }, { capture: true, passive: true });
+        mark('journey:recorder-forwarder-armed');
+    }
+
     if ('serviceWorker' in navigator) {
         // SW → page → parent
         navigator.serviceWorker.addEventListener('message', function(ev) {

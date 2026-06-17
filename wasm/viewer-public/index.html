@@ -108,6 +108,7 @@ h3 { margin: 5px 0; }
 <script src="lib/recent-files.js"></script>
 <script src="lib/ui-lang.js"></script>
 <script src="lib/editor-bridge.js"></script>
+<script src="lib/journey-recorder.js"></script>
 <div id="sidebar-hover-zone"></div>
 <div id="files">
     <h3>Files</h3>
@@ -366,6 +367,11 @@ const __forceSingle = window.__VIEWER_SINGLE_USER || __qp.has('singleuser');
 const CO_EDITING = !__forceSingle &&
     (window.__VIEWER_CO_EDITING || __qp.has('co-editing'));
 const SINGLE_USER = !CO_EDITING;
+// Journey recorder (?record): capture the session for replay/review. When
+// set, the editor iframe is loaded with &record=1 so wasm-loader forwards
+// in-canvas input to the recorder. See viewer-public/lib/journey-recorder.js.
+const RECORD = __qp.has('record');
+const RECORD_PARAM = RECORD ? '&record=1' : '';
 document.title = CO_EDITING ? 'Viewer (Co-editing)' : 'Viewer (Single User)';
 
 // Co-edit toggle button (sidebar). Reload-based mode switch — mirrors how
@@ -814,6 +820,11 @@ window.addEventListener('message', function(event) {
     if (typeof event.data !== 'string') return;
     try {
         const msg = JSON.parse(event.data);
+        // Journey recorder: in-canvas input forwarded from the editor iframe's
+        // wasm-loader (?record sessions only). Merge into the journey stream.
+        if (msg.MessageId === 'JourneyInput' && window.JourneyRecorder) {
+            JourneyRecorder.noteIframeInput(msg.Values); return;
+        }
         // Iter A8: latch warm-restore failure so subsequent cross-type
         // iframe creations skip the snapshot (which is ~100 % reproducible
         // bad once it has hung once in a session). Without this the user
@@ -1000,6 +1011,7 @@ window.addEventListener('message', function(event) {
             var rms = msg.Values.ms;
             console.log('[viewer] Doc ready after ' + rms + 'ms' + (msg.Values.timeout ? ' (timeout)' : ''));
             docReady = true;
+            if (window.JourneyRecorder) JourneyRecorder.noteDocReady(currentFile);
             tryDropShield('doc-ready', rms);
         }
         // Iframe's relay-adapter has finished joining the room. Until this
@@ -1282,7 +1294,8 @@ async function startPrewarm() {
                + '&UserName=' + encodeURIComponent(MY_USER_NAME)
                + '&viewerT0=' + window.__viewerT0
                + UI_LANG_PARAM
-               + __viewerPlanC;
+               + __viewerPlanC
+               + RECORD_PARAM;
 
     // Stage blank doc in the bridge cache — Kit reaches it via
     // /wasm/<BLANK_FILENAME> through the SW bridge once it boots.
@@ -1438,6 +1451,7 @@ async function uploadFile() {
         }
         const secretB64 = FileCrypto.b64urlEncode(secret);
         RecentFiles.remember({ secret: secretB64, fileId, cachedName: f.name });
+        if (window.JourneyRecorder) JourneyRecorder.noteUpload(f.name, docTypeFor(f.name), bytes);
         // Put the secret into the URL fragment so the user can bookmark it.
         // Only do this if only one file was uploaded; otherwise leave the hash alone.
         if (fileInput.files.length === 1) location.hash = '#file=' + secretB64;
@@ -1481,6 +1495,7 @@ async function openFileBySecret(secretB64, callerOpts) {
         } catch(e) { console.warn('[v2] decryptName failed', e); }
     }
     RecentFiles.remember({ secret: secretB64, fileId, cachedName });
+    if (window.JourneyRecorder) JourneyRecorder.noteOpen(cachedName, cachedName ? docTypeFor(cachedName) : 'writer', plainBytes);
     // Size the import time-ease budget from the (known) plaintext size +
     // doc type. Import dominates open time at a few s/MB; the ease
     // asymptotes so a rough estimate is fine (a wrong budget only changes
@@ -1742,7 +1757,8 @@ async function openFile(name, opts) {
                           + UI_LANG_PARAM
                           + __coldPlanC
                           + (opts.displayName
-                              ? '&displayName=' + encodeURIComponent(opts.displayName) : '');
+                              ? '&displayName=' + encodeURIComponent(opts.displayName) : '')
+                          + RECORD_PARAM;
             // Note: we don't disconnect the OLD iframe here anymore.
             // It's parked above, may be revived on a future cross-type
             // back to its doctype. RelayDisconnect would tear down its
@@ -1859,6 +1875,7 @@ function isFragmentSecret(s) {
 window.addEventListener('hashchange', function() {
     const val = currentHashFile();
     if (!val) return;
+    if (window.JourneyRecorder) JourneyRecorder.noteHashChange();
     if (isFragmentSecret(val)) {
         openFileBySecret(val);
     } else if (val !== currentFile) {
