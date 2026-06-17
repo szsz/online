@@ -116,6 +116,18 @@ h3 { margin: 5px 0; }
         <span id="ui-lang-mount" style="flex:1"></span>
     </div>
     <div id="prewarm-status">🔄 Pre-warming editor...</div>
+    <div id="coedit-row" style="margin:6px 0;font-size:12px;">
+        <button id="coedit-toggle" type="button" onclick="toggleCoEditing()"
+                style="width:100%;padding:5px 6px;font-size:12px;cursor:pointer;
+                       border:1px solid #c5d2e0;border-radius:5px;background:#f4f8fc;"></button>
+        <div id="coedit-share" style="display:none;margin-top:4px;">
+            <input id="coedit-share-link" type="text" readonly
+                   style="width:100%;font-size:11px;box-sizing:border-box;"
+                   onclick="this.select()">
+            <button type="button" onclick="copyCoEditingLink()"
+                    style="margin-top:2px;font-size:11px;cursor:pointer;">Copy link</button>
+        </div>
+    </div>
     <input type="file" id="upload" onchange="uploadFile()" multiple>
     <div id="new-folder-bar">
         <input type="text" id="new-folder-name" placeholder="New folder name...">
@@ -340,13 +352,62 @@ const UI_LANG_PARAM = '&lang=' + encodeURIComponent(UI_LANG);
 // Read-only mode: set by readonly.html or ?readonly=1 URL param.
 // When true, the relay parameter is omitted from iframe URLs (disabling
 // co-editing) and the shield drops on WasmDocReady alone.
-// Single-user mode: set by singleuser.html or ?singleuser URL param.
-// When true, the relay parameter is omitted from iframe URLs — all edits
-// go straight to the local Kit without co-editing. The user can still
-// edit and save; there's just no relay server connection.
-const SINGLE_USER = window.__VIEWER_SINGLE_USER ||
-    new URLSearchParams(window.location.search).has('singleuser');
-if (SINGLE_USER) document.title = 'Viewer (Single User)';
+// Mode (2026-06-17): SINGLE-USER IS THE DEFAULT. Co-editing (a relay
+// connection) is opt-in — via the `?co-editing` URL param,
+// window.__VIEWER_CO_EDITING, or the in-app "Co-edit" toggle button
+// (which reloads the page with ?co-editing). When single-user, the relay
+// parameter is omitted from iframe URLs — all edits go straight to the
+// local Kit; the user can still edit and save, there's just no relay
+// server connection. `?singleuser` / __VIEWER_SINGLE_USER remain accepted
+// (now redundant, since single-user is the default) and act as an explicit
+// override that wins over ?co-editing, for back-compat.
+const __qp = new URLSearchParams(window.location.search);
+const __forceSingle = window.__VIEWER_SINGLE_USER || __qp.has('singleuser');
+const CO_EDITING = !__forceSingle &&
+    (window.__VIEWER_CO_EDITING || __qp.has('co-editing'));
+const SINGLE_USER = !CO_EDITING;
+document.title = CO_EDITING ? 'Viewer (Co-editing)' : 'Viewer (Single User)';
+
+// Co-edit toggle button (sidebar). Reload-based mode switch — mirrors how
+// readonly/singleuser drive mode at load; avoids a fragile live relay
+// re-init of an already-booted editor iframe.
+function renderCoEditToggle() {
+    var btn = document.getElementById('coedit-toggle');
+    if (!btn) return;
+    var share = document.getElementById('coedit-share');
+    if (CO_EDITING) {
+        btn.textContent = '👥 Co-editing: ON — switch to single-user';
+        btn.title = 'Currently co-editing. Click to return to single-user mode.';
+        if (share) {
+            share.style.display = '';
+            var link = document.getElementById('coedit-share-link');
+            if (link) link.value = window.location.href;
+        }
+    } else {
+        btn.textContent = '👤 Single-user — click to start co-editing';
+        btn.title = 'Start a co-editing session. Anyone who opens this link can edit with you.';
+        if (share) share.style.display = 'none';
+    }
+}
+function toggleCoEditing() {
+    var u = new URL(window.location.href);
+    if (CO_EDITING) {
+        u.searchParams.delete('co-editing');
+    } else {
+        u.searchParams.set('co-editing', '1');
+        u.searchParams.delete('singleuser');
+    }
+    window.location.href = u.toString();   // reload into the new mode
+}
+function copyCoEditingLink() {
+    var link = document.getElementById('coedit-share-link');
+    if (!link) return;
+    link.select();
+    try { navigator.clipboard.writeText(link.value); }
+    catch (e) { try { document.execCommand('copy'); } catch (e2) {} }
+    setStatus('Co-editing link copied');
+}
+renderCoEditToggle();
 
 // Random pronounceable name for this browser tab (shown on cursor to peers)
 function generateUserName() {
