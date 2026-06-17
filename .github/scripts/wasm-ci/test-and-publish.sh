@@ -548,6 +548,30 @@ if [[ -d /home/localadmin/ci-corpus/bulk-open-ignored ]]; then
         && BULK_OPEN_SAMPLES_DIR=/home/localadmin/ci-corpus/bulk-open-ignored \
            BULK_OPEN_REPORT_ONLY=1 \
            timeout 3000 node tests/regression/test-regression-bulk-open-ignored.js ) >> "$LOG" 2>&1 || true
+
+    # Link the serial bulk-open report into the overall parallel-suite
+    # report grid. Bulk-open was pulled OUT of the parallel TESTS array
+    # (#239 → Phase 1b above), so the runner's reports/index.html no
+    # longer lists it — its report (regression-bulk-open-ignored.html) is
+    # published but otherwise unreachable from the main report. Inject an
+    # informational row before </tbody> so it's clickable from the grid.
+    # The .html is mirrored into $TEST_OUTPUT/reports/ later (the
+    # "Stitch in host-side artefacts" step), so the relative href
+    # resolves on the publish path. Use class="info" (not pass/fail) so
+    # it doesn't skew the PHASE1_PASS / PHASE1_FAIL grep counts below.
+    BULK_REPORT_HOST="/tmp/static-deploy/public/reports/regression-bulk-open-ignored.html"
+    OVERALL_INDEX="$TEST_OUTPUT/reports/index.html"
+    if [[ -f "$BULK_REPORT_HOST" ]] && [[ -f "$OVERALL_INDEX" ]] \
+       && ! grep -q 'regression-bulk-open-ignored.html' "$OVERALL_INDEX"; then
+        BULK_ROW='<tr class="info"><td>—</td><td><a href="regression-bulk-open-ignored.html">regression-bulk-open-ignored</a></td><td class="s">serial</td><td class="dur">—</td><td>Per-MB open-time over the 30-doc ignored corpus (Phase 1b, serial + uncontended; report-only, does not gate).</td></tr>'
+        # Insert immediately before the first </tbody>. Using a temp file
+        # keeps this robust regardless of whether the row contains slashes.
+        awk -v row="$BULK_ROW" '
+            !done && /<\/tbody>/ { print row; done=1 }
+            { print }
+        ' "$OVERALL_INDEX" > "$OVERALL_INDEX.tmp" && mv "$OVERALL_INDEX.tmp" "$OVERALL_INDEX"
+        echo "[CI] linked regression-bulk-open-ignored.html into the overall report grid" >> "$LOG"
+    fi
 fi
 set -e
 
