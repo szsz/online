@@ -93,7 +93,7 @@ async function grantClipboard(page) {
 
         const upA = await openViaViewer(browser, VIEWER, NAME, fixtureBytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageA = upA.page;
         await grantClipboard(pageA);
         await waitInFrame(pageA,
@@ -104,7 +104,7 @@ async function grantClipboard(page) {
 
         const upB = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageB = upB.page;
         await grantClipboard(pageB);
         await waitInFrame(pageB,
