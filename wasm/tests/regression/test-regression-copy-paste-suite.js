@@ -45,6 +45,8 @@ const { execFileSync } = require('child_process');
 const puppeteer = require('puppeteer');
 const env = require('../../lib/test-env');
 const { uploadV2, downloadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { waitForDocReady, getActiveEditorFrame } = require('../../lib/two-tab');
 
 const VIEWER = env.FILE_STORAGE_URL;
 const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-copy-paste-suite';
@@ -169,28 +171,33 @@ async function withFreshDoc() {
         args: ['--no-sandbox', '--ignore-certificate-errors',
                '--enable-features=SharedArrayBuffer'],
     });
-    const page = await browser.newPage();
-    const cdp = await page.createCDPSession();
-    await cdp.send('Browser.grantPermissions', {
-        permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
-    });
-    await page.setViewport({ width: 1280, height: 900 });
-    await page.goto(`${VIEWER}/?singleuser#file=${up.b64urlSecret}`,
-        { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(120000) });
+    // Grant clipboard perms for the viewer origin BEFORE we navigate
+    // (overridePermissions is awaitable and applies to the origin, so it
+    // covers the page openSecretInBrowser creates internally).
+    await browser.defaultBrowserContext().overridePermissions(VIEWER,
+        ['clipboard-read', 'clipboard-write', 'clipboard-sanitized-write']);
 
-    let frame = null;
-    for (let i = 0; i < 90 && !frame; i++) {
-        frame = page.frames().find(f => f.url().includes('cool.html'));
-        if (frame && !(await frame.$('#document-canvas').catch(() => null))) frame = null;
-        if (!frame) await sleep(1000);
-    }
-    if (!frame) throw new Error('editor frame never loaded');
-    await frame.waitForFunction(() => window.__wasmInitialDocLoaded === true,
-        { timeout: env.scaleTimeout(60000) });
-    await frame.waitForFunction(() =>
-        /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''),
-        { timeout: env.scaleTimeout(30000) });
+    // Open via the JOBS_SCALE-aware two-tab helper instead of a
+    // hand-rolled `for(i<90){sleep}` frame-find. openSecretInBrowser
+    // resolves the FILE iframe past the prewarm bootstrap (and appends
+    // ?ws=$JOBS_SCALE so the viewer widens its watchdogs under
+    // contention); waitForDocReady waits __wasmInitialDocLoaded +
+    // the state-bar, with timeouts scaled by JOBS_SCALE. This is the
+    // same migration that fixed e2e-copypaste's CI "no checklist"
+    // setup crash under JOBS=2 (#239).
+    const { page } = await openSecretInBrowser(browser, VIEWER, up.b64urlSecret, {
+        singleUser: true,
+        viewport: { width: 1280, height: 900 },
+        gotoTimeout: env.scaleTimeout(120000),
+        iframeTimeout: env.scaleTimeout(120000),
+    });
+    await waitForDocReady(page, { timeout: env.scaleTimeout(90000) });
     await sleep(2000);
+
+    // Re-resolve the active editor frame fresh (the bar uses it for
+    // canvas reads). getActiveEditorFrame filters out the prewarm blank.
+    const frame = await getActiveEditorFrame(page);
+    if (!frame) throw new Error('editor frame never loaded');
 
     const charCount = () => frame.evaluate(() => {
         const t = document.querySelector('#StateWordCount')?.textContent || '';
@@ -450,25 +457,16 @@ const USE_CASES = [
                 await snap(ctx.page, 'before-reopen');
                 // Reopen in a second page in the SAME browser (same origin,
                 // same clipboard perms). Different page = different
-                // session = real reload path.
-                const page2 = await ctx.browser.newPage();
-                await page2.setViewport({ width: 1280, height: 900 });
-                await page2.goto(`${VIEWER}/?singleuser#file=${ctx.up.b64urlSecret}`,
-                    { waitUntil: 'domcontentloaded',
-                      timeout: env.scaleTimeout(120000) });
-                // Wait for the fresh page to load its editor frame.
-                let frame2 = null;
-                for (let i = 0; i < 90 && !frame2; i++) {
-                    frame2 = page2.frames().find(f => f.url().includes('cool.html'));
-                    if (frame2 && !(await frame2.$('#document-canvas').catch(() => null))) frame2 = null;
-                    if (!frame2) await sleep(1000);
-                }
-                if (!frame2) return { pass: false, ev: 'reopen frame never loaded' };
-                await frame2.waitForFunction(() => window.__wasmInitialDocLoaded === true,
-                    { timeout: env.scaleTimeout(60000) });
-                await frame2.waitForFunction(() =>
-                    /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''),
-                    { timeout: env.scaleTimeout(30000) });
+                // session = real reload path. Use the same JOBS_SCALE-aware
+                // helper as the initial open (no hand-rolled frame-find).
+                const { page: page2 } = await openSecretInBrowser(
+                    ctx.browser, VIEWER, ctx.up.b64urlSecret, {
+                        singleUser: true,
+                        viewport: { width: 1280, height: 900 },
+                        gotoTimeout: env.scaleTimeout(120000),
+                        iframeTimeout: env.scaleTimeout(120000),
+                    });
+                await waitForDocReady(page2, { timeout: env.scaleTimeout(90000) });
                 await sleep(2500);
                 const afterReopen = await getCharCount(page2);
                 await snap(page2, 'after-reopen');
