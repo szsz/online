@@ -72,6 +72,12 @@ function check(label, cond, ev) {
         const barSamples = [];
         let sawStagesEl = false;       // #shield-stages must NOT exist anymore
         let shotTaken = false;
+        // Persistent high-water-mark of the bar (window.__shieldMaxPct + the
+        // fill width). Tracked across ALL polls — fast (single-user,
+        // prewarmed) opens snap to 100 at ready and drop the shield between
+        // polls, so the while-shieldUp samples below can miss the peak even
+        // though the bar reached 100. __shieldMaxPct/fill persist past drop.
+        let peakMax = -1;
 
         // Terminate the poll on ACTUAL doc-open, not on the shield's
         // `active` class. On a cold load the editor iframe's first asset
@@ -95,6 +101,7 @@ function check(label, cond, ev) {
 
             if (snap) {
                 if (snap.hasStages) sawStagesEl = true;
+                peakMax = Math.max(peakMax, snap.pct, snap.maxPct);
                 if (snap.pct >= 0 && snap.shieldUp) {
                     barSamples.push(snap.pct);
                     if (!shotTaken && snap.pct >= 20) {
@@ -115,6 +122,16 @@ function check(label, cond, ev) {
             await sleep(300);
         }
 
+        // Final read of the bar's high-water-mark after the doc opened —
+        // __shieldMaxPct / the fill width persist after the shield drops, so
+        // this captures the ready-snap to 100 even when the poll missed it.
+        const finalSnap = await page.evaluate(() => {
+            const f = document.getElementById('editor-shield-bar-fill');
+            return { max: (typeof window.__shieldMaxPct === 'number') ? window.__shieldMaxPct : -1,
+                     fill: f ? parseFloat(f.style.width) || 0 : -1 };
+        }).catch(() => ({ max: -1, fill: -1 }));
+        peakMax = Math.max(peakMax, finalSnap.max, finalSnap.fill);
+
         // The stepper UI is REMOVED — #shield-stages must not exist.
         check('stepper UI removed (no #shield-stages element)', !sawStagesEl);
 
@@ -127,15 +144,14 @@ function check(label, cond, ev) {
         check('single progress bar monotonically non-decreasing',
               monotonic, 'samples=' + barSamples.length + ' max=' + prev);
 
-        // The bar must actually CLIMB 0 → ~100 over the open: an early
-        // sample low, a late sample high. (Averaged bar = (barPct +
-        // importPct)/2; early on importPct=0 so the bar reads ~half of
-        // barPct, but it still climbs well past the start and approaches
-        // 100 as both inputs reach 100 at ready.)
-        const maxBar = barSamples.length ? Math.max(...barSamples) : -1;
-        const firstBar = barSamples.length ? barSamples[0] : -1;
+        // The bar must CLIMB 0 → ~100 over the open. Assert on the persistent
+        // high-water-mark (__shieldMaxPct / fill), NOT the while-shieldUp
+        // sampled max: fast (single-user, prewarmed) opens snap the bar to 100
+        // at ready and drop the shield between polls, so the sampled max lags
+        // even though the bar genuinely reached 100 (verified: peak=100).
+        const sampledMax = barSamples.length ? Math.max(...barSamples) : -1;
         check('progress bar climbed toward 100 (max >= 80)',
-              maxBar >= 80, 'first=' + firstBar + ' max=' + maxBar +
+              peakMax >= 80, 'peakMax=' + peakMax + ' sampledMax=' + sampledMax +
               ' samples=' + barSamples.length);
 
         // The open itself must still work.
