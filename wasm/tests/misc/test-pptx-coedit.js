@@ -82,7 +82,7 @@ async function waitForImpress(page, label) {
         log('\n--- Browser A ---');
         const upA = await openViaViewer(browser, VIEWER, DOC_NAME, bytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageA = upA.page;
         const loadedA = await waitForImpress(pageA, 'A');
         check('Browser A: Impress loaded', loadedA);
@@ -93,7 +93,7 @@ async function waitForImpress(page, label) {
         log('\n--- Browser B ---');
         const upB = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageB = upB.page;
         const loadedB = await waitForImpress(pageB, 'B');
         check('Browser B: Impress loaded', loadedB);

@@ -97,14 +97,14 @@ async function typeAt(page, text) {
 
         const upGoodA = await openViaViewer(browser, VIEWER, docName, bytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         await waitForCharCount(upGoodA.page, 5, TIMEOUT);
         log(`[GOOD-A] Loaded: "${await getStatus(upGoodA.page)}"`);
         await sleep(8000);
 
         const upGoodB = await openSecretInBrowser(browser, VIEWER, upGoodA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         await waitForCharCount(upGoodB.page, 5, TIMEOUT);
         log(`[GOOD-B] Loaded: "${await getStatus(upGoodB.page)}"`);
         await sleep(15000);
@@ -143,14 +143,14 @@ async function typeAt(page, text) {
         const docNameBad = 'sab-bad-' + Date.now() + '.txt';
 
         const upBadA = await openViaViewer(browser, VIEWER, docNameBad, bytes,
-            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000) });
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000), coEditing: true });
             // ^ no isolatedContext — falls into default browser context
         await waitForCharCount(upBadA.page, 5, TIMEOUT);
         log(`[BAD-A] Loaded: "${await getStatus(upBadA.page)}"`);
         await sleep(8000);
 
         const upBadB = await openSecretInBrowser(browser, VIEWER, upBadA.b64urlSecret,
-            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000) });
+            { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000), coEditing: true });
             // ^ no isolatedContext — same default browser context as A
         await waitForCharCount(upBadB.page, 5, TIMEOUT);
         log(`[BAD-B] Loaded: "${await getStatus(upBadB.page)}"`);

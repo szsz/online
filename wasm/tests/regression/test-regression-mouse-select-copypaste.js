@@ -74,7 +74,7 @@ async function waitForCharCount(page, timeoutMs) {
         const { page: pageA, b64urlSecret } =
             await openViaViewer(browser, VIEWER, docName, bytes,
                 { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-                  isolatedContext: true });
+                  isolatedContext: true, coEditing: true });
         await grantClipboard(pageA);
         await waitForCharCount(pageA, TIMEOUT);
         console.log(`[A] Loaded: "${await getStatus(pageA)}"`);
@@ -84,7 +84,7 @@ async function waitForCharCount(page, timeoutMs) {
         const { page: pageB } =
             await openSecretInBrowser(browser, VIEWER, b64urlSecret,
                 { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-                  isolatedContext: true });
+                  isolatedContext: true, coEditing: true });
         await grantClipboard(pageB);
         await waitForCharCount(pageB, TIMEOUT);
         console.log(`[B] Loaded: "${await getStatus(pageB)}"`);

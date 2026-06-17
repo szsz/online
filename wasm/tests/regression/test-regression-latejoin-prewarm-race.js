@@ -48,7 +48,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const upA = await openSecretInBrowser(bA, VIEWER, b64urlSecret,
         { iframeTimeout: env.scaleTimeout(60000),
           gotoTimeout: env.scaleTimeout(60000),
-          viewport: { width: 1280, height: 900 } });
+          viewport: { width: 1280, height: 900 }, coEditing: true });
     const pA = upA.page;
     const cdpA = await pA.createCDPSession();
     await cdpA.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
@@ -85,7 +85,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const upB = await openSecretInBrowser(bB, VIEWER, b64urlSecret,
         { iframeTimeout: env.scaleTimeout(60000),
           gotoTimeout: env.scaleTimeout(60000),
-          viewport: { width: 1280, height: 900 } });
+          viewport: { width: 1280, height: 900 }, coEditing: true });
     const pB = upB.page;
     await waitInFrame(pB,
         () => /\d+\s+character/i.test(
@@ -119,7 +119,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const upC = await openSecretInBrowser(bC, VIEWER, b64urlSecret,
         { iframeTimeout: env.scaleTimeout(60000),
           gotoTimeout: env.scaleTimeout(60000),
-          viewport: { width: 1280, height: 900 } });
+          viewport: { width: 1280, height: 900 }, coEditing: true });
     const pC = upC.page;
     await waitInFrame(pC,
         () => /\d+\s+character/i.test(

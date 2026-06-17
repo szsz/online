@@ -64,7 +64,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const upA = await openSecretInBrowser(bA, VIEWER, b64urlSecret,
         { iframeTimeout: env.scaleTimeout(120000),
           gotoTimeout: env.scaleTimeout(60000),
-          viewport: { width: 1280, height: 900 } });
+          viewport: { width: 1280, height: 900 }, coEditing: true });
     const pA = upA.page;
 
     // waitInFrame re-resolves the live editor iframe on every poll.
@@ -93,7 +93,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     console.log('\n=== Phase 2: Hard refresh (navigate to same URL) ===');
     // This is equivalent to the user pressing F5 — the page reloads,
     // WebSocket closes instantly, no save triggered.
-    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
+    await pA.goto(VIEWER + '/?co-editing#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
     console.log('  Page reloaded');
 
     // Wait for editor to load again (via the LIVE iframe lookup, not a

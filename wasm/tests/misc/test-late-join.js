@@ -98,7 +98,7 @@ async function waitForCharCount(frame, timeoutMs) {
         log('\n===== Phase 1: A opens first, types ALPHA =====');
         const upA = await openViaViewer(browser, VIEWER, DOC_NAME, docBytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageA = upA.page, frameA = upA.editorFrame;
         await waitForCharCount(frameA, TIMEOUT);
         const initChars = charCount(await getStatus(frameA));
@@ -121,7 +121,7 @@ async function waitForCharCount(frame, timeoutMs) {
         log('\n===== Phase 2: B late-joins =====');
         const upB = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageB = upB.page, frameB = upB.editorFrame;
         await waitForCharCount(frameB, TIMEOUT);
         let bChars = charCount(await getStatus(frameB));
@@ -148,7 +148,7 @@ async function waitForCharCount(frame, timeoutMs) {
         log('\n===== Phase 3: C late-joins =====');
         const upC = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageC = upC.page, frameC = upC.editorFrame;
         await waitForCharCount(frameC, TIMEOUT);
         let cChars = charCount(await getStatus(frameC));
@@ -193,7 +193,7 @@ async function waitForCharCount(frame, timeoutMs) {
 
         const upD = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageD = upD.page, frameD = upD.editorFrame;
         await waitForCharCount(frameD, TIMEOUT);
         let dChars = charCount(await getStatus(frameD));

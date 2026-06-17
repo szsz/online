@@ -90,7 +90,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
         log(`[A] Opening...`);
         const upA = await openViaViewer(browser, VIEWER, docName, docBytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         pageA = upA.page;
         await waitForDocLoaded(pageA, 'A');
         await sleep(10000);
@@ -98,7 +98,7 @@ async function testFormat(browser, docName, docPath, formatLabel) {
         log(`[B] Opening...`);
         const upB = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         pageB = upB.page;
         await waitForDocLoaded(pageB, 'B');
         await sleep(15000);

@@ -94,7 +94,7 @@ async function clickCanvas(page) {
         const { page, editorFrame } = await openSecretInBrowser(
             browser, VIEWER, up.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         await editorFrame.waitForFunction(() =>
             document.querySelector('#StateWordCount')?.textContent?.includes('characters'),
             { timeout: TIMEOUT });

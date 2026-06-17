@@ -59,7 +59,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const upA = await openSecretInBrowser(browserA, VIEWER, b64urlSecret,
         { iframeTimeout: env.scaleTimeout(60000),
           gotoTimeout: env.scaleTimeout(60000),
-          viewport: { width: 1280, height: 900 } });
+          viewport: { width: 1280, height: 900 }, coEditing: true });
     const pageA = upA.page;
     await waitInFrame(pageA,
         () => /\d+\s+character/i.test(
@@ -94,7 +94,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         { iframeTimeout: env.scaleTimeout(60000),
           gotoTimeout: env.scaleTimeout(60000),
           isolatedContext: true,
-          viewport: { width: 1280, height: 900 } });
+          viewport: { width: 1280, height: 900 }, coEditing: true });
     const pageB = upB.page;
     await waitInFrame(pageB,
         () => /\d+\s+character/i.test(
@@ -140,7 +140,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const upC = await openSecretInBrowser(browserC, VIEWER, b64urlSecret,
         { iframeTimeout: env.scaleTimeout(60000),
           gotoTimeout: env.scaleTimeout(60000),
-          viewport: { width: 1280, height: 900 } });
+          viewport: { width: 1280, height: 900 }, coEditing: true });
     const pageC = upC.page;
     await waitInFrame(pageC,
         () => /\d+\s+character/i.test(

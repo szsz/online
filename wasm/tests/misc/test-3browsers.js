@@ -81,7 +81,7 @@ async function waitForAnyCharCount(frames, expected, timeout) {
         console.log('[A] Opening...');
         const upA = await openViaViewer(browser, VIEWER, docName, bytes,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageA = upA.page, frameA = upA.editorFrame;
         await waitForCharCount(frameA, 11, TIMEOUT);
         console.log(`[A] Loaded: "${await getStatus(frameA)}"`);
@@ -90,7 +90,7 @@ async function waitForAnyCharCount(frames, expected, timeout) {
         console.log('[B] Opening...');
         const upB = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageB = upB.page, frameB = upB.editorFrame;
         await waitForCharCount(frameB, 11, TIMEOUT);
         console.log(`[B] Loaded: "${await getStatus(frameB)}"`);
@@ -99,7 +99,7 @@ async function waitForAnyCharCount(frames, expected, timeout) {
         console.log('[C] Opening...');
         const upC = await openSecretInBrowser(browser, VIEWER, upA.b64urlSecret,
             { iframeTimeout: TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-              isolatedContext: true });
+              isolatedContext: true, coEditing: true });
         const pageC = upC.page, frameC = upC.editorFrame;
         await waitForCharCount(frameC, 11, TIMEOUT);
         console.log(`[C] Loaded: "${await getStatus(frameC)}"`);
