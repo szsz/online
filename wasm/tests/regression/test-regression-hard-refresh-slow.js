@@ -47,7 +47,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const { browser: bA, cleanup: cA } = await launch();
     const pA = await bA.newPage();
     await pA.setViewport({ width: 1280, height: 900 });
-    await pA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
+    await pA.goto(VIEWER + '/?co-editing#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fA;
     for (let i = 0; i < 300; i++) {
@@ -116,7 +116,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
     const { browser: bB, cleanup: cB } = await launch();
     const pB = await bB.newPage();
     await pB.setViewport({ width: 1280, height: 900 });
-    await pB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
+    await pB.goto(VIEWER + '/?co-editing#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
     let fB;
     for (let i = 0; i < 300; i++) {

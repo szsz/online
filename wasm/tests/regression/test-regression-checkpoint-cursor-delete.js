@@ -96,7 +96,7 @@ async function openViewer(browser, b64urlSecret, fileId, cachedName, label) {
     page.on('frameattached', fr => {
         fr.page && fr.page.on && fr.page.on('console', () => {});
     });
-    await page.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
+    await page.goto(VIEWER + '/?co-editing#file=' + b64urlSecret, { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
     // Once the iframe is attached, listen to its console too.
     const attachIframeLogs = async () => {
         try {

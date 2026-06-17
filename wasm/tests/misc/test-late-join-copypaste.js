@@ -44,7 +44,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         const cdpA = await pageA.createCDPSession();
         await cdpA.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] });
         await pageA.setViewport({ width: 1280, height: 900 });
-        await pageA.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
+        await pageA.goto(VIEWER + '/?co-editing#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
         // Wait for editor — require target fileId in frame URL so we
         // don't latch onto the prewarm blank frame (whose statusbar shows
@@ -159,7 +159,7 @@ function charCount(s) { const m = s && s.match(/(\d+) characters/); return m ? p
         const ctxB = await browser.createBrowserContext();
         const pageB = await ctxB.newPage();
         await pageB.setViewport({ width: 1280, height: 900 });
-        await pageB.goto(VIEWER + '/#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
+        await pageB.goto(VIEWER + '/?co-editing#file=' + b64urlSecret, { waitUntil: 'domcontentloaded' });
 
         let frameB;
         for (let i = 0; i < 300; i++) {

@@ -67,7 +67,7 @@ async function openInViewer(browser, label, fileId, b64urlSecret) {
     const page = await ctx.newPage();
     await page.setViewport({ width: 1920, height: 1080 });
     page.on('pageerror', e => log(`[${label} pageerror] ${e.message}`));
-    await page.goto(VIEWER + '/?planc=1#file=' + b64urlSecret,
+    await page.goto(VIEWER + '/?planc=1&co-editing#file=' + b64urlSecret,
         { waitUntil: 'domcontentloaded', timeout: 90000 });
     const deadline = Date.now() + 240000;
     while (Date.now() < deadline) {
