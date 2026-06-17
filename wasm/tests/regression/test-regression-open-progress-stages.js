@@ -1,29 +1,28 @@
 const __cl = require('../../lib/inject-checklist');
-// Acceptance: the viewer's loading shield shows a MULTI-STAGE progress
-// readout during file open — not just a spinner + single label.
+// Acceptance: the viewer's loading shield shows ONE averaged progress
+// bar during file open that climbs 0 → ~100 % as the document opens.
 //
-// Feature (2026-06-12, user request): break the file-open pipeline into
-// as many user-visible stages as possible. The iframe's wasm-loader
-// forwards its mark() pipeline milestones to the parent viewer as
-// `WasmOpenStage` postMessages; the viewer renders them as a stage
-// checklist (`#shield-stages` <li> items) under the existing progress
-// bar, each flipping pending → in-progress → done as its signal
-// arrives. The kit's own import progress (statusindicator setvalue
-// 0-100) refines the "Opening document" stage.
+// Feature history:
+//   - 2026-06-12: a multi-stage stepper (#shield-stages <li> rows) was
+//     rendered under the bar.
+//   - 2026-06-17 (single-averaged-progress-bar): the stepper + per-step
+//     sub-bars + shimmer were REMOVED. The one bar
+//     (#editor-shield-bar-fill / window.__shieldMaxPct) now shows
+//     (barPct + importPct) / 2 — the average of the internal boot/stage
+//     value and the kit import %. This test asserts the SINGLE bar, not
+//     the (now-deleted) stepper rows.
 //
 // This test drives ONLY through the visible UI:
-//   1. Upload a docx via v2, open it in a FRESH browser (cold pipeline
-//      — maximum number of stages).
+//   1. Upload a docx via v2, open it in a FRESH browser (cold pipeline).
 //   2. While the shield is up, poll the VIEWER page DOM (not the
-//      iframe): #shield-stages must exist and its items must
-//      transition to data-state="done" over time.
-//   3. Assert ≥ 5 distinct stages reached "done", in non-decreasing
-//      DOM order, before the shield drops.
-//   4. Assert the shield's progress-bar width is monotonically
-//      non-decreasing across polls.
+//      iframe): the bar fill width (and window.__shieldMaxPct) must
+//      climb monotonically from ~0 toward 100.
+//   3. Assert the bar climbed a meaningful amount (low early sample,
+//      high late sample) and never regressed across polls.
+//   4. Assert NO stepper UI is present (#shield-stages removed).
 //   5. After the shield drops, the doc must actually be open
-//      (StateWordCount shows characters) — the stages must not break
-//      the open itself.
+//      (StateWordCount shows characters) — the bar must not break the
+//      open itself.
 
 'use strict';
 
@@ -67,24 +66,19 @@ function check(label, cond, ev) {
               viewport: { width: 1280, height: 900 } });
         const page = up.page;
 
-        // Poll viewer DOM while shield is up. Collect:
-        //  - stage list state snapshots (id -> data-state)
-        //  - bar width %
+        // Poll viewer DOM while shield is up. Collect the single bar's
+        // width % (and window.__shieldMaxPct) across the open. Also
+        // confirm the old stepper UI is gone.
         const barSamples = [];
-        const doneOrder = [];          // stage ids in the order they turned done
-        const seenDone = new Set();
-        let sawStagesEl = false;
+        let sawStagesEl = false;       // #shield-stages must NOT exist anymore
         let shotTaken = false;
 
         // Terminate the poll on ACTUAL doc-open, not on the shield's
         // `active` class. On a cold load the editor iframe's first asset
         // fetch can ERR_ABORT and the frame reloads; the shield briefly
-        // loses `active` during that gap. The old `break on !shieldUp`
-        // exited after ~1-2 s — before any stage fired — so seenDone was
-        // empty even though the open later succeeded at ~40 s. Poll until
-        // the document reports characters (the same signal step 5 uses),
-        // accumulating stage transitions across the whole load (including
-        // across an iframe reload — seenDone is cumulative by design).
+        // loses `active` during that gap. Poll until the document reports
+        // characters (the same signal step 5 uses), accumulating bar
+        // samples across the whole load (including across an iframe reload).
         const pollDeadline = Date.now() + env.scaleTimeout(120000);
         let docOpen = false;
         while (Date.now() < pollDeadline) {
@@ -92,38 +86,27 @@ function check(label, cond, ev) {
                 const sh = document.getElementById('editor-shield');
                 const shieldUp = !!sh && sh.classList.contains('active');
                 const stagesEl = document.getElementById('shield-stages');
-                const stages = stagesEl ? Array.from(stagesEl.querySelectorAll('li')).map(li => ({
-                    id: li.getAttribute('data-stage'),
-                    state: li.getAttribute('data-state'),
-                })) : null;
                 const fill = document.getElementById('editor-shield-bar-fill');
                 const pct = fill ? parseFloat(fill.style.width) || 0 : -1;
-                return { shieldUp, stages, pct };
+                const maxPct = (typeof window.__shieldMaxPct === 'number')
+                    ? window.__shieldMaxPct : -1;
+                return { shieldUp, hasStages: !!stagesEl, pct, maxPct };
             }).catch(() => null);
 
             if (snap) {
-                if (snap.stages) {
-                    sawStagesEl = true;
-                    for (const s of snap.stages) {
-                        if (s.state === 'done' && !seenDone.has(s.id)) {
-                            seenDone.add(s.id);
-                            doneOrder.push(s.id);
-                            log(`  stage done: ${s.id} (bar=${snap.pct}%)`);
-                        }
-                    }
-                    // One mid-flight screenshot of the staged shield.
-                    if (!shotTaken && seenDone.size >= 2 && snap.shieldUp) {
+                if (snap.hasStages) sawStagesEl = true;
+                if (snap.pct >= 0 && snap.shieldUp) {
+                    barSamples.push(snap.pct);
+                    if (!shotTaken && snap.pct >= 20) {
                         shotTaken = true;
-                        try { await page.screenshot({ path: SHOTS + '/01_shield_stages.png' }); } catch (_) {}
+                        try { await page.screenshot({ path: SHOTS + '/01_shield_bar.png' }); } catch (_) {}
                     }
                 }
-                if (snap.pct >= 0 && snap.shieldUp) barSamples.push(snap.pct);
             }
 
             // Doc-open is the real terminator. Check the iframe's word
-            // count; once chars are visible the open is done and stages
-            // have all fired. Give one extra poll after detection so the
-            // final "done" transitions land.
+            // count; once chars are visible the open is done. Give one
+            // extra poll after detection so the final bar update lands.
             const cc = await getCharCount(page).catch(() => -1);
             if (cc > 0) {
                 if (docOpen) break;   // saw it open last poll too — settle
@@ -132,9 +115,8 @@ function check(label, cond, ev) {
             await sleep(300);
         }
 
-        check('#shield-stages element rendered on the shield', sawStagesEl);
-        check('>= 5 distinct stages reached done before shield drop',
-              seenDone.size >= 5, 'done=' + doneOrder.join(','));
+        // The stepper UI is REMOVED — #shield-stages must not exist.
+        check('stepper UI removed (no #shield-stages element)', !sawStagesEl);
 
         // Bar monotonicity (allow equal, disallow regress > 2% jitter).
         let monotonic = true, prev = -1;
@@ -142,8 +124,19 @@ function check(label, cond, ev) {
             if (p < prev - 2) { monotonic = false; break; }
             prev = Math.max(prev, p);
         }
-        check('shield progress bar monotonically non-decreasing',
+        check('single progress bar monotonically non-decreasing',
               monotonic, 'samples=' + barSamples.length + ' max=' + prev);
+
+        // The bar must actually CLIMB 0 → ~100 over the open: an early
+        // sample low, a late sample high. (Averaged bar = (barPct +
+        // importPct)/2; early on importPct=0 so the bar reads ~half of
+        // barPct, but it still climbs well past the start and approaches
+        // 100 as both inputs reach 100 at ready.)
+        const maxBar = barSamples.length ? Math.max(...barSamples) : -1;
+        const firstBar = barSamples.length ? barSamples[0] : -1;
+        check('progress bar climbed toward 100 (max >= 80)',
+              maxBar >= 80, 'first=' + firstBar + ' max=' + maxBar +
+              ' samples=' + barSamples.length);
 
         // The open itself must still work.
         await waitInFrame(page,
