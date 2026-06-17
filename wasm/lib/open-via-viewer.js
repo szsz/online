@@ -75,7 +75,13 @@ async function openSecretInBrowser(browser, viewerUrl, b64urlSecret, opts) {
         + '/' + (opts.viewerPath || '')
         + '#file=' + b64urlSecret
         + (opts.urlSuffix || '');
-    if (opts.singleUser) url = url.replace('/#', '/?singleuser#');
+    // Mode: single-user is the viewer default (2026-06-17). Co-edit tests
+    // must opt in explicitly with `coEditing: true` on EVERY tab in the
+    // session so the relay connects and the tabs see each other.
+    // `singleUser: true` is now redundant (it's the default) but still
+    // honored for explicitness / back-compat.
+    if (opts.coEditing) url = url.replace('/#', '/?co-editing#');
+    else if (opts.singleUser) url = url.replace('/#', '/?singleuser#');
 
     // JOBS_SCALE wiring. Under parallel test runners (JOBS=2+) on the
     // self-hosted runner, CPU contention slows canvas paint enough to
@@ -87,8 +93,9 @@ async function openSecretInBrowser(browser, viewerUrl, b64urlSecret, opts) {
     // search-string `ws` param).
     const _jobsScale = parseInt(process.env.JOBS_SCALE || '1', 10);
     if (Number.isFinite(_jobsScale) && _jobsScale > 1) {
-        // Inject ?ws= into the search portion (before the hash). Handle
-        // existing ?singleuser case by appending with & instead.
+        // Inject ?ws= into the search portion (before the hash). If a
+        // mode param (?co-editing / ?singleuser) is already present, append
+        // with & instead of starting a new query string.
         const _hashIdx = url.indexOf('#');
         const _searchEnd = _hashIdx === -1 ? url.length : _hashIdx;
         const _hasSearch = url.slice(0, _searchEnd).includes('?');

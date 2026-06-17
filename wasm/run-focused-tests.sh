@@ -40,6 +40,7 @@ TESTS=(
     "e2e-copypaste|tests/misc/test-e2e-copypaste.js|E2E Copy/Paste|Real keyboard copy/paste between two browsers|shots-e2e-copypaste"
     # New single-user copy/paste (kit-side isolation)
     "singleuser-copy-paste|tests/misc/test-singleuser-copy-paste.js|Single-User Copy/Paste|All copy/paste flows in single-user mode (no relay): internal external text image plaintext save round-trip|shots-singleuser-copy-paste"
+    "regression-coediting-mode-toggle|tests/regression/test-regression-coediting-mode-toggle.js|Regression: Co-editing mode toggle|Single-user default + ?co-editing opt-in + #coedit-toggle button reload|shots-coediting-toggle"
     # Hot-switch (new files added in iter10/iter11)
     "regression-iframe-pool|tests/regression/test-regression-iframe-pool.js|Regression: Iframe Pool Cross-Type Revive|Cross-type to a previously-warm doctype reuses parked iframe (≪ 3s) instead of cold reload|none"
     "regression-samedoc-flicker|tests/regression/test-regression-samedoc-flicker.js|Regression: Same-Doctype Title Flicker|A↔B name flicker on same-type hot-switch (parallel setInterval writers)|shots-regression-samedoc-flicker"
