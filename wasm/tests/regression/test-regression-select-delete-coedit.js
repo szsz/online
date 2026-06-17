@@ -116,7 +116,7 @@ async function waitForCharCount(page, expected, timeoutMs) {
             const ctx = await browser.createBrowserContext();
             const page = await ctx.newPage();
             await page.setViewport({ width: 1280, height: 900 });
-            await page.goto(VIEWER + '/#file=' + upDoc.b64urlSecret,
+            await page.goto(VIEWER + '/?co-editing#file=' + upDoc.b64urlSecret,
                 { waitUntil: 'domcontentloaded' });
             // Wait for the editor iframe that actually loaded the TARGET
             // doc. Two failure modes to guard against:
