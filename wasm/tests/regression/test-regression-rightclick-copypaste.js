@@ -175,18 +175,27 @@ async function realClickMenuItem(page, labelRegex) {
         const cx = 300;
         const cy = 305;
 
-        // Focus + click into canvas to place caret.
-        await page.mouse.click(cx, cy);
-        await sleep(800);
-
-        // Type a known marker that will show in StateWordCount.
+        // Focus + click into canvas to place caret, then type a marker.
+        // The FIRST click into a freshly-opened canvas can be absorbed by
+        // focus-init without placing a caret (more visible since single-user
+        // became the default in #243 — the open is faster, so the first
+        // click lands earlier). A no-op type adds 0 chars, so retry
+        // click+type until the count actually moves; failed attempts add
+        // nothing, so the exact-delta assertion below still holds.
         const MARKER = 'rcMarker';
         log(`Typing "${MARKER}" via real keystrokes`);
-        await page.keyboard.type(MARKER, { delay: 50 });
-        await sleep(1500);
+        let wcAfterType = wc0;
+        for (let attempt = 1; attempt <= 4; attempt++) {
+            await page.mouse.click(cx, cy);
+            await sleep(500);
+            await page.keyboard.type(MARKER, { delay: 50 });
+            await sleep(1200);
+            wcAfterType = await readChars();
+            if (wcAfterType - wc0 >= MARKER.length) break;
+            log(`  marker-type attempt ${attempt} was a no-op (delta=${wcAfterType - wc0}); retrying`);
+        }
         await snap(page, 'after_typing');
 
-        const wcAfterType = await readChars();
         log(`after-type #StateWordCount: ${wcAfterType}`);
         check('typing increased char count by len(marker)',
               wcAfterType - wc0 === MARKER.length,
