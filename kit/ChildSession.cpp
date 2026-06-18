@@ -4678,6 +4678,15 @@ void ChildSession::loKitCallback(const int type, const std::string& payload)
         sendTextFrame("tooltip: " + payload);
         break;
     }
+    case LOK_CALLBACK_DOCUMENT_READY:
+        // The per-session switch has nothing to do for this event — swallow it
+        // so it doesn't fall through to the "Unknown callback event" default
+        // and spam an ERR on every open. NB: LOK_CALLBACK_DOCUMENT_READY is an
+        // enum value (=75 in LibreOfficeKitEnums.h), NOT a #define, so it must
+        // NOT be #ifdef-guarded — #ifdef on an enum is always false and would
+        // compile the case out (which is exactly the latent bug at
+        // Kit.cpp:1300, where the Document-level handler never compiles in).
+        break;
     default:
         LOG_ERR("Unknown callback event (" << lokCallbackTypeToString(type) << "): " << payload);
     }

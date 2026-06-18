@@ -1798,6 +1798,29 @@ void Document::registerViewCallback(int viewId)
     LOG_INF("registerViewCallback: viewId=" << viewId << " registered on new document");
 }
 
+namespace {
+    // Stable, pronounceable pseudo-random display name for a view that has no
+    // session-registered username (an internal/extra core view, or a viewId
+    // created during an in-place doc switch). Deterministic in viewId so it
+    // doesn't flicker across the repeated notifyViewInfo() calls.
+    std::string fallbackViewUserName(int viewId)
+    {
+        static const char cons[] = "bcdfghjklmnprstvwz";
+        static const char vowels[] = "aeiou";
+        unsigned int seed = static_cast<unsigned int>(viewId) * 2654435761u + 1u;
+        std::string name;
+        for (int i = 0; i < 6; ++i)
+        {
+            seed = seed * 1103515245u + 12345u;
+            name += (i % 2 == 0) ? cons[(seed >> 16) % (sizeof(cons) - 1)]
+                                 : vowels[(seed >> 16) % (sizeof(vowels) - 1)];
+        }
+        if (!name.empty() && name[0] >= 'a' && name[0] <= 'z')
+            name[0] = static_cast<char>(name[0] - 'a' + 'A');
+        return name;
+    }
+}
+
 void Document::notifyViewInfo()
 {
     // Get the list of view ids from the core
@@ -1822,8 +1845,13 @@ void Document::notifyViewInfo()
         const auto itView = viewInfoMap.find(viewId);
         if (itView == viewInfoMap.end())
         {
-            LOG_ERR("No username found for viewId [" << viewId << "].");
-            oss << "\"username\":\"Unknown\",";
+            // No session registered a username for this core view. Assign a
+            // stable random display name instead of erroring + showing
+            // "Unknown" — every view should have a name when a file opens.
+            const std::string fallbackName = fallbackViewUserName(viewId);
+            LOG_DBG("No username for viewId [" << viewId << "]; using fallback ["
+                    << fallbackName << "].");
+            oss << "\"username\":\"" << JsonUtil::escapeJSONValue(fallbackName) << "\",";
         }
         else
         {
