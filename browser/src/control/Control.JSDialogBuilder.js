@@ -135,6 +135,11 @@ window.L.Control.JSDialogBuilder = window.L.Control.extend({
 		this._controlHandlers['borderwindow'] = this._borderwindowHandler;
 		this._controlHandlers['control'] = JSDialog.container;
 		this._controlHandlers['scrollbar'] = this._ignoreHandler;
+		// scrollbarbox is the corner widget where a GtkScrolledWindow's
+		// scrollbars meet (emitted e.g. by the Area dialog's colorsetwin).
+		// It has no client-side rendering — the browser scrolls natively —
+		// so ignore it instead of logging "Unsupported control type".
+		this._controlHandlers['scrollbarbox'] = this._ignoreHandler;
 		this._controlHandlers['toolbox'] = JSDialog.toolbox;
 		this._controlHandlers['spacer'] = JSDialog.spacer;
 		this._controlHandlers['toolitem'] = this._toolitemHandler;
