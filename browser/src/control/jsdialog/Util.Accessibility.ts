@@ -138,11 +138,18 @@ JSDialog.AddAltAttrOnFocusableImg = function (
 	} else if (data.aria?.description && data.aria.description.trim()) {
 		image.alt = data.aria.description;
 	} else {
-		// Missing alt attribute on focusable img
-		app.console.warn('[A11y] Missing alt attribue on focusable img.', {
-			imageId: image.id,
-			imageClass: image.className,
-		});
+		// Some core drawing-areas (e.g. the Area dialog's colorset /
+		// recentcolorset colour grids) are focusable but ship no text or
+		// aria. Rather than leave a focusable img with no accessible name
+		// — and spam the console on every render — derive a readable label
+		// from the widget id (e.g. "recentcolorset" → "Recentcolorset").
+		const derived = (data.id || image.id || '')
+			.replace(/[-_]+/g, ' ')
+			.replace(/([a-z])([A-Z])/g, '$1 $2')
+			.trim();
+		image.alt = derived
+			? derived.charAt(0).toUpperCase() + derived.slice(1)
+			: 'Image';
 	}
 };
 
