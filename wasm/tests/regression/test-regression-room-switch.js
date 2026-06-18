@@ -113,7 +113,11 @@ async function openViewerInContext(browser, label, recentList) {
             localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
         }, recentList);
     }
-    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(30000) });
+    // Co-editing required: this test exercises relay room switching
+    // (RelaySwitchRoom) + stale-WS-handler behavior, which only exist when
+    // the relay is connected. Single-user is the viewer default (2026-06-17),
+    // so opt in explicitly with ?co-editing.
+    await page.goto(VIEWER + '/?co-editing', { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(30000) });
     // Wait for prewarm to finish
     for (let i = 0; i < 240; i++) {
         await sleep(500);
