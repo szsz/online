@@ -153,7 +153,10 @@ async function openViewer(browser) {
             localStorage.setItem('rf_v1', JSON.stringify({ files: list }));
         }, rfList);
     }
-    await page.goto(VIEWER + '/', { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
+    // Co-editing required: this test verifies the relay-adapter forwards
+    // invalidatetiles between two peers in the same room. Single-user is the
+    // viewer default (2026-06-17); opt in with ?co-editing so the relay runs.
+    await page.goto(VIEWER + '/?co-editing', { waitUntil: 'domcontentloaded', timeout: env.scaleTimeout(60000) });
     // Prewarm runs INSIDE the bootstrap (__prewarm_blank) iframe before any
     // file is opened, so we can't use the "active editor frame" filter here;
     // poll any cool.html frame on the page for the readiness flag.
