@@ -300,4 +300,19 @@
 #                  the prints themselves are not needed for the
 #                  open fix (DrawWaveLine pixel emission, separate
 #                  effort).
-2026-06-07-70
+#   2026-06-18-74  git_sha 92dfb924 (LO PR #39). PaletteManager OOB
+#                  guard — clamps SetPalette(nPos) to [0, mnNumOfPalettes)
+#                  and bounds-checks GetPaletteName()'s unchecked
+#                  aNames[mnCurrentPalette]. Fixes the Area-dialog
+#                  Color-tab crash: opening Area on a shape activates the
+#                  Color tab, which calls SetPalette(get_active()) with an
+#                  index past the live palette list (color palettes aren't
+#                  all loaded in WASM) → aNames[idx] returns a garbage
+#                  OUString → rtl_uString_acquire faults ("memory access
+#                  out of bounds"; same corruption also surfaced as
+#                  "unaligned access" / "function signature mismatch").
+#                  Root-caused via a names-kept WASM build (--profiling-
+#                  funcs + WASM_KEEP_NAMES=1 + --clean reconfigure).
+#                  Re-enables tripwires regression-writer-shape-area-oom /
+#                  -writer-insert-shape-area / -impress-area-dialog.
+2026-06-18-74
