@@ -78,6 +78,22 @@ function check(label, cond, ev) {
                 document.querySelector('#StateWordCount')?.textContent?.trim() || ''
             ).catch(() => '');
         }
+        // Poll the char count until `pred(cc)` holds (or a scaled budget
+        // elapses), then return. Replaces fixed post-paste sleeps: under heavy
+        // CI parallelism the paste round-trip (keyboard → kit → canvas →
+        // #StateWordCount) routinely takes longer than the old fixed sleep,
+        // so the assertion read the PRE-paste count and the step flaked (seen
+        // as e2e-copypaste FAIL in CI at ~183s while passing solo). Polling
+        // waits exactly as long as the paste needs and no longer.
+        async function settleCc(pred, budgetMs) {
+            const deadline = Date.now() + env.scaleTimeout(budgetMs || 20000);
+            let cc = charCount(await getWc());
+            while (!pred(cc) && Date.now() < deadline) {
+                await sleep(400);
+                cc = charCount(await getWc());
+            }
+            return cc;
+        }
         let stepNum = 0;
         const report = [];
         async function snap(name) {
@@ -115,7 +131,7 @@ function check(label, cond, ev) {
         console.log('\n--- STEP 1: Type "HELLO " ---');
         await clickEditor();
         await page.keyboard.type('HELLO ', { delay: 80 });
-        await sleep(3000);
+        await settleCc(cc => cc - cc0 === 6, 12000);
         const cc1 = await logStep('After_type');
         check('STEP1 type: +6', cc1 - cc0 === 6, 'delta=' + (cc1 - cc0));
 
@@ -159,7 +175,7 @@ function check(label, cond, ev) {
         await page.keyboard.down('Control');
         await page.keyboard.press('v');
         await page.keyboard.up('Control');
-        await sleep(8000);
+        await settleCc(cc => cc > ccPre3);
         const cc3 = await logStep('After_internal_paste');
         check('STEP3 internal paste: delta > 0', cc3 > ccPre3, 'delta=' + (cc3 - ccPre3));
 
@@ -182,7 +198,7 @@ function check(label, cond, ev) {
         await page.keyboard.down('Control');
         await page.keyboard.press('v');
         await page.keyboard.up('Control');
-        await sleep(8000);
+        await settleCc(cc => cc - ccPre4 === 12);
         const cc4 = await logStep('After_external_text_paste');
         check('STEP4 external text: +12', cc4 - ccPre4 === 12, 'delta=' + (cc4 - ccPre4));
         check('STEP4 no double paste', cc4 - ccPre4 <= 20, 'delta=' + (cc4 - ccPre4));
@@ -205,7 +221,7 @@ function check(label, cond, ev) {
         await page.keyboard.down('Control');
         await page.keyboard.press('v');
         await page.keyboard.up('Control');
-        await sleep(8000);
+        await settleCc(cc => cc - ccPre5 === 9);
         const cc5 = await logStep('After_external_html_paste');
         check('STEP5 external HTML: +9', cc5 - ccPre5 === 9, 'delta=' + (cc5 - ccPre5));
 
@@ -239,7 +255,7 @@ function check(label, cond, ev) {
         await page.keyboard.down('Control');
         await page.keyboard.press('v');
         await page.keyboard.up('Control');
-        await sleep(8000);
+        await settleCc(cc => cc > ccPre6);
         const cc6 = await logStep('After_internal_paste_after_ext');
         check('STEP6 internal paste after external: delta > 0', cc6 > ccPre6, 'delta=' + (cc6 - ccPre6));
 
@@ -267,7 +283,7 @@ function check(label, cond, ev) {
         await page.keyboard.down('Control');
         await page.keyboard.press('v');
         await page.keyboard.up('Control');
-        await sleep(8000);
+        await sleep(env.scaleTimeout(8000));
         const cc7 = await logStep('After_image_paste');
         check('STEP7 image paste: no text double-paste', Math.abs(cc7 - ccPre7) <= 2,
             'delta=' + (cc7 - ccPre7));

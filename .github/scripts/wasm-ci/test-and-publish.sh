@@ -287,14 +287,9 @@ LO_BLOCKED_TESTS=(
     # function-signature-mismatch.md.
     regression-writer-insert-shape-area
     regression-writer-shape-area-oom
-    # Header/footer docx export — removing a header via the Page Style
-    # dialog clears its CONTENT but leaves the SwFormatHeader active
-    # (IsActive()=true), so the docx export still emits an empty
-    # word/header1.xml + headerReference. Root-caused 2026-06-14 to the
-    # LOK Page Style apply path (model-side, sw) — awaiting an LO fix
-    # (Batch B). Counted as LO-blocked, not a real online regression.
-    # See ai/tasks/todo/fix-header-footer-docx-export-keeps-part.md.
-    regression-writer-header-footer-remove
+    # (regression-writer-header-footer-remove REMOVED 2026-06-21: fixed by
+    # libreoffice-core-wasm PR #42 — skip the LOK delete-confirmation dialog so
+    # the untick is honoured; now enforced on LO_BUILD_ID ≥ 2026-06-21-84.)
     # Impress transition click — fails DETERMINISTICALLY (locally + CI):
     # the two dialogevents come back with distinct lengths / no cmd values,
     # i.e. the transition panel's click doesn't emit the expected
