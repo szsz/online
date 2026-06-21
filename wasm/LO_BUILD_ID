@@ -315,4 +315,4 @@
 #                  funcs + WASM_KEEP_NAMES=1 + --clean reconfigure).
 #                  Re-enables tripwires regression-writer-shape-area-oom /
 #                  -writer-insert-shape-area / -impress-area-dialog.
-2026-06-19-76
+2026-06-21-84
