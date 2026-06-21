@@ -612,9 +612,18 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             // command, but the kit shouldn't crash if it's somehow not
             // there).
             const std::string& sessionLang = getLang();
+            // NB: do NOT pass Batch=true here. A Batch load makes LO core
+            // (lo_documentLoadWithOptions) set the *process-global*
+            // DialogCancelMode to LOKSilent — which it never restores — so
+            // every modal dialog opened afterwards on this (switched-to)
+            // document is silently cancelled in Dialog::ImplStartExecute. The
+            // symptom: on the 2nd doc opened in a tab, the shape Area dialog,
+            // Insert Special Character, etc. never appear. The initial
+            // (interactive) document load passes no Batch and leaves the mode
+            // at the normal LOK 'Silent', under which dialogs open; matching
+            // that here keeps dialogs working after a hot switch.
             const std::string switchDocOpts =
-                "Language=" + (sessionLang.empty() ? std::string("en-US") : sessionLang) +
-                ",Batch=true";
+                "Language=" + (sessionLang.empty() ? std::string("en-US") : sessionLang);
             auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), switchDocOpts.c_str());
             SW_MARK("documentLoad:done");
 #ifdef __EMSCRIPTEN__
@@ -646,6 +655,19 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             _docManager->registerViewCallback(_viewId);
             SW_MARK("registerViewCallback:done");
         }
+
+        // Make the freshly-loaded document's view the current one. The initial
+        // load makes its (first/only) view current implicitly, but on a hot
+        // switch the previous document's view shell stays "current" (or is
+        // released, leaving SfxViewShell::Current() null). Modal dialogs opened
+        // afterwards on the 2nd document (.uno:FormatArea / shape Area, Insert
+        // Special Character, etc.) ask SfxDialogController::InstallLOKNotifierHdl
+        // for a notifier, which returns SfxViewShell::Current(); if that is not
+        // the new doc's view, Dialog::ImplStartExecute fails, the dialog is torn
+        // down before its open is sent and never appears. Activating the new
+        // view restores SfxViewShell::Current() so dialogs work after a switch.
+        newDoc->setView(_viewId);
+        SW_MARK("setView:done");
 
         sendTextFrame("invalidatetiles: EMPTY");
 
