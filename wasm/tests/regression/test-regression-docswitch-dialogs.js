@@ -79,12 +79,16 @@ function ifrOf(page) {
 // actually active — i.e. the Shapes menu button becomes visible. Returns
 // true only if the ribbon really switched (the thing that breaks on doc B).
 async function activateInsertRibbon(page, frame, ifr) {
-    await clickEl(page, frame, ifr, () => {
-        const e = document.querySelector('#Insert-tab-label');
-        if (!e || !e.offsetParent) return null;
-        const r = e.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height };
-    });
     for (let i = 0; i < 20; i++) {
+        // Re-click each iteration: right after a doc-switch the notebookbar
+        // may still be rebuilding, so a single click can be discarded by the
+        // rebuild. Re-clicking until the Insert ribbon's Shapes button shows
+        // makes this robust to that transient.
+        await clickEl(page, frame, ifr, () => {
+            const e = document.querySelector('#Insert-tab-label');
+            if (!e || !e.offsetParent) return null;
+            const r = e.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height };
+        });
         const shapesVisible = await frame.evaluate(() => {
             for (const s of ['[id^="insert-insert-shapes"][id$="-button"]',
                              '[id^="insert-insert-shapes"]:not([id$="-button"])']) {

@@ -900,6 +900,16 @@ class Socket {
 		console.log('_onStatusMsg: docLayer=' + !!this._map._docLayer +
 			' cmd.type=' + command.type +
 			' layer._docType=' + (this._map._docLayer ? (this._map._docLayer as any)._docType : 'N/A'));
+		// Captured BEFORE the cross-type teardown below: true when this status
+		// is a reload onto an already-existing layer of the SAME doc type — i.e.
+		// a same-type hot-switch (docx → docx in the same tab) or a same-type
+		// reconnect. In that case the doc layer is reused and the full UI
+		// re-init below is skipped, but core re-creates the notebookbar with a
+		// new window id, leaving its tab handlers stale (see same-type refresh
+		// after the branch chain). Cross-type differs in type → false (handled
+		// by its own teardown+rebuild); first load has no layer → false.
+		const reloadedSameTypeLayer = !!(this._map._docLayer && command.type &&
+			(this._map._docLayer as any)._docType === command.type);
 		if (this._map._docLayer && command.type &&
 			this._map._docLayer._docType &&
 			this._map._docLayer._docType !== command.type) {
@@ -1005,6 +1015,28 @@ class Socket {
 			window.migrating = false;
 			this._map.uiManager.initializeSidebar();
 			this._map.uiManager.refreshTheme();
+		}
+
+		// Same-type doc reload (hot-switch docx→docx in the same tab, or a
+		// same-type reconnect): the branches above reuse the doc layer and do
+		// NOT rebuild the notebookbar (initializeNotebookbarInCore is a no-op
+		// once the notebookbar is already initialized). Core, however, re-creates
+		// the notebookbar/dialog components for the new document with NEW window
+		// ids, so the existing notebookbar's tab-click handlers stay bound to the
+		// stale component and go dead: clicking "Insert" no longer activates the
+		// ribbon, making Shapes / Symbol / shape Area palette unreachable on the
+		// 2nd document (user-reported 2026-06-19, incognito). Rebuild it so its
+		// handlers re-bind to the new doc. Runs once per status; cross-type and
+		// first-load rebuild via the block above instead.
+		if (reloadedSameTypeLayer && !window.mode.isMobile()) {
+			try {
+				if (this._map.uiManager.getCurrentMode &&
+					this._map.uiManager.getCurrentMode() === 'notebookbar') {
+					this._map.uiManager.refreshNotebookbar();
+				}
+			} catch (e: any) {
+				window.app.console.error('notebookbar refresh on same-type doc reload: ' + e);
+			}
 		}
 
 		this._map.fire('docloaded', { status: true });
