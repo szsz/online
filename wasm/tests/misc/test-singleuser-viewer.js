@@ -160,7 +160,8 @@ async function getFileMeta(name, fileId) {
 
         // 3. Wait for Writer to load (statusbar character count present).
         let loaded = false;
-        for (let i = 0; i < 300; i++) {
+        const loadDeadline = Date.now() + env.scaleTimeout(150000);
+        while (Date.now() < loadDeadline) {
             await sleep(500);
             const cc = await getCharCount(page);
             if (cc >= 0) { loaded = true; break; }
@@ -189,8 +190,17 @@ async function getFileMeta(name, fileId) {
         await sleep(800);
         const typed = 'HELLO';
         for (const ch of typed) { await page.keyboard.type(ch, { delay: 60 }); await sleep(350); }
-        await sleep(3000);
-        const charsAfter = await getCharCount(page);
+        // Poll until the typed chars land in the status bar instead of a fixed
+        // sleep: under heavy CI parallelism the keyboard → kit → status-bar
+        // round-trip exceeds a fixed wait, so the exact "+N chars" assertion
+        // read the pre-type count and the test flaked (CI FAIL ~179s while
+        // passing solo). Polling waits exactly as long as needed.
+        let charsAfter = await getCharCount(page);
+        const typeDeadline = Date.now() + env.scaleTimeout(20000);
+        while (charsAfter !== charsBefore + typed.length && Date.now() < typeDeadline) {
+            await sleep(400);
+            charsAfter = await getCharCount(page);
+        }
         await snap(page, 'after_type');
         log(`[state] chars after typing   = ${charsAfter}`);
         check(`Typing landed locally (+${typed.length} chars)`,
@@ -202,11 +212,17 @@ async function getFileMeta(name, fileId) {
         await page.keyboard.down('Control');
         await page.keyboard.press('s');
         await page.keyboard.up('Control');
-        // Give relay-adapter's save pipeline time to run (download from
-        // /wasm/, encrypt if enabled, POST to /api/files, get response).
-        // 10s is generous for a blank doc.
-        await sleep(12000);
-        const afterMeta = await getFileMeta(DOC_NAME, upV2.fileId);
+        // Poll until the stored file actually changes instead of a fixed
+        // sleep: the save pipeline (download from /wasm/, encrypt if enabled,
+        // POST to /api/files) can exceed a fixed wait under CI load, so the
+        // "hash changed" assertion fired too early and flaked. Poll the file
+        // metadata until the hash differs from the initial one (scaled budget).
+        let afterMeta = await getFileMeta(DOC_NAME, upV2.fileId);
+        const saveDeadline = Date.now() + env.scaleTimeout(30000);
+        while ((!afterMeta || afterMeta.hash === (initialMeta?.hash || '')) && Date.now() < saveDeadline) {
+            await sleep(500);
+            afterMeta = await getFileMeta(DOC_NAME, upV2.fileId);
+        }
         const afterSize = afterMeta ? afterMeta.size : -1;
         log(`[save] stored size after save = ${afterSize} hash=${(afterMeta?.hash || '').slice(0, 16)}`);
         // We expect the hash to change (typed 5 chars) AND size > 0.
