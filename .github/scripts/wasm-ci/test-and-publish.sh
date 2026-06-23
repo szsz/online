@@ -266,12 +266,17 @@ KNOWN_FLAKE_TESTS=(
 )
 
 LO_BLOCKED_TESTS=(
-    # Spellcheck — squiggle paint blocked on #196 LO-side paint
-    # enablement (DrawWaveLine emit path). dict-locale-resolve and
-    # mixed-lang-spellcheck both started passing on LO build
-    # 2026-06-05-69 (post LO PR #36 MAXIMUM_MEMORY=2GB) — removed
-    # from this set 2026-06-06.
-    regression-spellcheck-squiggle
+    # (regression-spellcheck-squiggle REMOVED 2026-06-23: spellcheck for docx
+    # now works end-to-end. Two fixes: LO dict-scan reorder lingutil.cxx
+    # GetOldStyleDics — EMSCRIPTEN before SYSTEM_DICTS so dicts register
+    # (LO_BUILD_ID ≥ 2026-06-22-87) — PLUS the real blocker: online.wasm is
+    # linked by wasm/Makefile.am, which lacked -sSTACK_SIZE, so the kit thread
+    # had emscripten's default 64 KiB stack; hunspell's recursive spell()/affix
+    # check on tokens like "en-US." overflowed it the moment SpellOnline
+    # activated (the crash that forced the -51 dict revert). Set STACK_SIZE +
+    # DEFAULT_PTHREAD_STACK_SIZE = 8 MiB in online_LDFLAGS. Verified: redPx=625,
+    # squiggles paint, no overflow. LO-side -sSTACK_SIZE never mattered — it
+    # only affects LO's unused standalone soffice.wasm.)
     # Ctrl+X TRIPWIRE — intentionally fails until kit .uno:Cut writes
     # to OS clipboard. See ai/proposals/promoted/ctrl-x-isolated-
     # single-user-clipboard.md

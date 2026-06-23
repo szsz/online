@@ -137,8 +137,21 @@ online_LDADD = \
 # real doc + checkpoint replay in one runtime) → the entire
 # "second browser never loads" test cluster, plus the shape-area
 # OOM tripwires. Mirrors LO PR #36's values: initial 1 GB, max 2 GB.
+#
+# STACK_SIZE + DEFAULT_PTHREAD_STACK_SIZE=8 MiB (2026-06-23): same
+# class of trap as the memory flags above — online.wasm is linked HERE,
+# NOT from LO's soffice link, so LO-side -sSTACK_SIZE never reached the
+# shipped binary (verified: LO soffice.js had STACK_SIZE=8388608 but the
+# deployed online.js read 65536). With the emscripten default 64 KiB
+# stack, enabling spellcheck for docx overflowed the kit thread the
+# moment hunspell checked a recursion-heavy token (e.g. "en-US." in the
+# autospell idle scan): "Stack cookie has been overwritten" → unreachable,
+# which is the crash that forced the -51 dict-scan revert. hunspell's
+# recursive spell()/affix checking needs a desktop-parity stack; 8 MiB
+# (native LO main stack) gives it headroom. Both knobs set since the kit
+# thread's stack tracked the default regardless of which governs it.
 online_LDFLAGS = \
-	-Oz -g0 -pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1 -s MAXIMUM_MEMORY=2GB -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
+	-Oz -g0 -pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1 -s MAXIMUM_MEMORY=2GB -s STACK_SIZE=8388608 -s DEFAULT_PTHREAD_STACK_SIZE=8388608 -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
 	--pre-js @LOSOURCEDIR@/static/emscripten/environment.js \
 	--pre-js @LOBUILDDIR@/workdir/CustomTarget/static/emscripten_fs_image/soffice.data.js.link \
 	--post-js @LOBUILDDIR@/workdir/CustomTarget/static/unoembind/bindings_uno.js \
