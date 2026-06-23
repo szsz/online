@@ -315,4 +315,49 @@
 #                  funcs + WASM_KEEP_NAMES=1 + --clean reconfigure).
 #                  Re-enables tripwires regression-writer-shape-area-oom /
 #                  -writer-insert-shape-area / -impress-area-dialog.
-2026-06-21-84
+#   2026-06-22-87  git_sha 30cbf5e24f15 (LO PR #43). Enables spellcheck
+#                  on docx via TWO coupled fixes:
+#                  (1) lingucomponent/source/lingutil/lingutil.cxx —
+#                      reorder GetOldStyleDics so `#if defined EMSCRIPTEN`
+#                      precedes SYSTEM_DICTS/IOS in all three blocks
+#                      (DICT/HYPH/THES). WASM defines BOTH SYSTEM_DICTS and
+#                      EMSCRIPTEN; with SYSTEM_DICTS first the scan hit
+#                      DICT_SYSTEM_DIR (/usr/share/hunspell, absent in the
+#                      VFS) instead of $BRAND_BASE_DIR/share/dict where
+#                      dict-loader.js writes the dicts → hasLanguage(en-US)
+#                      false → spellcheck never activated.
+#                  (2) solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk —
+#                      DEFAULT_PTHREAD_STACK_SIZE 64 KiB → 1 MiB. (1) alone
+#                      was previously shipped as 64bb48e598bb (-51) and
+#                      REVERTED: activating spellcheck overflowed the 64 KiB
+#                      worker pthread stack (hunspell recursion on the
+#                      autospell daemon), cascading 30+ test timeouts. The
+#                      larger stack gives the daemon headroom. The OnWin
+#                      paint-gate fix (-30, inftxt.cxx) is already in-tree,
+#                      so registered dicts → populated wrong-list →
+#                      DrawWaveLine emits the red squiggle. Removes
+#                      regression-spellcheck-squiggle from LO_BLOCKED_TESTS.
+#                      NOTE: -87 was INCOMPLETE — it bumped the WRONG stack.
+#                      Verified on deploy: dicts register but the overflow
+#                      STILL fired. Do not pin online to -87; use -88.
+#   2026-06-22-88  git_sha 7df4f91d561e (LO PR #44). The real fix on top of
+#                  -87: solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk —
+#                  STACK_SIZE 128 KiB → 4 MiB. Writer autospell runs as idle
+#                  work on the MAIN thread (DocumentTimerManager::DoIdleJobs →
+#                  SwTextFrame::AutoSpell_); under -sPROXY_TO_PTHREAD main()
+#                  runs on the proxied-main pthread whose stack = STACK_SIZE,
+#                  NOT DEFAULT_PTHREAD_STACK_SIZE. -87's 1 MiB worker bump did
+#                  not help (proven by elimination — overflow persisted).
+#                  4 MiB main stack gives hunspell suggestion recursion the
+#                  headroom it needs. Pairs with removing
+#                  regression-spellcheck-squiggle from LO_BLOCKED_TESTS.
+#                  NOTE: -88 ALSO incomplete — STACK_SIZE is the wrong knob.
+#   2026-06-22-89  git_sha 9ea54cd31970 (LO PR #45). The proxied-main thread
+#                  (soffice_main under -sPROXY_TO_PTHREAD, runs the LO main
+#                  loop + autospell idle scan) is governed by
+#                  DEFAULT_PTHREAD_STACK_SIZE, not STACK_SIZE — proven because
+#                  -88's STACK_SIZE 128K→4M left the overflow at the IDENTICAL
+#                  cookie address. Set BOTH STACK_SIZE and
+#                  DEFAULT_PTHREAD_STACK_SIZE to desktop-parity 8 MiB. Overflow
+#                  signature was checkStackCookie ← Browser_mainLoop_runner.
+2026-06-22-89
