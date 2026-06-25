@@ -181,12 +181,28 @@
         // (Spell .dic / .aff; hyphenation hyph_*.dic; thesaurus
         //  th_*_v2.dat / th_*_v2.idx.)
         var DATA_RE = /(?:^|\/)([^\/]+\.(?:dic|aff|dat|idx))$/i;
+        // Normalise a spell-dictionary file name so LO's GetOldStyleDics derives
+        // the locale the document actually uses. The scanner takes the file stem
+        // (minus a hyph_/th_ prefix) as a BCP47 tag. Some upstream dicts carry a
+        // project suffix — German is `de_DE_frami.dic` → stem "de_DE_frami" →
+        // parses to the BCP47 *variant* tag "de-DE-frami" (stored by LO as the
+        // opaque qlt locale), which no `de-DE` document ever matches. Strip such
+        // a trailing `_<variant>` from <lang>_<REGION>_<variant> spell files so
+        // the stem is a plain `<lang>_<REGION>`. Hyphenation/thesaurus names
+        // (hyph_*, th_*) and already-plain names (en_US, fr) are left untouched.
+        function normalizeLeaf(leaf) {
+            if (/^(?:hyph_|th_)/i.test(leaf)) return leaf;
+            // <lang>_<REGION>_<variant>.<dic|aff>  ->  <lang>_<REGION>.<ext>
+            return leaf.replace(
+                /^([a-z]{2,3})_([A-Za-z]{2,4})_[A-Za-z0-9]+(\.(?:dic|aff))$/,
+                '$1_$2$3');
+        }
         var written = 0;
         for (var i = 0; i < entries.length; i++) {
             var e = entries[i];
             var m = DATA_RE.exec(e.name);
             if (!m) continue;
-            var leaf = m[1];
+            var leaf = normalizeLeaf(m[1]);
             var full = base + '/' + leaf;
             ensureParents(full);
             try {

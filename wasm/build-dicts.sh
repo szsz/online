@@ -41,17 +41,21 @@ RAW_BASE='https://raw.githubusercontent.com/LibreOffice/dictionaries/master'
 OUT_DIR="$SCRIPT_DIR/online-build/dicts"
 FETCH_DIR="$SCRIPT_DIR/online-build/dicts-src"
 
-# Default set: what we expect most users to need. Pick by file size /
-# geography; add/remove here. Directory names are upstream repo names —
-# run `bash wasm/build-dicts.sh --list` to see all options.
-# Upstream uses locale-coded dirs for most langs (hu_HU, pl_PL, …) and
-# bare 2-letter dirs for a handful (en, de, es, …). `--list` shows them.
+# Default set: EVERY spell dictionary LibreOffice/dictionaries ships, so any
+# document language a user opens can be loaded on demand (the editor fetches a
+# language's bundle lazily — see wasm/DICTIONARIES.md). Directory names are the
+# upstream repo names (run `bash wasm/build-dicts.sh --list` to refresh this).
+# build-dicts.sh auto-skips any dir without hunspell .dic/.aff files (some are
+# hyphenation/thesaurus-only or complex-script), so they drop out cleanly.
+# Bundles are lazy-loaded, so the on-server total size is not a client cost.
 DEFAULT_LANGS=(
-    en de es
-    fr_FR it_IT nl_NL pt_BR pt_PT
-    hu_HU pl_PL cs_CZ sk_SK ro
-    ru_RU tr_TR hr_HR el_GR
-    da_DK sv_SE uk_UA
+    af_ZA an_ES ar as_IN be_BY bg_BG bn_BD bo br_FR bs_BA
+    ca ckb cs_CZ da_DK de el_GR en eo es et_EE
+    fa_IR fr_FR gd_GB gl gu_IN gug he_IL hi_IN hr_HR hu_HU
+    id is it_IT kmr_Latn kn_IN ko_KR lo_LA lt_LT lv_LV mn_MN
+    mr_IN ne_NP nl_NL no oc_FR or_IN pa_IN pl_PL pt_BR pt_PT
+    ro ru_RU sa_IN si_LK sk_SK sl_SI sq_AL sr sv_SE sw_TZ
+    ta_IN te_IN th_TH tr_TR uk_UA vi zu_ZA
 )
 
 FORCE_REFETCH=false
