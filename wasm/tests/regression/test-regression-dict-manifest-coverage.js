@@ -17,10 +17,14 @@
 //   1. Manifest is reachable + parses as JSON array.
 //   2. Each entry has { lang, file, size } with sane shapes.
 //   3. Every minimum-coverage code is present (REQUIRED set below).
-//   4. Total deploy size is in a sane range (< 100 MB so a future
-//      "add ALL upstream dicts" PR doesn't blow the App Service
-//      payload limit; > 5 MB so a build that produces only stub
-//      bundles fires).
+//   4. Total deploy size is in a sane range (< 350 MB; > 5 MB so a
+//      build that produces only stub bundles fires). DEFAULT_LANGS now
+//      ships EVERY upstream spell dictionary (2026-06-25). That is a
+//      large on-server total, but it is NOT a client cost: bundles are
+//      lazy-loaded — the editor fetches only the language(s) a document
+//      uses (see wasm/DICTIONARIES.md), and they are served as static
+//      files from coolwasmfiles storage, not through any App Service
+//      payload limit. The cap is just a runaway-build guard.
 //   5. Every entry's file URL is fetchable with the expected
 //      Content-Length matching `size` ±1 byte (catches a manifest
 //      that lists a lang whose tar didn't actually ship).
@@ -53,7 +57,7 @@ const REQUIRED_LANGS = [
     'tr_TR', 'hr_HR', 'el_GR', 'ro',
 ];
 const MIN_TOTAL_BYTES =   5_000_000;   // 5 MB
-const MAX_TOTAL_BYTES = 100_000_000;   // 100 MB
+const MAX_TOTAL_BYTES = 350_000_000;   // 350 MB — all upstream dicts, lazy-loaded
 
 let allPassed = true;
 function check(label, cond, ev) {
