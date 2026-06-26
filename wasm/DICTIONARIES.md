@@ -56,13 +56,28 @@ to learn to pick them up at runtime (all gated to `EMSCRIPTEN`/LibreOfficeKit):
 
 - **`GetOldStyleDics`** scans `$BRAND_BASE_DIR/share/dict` (EMSCRIPTEN ordered
   before `SYSTEM_DICTS`), where the dict-loader writes.
-- **`SpellChecker::hasLocale`** (sspellimp.cxx) re-scans that directory when its
-  file count changes (guarded so genuinely-unsupported languages don't re-scan
-  every word), and matches a document locale to any installed dictionary of the
-  same **language** (so `fr` serves `fr-FR`, `de-DE` serves a `de-DE` doc, etc.).
+- **Dict generation counter** — the dict-loader calls the exported
+  `lok_wasm_dict_installed()` (`linguistic/source/misc.cxx`) after writing each
+  dictionary, bumping an in-memory counter (`linguistic::GetWasmDictGeneration`).
+  This is how the layers below know a dictionary appeared **without touching the
+  filesystem per spell query** — a single integer compare. (It replaced an
+  earlier per-word `share/dict` directory enumeration that made selection/typing
+  lag once several dictionaries were loaded.)
+- **`SpellChecker::hasLocale`** (sspellimp.cxx) re-scans `share/dict` only when
+  the generation advances, and matches a document locale to any installed
+  dictionary of the same **language** (so `fr` serves `fr-FR`, `de-DE` serves a
+  `de-DE` doc, etc.).
 - **`SpellCheckerDispatcher::hasLocale`** (spelldsp.cxx) — the framework's
   language→service cache — probes the loaded spell service on a cache miss and
-  registers the locale if the service now supports it.
+  registers the locale if the service now supports it. A **negative-probe cache**
+  (flushed when the generation advances) means an unsupported locale is probed
+  once per install, not once per word.
+- **Language picker** — `getLanguages()` (the LOK `.uno:LanguageStatus` command
+  values) emits the **full `SvtLanguageTable`** under EMSCRIPTEN, not just
+  installed-dictionary locales; otherwise the picker would offer only the
+  start-up (primary) language and the user could never select another language
+  to trigger its lazy load. The client (`Map.js`) narrows the list to the
+  languages we ship dictionaries for, via `window.getSupportedSpellLangs()`.
 - **Re-spell trigger** — when a runtime re-scan first registers a language the
   spell service fires `SPELL_WRONG_WORDS_AGAIN`, so text scanned as "correct"
   before its dictionary loaded gets re-checked (squiggles appear).

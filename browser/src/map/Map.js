@@ -247,23 +247,61 @@ window.L.Map = window.L.Evented.extend({
 			}
 		}, this);
 
+		// Build app.languages (what the language picker offers) from the raw
+		// list LibreOffice core reports. Under the WASM build, core returns the
+		// full language table (so the user can pick any language and trigger a
+		// lazy dictionary load), but we only ship dictionaries for a subset —
+		// narrow the offered list to languages we can actually spell-check
+		// (dict-loader exposes the set via window.getSupportedSpellLangs), while
+		// always keeping the favourite/common languages. Falls back to the full
+		// list when the supported set isn't known yet (manifest still loading)
+		// or when filtering would empty the picker.
+		var setOfferedLanguages = function(mapObj) {
+			var raw = app._coreLanguages || [];
+			var supported = (typeof window.getSupportedSpellLangs === 'function')
+				? window.getSupportedSpellLangs() : null;
+			var fav = app.favouriteLanguages || [];
+			var out;
+			if (supported && supported.length) {
+				var sup = {};
+				supported.forEach(function(s) { sup[String(s).toLowerCase()] = true; });
+				out = raw.filter(function(l) {
+					var prim = String(l.iso || '').toLowerCase().split('-')[0].split('_')[0];
+					return sup[prim] || fav.indexOf(l.iso) >= 0;
+				});
+				if (!out.length) out = raw.slice();
+			} else {
+				out = raw.slice();
+			}
+			out.sort(function(a, b) {
+				return a.translated < b.translated ? -1 : a.translated > b.translated ? 1 : 0;
+			});
+			app.languages = out;
+			mapObj.fire('languagesupdated');
+		};
+
 		this.on('commandvalues', function(e) {
 			if (e.commandName === '.uno:LanguageStatus' && app.util.isArray(e.commandValues)) {
-				app.languages = [];
+				app._coreLanguages = [];
 				e.commandValues.forEach(function(language) {
 					var split = language.split(';');
-					language = split[0];
-					var code = '';
-					if (split.length > 1)
-						code = split[1];
-					app.languages.push({translated: _(language), neutral: language, iso: code});
+					var name = split[0];
+					var code = split.length > 1 ? split[1] : '';
+					app._coreLanguages.push({translated: _(name), neutral: name, iso: code});
 				});
-				app.languages.sort(function(a, b) {
-					return a.translated < b.translated ? -1 : a.translated > b.translated ? 1 : 0;
-				});
-				this.fire('languagesupdated');
+				setOfferedLanguages(this);
 			}
 		});
+
+		// Re-narrow the offered languages once the dictionary manifest loads,
+		// in case the LanguageStatus command values arrived first.
+		if (!this._spellLangsReadyHooked && typeof window !== 'undefined' && window.addEventListener) {
+			this._spellLangsReadyHooked = true;
+			var mapObj = this;
+			window.addEventListener('lo-spell-langs-ready', function() {
+				setOfferedLanguages(mapObj);
+			});
+		}
 
 		this.on('docloaded', function(e) {
 			if (this.options.debug && !this._debug.debugOn)

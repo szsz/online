@@ -360,4 +360,4 @@
 #                  cookie address. Set BOTH STACK_SIZE and
 #                  DEFAULT_PTHREAD_STACK_SIZE to desktop-parity 8 MiB. Overflow
 #                  signature was checkStackCookie ← Browser_mainLoop_runner.
-2026-06-25-107
+2026-06-26-108

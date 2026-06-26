@@ -213,6 +213,27 @@
             }
         }
         log('wrote', written, '/', entries.length, 'data files to', base);
+        // Tell LibreOffice a dictionary just appeared so its linguistic
+        // services re-scan share/dict exactly once (and flush their negative
+        // caches) instead of polling the filesystem on every spell query. The
+        // export is EMSCRIPTEN_KEEPALIVE'd in linguistic/source/misc.cxx.
+        //
+        // Only call it once the wasm runtime is initialized: the *primary*
+        // (eager) preload runs in preRun, before runtime init, where calling a
+        // native export aborts ("called before runtime initialization"). The
+        // eager dictionary doesn't need the bump anyway — it lands in
+        // share/dict before LO's first locale scan, so the initial scan (the
+        // -1 → 0 generation transition in hasLocale) picks it up. Only the
+        // reactive (post-init) loads need to advance the generation.
+        if (written > 0 && Module.calledRun) {
+            try {
+                if (typeof Module._lok_wasm_dict_installed === 'function') {
+                    Module._lok_wasm_dict_installed();
+                } else if (typeof Module.ccall === 'function') {
+                    Module.ccall('lok_wasm_dict_installed', null, [], []);
+                }
+            } catch (e) { warn('dict-installed notify failed', e); }
+        }
     }
 
     // ── Main entry: preRun-blocking primary preload ───────────────
@@ -262,6 +283,7 @@
             })
             .then(function(manifest) {
                 state.manifest = manifest;
+                computeSupportedLangs(manifest);
                 var lang = pickLang(manifest);
                 if (!lang) {
                     warn('no dictionary matched navigator.language — skipping preload');
@@ -358,6 +380,40 @@
         });
         if (prefix) return globalThis.loadDictionary(prefix.lang);
         return Promise.resolve({ lang: bcp47, skipped: 'no-manifest-match' });
+    };
+
+    // ── Supported-language set (for the language picker) ──────────
+    // The editor's language picker offers the full LibreOffice language
+    // table, but we only ship dictionaries for a subset. Expose the set of
+    // primary language subtags we can actually spell-check so the picker can
+    // narrow its list to languages that will get squiggles when selected.
+    // Derived from both each manifest entry's `lang` key and the BCP-47 codes
+    // in its `locales` field (so e.g. "pt_BR" + "pt_PT" both contribute "pt").
+    function computeSupportedLangs(manifest) {
+        var set = Object.create(null);
+        (manifest || []).forEach(function(e) {
+            var add = function(code) {
+                if (!code) return;
+                var prim = String(code).toLowerCase().replace(/_/g, '-').split('-')[0];
+                if (prim) set[prim] = true;
+            };
+            add(e.lang);
+            if (e.locales) String(e.locales).trim().split(/\s+/).forEach(add);
+        });
+        state.supportedLangs = Object.keys(set);
+        // Let the client (Map.js language-picker builder) re-filter now that
+        // the set is known, in case the LanguageStatus command values arrived
+        // before the manifest finished loading.
+        try {
+            if (typeof window !== 'undefined' && window.dispatchEvent)
+                window.dispatchEvent(new Event('lo-spell-langs-ready'));
+        } catch (e) { /* non-DOM context (pthread worker) — ignore */ }
+    }
+
+    // Returns an array of spell-checkable primary language subtags
+    // (e.g. ['de','fr','en',...]) once the manifest has loaded, else null.
+    globalThis.getSupportedSpellLangs = function() {
+        return state.supportedLangs ? state.supportedLangs.slice() : null;
     };
 
     // Debug surface.
