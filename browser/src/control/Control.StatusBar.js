@@ -509,6 +509,11 @@ class StatusBar extends JSDialog.Toolbar {
 			// load failure to break the cursor-move signal.
 			var localeCode = this.extractLanguageCodeFromStatus(state);
 			if (localeCode && typeof window.loadDictionaryForLocale === 'function') {
+				// The dict-loader installs the dictionary and notifies the kit
+				// (lok_wasm_dict_installed), which re-spells open documents so a
+				// language switched to before its dictionary loaded gets
+				// squiggles once it arrives. Best-effort; never break the
+				// cursor-move signal on failure.
 				try { window.loadDictionaryForLocale(localeCode).catch(function () {}); }
 				catch (_) { /* dict-loader unavailable in some build modes */ }
 			}
