@@ -82,33 +82,59 @@ async function redPixels(frame) {
     await page.screenshot({ path: `${SHOT_DIR}/01_english.png` });
     log(`English red pixels = ${enRed}`);
 
-    // Switch the whole document to Spanish via the status-bar language menu.
-    await page.keyboard.down('Control'); await page.keyboard.press('a'); await page.keyboard.up('Control'); await sleep(400);
-    const btn = await frame.evaluate(() => {
-        const e = document.getElementById('languagestatus'); if (!e) return null;
-        const r = e.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 };
-    });
-    check('language status button present', !!btn);
-    if (!btn) { await browser.close(); process.exit(1); }
-    await page.mouse.click(btn.x, btn.y); await sleep(env.scaleTimeout(1500));
-    const es = await frame.evaluate(() => {
-        const sp = [...document.querySelectorAll('span')].filter(s => s.offsetParent !== null);
-        const el = sp.find(s => /^Spanish \(Spain\)/.test([...s.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent.trim()).join('')));
-        if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 };
-    });
-    check('Spanish (Spain) offered in the language menu', !!es);
-    if (!es) { await browser.close(); process.exit(1); }
-    await page.mouse.click(es.x, es.y);
-    log('switched to Spanish; waiting for dict load + re-spell');
-    await sleep(env.scaleTimeout(16000));
-    await page.mouse.click(700, 520); await sleep(1500); // move cursor off, let paint settle
-    const esRed = await redPixels(frame);
-    await page.screenshot({ path: `${SHOT_DIR}/02_spanish.png` });
-    log(`Spanish red pixels = ${esRed}`);
+    // Click a span whose direct text matches `re` (menu entry / dialog row).
+    async function clickText(re) {
+        const r = await frame.evaluate((rs) => {
+            const rx = new RegExp(rs);
+            const sp = [...document.querySelectorAll('span,td,div')].filter(s => s.offsetParent !== null);
+            const el = sp.find(s => rx.test([...s.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent.trim()).join('')));
+            if (!el) return null; const b = el.getBoundingClientRect(); return { x: b.x + b.width/2, y: b.y + b.height/2 };
+        }, re).catch(() => null);
+        if (r) { await page.mouse.click(r.x, r.y); return true; }
+        return false;
+    }
+    async function openLangMenu() {
+        await page.keyboard.down('Control'); await page.keyboard.press('a'); await page.keyboard.up('Control'); await sleep(400);
+        const btn = await frame.evaluate(() => { const e = document.getElementById('languagestatus'); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; });
+        if (!btn) return false;
+        await page.mouse.click(btn.x, btn.y); await sleep(env.scaleTimeout(1500));
+        return true;
+    }
 
-    check('Spanish misspellings show red squiggles after switching language',
-          esRed > enRed + 40 && esRed > 80,
-          `enRed=${enRed} esRed=${esRed}`);
+    // Switch the document to `name` and assert squiggles appear. `viaMore`:
+    // common languages are inline favourites; the rest (e.g. Hungarian) are
+    // reached through "Set Language for Selection → More…". Both paths trigger
+    // the lazy dict load + re-spell — covers the multi-language fix.
+    async function switchAndCheck(name, viaMore, shot) {
+        if (!(await openLangMenu())) { check(`[${name}] language status button present`, false); return; }
+        if (viaMore) {
+            const more = await clickText('Set Language for Selection');
+            check(`[${name}] "Set Language for Selection" available`, more);
+            await sleep(env.scaleTimeout(2000));
+            const row = await clickText('^' + name);
+            check(`[${name}] offered in the More… language list`, row);
+            await sleep(800);
+            const ok = await frame.evaluate(() => { const b = document.getElementById('ok') || [...document.querySelectorAll('button')].find(x=>/^ok$/i.test((x.textContent||'').trim())); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; });
+            if (ok) await page.mouse.click(ok.x, ok.y);
+        } else {
+            const inline = await clickText('^' + name);
+            check(`[${name}] offered in the inline language menu`, inline);
+        }
+        log(`switched to ${name}; waiting for dict load + re-spell`);
+        await sleep(env.scaleTimeout(16000));
+        await page.mouse.click(700, 520); await sleep(1500); // move cursor off, let paint settle
+        const red = await redPixels(frame);
+        await page.screenshot({ path: `${SHOT_DIR}/${shot}.png` });
+        log(`${name} red pixels = ${red}`);
+        check(`${name} misspellings show red squiggles after switching language`,
+              red > enRed + 40 && red > 80, `enRed=${enRed} red=${red}`);
+    }
+
+    // Spanish: an inline favourite. Hungarian: via the More… dialog (and a real
+    // user-reported "doesn't always check spelling" language — its dict is
+    // larger / lazier, so it exercises the re-spell-on-dict-install path).
+    await switchAndCheck('Spanish \\(Spain\\)', false, '02_spanish');
+    await switchAndCheck('Hungarian', true, '03_hungarian');
 
     await browser.close();
     log('\n' + (allPassed ? 'TEST PASSED' : 'TEST FAILED'));
