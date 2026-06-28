@@ -21,9 +21,13 @@ const __cl = require('../../lib/inject-checklist');
 //
 // This test drives everything through real visible UI (mouse/keyboard) and
 // asserts via visible DOM only — no sendUnoCommand / dispatcher / state pokes.
-// It is a TRIPWIRE: the DOC-B assertions FAIL today and PASS once the
-// doc-switch notebookbar regression is fixed. The DOC-A block is a sanity
-// gate (proves the mechanics work on a first doc).
+//
+// STATUS: FIXED (2026-06-21) — the DOC-B assertions now PASS. Root cause was
+// kit-side: switchdocument (kit/ChildSession.cpp) passed Batch=true, leaking a
+// DialogCancelMode::LOKSilent that killed all modal dialogs on the 2nd doc,
+// plus a missing notebookbar refresh on same-type switch (Socket.ts). This is
+// no longer a tripwire — it is a live regression guard: it must stay GREEN.
+// The DOC-A block is a sanity gate (proves the mechanics work on a first doc).
 
 'use strict';
 
