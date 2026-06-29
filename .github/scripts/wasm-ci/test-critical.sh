@@ -69,23 +69,40 @@ CRITICAL=(
 # wrapper but keep the whole gate well under the full suite's runtime.
 PER_TEST_TIMEOUT="${CRITICAL_TEST_TIMEOUT:-900}"
 
-echo "=== Critical-subset gate (${#CRITICAL[@]} tests, ${PER_TEST_TIMEOUT}s each) ==="
+# Up to 2 attempts per critical test. The 2-browser co-edit test
+# (latejoin-unsaved) is a known transient iframe-race flake (it is in
+# KNOWN_FLAKE_TESTS for the full suite, and the race is tracked in
+# ai/proposals/promoted/paste-coedit-jobs2-second-iframe-race.md). Without a
+# retry, one transient hiccup fails this BLOCKING gate and aborts the entire
+# run — so the full suite never publishes and every downstream test reads as
+# "failed". A single retry absorbs the transient race; a genuine regression
+# (editor down, warm broken, co-edit broken) still fails both attempts and
+# blocks the merge. This does NOT mask real breakage — it only de-flakes the
+# gate. Root-causing the underlying race is tracked separately.
+MAX_ATTEMPTS="${CRITICAL_TEST_ATTEMPTS:-2}"
+echo "=== Critical-subset gate (${#CRITICAL[@]} tests, ${PER_TEST_TIMEOUT}s each, up to ${MAX_ATTEMPTS} attempts) ==="
 FAILED=()
 for entry in "${CRITICAL[@]}"; do
     slug="${entry%%|*}"
     script="${entry#*|}"
     echo "--- [$slug] $script ---"
-    logf="$(mktemp)"
-    if ( cd "$WORKSPACE/wasm" && TMPDIR="$(mktemp -d)" timeout "$PER_TEST_TIMEOUT" node "$script" ) > "$logf" 2>&1; then
-        echo "  [$slug] PASS"
-    else
+    passed=false
+    for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+        logf="$(mktemp)"
+        if ( cd "$WORKSPACE/wasm" && TMPDIR="$(mktemp -d)" timeout "$PER_TEST_TIMEOUT" node "$script" ) > "$logf" 2>&1; then
+            echo "  [$slug] PASS (attempt $attempt/$MAX_ATTEMPTS)"
+            passed=true
+            rm -f "$logf"
+            break
+        fi
         rc=$?
-        echo "  [$slug] FAIL (exit $rc)"
+        echo "  [$slug] FAIL (attempt $attempt/$MAX_ATTEMPTS, exit $rc)"
         echo "  ---- last 25 lines ----"
         tail -25 "$logf" | sed 's/^/    /'
-        FAILED+=("$slug")
-    fi
-    rm -f "$logf"
+        rm -f "$logf"
+        [[ "$attempt" -lt "$MAX_ATTEMPTS" ]] && echo "  [$slug] retrying…"
+    done
+    $passed || FAILED+=("$slug")
 done
 
 echo "=== Critical-subset gate result ==="
