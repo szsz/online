@@ -1,0 +1,67 @@
+{
+  "_comment": "Spec for the editor's Azure Front Door rule set. Applied by wasm/apply-front-door-rules.sh (delete-and-recreate, idempotent by sha256 of the applier script). This JSON is informational + the source of truth for what's intended; the applier script is what runs in CI.",
+
+  "ruleSetName": "editor",
+
+  "_designNote": "The editor storage account is single-purpose: per-deploy builds at /<APP_BUILD_ID>/<path>. Every byte is content-addressed by URL — the <id>/ folder IS the version. So everything is immutable. Updates ship as a new <id>/ folder + a viewer-side pointer flip; existing in-flight tabs keep working at the previous id until reload.",
+
+  "_brotliNote": "Brotli is NOT done via FD URL rewrite (AFD's UrlRewrite action doesn't support server-variable interpolation in destinations, so a per-deploy-templated brotli swap isn't expressible). Instead the deploy step (wasm/deploy-front-door.sh) uploads each pre-built `.br` sidecar's bytes as the canonical blob URL with Content-Encoding: br metadata. Browsers receive brotli bytes + the encoding header and decompress transparently. All modern browsers support brotli; non-brotli clients (legacy tooling) get undecodable bytes — theoretical concern for the editor's audience.",
+
+  "rules": [
+    {
+      "name": "globalHeaders",
+      "order": 1,
+      "matchProcessingBehavior": "Continue",
+      "_purpose": "COOP/COEP/CORP enable SharedArrayBuffer (required by WASM threads). CORS lets the viewer iframe embed cool.html cross-origin. These apply to every response, including 404s.",
+      "conditions": [],
+      "actions": [
+        {
+          "type": "ModifyResponseHeader",
+          "headerAction": "Overwrite",
+          "headerName": "Cross-Origin-Opener-Policy",
+          "value": "same-origin"
+        },
+        {
+          "type": "ModifyResponseHeader",
+          "headerAction": "Overwrite",
+          "headerName": "Cross-Origin-Embedder-Policy",
+          "value": "require-corp"
+        },
+        {
+          "type": "ModifyResponseHeader",
+          "headerAction": "Overwrite",
+          "headerName": "Cross-Origin-Resource-Policy",
+          "value": "cross-origin"
+        },
+        {
+          "type": "ModifyResponseHeader",
+          "headerAction": "Overwrite",
+          "headerName": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "type": "ModifyResponseHeader",
+          "headerAction": "Overwrite",
+          "headerName": "Access-Control-Allow-Methods",
+          "value": "GET, HEAD, OPTIONS"
+        }
+      ]
+    },
+
+    {
+      "name": "immutableAll",
+      "order": 2,
+      "matchProcessingBehavior": "Continue",
+      "_purpose": "Every URL on this storage is per-deploy-versioned by its <id>/ path. Cache forever. Updates create a new <id>/ folder; the viewer's pointer flip steers traffic.",
+      "conditions": [],
+      "actions": [
+        {
+          "type": "ModifyResponseHeader",
+          "headerAction": "Overwrite",
+          "headerName": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ]
+}
