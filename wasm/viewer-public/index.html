@@ -1,0 +1,1904 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Viewer</title>
+<!-- Iter 40: prewarm DNS+TLS to the editor + relay origins. URLs come
+     from /config.js (window.__CONFIG); injected here so the head tags
+     fire before any iframe load. No env-specific hostnames in source. -->
+<script src="/config.js"></script>
+<script>
+(function preconnectFromConfig() {
+    var c = window.__CONFIG || {};
+    var hosts = [c.EDITOR_URL, c.RELAY_URL].filter(Boolean);
+    for (var i = 0; i < hosts.length; i++) {
+        var u = hosts[i];
+        var link = document.createElement('link');
+        link.rel = 'preconnect';
+        link.href = u;
+        link.crossOrigin = 'anonymous';
+        document.head.appendChild(link);
+        var dns = document.createElement('link');
+        dns.rel = 'dns-prefetch';
+        dns.href = u.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+        document.head.appendChild(dns);
+    }
+})();
+</script>
+<style>
+body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+#files {
+    width: 300px; border-right: 1px solid #ccc; padding: 10px;
+    overflow-y: auto; box-sizing: border-box; flex-shrink: 0;
+    transition: width 0.2s, padding 0.2s; background: #fff;
+    z-index: 50;
+}
+body.docs-collapsed #files {
+    width: 12px; padding: 0; cursor: pointer;
+    background: #e5e7eb; border-right: 1px solid #9ca3af;
+}
+body.docs-collapsed #files > * { display: none; }
+body.docs-collapsed #files::before {
+    content: "‹‹"; display: block; text-align: center;
+    color: #6b7280; font-size: 14px; padding-top: 50vh; line-height: 12px;
+}
+body.docs-collapsed #files:hover {
+    background: #d1d5db;
+}
+/* When user hovers near the left edge or clicks the bar, expand */
+body.docs-collapsed.docs-hover #files {
+    width: 300px; padding: 10px;
+    background: #fff; border-right: 1px solid #ccc;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+    position: absolute; top: 0; bottom: 0;
+}
+body.docs-collapsed.docs-hover #files > * { display: block; }
+body.docs-collapsed.docs-hover #files::before { display: none; }
+/* Hover hot-zone — invisible div on the left edge */
+#sidebar-hover-zone {
+    position: fixed; top: 0; left: 0; width: 8px; bottom: 0;
+    z-index: 60; display: none;
+}
+body.docs-collapsed #sidebar-hover-zone { display: block; }
+#editor-pane { flex: 1; position: relative; min-width: 0; }
+#editor-frame { width: 100%; height: 100%; border: none; }
+#editor-shield {
+    /* Fully opaque so the user NEVER sees the pre-warm blank document */
+    position: absolute; inset: 0; background: #f5f5f5;
+    display: none; z-index: 100;
+    flex-direction: column; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    pointer-events: all;
+}
+#editor-shield.active { display: flex; }
+#editor-shield-spinner {
+    width: 56px; height: 56px; border: 5px solid #ddd; border-top-color: #4a90e2;
+    border-radius: 50%; animation: shspin 1s linear infinite; margin-bottom: 14px;
+}
+@keyframes shspin { to { transform: rotate(360deg); } }
+#editor-shield-label { font-size: 15px; font-weight: 500; color: #333; margin-bottom: 6px; }
+#editor-shield-detail { font-size: 12px; color: #666; }
+.file { padding: 6px 8px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 13px; }
+.file:hover { background: #e8f4ff; }
+.file.active { background: #d0e8ff; }
+.folder-row { padding: 6px 8px; cursor: pointer; font-weight: 600; font-size: 13px; color: #1a1a1a; user-select: none; }
+.folder-row:hover { background: #f0f4ff; }
+.folder-row .arrow { display: inline-block; width: 14px; font-size: 10px; color: #888; }
+.folder-contents { }
+.folder-actions { display: inline; margin-left: 6px; }
+.folder-actions button { font-size: 11px; padding: 1px 6px; cursor: pointer; background: #e8f0fe; border: 1px solid #c4d4f0; border-radius: 3px; color: #1a56c4; }
+.folder-actions button:hover { background: #d0e0ff; }
+#new-folder-bar { padding: 4px 8px; border-bottom: 1px solid #ccc; display: flex; gap: 4px; }
+#new-folder-bar input { flex: 1; font-size: 12px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px; }
+#new-folder-bar button { font-size: 12px; padding: 3px 8px; cursor: pointer; background: #1a56c4; color: #fff; border: none; border-radius: 3px; }
+#new-folder-bar button:hover { background: #0d3b8c; }
+#prewarm-status { padding: 8px; font-size: 12px; color: #666; border-bottom: 1px solid #ccc; }
+#prewarm-status.ready { background: #e0f8e0; color: #060; }
+#status-bar { padding: 5px 10px; background: #f5f5f5; font-size: 12px; border-top: 1px solid #ccc; display: flex; align-items: center; gap: 6px; }
+.status-spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid #ddd; border-top-color: #4a90e2;
+    border-radius: 50%; animation: shspin 0.8s linear infinite;
+}
+h3 { margin: 5px 0; }
+</style>
+</head>
+<body>
+<script src="lib/file-crypto.js"></script>
+<script src="lib/recent-files.js"></script>
+<script src="lib/ui-lang.js"></script>
+<script src="lib/editor-bridge.js"></script>
+<script src="lib/journey-recorder.js"></script>
+<div id="sidebar-hover-zone"></div>
+<div id="files">
+    <h3>Files</h3>
+    <div id="ui-lang-row" style="display:flex;align-items:center;gap:6px;font-size:12px;color:#555;margin-bottom:6px;">
+        <label for="ui-lang-switcher" style="white-space:nowrap;">Language:</label>
+        <span id="ui-lang-mount" style="flex:1"></span>
+    </div>
+    <div id="prewarm-status">🔄 Pre-warming editor...</div>
+    <div id="coedit-row" style="margin:6px 0;font-size:12px;">
+        <button id="coedit-toggle" type="button" onclick="toggleCoEditing()"
+                style="width:100%;padding:5px 6px;font-size:12px;cursor:pointer;
+                       border:1px solid #c5d2e0;border-radius:5px;background:#f4f8fc;"></button>
+        <div id="coedit-share" style="display:none;margin-top:4px;">
+            <input id="coedit-share-link" type="text" readonly
+                   style="width:100%;font-size:11px;box-sizing:border-box;"
+                   onclick="this.select()">
+            <button type="button" onclick="copyCoEditingLink()"
+                    style="margin-top:2px;font-size:11px;cursor:pointer;">Copy link</button>
+        </div>
+    </div>
+    <input type="file" id="upload" onchange="uploadFile()" multiple>
+    <div id="new-folder-bar">
+        <input type="text" id="new-folder-name" placeholder="New folder name...">
+        <button onclick="createFolder()">Create</button>
+    </div>
+    <div id="list"></div>
+</div>
+<div id="editor-pane">
+    <iframe id="editor-frame"
+            allow="cross-origin-isolated; clipboard-read; clipboard-write"
+            referrerpolicy="no-referrer"></iframe>
+    <div id="editor-shield" class="active">
+        <div id="editor-shield-spinner"></div>
+        <div id="editor-shield-label">Loading editor…</div>
+        <div id="editor-shield-bar"
+             style="width:300px;height:10px;background:#e0e0e0;border-radius:5px;overflow:hidden;margin:4px 0 6px;">
+            <div id="editor-shield-bar-fill"
+                 style="height:100%;background:linear-gradient(90deg,#4a90e2,#357abd);width:0%;transition:width 0.3s;"></div>
+        </div>
+        <div id="editor-shield-detail"></div>
+    </div>
+    <div id="status-bar">Ready</div>
+    <div id="save-toast">Document saved</div>
+</div>
+<style>
+#save-toast {
+    position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+    background: #1a7f37; color: #fff; padding: 8px 20px; border-radius: 6px;
+    font-size: 14px; font-weight: 500; opacity: 0; pointer-events: none;
+    transition: opacity 0.3s; z-index: 200;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+}
+#save-toast.show { opacity: 1; }
+</style>
+<script>
+// /config.js was already loaded in <head> for the preconnect injection
+// above — window.__CONFIG is therefore available below.
+// Timestamp of the viewer page load (navigation start). Passed to the
+// editor iframe so wasm-loader.js can measure total time from when the
+// user actually started loading the page, not from when the iframe loads.
+window.__viewerT0 = performance.timeOrigin || (performance.timing && performance.timing.navigationStart) || (Date.now() - performance.now());
+// Timing log — all times measured from when the user hit Enter on the viewer URL
+var __vMilestones = {};
+function viewerLog(label) {
+    var ms = Date.now() - window.__viewerT0;
+    __vMilestones[label] = ms;
+    console.log('%c[TIMING] ' + label + ' @ ' + (ms / 1000).toFixed(2) + 's',
+        'color: #1565c0; font-weight: bold; font-size: 13px');
+}
+viewerLog('Viewer page JS started');
+
+// JOBS_SCALE-aware budgets. Tests under parallel runners (JOBS=2+) on
+// the self-hosted runner share CPU/RAM with other puppeteer Chromes,
+// so canvas paint takes longer. The runner exports JOBS_SCALE as an
+// env var to its test processes; lib/open-via-viewer.js then appends
+// ?ws=<scale> to the viewer URL when launching the page. This viewer
+// reads ?ws=N and uses it as a multiplier on the per-page watchdogs
+// that otherwise tear the iframe down before the kit can finish
+// painting heavy docs.
+//
+// Bounds: clamp to [1, 8] so a malformed param can't blow up the
+// budget into hours. Default 1 = production behaviour unchanged.
+window.__JOBS_SCALE = (function() {
+    try {
+        var raw = new URLSearchParams(window.location.search).get('ws');
+        var n = parseInt(raw || '1', 10);
+        if (!Number.isFinite(n) || n < 1) return 1;
+        if (n > 8) return 8;
+        return n;
+    } catch (e) { return 1; }
+})();
+if (window.__JOBS_SCALE !== 1) {
+    console.log('[viewer] JOBS_SCALE=' + window.__JOBS_SCALE
+        + ' — canvas-paint watchdog and friends widen accordingly');
+}
+
+// armWOPIReady — open the kit's WOPI postMessage gate.
+// Posts Host_PostmessageReady so window.WOPIPostmessageReady flips
+// true in cool.html (set in browser/js/global.js:449 on receipt).
+// Without it Map.WOPI.js:541 drops every parent postMessage with
+// "PostMessage ignored: not ready." The viewer previously never
+// sent it.
+//
+// Retry strategy: kit registers its message listener mid-bootstrap
+// (after the bundle.js's Initializer class is instantiated). A
+// single post on iframe `load` lands too early. We spray the
+// message on load AND on a 500ms interval for ~6 s. The kit's
+// listener self-removes on first receipt (global.js:450), so
+// extras are no-ops; if the kit reloads (planc=0 cold-loop) the
+// listener is re-armed and a later retry catches it.
+function armWOPIReady(iframe) {
+    if (!iframe || iframe.dataset.wopiReadyArmed === '1') return;
+    iframe.dataset.wopiReadyArmed = '1';
+    function postReady() {
+        try {
+            if (iframe.contentWindow) {
+                iframe.contentWindow.postMessage(
+                    JSON.stringify({ MessageId: 'Host_PostmessageReady' }),
+                    '*');
+            }
+        } catch (e) {
+            console.log('[viewer] armWOPIReady post failed:', e && e.message);
+        }
+    }
+    iframe.addEventListener('load', function () {
+        postReady();
+        var ticks = 0;
+        var iv = setInterval(function () {
+            postReady();
+            if (++ticks >= 12) clearInterval(iv);
+        }, 500);
+    });
+}
+</script>
+<script>
+// --- Sidebar collapse/expand ---
+(function() {
+    const filesEl = document.getElementById('files');
+    const hoverZone = document.getElementById('sidebar-hover-zone');
+    let hoverHideTimer = null;
+
+    function expand() {
+        if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+        document.body.classList.add('docs-hover');
+    }
+    function scheduleCollapse() {
+        if (hoverHideTimer) clearTimeout(hoverHideTimer);
+        hoverHideTimer = setTimeout(() => {
+            document.body.classList.remove('docs-hover');
+        }, 500);
+    }
+
+    hoverZone.addEventListener('mouseenter', expand);
+    filesEl.addEventListener('mouseenter', expand);
+    // We use document-level `mouseover` (which bubbles, unlike mouseleave) to
+    // detect when the cursor is anywhere outside the sidebar — including
+    // inside the editor iframe, which would otherwise swallow subsequent
+    // mouse events before #files.mouseleave can fire.
+    document.addEventListener('mouseover', function(e) {
+        if (!document.body.classList.contains('docs-collapsed')) return;
+        const t = e.target;
+        if (t === filesEl || filesEl.contains(t) || t === hoverZone) return;
+        scheduleCollapse();
+    });
+    // Click on the collapsed thin bar expands the sidebar.
+    // We only react to clicks on the bar background itself (e.target === filesEl)
+    // — not on file entries inside it. Otherwise clicking a file in the
+    // expanded sidebar would let the click bubble up after openFile() called
+    // collapseSidebar(), and we'd immediately re-expand it.
+    filesEl.addEventListener('click', function(e) {
+        if (e.target !== filesEl) return;
+        if (document.body.classList.contains('docs-collapsed') &&
+            !document.body.classList.contains('docs-hover')) {
+            expand();
+        }
+    });
+})();
+
+// Collapse the sidebar when the user opens a document
+function collapseSidebar() {
+    document.body.classList.add('docs-collapsed');
+    document.body.classList.remove('docs-hover');
+}
+
+// Domain URLs injected by the viewer server at /config.js. Required —
+// no fallbacks (a hardcoded prod default would silently misroute on
+// non-prod deployments instead of failing fast).
+if (!window.__CONFIG || !window.__CONFIG.EDITOR_URL || !window.__CONFIG.RELAY_URL) {
+    document.body.innerHTML = '<pre style="padding:2em;color:#b00">'
+        + 'Viewer config missing — /config.js did not deliver EDITOR_URL/RELAY_URL.\n'
+        + 'Check viewer-server.js + ~/ENV/online*.env.</pre>';
+    throw new Error('viewer config missing');
+}
+const EDITOR = window.__CONFIG.EDITOR_URL;
+const RELAY  = window.__CONFIG.RELAY_URL;
+// Pass our own origin to the iframe so the relay-adapter knows where to
+// upload checkpoint saves (the cross-origin iframe can't read parent.origin
+// and the referrer is suppressed by referrerpolicy="no-referrer").
+const FILE_STORAGE_URL = window.__CONFIG.VIEWER_URL || window.location.origin;
+
+// Per-deploy editor folder. Each editor deploy lives at
+// ${EDITOR}/<EDITOR_DEPLOY_ID>/ so multiple deploys can co-exist on the
+// same origin without filename hashing. EDITOR_BASE is the prefix every
+// cool.html / browser-static iframe URL is built off of; when
+// EDITOR_DEPLOY_ID is unset (local dev with a flat editor) it falls back
+// to EDITOR for legacy flat URLs.
+//
+// The /wasm/<fileId> POST endpoint and other server-side handlers are
+// NOT per-deploy — they stay at EDITOR root. Only static assets that
+// vary per build live under the prefix.
+const EDITOR_DEPLOY_ID = (window.__CONFIG.EDITOR_DEPLOY_ID || '').trim();
+const EDITOR_BASE = EDITOR_DEPLOY_ID
+    ? EDITOR + '/' + EDITOR_DEPLOY_ID
+    : EDITOR;
+const BLANK_FILENAME = '__prewarm_blank.docx';
+
+// UI language: resolve once at viewer load (browser-detect →
+// localStorage pin → English fallback) and apply to every iframe
+// URL we build below via &lang=<code>. Switcher dropdown lives in
+// the sidebar header; changing it persists the pin and reloads the
+// page so the editor iframe re-fetches with the new language. We
+// reload-the-page rather than postMessage-into-the-editor because
+// cool.html reads window.LANG synchronously at startup; a mid-life
+// switch would leave half the menus in the old language.
+const UI_LANG = (window.UILang && window.UILang.getActiveLang())
+                 ? window.UILang.getActiveLang() : 'en';
+const UI_LANG_PARAM = '&lang=' + encodeURIComponent(UI_LANG);
+(function mountLangSwitcher() {
+    if (!window.UILang) return;
+    const mount = document.getElementById('ui-lang-mount');
+    if (!mount) return;
+    const sel = window.UILang.buildSwitcher(UI_LANG, function (newCode) {
+        // Trigger a top-level reload — this forces the iframe to
+        // re-create with ?lang=<newCode>, which is the only path
+        // that actually swaps cool.html's UI language.
+        window.location.reload();
+    });
+    sel.style.cssText = 'font-size:12px;padding:1px 4px;width:100%;';
+    mount.appendChild(sel);
+})();
+
+// Read-only mode: set by readonly.html or ?readonly=1 URL param.
+// When true, the relay parameter is omitted from iframe URLs (disabling
+// co-editing) and the shield drops on WasmDocReady alone.
+// Mode (2026-06-17): SINGLE-USER IS THE DEFAULT. Co-editing (a relay
+// connection) is opt-in — via the `?co-editing` URL param,
+// window.__VIEWER_CO_EDITING, or the in-app "Co-edit" toggle button
+// (which reloads the page with ?co-editing). When single-user, the relay
+// parameter is omitted from iframe URLs — all edits go straight to the
+// local Kit; the user can still edit and save, there's just no relay
+// server connection. `?singleuser` / __VIEWER_SINGLE_USER remain accepted
+// (now redundant, since single-user is the default) and act as an explicit
+// override that wins over ?co-editing, for back-compat.
+const __qp = new URLSearchParams(window.location.search);
+const __forceSingle = window.__VIEWER_SINGLE_USER || __qp.has('singleuser');
+const CO_EDITING = !__forceSingle &&
+    (window.__VIEWER_CO_EDITING || __qp.has('co-editing'));
+const SINGLE_USER = !CO_EDITING;
+// Journey recorder (?record): capture the session for replay/review. When
+// set, the editor iframe is loaded with &record=1 so wasm-loader forwards
+// in-canvas input to the recorder. See viewer-public/lib/journey-recorder.js.
+const RECORD = __qp.has('record');
+const RECORD_PARAM = RECORD ? '&record=1' : '';
+document.title = CO_EDITING ? 'Viewer (Co-editing)' : 'Viewer (Single User)';
+
+// Co-edit toggle button (sidebar). Reload-based mode switch — mirrors how
+// readonly/singleuser drive mode at load; avoids a fragile live relay
+// re-init of an already-booted editor iframe.
+function renderCoEditToggle() {
+    var btn = document.getElementById('coedit-toggle');
+    if (!btn) return;
+    var share = document.getElementById('coedit-share');
+    if (CO_EDITING) {
+        btn.textContent = '👥 Co-editing: ON — switch to single-user';
+        btn.title = 'Currently co-editing. Click to return to single-user mode.';
+        if (share) {
+            share.style.display = '';
+            var link = document.getElementById('coedit-share-link');
+            if (link) link.value = window.location.href;
+        }
+    } else {
+        btn.textContent = '👤 Single-user — click to start co-editing';
+        btn.title = 'Start a co-editing session. Anyone who opens this link can edit with you.';
+        if (share) share.style.display = 'none';
+    }
+}
+function toggleCoEditing() {
+    var u = new URL(window.location.href);
+    if (CO_EDITING) {
+        u.searchParams.delete('co-editing');
+    } else {
+        u.searchParams.set('co-editing', '1');
+        u.searchParams.delete('singleuser');
+    }
+    window.location.href = u.toString();   // reload into the new mode
+}
+function copyCoEditingLink() {
+    var link = document.getElementById('coedit-share-link');
+    if (!link) return;
+    link.select();
+    try { navigator.clipboard.writeText(link.value); }
+    catch (e) { try { document.execCommand('copy'); } catch (e2) {} }
+    setStatus('Co-editing link copied');
+}
+renderCoEditToggle();
+
+// Random pronounceable name for this browser tab (shown on cursor to peers)
+function generateUserName() {
+    var c = 'bcdfghjklmnprstvwz', v = 'aeiou';
+    var len = 5 + Math.floor(Math.random() * 2);
+    var name = '';
+    for (var i = 0; i < len; i++) {
+        var pool = (i % 2 === 0) ? c : v;
+        name += pool.charAt(Math.floor(Math.random() * pool.length));
+    }
+    return name.charAt(0).toUpperCase() + name.slice(1);
+}
+const MY_USER_NAME = generateUserName();
+console.log('[viewer] My name: ' + MY_USER_NAME);
+
+// Build the relay room URL for a given document name. Each document gets
+// its own room so that only browsers viewing the same file exchange edits.
+function relayRoom(docName) {
+    // Sanitize the name into a URL-safe room key
+    const key = encodeURIComponent(docName).replace(/%/g, '_');
+    return RELAY + '/room/' + key;
+}
+
+// Pre-warm state
+let prewarmReady = false;
+let currentFile = null;
+// Bug iter 12: iframe pool. Cross-type currently destroys the current
+// iframe and creates a fresh one — costs ~11 s of warm-restore + first
+// doc load every time. Instead, park each doctype's iframe alive and
+// hidden on cross-type, and revive it on the next cross-type back to
+// that doctype. Subsequent cross-type to a previously-parked doctype
+// becomes a same-type-style hot-switch (~200 ms-1 s) instead of a
+// cold reload. Memory cost: up to 3 iframes (~840 MB) for a session
+// that touches all three doctypes.
+const parkedIframes = {}; // doctype -> { iframe, lastFile }
+// Track what's actually loaded in the visible iframe. Distinct from
+// currentFile/currentDocType which can be set by openFileBySecret
+// before openFile (and the iframe lifecycle code) runs. Only updated
+// AFTER an iframe is set up to host a doc.
+let activeIframeFile = null;
+let activeIframeDocType = null;
+// Track whether the iframe's relay-adapter has activated (sent join-ready
+// + accepted by the relay). Until activated, any keystroke the user types
+// is dropped on the floor with a "Dropping input not activated yet" log
+// — so we keep the shield up to make that wait visible. WasmDocReady alone
+// is no longer enough: the doc may be visually rendered but typing
+// silently disappears.
+let relayActivated = false;
+let docReady = false;
+// Track the doc type currently loaded in the iframe so we can detect when a
+// hot-switch would cross document types (writer↔calc↔impress). The JS
+// docLayer is type-specific; switching types in-place corrupts state, so we
+// force a cold iframe reload for cross-type opens.
+let currentDocType = 'writer'; // pre-warm starts with blank.docx
+// Monotonic open-request counter. Each openFile() call takes a ticket;
+// after its `await filePromise` it checks it's still the latest before
+// mutating shared editor state (EditorBridge.stage / RelaySwitchRoom /
+// iframe.src#switchdoc). Fixes the rapid hot-switch race where a SLOWER
+// earlier click (uncached doc B) resolves AFTER a faster later click
+// (cached doc A) and re-sets the iframe to the stale doc — the kit then
+// loads / the title shows the wrong document (regression-samedoc-flicker,
+// regression-docname-switch). Single-owner: latest user click wins.
+let __openReqSeq = 0;
+// fileId/name of the most recent open the user actually requested. A stale
+// HotSwitchFailed event must NOT re-open a doc the user already switched
+// away from (rapid A→B→A: B's watchdog fires HotSwitchFailed(B) after the
+// user moved to A → re-opening B loaded the wrong doc).
+let __latestRequestedFile = null;
+
+function docTypeFor(filename) {
+    const ext = filename.split('.').pop().toLowerCase().split('?')[0];
+    if (['xlsx','xls','ods','csv','tsv'].indexOf(ext) >= 0) return 'calc';
+    if (['pptx','ppt','odp','ppsx','pps'].indexOf(ext) >= 0) return 'impress';
+    return 'writer';
+}
+
+// Expose for tests
+window.__viewerState = {
+    get prewarmReady() { return prewarmReady; },
+    get currentFile() { return currentFile; },
+    get currentDocType() { return currentDocType; },
+};
+
+function setStatus(msg) {
+    document.getElementById('status-bar').textContent = msg;
+}
+// ── Per-step open progress (single-owner model, 2026-06-15) ────────
+//
+// SINGLE BAR (2026-06-17): the ONE visible bar (#editor-shield-bar-fill)
+// shows the AVERAGE of two inputs:
+//
+//     displayed% = (barPct + importPct) / 2     (clamped 0-100, monotone)
+//
+//   - barPct    = the boot/stage value the ProgressModel still derives
+//                 internally from the active step's band + intra fraction
+//                 (the existing recompute() computation — KEPT).
+//   - importPct = the latest kit import percentage (0-100; 0 before the
+//                 first WasmOpenStage{stage:'import'} frame arrives).
+//
+// All other progress UI was removed: the per-step <li> stepper rows
+// (#shield-stages), the per-step sub-bars, and the indeterminate
+// shimmer. Only the single bar + label + spinner remain. The internal
+// step model is still driven by the WasmOpenStage / WasmProgress frames
+// (so barPct keeps its meaning) — it just no longer renders a stepper.
+//
+// Each step owns a [bandStart, bandEnd] slice of the 0..100 barPct.
+// Import dominates open time, so it owns the largest band; the fast
+// boot/render steps share the head, Ready snaps barPct to 100.
+var SHIELD_STEPS = [
+    // id          label                marks that ADVANCE this step              band   track-mode
+    { id: 'prep',     label: 'Preparing…',        marks: [],                                           band: [0, 5],   track: 'none' },
+    { id: 'boot',     label: 'Starting editor',   marks: ['loader:start', 'sw-bridge:ready'],          band: [5, 12],  track: 'ticks' },
+    { id: 'download', label: 'Downloading editor',marks: ['net:fetch_start', 'net:fetch_end'],         band: [12, 30], track: 'bytes', coldOnly: true },
+    { id: 'compile',  label: 'Compiling engine',  marks: ['emscripten:module_defined', 'snapshot:signal', 'emscripten:wasmExports_ready'], band: [30, 38], track: 'ease' },
+    { id: 'runtime',  label: 'Starting runtime',  marks: ['emscripten:FS_ready', 'emscripten:calledRun', 'dom:status_appeared'], band: [38, 45], track: 'ticks' },
+    { id: 'import',   label: 'Opening document',  marks: [],                                           band: [45, 88], track: 'import' },
+    { id: 'render',   label: 'Rendering',         marks: [],                                           band: [88, 96], track: 'render' },
+    { id: 'ready',    label: 'Ready',             marks: ['doc:loaded'],                               band: [96, 100],track: 'tick' },
+];
+// Map each granular wasm-loader mark prefix → the user-facing step it
+// advances. Several marks collapse into one step (e.g. the three
+// compile marks all live in 'compile'). 'dom:first_canvas' opens the
+// render step; 'doc:loaded' completes everything.
+var MARK_TO_STEP = {};
+SHIELD_STEPS.forEach(function(st) {
+    (st.marks || []).forEach(function(m) { MARK_TO_STEP[m] = st.id; });
+});
+function stepDef(id) {
+    for (var i = 0; i < SHIELD_STEPS.length; i++) if (SHIELD_STEPS[i].id === id) return SHIELD_STEPS[i];
+    return null;
+}
+function stepIndex(id) {
+    for (var i = 0; i < SHIELD_STEPS.length; i++) if (SHIELD_STEPS[i].id === id) return i;
+    return -1;
+}
+// setShieldStage — NO-OP. The per-step stepper rows were removed; every
+// call site already issues the matching ProgressModel.enterStep()/
+// setIntra() alongside this call, so the model's active step (→ barPct)
+// is driven without it. Kept as an empty shim so the ~12 call sites in
+// the message handler need no churn.
+function setShieldStage(stageId, state, pctText) { /* stepper removed */ }
+
+// ── The single-owner progress model ───────────────────────────────
+//
+// Holds the active step + per-step intra fraction and derives the
+// internal stage value (barPct). Real-signal fractions (download bytes %,
+// import %, render thumbs N/M) come from their feeders; signal-less steps
+// (compile, runtime, prep) are TIME-EASED (1 − e^(−t/budget)) — monotone,
+// smooth at any timer rate, can never reach the band end early. The ONE
+// visible bar shows (barPct + importPct) / 2 (see recompute()).
+var ProgressModel = {
+    activeStep: 'prep',
+    intra: {},            // stepId → 0..1 real fraction (only for track:bytes/import/render)
+    easeT0: {},           // stepId → performance.now() when the step went active (for ease)
+    _coldSeen: {},        // stepId → true if a cold-only step actually fired a mark
+    label: '',
+    detail: '',
+    importBudgetMs: 18000,
+    _lastBar: 0,        // monotone floor for the DISPLAYED (averaged) bar
+    importPct: 0,       // latest kit import % (0..100); 0 before import begins
+    _easeTimer: null,
+    reset: function() {
+        this.activeStep = 'prep';
+        this.intra = {};
+        this.easeT0 = {};
+        this._coldSeen = {};
+        this.label = '';
+        this.detail = '';
+        this._lastBar = 0;
+        this.importPct = 0;
+        window.__shieldMaxPct = 0;
+        if (this._easeTimer) { clearInterval(this._easeTimer); this._easeTimer = null; }
+    },
+    now: function() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); },
+    // Mark a step active; start its time-ease clock if it has no real signal.
+    enterStep: function(id) {
+        var idx = stepIndex(id), curIdx = stepIndex(this.activeStep);
+        if (idx < curIdx) return;            // never go backwards
+        this.activeStep = id;
+        if (this.easeT0[id] == null) this.easeT0[id] = this.now();
+        // At 'ready' the document is fully open — both inputs are 100, so
+        // the averaged bar reaches 100. (On warm/cached opens the import
+        // frames may never reach 100 on their own; ready forces it.)
+        if (id === 'ready') this.importPct = 100;
+        this._ensureEaseTimer();
+        this.recompute();
+    },
+    setIntra: function(id, frac) {
+        frac = Math.max(0, Math.min(1, frac));
+        this.intra[id] = frac;
+        // The kit import % is the second input to the averaged bar. Capture
+        // it (0..100) whenever the import step's intra fraction is fed; it
+        // only ever climbs (the import frames are monotone, and 'doc:loaded'
+        // forces it to 100 via setImportPct below).
+        if (id === 'import') this.setImportPct(frac * 100);
+        else this.recompute();
+    },
+    // Set the latest kit import percentage (0..100), monotone-non-decreasing.
+    setImportPct: function(pct) {
+        pct = Math.max(0, Math.min(100, pct || 0));
+        if (pct > this.importPct) this.importPct = pct;
+        this.recompute();
+    },
+    // Time-ease fraction for a signal-less step. budget chosen per step.
+    _easeFrac: function(id) {
+        var t0 = this.easeT0[id];
+        if (t0 == null) return 0;
+        var budget = id === 'import' ? this.importBudgetMs
+                   : id === 'compile' ? 4000
+                   : id === 'runtime' ? 2500
+                   : id === 'render'  ? 3000
+                   : 2000;
+        var t = this.now() - t0;
+        return 1 - Math.exp(-t / budget);
+    },
+    // The fraction (0..1) FILLED within the active step's band.
+    _activeFrac: function() {
+        var st = stepDef(this.activeStep);
+        if (!st) return 0;
+        var real = this.intra[this.activeStep];
+        if ((st.track === 'bytes' || st.track === 'import' || st.track === 'render')
+            && real != null) {
+            return real;                       // byte/percent mode — real signal
+        }
+        // No real signal yet → time-ease (never claims "done").
+        return this._easeFrac(this.activeStep);
+    },
+    _ensureEaseTimer: function() {
+        if (this._easeTimer) return;
+        var self = this;
+        this._easeTimer = setInterval(function() { self.recompute(); }, 200);
+    },
+    // Compute the internal boot/stage value (barPct): completed steps
+    // contribute their full band; the active step contributes
+    // bandStart + frac*(bandEnd-bandStart). Monotone by construction
+    // (activeStep never regresses, ease is monotone, real fractions feed
+    // forward). This is the SAME computation that used to drive the bar
+    // directly — it's now one of the two averaged inputs.
+    _barPct: function() {
+        var st = stepDef(this.activeStep);
+        if (!st) return 0;
+        var frac = this._activeFrac();
+        var bar = st.band[0] + (st.band[1] - st.band[0]) * frac;
+        if (this.activeStep === 'ready') bar = 100;
+        return Math.max(0, Math.min(100, bar));
+    },
+    // Derive + render the ONE visible bar as the average of the internal
+    // stage value (barPct) and the kit import % (importPct, 0 before
+    // import). Clamped 0-100 and monotone-non-decreasing (a soft floor
+    // that can never pull the bar backward on transient jitter).
+    recompute: function() {
+        var barPct = this._barPct();
+        var disp = (barPct + this.importPct) / 2;
+        disp = Math.max(0, Math.min(100, disp));
+        if (disp < this._lastBar) disp = this._lastBar;   // soft monotone
+        this._lastBar = disp;
+        window.__shieldMaxPct = disp;
+        var fill = document.getElementById('editor-shield-bar-fill');
+        if (fill) fill.style.width = disp + '%';
+        if (this.label) {
+            var lbl = document.getElementById('editor-shield-label');
+            if (lbl) lbl.textContent = this.label;
+        }
+        if (this.detail != null) {
+            var d = document.getElementById('editor-shield-detail');
+            if (d) d.textContent = this.detail;
+        }
+    },
+};
+window.ProgressModel = ProgressModel;
+
+function showShield(label, detail) {
+    ProgressModel.reset();
+    ProgressModel.label = label || 'Working…';
+    ProgressModel.detail = detail || '';
+    document.getElementById('editor-shield-label').textContent = ProgressModel.label;
+    document.getElementById('editor-shield-detail').textContent = ProgressModel.detail;
+    document.getElementById('editor-shield-bar-fill').style.width = '0%';
+    ProgressModel.enterStep('prep');
+    var sh = document.getElementById('editor-shield');
+    sh.classList.add('active');
+    sh.style.display = 'flex';
+}
+function hideShield() {
+    var sh = document.getElementById('editor-shield');
+    sh.classList.remove('active');
+    sh.style.display = 'none';
+    if (ProgressModel._easeTimer) { clearInterval(ProgressModel._easeTimer); ProgressModel._easeTimer = null; }
+    // Iter 196: monotonic counter so tests polling at ≥100 ms can
+    // detect cross-revive same-file open events whose shield goes
+    // up→down within microseconds (faster than poll cadence).
+    window.__shieldDropCount = (window.__shieldDropCount || 0) + 1;
+}
+// SINGLE OWNER shim. All legacy callers (tryDropShield, relay phases,
+// WasmProgress fallback) used to write the bar directly through this.
+// They now route through the model: a `label`/`detail` updates text,
+// and a `pct` is treated as a FLOOR HINT only — the model owns the real
+// value, so a hint can nudge the bar forward (e.g. 'Ready' 100) but can
+// never pull it backward or latch it. This preserves every call site
+// while removing the scattered absolute writers that caused the park.
+function updateShieldProgress(label, pct, detail) {
+    // SINGLE OWNER (C1, completed 2026-06-15): label/detail ONLY. The bar
+    // value is owned exclusively by the step model (enterStep + setIntra +
+    // time-ease). The `pct` argument is now IGNORED — it used to raise a
+    // `_lastBar` soft floor, but legacy callers pass hardcoded high values
+    // (tryDropShield's premature 'Joining session… 96' fired by the PREWARM
+    // doc's early docReady, the openFile 15/30/50/90 nudges, late-join 85/90/
+    // 95) which pinned the bar near the top for the whole open — the real
+    // "stuck at 94/96%". Dropping the floor makes those calls label-only and
+    // lets the bar reflect the genuine step state. Signature kept so the ~12
+    // call sites need no churn; pct is intentionally unused.
+    if (label != null) ProgressModel.label = label;
+    if (detail != null) ProgressModel.detail = detail;
+    ProgressModel.recompute();
+}
+
+// Drop the shield only when BOTH the doc is rendered AND the relay-adapter
+// has activated. Either signal alone is misleading: WasmDocReady without
+// RelayActivated leaves the user staring at a doc that silently refuses
+// to accept input; RelayActivated without WasmDocReady would expose the
+// blank prewarm doc.
+// Absolute floor: once we begin loading a file, force-drop the shield
+// after 90 s no matter what. Guards the click-during-prewarm flow where
+// the new target iframe can hang on Azure and leave the user with an
+// eternal spinner. Set on first tryDropShield for a given file.
+var __shieldFloorTimer = null;
+function armShieldFloor() {
+    if (__shieldFloorTimer || !currentFile) return;
+    __shieldFloorTimer = setTimeout(function() {
+        __shieldFloorTimer = null;
+        var sh = document.getElementById('editor-shield');
+        if (sh && sh.classList.contains('active')) {
+            console.warn('[viewer] Shield floor timeout (90s) — forcing drop');
+            docReady = true; relayActivated = true;
+            hideShield();
+            setStatus('Loaded (timeout) — ' + currentFile);
+        }
+    }, 90000);
+}
+var __timingSummaryPrintedFor = null;
+function tryDropShield(reason, docMs) {
+    if (!currentFile) return;
+    armShieldFloor();
+    if (docReady && relayActivated) {
+        // Only print the summary + "Document ready" log ONCE per open.
+        // WasmDocReady can fire more than once (docPoll + switchdoc
+        // docReadyInterval both post it), and tryDropShield is called
+        // from multiple signal handlers — without this guard the
+        // browser console shows two identical summaries.
+        if (__timingSummaryPrintedFor !== currentFile) {
+            __timingSummaryPrintedFor = currentFile;
+            viewerLog('Document ready: ' + currentFile);
+            var summary = Object.keys(__vMilestones).map(function(k) {
+                return '  ' + k + ': ' + (__vMilestones[k] / 1000).toFixed(2) + 's';
+            }).join('\n');
+            console.log('%c[TIMING SUMMARY] (from viewer page navigation)\n' + summary,
+                'color: #1b5e20; font-weight: bold; font-size: 12px');
+        }
+        // Doc is fully open AND relay activated → the open is genuinely
+        // complete. Snap the averaged bar to 100: enterStep('ready') sets
+        // barPct=100 AND forces importPct=100, so (barPct+importPct)/2=100.
+        // This is the honest completion signal on the warm/cached path,
+        // where the kit may never send a terminal import-100 / doc:loaded
+        // frame (the bar would otherwise drop at ~half of barPct).
+        ProgressModel.enterStep('ready');
+        updateShieldProgress('Ready', 100, currentFile);
+        setTimeout(function() {
+            hideShield();
+            setStatus('Ready — ' + currentFile +
+                (docMs > 0 ? ' (' + (docMs / 1000).toFixed(1) + 's)' : ''));
+        }, 200);
+        return;
+    }
+    // If doc is ready but relay hasn't activated yet, start a timeout
+    // to drop the shield anyway. The relay is for co-editing — a single
+    // user shouldn't have to wait for it.
+    if (docReady && !relayActivated) {
+        if (!window.__shieldRelayTimeout) {
+            window.__shieldRelayTimeout = setTimeout(function() {
+                window.__shieldRelayTimeout = null;
+                if (docReady && !relayActivated) {
+                    console.log('[viewer] Shield timeout: dropping without relay activation');
+                    relayActivated = true; // pretend activated
+                    tryDropShield('relay-timeout', docMs);
+                }
+            }, 5000);
+        }
+        updateShieldProgress('Joining session…', 96, 'Waiting for relay activation');
+    } else if (!docReady) {
+        updateShieldProgress('Loading document…', 92, currentFile);
+    }
+    console.log('[viewer] tryDropShield (' + reason + '): docReady=' + docReady +
+                ' relayActivated=' + relayActivated + ' — keeping shield up');
+}
+
+function setPrewarmStatus(msg, ready) {
+    const el = document.getElementById('prewarm-status');
+    el.textContent = msg;
+    if (ready) el.classList.add('ready');
+}
+
+// Listen for pre-warm ready signal from editor iframe
+window.addEventListener('message', function(event) {
+    if (typeof event.data !== 'string') return;
+    try {
+        const msg = JSON.parse(event.data);
+        // Journey recorder: in-canvas input forwarded from the editor iframe's
+        // wasm-loader (?record sessions only). Merge into the journey stream.
+        if (msg.MessageId === 'JourneyInput' && window.JourneyRecorder) {
+            JourneyRecorder.noteIframeInput(msg.Values); return;
+        }
+        // Iter A8: latch warm-restore failure so subsequent cross-type
+        // iframe creations skip the snapshot (which is ~100 % reproducible
+        // bad once it has hung once in a session). Without this the user
+        // pays the 12 s watchdog wait on every cross-type after the first
+        // failure. Latch persists for the lifetime of the viewer page.
+        if (msg.MessageId === 'WarmRestoreFailed') {
+            window.__warmRestoreFailedThisSession = true;
+            console.log('[viewer] WarmRestoreFailed received — '
+                + 'subsequent cross-type iframes will use ?planc=0');
+            return;
+        }
+        // Iter 195: hot-switch (in-iframe #switchdoc) can wedge after
+        // 3+ consecutive switchdocs in the same kit. wasm-loader's
+        // bridge:hot_switch_watchdog fires after 30s of no canvas
+        // change and posts HotSwitchFailed. Drop the cached
+        // currentFile/currentDocType so the next openFileBySecret
+        // takes the cross-type cold-reload path, then re-trigger
+        // the open of the file the user just clicked. The iframe's
+        // src change (cool.html?... no #switchdoc) forces a fresh
+        // load — same UX as a cold reload, but recovers the user
+        // instead of staring at a stuck spinner.
+        if (msg.MessageId === 'HotSwitchFailed' && msg.Values) {
+            var stuckFile = msg.Values.filename;
+            console.warn('[viewer] HotSwitchFailed for ' + stuckFile
+                + ' (' + msg.Values.reason + ') — falling back to cold reload');
+            // Force the next open to be a cold reload.
+            currentFile = null;
+            currentDocType = null;
+            activeIframeFile = null;
+            activeIframeDocType = null;
+            // Re-fire the open for the file the user wanted, if we
+            // still have its secret cached. RecentFiles is the
+            // localStorage-backed registry; entries have
+            // {secret, fileId, cachedName}.
+            try {
+                var rec = (typeof RecentFiles !== 'undefined' && RecentFiles.list)
+                    ? RecentFiles.list() : [];
+                var entry = rec.find(function(r) {
+                    return r.cachedName === stuckFile || r.fileId === stuckFile;
+                });
+                // Only recover the stuck file if the user hasn't since moved
+                // on. On a rapid A→B→A, a late HotSwitchFailed(B) must not
+                // re-open B once A is the latest request — otherwise the
+                // recovery re-loads the wrong doc (samedoc-flicker/docname).
+                var stillWanted = entry && (entry.fileId === __latestRequestedFile
+                    || entry.cachedName === __latestRequestedFile
+                    || stuckFile === __latestRequestedFile);
+                if (entry && stillWanted && typeof openFileBySecret === 'function') {
+                    openFileBySecret(entry.secret);
+                } else {
+                    console.log('[viewer] HotSwitchFailed recovery of ' + stuckFile +
+                        ' skipped — user moved to ' + __latestRequestedFile);
+                }
+            } catch(e) { console.error('[viewer] HotSwitchFailed retry failed', e); }
+            return;
+        }
+        // Fine-grained pipeline stage from the iframe's wasm-loader
+        // mark() stream (or the kit's import % for stage 'import').
+        // SINGLE OWNER: each granular mark advances its user-facing step
+        // in ProgressModel; import drives the import step's intra %. No
+        // direct bar writes — the model owns the value.
+        if (msg.MessageId === 'WasmOpenStage' && msg.Values && msg.Values.stage) {
+            var stg = msg.Values.stage;
+            if (stg === 'import') {
+                // Real kit statusindicator % (0..100). Feeds the import
+                // step's intra sub-bar (byte/percent mode); the model maps
+                // it into the import band — now reachable after C1.
+                var ipct = Math.max(0, Math.min(100, msg.Values.pct || 0));
+                setShieldStage('import', ipct >= 100 ? 'done' : 'in-progress', '');
+                ProgressModel.enterStep('import');
+                ProgressModel.setIntra('import', ipct / 100);
+            } else if (stg === 'render') {
+                // pptx per-slide render thumbs N/M (real DOM signal from
+                // the loader's slide-render tap). Feeds the render step's
+                // intra sub-bar (byte/percent mode).
+                var rpct = Math.max(0, Math.min(100, msg.Values.pct || 0));
+                setShieldStage('import', 'done', '');
+                ProgressModel.enterStep('render');
+                setShieldStage('render', rpct >= 100 ? 'done' : 'in-progress', '');
+                ProgressModel.setIntra('render', rpct / 100);
+            } else if (stg === 'doc:loaded') {
+                // Open complete — everything done; snap to 100.
+                setShieldStage('import', 'done', '');
+                setShieldStage('render', 'done', '');
+                setShieldStage('ready', 'done', '');
+                ProgressModel.enterStep('ready');
+            } else {
+                // A granular boot/render mark → advance its user-facing
+                // step. The step it maps to becomes active (and earlier
+                // steps complete implicitly). Track which cold-only steps
+                // actually fired a mark so warm opens can collapse them.
+                var stepId = MARK_TO_STEP[stg];
+                if (stepId) {
+                    var def = stepDef(stepId);
+                    if (def && def.coldOnly) ProgressModel._coldSeen[stepId] = true;
+                    ProgressModel.enterStep(stepId);
+                    setShieldStage(stepId, 'in-progress', '');
+                    // DEAD-ZONE EASE: once the runtime is up, the next thing
+                    // is the document import — but for a big doc there's a
+                    // long (~30s cold) silent warmup/snapshot gap before the
+                    // first import % frame arrives (measured: Docaposte 53-
+                    // slide pptx, calledRun t=3s → import 5% t=36s). Enter the
+                    // import step NOW so its band time-eases continuously
+                    // through that gap (honest: no number surfaced, sub-bar
+                    // shimmers) instead of freezing at the runtime band end.
+                    // The real import % hands off seamlessly the moment the
+                    // first frame lands (soft monotone floor → no backwards).
+                    if (stepId === 'runtime') ProgressModel.enterStep('import');
+                }
+                // NOTE: dom:first_canvas deliberately does NOT advance the
+                // render step. The first canvas is the PREWARM blank-doc
+                // bootstrap paint (~2s), not the user's document render —
+                // entering the render band [88,96] on it pinned the bar at
+                // ~96% for the whole open (the "stuck at 94/96%" bug). The
+                // render step opens only on the REAL post-import signals:
+                // the pptx slide-render tap (stage:'render'), WasmSwitchVisible,
+                // or doc:loaded. first_canvas now maps to no step (no-op).
+            }
+            return;
+        }
+        // Live progress from the iframe's wasm-loader. SINGLE OWNER: these
+        // were the scattered absolute writers (incl. the hard "Compiling…
+        // 90" that latched the park). Now they only feed the stepper:
+        //   - download → real bytes % into the 'download' step's sub-bar;
+        //   - 'Opening/Switching/Compiling/Initializing' → label/step nudge
+        //     only (NO absolute pct — the relevant step's band + ease own
+        //     the bar). The hard 90/93/95 are dropped here at the source.
+        if (msg.MessageId === 'WasmProgress' && msg.Values) {
+            var pct = msg.Values.pct;
+            var label = msg.Values.label || '';
+            var detail = msg.Values.detail || '';
+            if (label.includes('Downloading editor')) {
+                // Real download bytes % (Content-Length-driven aggregate,
+                // ~0..88 from the loader). Feed it into the download step's
+                // intra sub-bar (byte mode) — a genuine % the whole way.
+                ProgressModel._coldSeen['download'] = true;
+                ProgressModel.enterStep('download');
+                setShieldStage('download', 'in-progress', '');
+                if (pct != null) ProgressModel.setIntra('download', Math.min(1, pct / 88));
+                // detail passes through unmodified — already MB-formatted
+                // by wasm-loader's renderDetail(); show it as the subtitle.
+                updateShieldProgress('Downloading editor…', null, detail);
+            } else if (label === 'Ready') {
+                // The loader posts 'Ready'/100 from its prewarm
+                // fireDocReady/docPoll path BEFORE the user's real doc has
+                // loaded (premature Ready, proposal §B3). Treat it as a
+                // LABEL-ONLY nudge here — NOT a 100 floor — so it can't
+                // latch the bar at 100 before import. The genuine 100 is
+                // owned by the 'ready' step (doc:loaded) + tryDropShield,
+                // which gate on real doc-load AND relay activation.
+                updateShieldProgress(null, null, null);
+            } else if (label.includes('Opening') || label.includes('Switching')) {
+                // Label-only nudge — the import step's band owns the bar.
+                updateShieldProgress('Opening document…', null, currentFile || detail);
+            } else {
+                // Compiling…/Initializing runtime… — label-only. The hard
+                // absolute pct (90/93/95) is intentionally DROPPED here so
+                // it can no longer latch the bar above the import band.
+                updateShieldProgress(label || null, null, detail || null);
+            }
+        }
+        // Iframe canvas first paint after switchdocument — doc is visible
+        // but the toolbar / word-count / status bar may still be loading.
+        // Single owner: open the render step (label-only); the render
+        // step's band + ease own the bar, no absolute 90 jump.
+        if (msg.MessageId === 'WasmSwitchVisible' && msg.Values && currentFile) {
+            var ms = msg.Values.ms;
+            console.log('[viewer] Switch visible after ' + ms + 'ms (waiting for doc-ready)');
+            setShieldStage('import', 'done', '');
+            ProgressModel.enterStep('render');
+            setShieldStage('render', 'in-progress', '');
+            updateShieldProgress('Rendering document…', null, currentFile);
+        }
+
+        // Iframe reports the document is fully loaded (canvas pixels
+        // changed from baseline AND status bar populated). This is the
+        // ONLY signal we drop the shield on for post-prewarm document
+        // loads — App_LoadingStatus=Initialized fires from COOL JS when
+        // the editor chrome boots, which can happen before the new
+        // document's canvas has actually rendered (especially for
+        // hot-switches where the iframe is reused and the previous
+        // doc's status text matches the new one).
+        if (msg.MessageId === 'WasmDocReady' && msg.Values && currentFile) {
+            var rms = msg.Values.ms;
+            console.log('[viewer] Doc ready after ' + rms + 'ms' + (msg.Values.timeout ? ' (timeout)' : ''));
+            docReady = true;
+            if (window.JourneyRecorder) JourneyRecorder.noteDocReady(currentFile);
+            tryDropShield('doc-ready', rms);
+        }
+        // Iframe's relay-adapter has finished joining the room. Until this
+        // arrives, the editor refuses input ("Dropping input not activated
+        // yet") so the user CAN'T type even if the doc looks rendered.
+        if (msg.MessageId === 'RelayActivated') {
+            console.log('[viewer] Relay activated (viewId=' + msg.Values.viewId +
+                        ', firstClient=' + msg.Values.isFirstClient + ')');
+            relayActivated = true;
+            tryDropShield('relay-activated');
+        }
+        // Periodic update from the iframe while it's still waiting to
+        // activate. Lets us tell the user WHAT we're waiting for instead
+        // of leaving a stale spinner.
+        if (msg.MessageId === 'RelayActivating' && currentFile && !relayActivated) {
+            var waitingFor = msg.Values.waitingFor;
+            var elapsed = msg.Values.elapsedSec;
+            updateShieldProgress(
+                'Joining session…',
+                Math.min(99, 95 + Math.min(elapsed, 4)),  // creep toward 99 as time passes
+                'Waiting for ' + waitingFor + (elapsed > 2 ? ' (' + elapsed + 's)' : ''));
+        }
+
+        // Late-join progress phases from relay-adapter
+        if (msg.MessageId === 'RelayLateJoinPhase' && currentFile && !relayActivated) {
+            var phase = msg.Values.phase;
+            if (phase === 'downloading') {
+                updateShieldProgress('Adding latest changes…', 85,
+                    'Downloading checkpoint' + (msg.Values.msgCount ? ' + ' + msg.Values.msgCount + ' edits' : ''));
+            } else if (phase === 'loading') {
+                updateShieldProgress('Adding latest changes…', 90, 'Loading document');
+            } else if (phase === 'replaying') {
+                updateShieldProgress('Adding latest changes…', 95, 'Replaying edits');
+            }
+        }
+        // Save-complete toast
+        if (msg.MessageId === 'SaveComplete') {
+            var toast = document.getElementById('save-toast');
+            if (toast) {
+                toast.classList.add('show');
+                setTimeout(function() { toast.classList.remove('show'); }, 2000);
+            }
+        }
+        // Save conflict — file was modified externally since we loaded it
+        if (msg.MessageId === 'SaveConflict' && msg.Values) {
+            var cv = msg.Values;
+            var choice = confirm(
+                'This file was modified externally since you opened it.\n\n' +
+                'Your version is based on: ' + (cv.expectedHash || '').substring(0, 8) + '…\n' +
+                'Current storage version: ' + (cv.currentHash || '').substring(0, 8) + '…\n' +
+                'Last modified: ' + (cv.updatedAt || 'unknown') + '\n\n' +
+                'Click OK to overwrite with your version, or Cancel to keep the external version.'
+            );
+            if (choice) {
+                var iframe = document.getElementById('editor-frame');
+                if (iframe && iframe.contentWindow) {
+                    iframe.contentWindow.postMessage(JSON.stringify({
+                        MessageId: 'ForceSave', Values: {}
+                    }), '*');
+                }
+            }
+        }
+
+        // Encryption key request from the editor iframe's relay-adapter.
+        // The viewer is the key authority — it derives the key and responds.
+        if (msg.MessageId === 'KeyRequest' && msg.Values) {
+            var fId = msg.Values.fileId;
+            var kv = msg.Values.keyVersion;
+            fetch('/api/keys/' + encodeURIComponent(fId) + '/' + kv)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var iframe = document.getElementById('editor-frame');
+                    if (iframe && iframe.contentWindow) {
+                        iframe.contentWindow.postMessage(JSON.stringify({
+                            MessageId: 'KeyResponse',
+                            Values: { keyVersion: data.keyVersion, key: data.key, fileId: fId }
+                        }), '*');
+                    }
+                }).catch(function(e) { console.error('[viewer] Key request failed:', e); });
+        }
+
+        // WasmPrewarmReady fires from wasm-loader.js once the prewarm doc
+        // has actually painted (__wasmInitialDocLoaded=true). This is the
+        // ONLY signal that means "the iframe is ready to receive
+        // switchdocument" — without this, a hot-switch dispatched in
+        // response to App_LoadingStatus=Initialized will sit in
+        // pendingSwitchFilename for 20-30 s while polled trySendSwitch
+        // retries wait for the prewarm to actually finish.
+        if (msg.MessageId === 'WasmPrewarmReady') {
+            if (!prewarmReady) {
+                prewarmReady = true;
+                setPrewarmStatus('✅ Editor pre-warmed — pick a file', true);
+                viewerLog('Editor pre-warmed (ready to open files)');
+                if (!currentFile) {
+                    hideShield();
+                    return;
+                }
+            }
+            // Iter 202: real paint completion clears the cold-type watchdog.
+            // The cold-reload-initialized branch ALSO flips prewarmReady
+            // off the early Initialized signal, so we can't gate on that
+            // — track WasmPrewarmReady's last-seen file in its own flag.
+            window.__lastPaintedFile = msg.Values && msg.Values.filename;
+            clearTimeout(window.__crossTypeWatchdog);
+        }
+
+        // App_LoadingStatus=Initialized has TWO emitters: COOL Map.js (early
+        // — fires when the framework boots) and wasm-loader.js docPoll (late
+        // — same moment as WasmPrewarmReady). We can't tell them apart by
+        // message shape, so the early one will fire first and we use it
+        // ONLY for cold reloads (where the iframe is recreated and there's
+        // no switchdocument that needs the late signal). For post-prewarm
+        // hot-switches we trust WasmDocReady, which gates on canvas paint.
+        if (msg.MessageId === 'App_LoadingStatus' && msg.Values && msg.Values.Status === 'Initialized') {
+            // For cold-reload cross-type switches, WasmDocReady never fires
+            // (no switchdocument in the new iframe). Accept Initialized as ready.
+            if (window.__viewerState && window.__viewerState.lastOpenMode &&
+                window.__viewerState.lastOpenMode.startsWith('cold')) {
+                console.log('[viewer] App_LoadingStatus=Initialized (cold reload) — treating as doc ready');
+                docReady = true;
+                tryDropShield('cold-reload-initialized');
+                // Also flip prewarmReady so the NEXT open in this session
+                // can take the same-type hot-switch path. Earlier we kept
+                // this on WasmPrewarmReady only, but that fires AFTER the
+                // shield-drop signal — by then the test/user already
+                // clicked the next file and the iframe was replaced
+                // before the postMessage landed. Using the same early
+                // signal that drops the shield ensures prewarmReady is
+                // visible for the click that immediately follows.
+                // Sending switchdocument too early is safe: the iframe's
+                // trySendSwitch retries on a 50 ms poll until
+                // __wasmInitialDocLoaded is set.
+                if (!prewarmReady) {
+                    prewarmReady = true;
+                    viewerLog('Cold-reload iframe ready — same-type hot-switch armed');
+                }
+            }
+        }
+
+        // Editor asking the viewer to save a v2-encrypted file. The
+        // editor iframe never sees keys — it hands us plaintext, we
+        // encrypt with the currently-open file's contentKey and PUT
+        // to /api/v2/file/<fileId>. Response posts back so the
+        // adapter can rotate the relay checkpoint.
+        // Editor (late joiner) asking the viewer to fetch + decrypt a
+        // v2 file. The relay checkpoint's locator is /api/v2/file/<id>,
+        // which serves CIPHERTEXT. Only the viewer has the content key;
+        // the editor can't decrypt. We fetch, decrypt, and post the
+        // plaintext back as base64.
+        if (msg.MessageId === 'WasmFileLoad' && msg.Values) {
+            const { fileId: loadFileId, reqId: loadReqId } = msg.Values;
+            const respondLoad = (payload) => {
+                try { event.source.postMessage(JSON.stringify({
+                    MessageId: 'WasmFileLoadResult',
+                    Values: Object.assign({ reqId: loadReqId }, payload),
+                }), '*'); } catch(e) {}
+            };
+            if (!currentV2Keys || currentV2Keys.fileId !== loadFileId) {
+                respondLoad({ ok: false, error: 'no-key-for-fileId' });
+                return;
+            }
+            (async () => {
+                try {
+                    const resp = await fetch('/api/v2/file/' + loadFileId);
+                    if (!resp.ok) {
+                        respondLoad({ ok: false, error: 'fetch-' + resp.status });
+                        return;
+                    }
+                    const j = await resp.json();
+                    if (j.encName) currentV2Keys.encName = j.encName;
+                    const ctBytes = Uint8Array.from(atob(j.ciphertext), c => c.charCodeAt(0));
+                    const plaintext = await FileCrypto.decryptBytes(currentV2Keys.contentKey, ctBytes);
+                    respondLoad({ ok: true, bytes: bytesToBase64(plaintext) });
+                } catch(e) {
+                    respondLoad({ ok: false, error: 'decrypt-' + (e.message || 'unknown') });
+                }
+            })();
+            return;
+        }
+
+        if (msg.MessageId === 'WasmFileSave' && msg.Values) {
+            const { fileId: saveFileId, bytes, reqId } = msg.Values;
+            const respond = (payload) => {
+                try { event.source.postMessage(JSON.stringify({
+                    MessageId: 'WasmFileSaveResult',
+                    Values: Object.assign({ reqId }, payload),
+                }), '*'); } catch(e) {}
+            };
+            if (!currentV2Keys || currentV2Keys.fileId !== saveFileId) {
+                respond({ ok: false, error: 'no-key-for-fileId' });
+                return;
+            }
+            const plaintext = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+            (async () => {
+                try {
+                    const [ctBytes, hashBuf] = await Promise.all([
+                        FileCrypto.encryptBytes(currentV2Keys.contentKey, plaintext),
+                        crypto.subtle.digest('SHA-256', plaintext),
+                    ]);
+                    const ciphertext = bytesToBase64(ctBytes);
+                    const hashHex = Array.from(new Uint8Array(hashBuf))
+                        .map(b => b.toString(16).padStart(2, '0')).join('');
+                    // encName is reused unchanged — filename doesn't
+                    // change on a save. Iter 60: cached on the initial
+                    // open in currentV2Keys.encName, so we no longer
+                    // refetch the full ciphertext just to read it.
+                    // Fall back to a fetch only if the cache is empty
+                    // (shouldn't happen — open path always populates it).
+                    let encName = currentV2Keys.encName || '';
+                    if (!encName) {
+                        try {
+                            const meta = await fetch('/api/v2/file/' + saveFileId);
+                            if (meta.ok) {
+                                const m = await meta.json();
+                                encName = m.encName || '';
+                                currentV2Keys.encName = encName;
+                            }
+                        } catch(e) {}
+                    }
+                    const putResp = await fetch('/api/v2/file/' + saveFileId, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ciphertext, encName }),
+                    });
+                    if (!putResp.ok) {
+                        respond({ ok: false, error: 'put-failed-' + putResp.status });
+                        return;
+                    }
+                    respond({
+                        ok: true,
+                        hash: hashHex,
+                        locator: FILE_STORAGE_URL + '/api/v2/file/' + saveFileId,
+                    });
+                } catch(e) {
+                    respond({ ok: false, error: 'encrypt-or-put-' + (e.message || 'unknown') });
+                }
+            })();
+        }
+    } catch(e) {}
+});
+
+// Start pre-warm immediately: load the editor iframe in parallel with the
+// blank doc upload. The iframe takes several seconds to download online.wasm
+// anyway — the blank doc just needs to arrive at /wasm/ before Kit opens it
+// (~6s after iframe starts loading). Starting the iframe immediately saves
+// the TLS handshake + CORS preflight + upload latency (~2-5s).
+async function startPrewarm() {
+    showShield('Loading editor…', 'First-time pre-warm of WebAssembly runtime');
+    // Start the editor iframe IMMEDIATELY, upload blank doc in parallel.
+    // The blank doc must exist at /wasm/ before Kit tries to open it (~6s
+    // into WASM init). The iframe load + blank doc upload overlap.
+    const iframe = document.getElementById('editor-frame');
+    viewerLog('Editor iframe loading');
+    // Prewarm is stand-alone: the blank doc is local state and will be
+    // replaced by a real doc (hot-switch or cold reload) as soon as the
+    // user opens something. Don't wire up the relay for the blank —
+    // connecting to a relay room we're about to abandon just burns a WS
+    // handshake and keeps a ghost room alive for cleanup. The real
+    // relay room is set by openFile() via RelaySwitchRoom or the cold
+    // reload coolUrl.
+    // Propagate Plan C state: snapshot is now ON by default. Pass
+    // ?planc=0 through to the iframe to opt OUT (cold-only).
+    var __viewerPlanC = '';
+    try {
+        var __vp = new URLSearchParams(window.location.search).get('planc');
+        if (__vp === '0' || __vp === 'off') __viewerPlanC = '&planc=0';
+        else if (__vp === '1' || __vp === 'on') __viewerPlanC = '&planc=1';
+    } catch (e) { /* ignore */ }
+    // cool.html lives at /<id>/browser/dist/cool.html on FD (the literal
+    // webpack output path). Pre-cutover the editor App Service routed
+    // /browser/cool.html → browser/dist/cool.html via express.static;
+    // FD static storage serves blobs literally, no routing. The other
+    // assets cool.html references (bundle.js, online.wasm) resolve
+    // relative to its own URL, so they continue to work from /browser/
+    // dist/ once cool.html itself loads from there.
+    armWOPIReady(iframe);
+    iframe.src = EDITOR_BASE + '/browser/dist/cool.html?WOPISrc=' + encodeURIComponent(BLANK_FILENAME)
+               + '&access_token=test'
+               + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
+               + '&UserName=' + encodeURIComponent(MY_USER_NAME)
+               + '&viewerT0=' + window.__viewerT0
+               + UI_LANG_PARAM
+               + __viewerPlanC
+               + RECORD_PARAM;
+
+    // Stage blank doc in the bridge cache — Kit reaches it via
+    // /wasm/<BLANK_FILENAME> through the SW bridge once it boots.
+    try {
+        const resp = await fetch('/blank.docx');
+        if (resp.ok) {
+            const buf = await resp.arrayBuffer();
+            EditorBridge.stage(BLANK_FILENAME, buf);
+        }
+    } catch (e) {
+        console.log('[viewer] Blank doc stage failed (non-critical): ' + e.message);
+    }
+}
+
+// Current folder context for uploads (set by clicking a folder)
+let currentUploadFolder = '';
+
+async function refresh() {
+    // v2-only sidebar: render files this browser knows about via
+    // localStorage (RecentFiles). The server's plaintext /api/files/
+    // listing is intentionally ignored — we don't want to surface or
+    // decrypt documents whose secret we never saw. If you want a file
+    // listed here, upload it (this browser keeps the secret) or open
+    // its /#file=<secret> URL once (the secret lands in localStorage).
+    const list = document.getElementById('list');
+    const recent = typeof RecentFiles !== 'undefined' ? RecentFiles.list() : [];
+    if (recent.length === 0) {
+        list.innerHTML =
+            '<div style="padding:12px 8px;color:#888;font-size:12px;line-height:1.5">' +
+            'No encrypted files yet.<br>Upload a file to start — the secret goes in the URL, which only you hold.' +
+            '</div>';
+        return;
+    }
+    let html = '<h4 style="margin:8px 0 4px 8px">🔒 Encrypted files</h4>';
+    for (const r of recent) {
+        const name = r.cachedName || '(locked)';
+        const id = r.fileId.substring(0, 8);
+        const when = r.lastVisited ? new Date(r.lastVisited).toLocaleString() : '';
+        html += `<div class="file" style="padding-left:8px" data-name="${r.fileId}" data-fileid="${r.fileId}">` +
+                `<span style="flex:1">${name}</span>` +
+                `<span style="color:#999;font-size:10px;font-family:monospace">${id}</span>` +
+                `</div>`;
+        _attachClickAfter(r);
+    }
+    list.innerHTML = html;
+    // Re-attach click handlers (innerHTML wipes inline listeners).
+    for (const r of recent) {
+        const el = list.querySelector(`.file[data-fileid="${r.fileId}"]`);
+        if (el) el.addEventListener('click', () => {
+            // Iter 181: collapse synchronously here, BEFORE the hash-
+            // change round-trip that lazily calls openFile (which would
+            // also collapse, but only after openFileBySecret resolves
+            // its keys + first fetch). regression-sidebar reads the
+            // body class immediately after click expecting the bar to
+            // already be docs-collapsed. The renderTree branch (line
+            // ~790) uses inline onclick="openFile(...)" so collapse
+            // fires synchronously there; the recent-files branch goes
+            // through location.hash, hence this missing collapse.
+            collapseSidebar();
+            location.hash = '#file=' + r.secret;
+        });
+    }
+}
+function _attachClickAfter() { /* no-op — kept for forward refactors */ }
+
+function renderTree(node, pathPrefix, depth) {
+    let html = '';
+    // Render subfolders first
+    const folderKeys = Object.keys(node).filter(k => k !== '__files').sort();
+    for (const name of folderKeys) {
+        const fullPath = pathPrefix ? pathPrefix + '/' + name : name;
+        const indent = depth * 16;
+        html += `<div class="folder-row" style="padding-left:${8 + indent}px" onclick="toggleFolder(this)" data-path="${fullPath}">` +
+                `<span class="arrow">&#9654;</span> ${name}` +
+                `<span class="folder-actions"><button onclick="event.stopPropagation();setUploadFolder('${fullPath.replace(/'/g,"\\'")}')">Upload here</button></span>` +
+                `</div>`;
+        html += `<div class="folder-contents" style="display:none">`;
+        html += renderTree(node[name], fullPath, depth + 1);
+        html += `</div>`;
+    }
+    // Render files
+    for (const f of (node.__files || [])) {
+        const indent = depth * 16;
+        const displayName = f.name.split('/').pop();
+        html += `<div class="file" style="padding-left:${8 + indent}px" data-name="${f.name}" ` +
+                `onclick="openFile('${f.name.replace(/'/g, "\\'")}')">${displayName} ` +
+                `<span style="color:#999;font-size:11px">(${(f.size/1024).toFixed(1)}KB)</span></div>`;
+    }
+    return html;
+}
+
+function toggleFolder(el) {
+    const contents = el.nextElementSibling;
+    const open = contents.style.display !== 'none';
+    contents.style.display = open ? 'none' : '';
+    el.querySelector('.arrow').innerHTML = open ? '&#9654;' : '&#9660;';
+}
+
+function setUploadFolder(path) {
+    currentUploadFolder = path;
+    setStatus('Upload folder: ' + (path || '(root)'));
+}
+
+async function createFolder() {
+    const input = document.getElementById('new-folder-name');
+    const name = input.value.trim();
+    if (!name) return;
+    const fullPath = currentUploadFolder ? currentUploadFolder + '/' + name : name;
+    await fetch('/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: fullPath })
+    });
+    input.value = '';
+    setStatus('Created folder: ' + fullPath);
+    refresh();
+}
+
+// btoa(String.fromCharCode.apply(null, bigArray)) blows the call stack for
+// anything > ~100KB in most browsers. Convert in fixed-size chunks.
+function bytesToBase64(bytes) {
+    let s = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(s);
+}
+
+async function uploadFile() {
+    const fileInput = document.getElementById('upload');
+    for (const f of fileInput.files) {
+        setStatus('Encrypting ' + f.name + '…');
+        const secret = FileCrypto.generateSecret();
+        const { contentKey, nameKey, fileId } = await FileCrypto.deriveKeys(secret);
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const [ctBytes, encNameBytes] = await Promise.all([
+            FileCrypto.encryptBytes(contentKey, bytes),
+            FileCrypto.encryptName(nameKey, f.name),
+        ]);
+        const ciphertext = bytesToBase64(ctBytes);
+        const encName    = bytesToBase64(encNameBytes);
+        setStatus('Uploading ' + f.name + '…');
+        const resp = await fetch('/api/v2/file/' + fileId, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ciphertext, encName }),
+        });
+        if (!resp.ok) {
+            const err = await resp.text().catch(() => '');
+            setStatus('Upload failed: ' + resp.status + (err ? ' — ' + err.substring(0, 120) : ''));
+            continue;
+        }
+        const secretB64 = FileCrypto.b64urlEncode(secret);
+        RecentFiles.remember({ secret: secretB64, fileId, cachedName: f.name });
+        if (window.JourneyRecorder) JourneyRecorder.noteUpload(f.name, docTypeFor(f.name), bytes);
+        // Put the secret into the URL fragment so the user can bookmark it.
+        // Only do this if only one file was uploaded; otherwise leave the hash alone.
+        if (fileInput.files.length === 1) location.hash = '#file=' + secretB64;
+    }
+    setStatus('Uploaded ' + fileInput.files.length + ' file(s)');
+    fileInput.value = '';
+    refresh();
+}
+
+// Keys for the currently-open file — held in memory only for the
+// lifetime of the tab. The editor iframe never gets these; it asks
+// the viewer to save on its behalf via postMessage (see the
+// `WasmFileSave` listener below).
+let currentV2Keys = null; // { contentKey, nameKey, fileId, secretB64 }
+
+// Open an encrypted file using the URL-fragment secret. Derive keys,
+// fetch the ciphertext, decrypt, upload plaintext bytes to the editor's
+// /wasm/ temp under the opaque fileId (the editor has no key and never
+// sees the filename), then trigger a hot-switch/cold-reload.
+async function openFileBySecret(secretB64, callerOpts) {
+    callerOpts = callerOpts || {};
+    const secret = FileCrypto.b64urlDecode(secretB64);
+    const { contentKey, nameKey, fileId } = await FileCrypto.deriveKeys(secret);
+    currentV2Keys = { contentKey, nameKey, fileId, secretB64, encName: null };
+    setStatus('Fetching encrypted file…');
+    const resp = await fetch('/api/v2/file/' + fileId);
+    if (!resp.ok) { setStatus('File not found (' + resp.status + ')'); return; }
+    const payload = await resp.json();
+    // Iter 60: cache encName so save doesn't have to refetch the
+    // entire ciphertext just to read it. Filename can't change
+    // without re-keying, so this is correct for the lifetime of the
+    // tab. WasmFileLoad below also refreshes this.
+    currentV2Keys.encName = payload.encName || null;
+    const ct = Uint8Array.from(atob(payload.ciphertext), c => c.charCodeAt(0));
+    const plainBytes = await FileCrypto.decryptBytes(contentKey, ct);
+    let cachedName = null;
+    if (payload.encName) {
+        try {
+            const nameCt = Uint8Array.from(atob(payload.encName), c => c.charCodeAt(0));
+            cachedName = await FileCrypto.decryptName(nameKey, nameCt);
+        } catch(e) { console.warn('[v2] decryptName failed', e); }
+    }
+    RecentFiles.remember({ secret: secretB64, fileId, cachedName });
+    if (window.JourneyRecorder) JourneyRecorder.noteOpen(cachedName, cachedName ? docTypeFor(cachedName) : 'writer', plainBytes);
+    // Size the import time-ease budget from the (known) plaintext size +
+    // doc type. Import dominates open time at a few s/MB; the ease
+    // asymptotes so a rough estimate is fine (a wrong budget only changes
+    // the curve shape, never overshoots). Real kit % overrides the ease
+    // when frames arrive. Rates from the bulk-open measurements (pptx
+    // ~3.1 s/MB; docx ~10.7 s/MB; xlsx floor-bound).
+    try {
+        var __sizeMB = plainBytes.byteLength / (1024 * 1024);
+        var __dt = cachedName ? docTypeFor(cachedName) : 'writer';
+        var __rate = __dt === 'writer' ? 10700 : __dt === 'impress' ? 3100 : 2000; // ms/MB
+        ProgressModel.importBudgetMs = Math.max(6000, Math.round(4000 + __rate * __sizeMB));
+        window.__importBudgetMs = ProgressModel.importBudgetMs;
+    } catch (e) { ProgressModel.importBudgetMs = 18000; }
+    // Stage plaintext in the in-memory bridge cache under the opaque
+    // fileId. When the editor iframe (cross-origin) boots and Kit
+    // fetches /wasm/<fileId>, the editor's bridge SW catches the fetch
+    // and posts to us via sw-bridge-request; editor-bridge.js replies
+    // with these bytes. The plaintext never leaves the browser.
+    EditorBridge.stage(fileId,
+        plainBytes.buffer.slice(plainBytes.byteOffset, plainBytes.byteOffset + plainBytes.byteLength),
+        { fileId: fileId, secretB64: secretB64, cachedName: cachedName });
+    // Use the fileId as WOPISrc; the editor chrome title can be set
+    // by wasm-loader from a postMessage once we wire that up.
+    currentFile = fileId;
+    // skipDownload: we already staged plaintext at /wasm/<fileId>; the
+    // legacy /api/files/<name> fetch in openFile would 404 on an opaque
+    // fileId. hashValue: keep the URL as #file=<secret>, never leak the
+    // fileId into the hash. docTypeHint: fileId has no extension, so
+    // infer the doc type from the decrypted filename — otherwise
+    // xlsx/pptx would be misclassified as writer and hot-switches would
+    // mix up docLayer state.
+    // __crossTypeRetry: forwarded so the cold-typechange watchdog
+    // doesn't re-arm on the recovery attempt — without this the
+    // 30 s watchdog fires repeatedly and the iframe is recreated
+    // every 30 s, never completing a cold load (>30 s on Azure).
+    openFile(fileId, {
+        skipDownload: true,
+        hashValue: secretB64,
+        docTypeHint: cachedName ? docTypeFor(cachedName) : 'writer',
+        displayName: cachedName || null,
+        __crossTypeRetry: !!callerOpts.__crossTypeRetry,
+    });
+}
+
+// URL fragment format: #file=<url-encoded filename>.
+// Updated whenever we open a file, so the URL is shareable and deep-linkable,
+// and browser back/forward navigates between recently opened files.
+function currentHashFile() {
+    const m = /^#file=(.+)$/.exec(location.hash);
+    return m ? decodeURIComponent(m[1]) : null;
+}
+
+async function openFile(name, opts) {
+    opts = opts || {};
+    const __myOpenSeq = ++__openReqSeq; // ticket for the latest-request-wins guard
+    __latestRequestedFile = name;       // newest user-requested doc (stale-re-open guard)
+    viewerLog('Opening file: ' + name);
+    const t0 = Date.now();
+    currentFile = name;
+    // Keep the URL in sync with the open file. For v2 opens the caller
+    // passes hashValue=<secret> so the hash stays as the shareable
+    // secret, not the opaque fileId.
+    const wantHash = '#file=' +
+        (opts.hashValue !== undefined ? opts.hashValue : encodeURIComponent(name));
+    if (location.hash !== wantHash) location.hash = wantHash;
+    // Snapshot prewarmReady at the START of openFile (before async
+    // downloads). If the prewarm completes during the download, we still
+    // use cold reload to avoid signal races with the prewarm WasmDocReady.
+    const wasPrewarmReady = prewarmReady;
+    const effectiveDocType = opts.docTypeHint || docTypeFor(name);
+    // V2 same-type hot-switch is enabled. Cross-type still cold-reloads
+    // — the docLayer event-handler purge (off(undefined, undefined,
+    // this) in CanvasTileLayer.onRemove) fixes the layer's own
+    // subscriptions, but app.sectionContainer sections (Calc headers,
+    // Impress slide-sorter, etc.) added in onAdd are not torn down on
+    // removeLayer and have their OWN map.on() handlers that fire into
+    // a stale _docLayer. Audit + per-layer removeSection in onRemove
+    // is tracked as #129.
+    // Plan B for SAME-TYPE only. Cross-type via switchdocument was
+    // tried (allowed wasPrewarmReady alone) but the C++ side
+    // (wasm_reload_doc_in_place → loadComponentFromURL("_self"))
+    // succeeds while the COOL JS layer swap fails:
+    // "Cannot read properties of null (reading 'getPixelBoundsCore')"
+    // — the new doc's layer never paints. Test screenshots showed
+    // the loading shield remaining up while the test mistakenly
+    // declared success based on stale status text from the prior doc.
+    // Cross-type stays on cold-reload until #129 (sectionContainer
+    // leak in CanvasTileLayer.onRemove) is properly fixed.
+    const willHotSwitch = wasPrewarmReady
+        && (effectiveDocType === currentDocType);
+    console.log('[viewer] hot-switch decision: willHotSwitch=' + willHotSwitch +
+        ' wasPrewarmReady=' + wasPrewarmReady +
+        ' effectiveDocType=' + effectiveDocType +
+        ' currentDocType=' + currentDocType);
+
+    // Collapse the file sidebar so the editor gets the full viewport.
+    // The user can re-open it by hovering the left edge or clicking the bar.
+    collapseSidebar();
+
+    // Always show the shield with spinner — user should see clear feedback
+    // for every document open, whether hot-switch (~1s) or cold reload (~30s).
+    showShield('Downloading file…', name);
+    document.getElementById('editor-shield-spinner').style.display = '';
+    document.getElementById('editor-shield-bar-fill').style.width = '5%';
+
+    document.querySelectorAll('.file').forEach(el => el.classList.toggle('active', el.dataset.name === name));
+
+    // Start downloading the file from Azure. For cold reloads, we also
+    // start the iframe in parallel — the file just needs to arrive at
+    // /wasm/ before Kit opens it (~3-6s into WASM init). v2 callers
+    // already staged plaintext at /wasm/<fileId> and pass skipDownload.
+    const filePromise = opts.skipDownload
+        ? Promise.resolve(null)
+        : fetch('/api/files/' + encodeURIComponent(name))
+            .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
+
+    if (!willHotSwitch) {
+        updateShieldProgress('Initializing app…', 15, 'Loading WebAssembly editor + downloading file');
+    }
+
+    const iframe = document.getElementById('editor-frame');
+    // v2 opens pass docTypeHint because the opaque fileId has no extension.
+    const newDocType = opts.docTypeHint || docTypeFor(name);
+    const sameType = newDocType === currentDocType;
+
+    // Reset shield-drop signals. For hot-switches, we need fresh signals
+    // from the new document. For cold reloads, the iframe recreates
+    // everything anyway.
+    docReady = false;
+    relayActivated = SINGLE_USER; // In readonly mode, no relay to wait for
+    // Reset the shield-floor timer for the new open.
+    if (__shieldFloorTimer) { clearTimeout(__shieldFloorTimer); __shieldFloorTimer = null; }
+
+    if (willHotSwitch) {
+        // HOT SWITCH — same document type, reuse the live WASM.
+        // Stage the new file in the bridge cache so Kit picks it up
+        // through the SW when wasm-loader sends `switchdocument` and
+        // Kit re-fetches /wasm/<name>.
+        updateShieldProgress('Opening document…', 30, 'Downloading ' + name);
+        const buf = await filePromise;
+        // Latest-request-wins: if a newer openFile() started while we were
+        // downloading, abandon this stale switch — otherwise its
+        // RelaySwitchRoom + iframe.src#switchdoc below would override the
+        // newer doc (rapid A→B→A loaded/showed the wrong doc).
+        if (__myOpenSeq !== __openReqSeq) {
+            console.log('[viewer] openFile(' + name + ') superseded by newer open #' + __openReqSeq + ' — abandoning stale hot-switch');
+            return;
+        }
+        updateShieldProgress('Opening document…', 50, 'Transferring to editor');
+        if (buf) {
+            EditorBridge.stage(name, buf);
+            try { iframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+        }
+        if (!SINGLE_USER) {
+            const newRoom = relayRoom(name);
+            iframe.contentWindow.postMessage(JSON.stringify({
+                MessageId: 'RelaySwitchRoom',
+                Values: { room: newRoom, docName: name }
+            }), '*');
+        }
+        const base = iframe.src.split('#')[0];
+        // Pass displayName alongside the WOPISrc so the editor chrome
+        // shows the human name instead of the opaque fileId.
+        const switchSuffix = opts.displayName
+            ? '&displayName=' + encodeURIComponent(opts.displayName) : '';
+        iframe.src = base + '#switchdoc=' + encodeURIComponent(name) + switchSuffix;
+        setStatus('Opening ' + (opts.displayName || name));
+        window.__viewerState.lastOpenMode = 'hot';
+    } else {
+        // CROSS-TYPE — bug iter 12: try to revive a parked iframe for
+        // this doctype before falling back to creating a fresh one.
+        var __coldPlanC = '';
+        try {
+            var __cp = new URLSearchParams(window.location.search).get('planc');
+            if (__cp === '0' || __cp === 'off') __coldPlanC = '&planc=0';
+            else if (__cp === '1' || __cp === 'on') __coldPlanC = '&planc=1';
+        } catch (e) { /* ignore */ }
+        // Iter 202: once warm-restore has wedged in this session, force
+        // every subsequent cross-type into pure cold (no snapshot
+        // restore). The wedge is reproducible against the captured
+        // snapshot, so paying the watchdog wait every cross-type is
+        // pure overhead.
+        if (window.__warmRestoreFailedThisSession && !__coldPlanC) {
+            __coldPlanC = '&planc=0';
+        }
+
+        // Park the CURRENT iframe under its doctype IFF it actually
+        // hosts a loaded doc (activeIframeFile/activeIframeDocType set).
+        // currentFile/currentDocType were reassigned upstream by
+        // openFileBySecret before this code runs, so they reflect the
+        // INCOMING file, not the one currently displayed. activeIframe*
+        // tracks the iframe's actual loaded state.
+        const shouldPark = activeIframeFile && activeIframeDocType
+            && activeIframeDocType !== newDocType;
+        if (shouldPark) {
+            iframe.style.display = 'none';
+            iframe.id = 'parked-iframe-' + activeIframeDocType;
+            parkedIframes[activeIframeDocType] = {
+                iframe, lastFile: activeIframeFile,
+            };
+            viewerLog('Parked iframe for ' + activeIframeDocType
+                + ' (was: ' + activeIframeFile + ')');
+        }
+
+        // Revive the previously-parked iframe for newDocType, if any.
+        const parked = parkedIframes[newDocType];
+        if (parked && parked.iframe && parked.iframe.contentWindow) {
+            delete parkedIframes[newDocType];
+            const reviveIframe = parked.iframe;
+            reviveIframe.id = 'editor-frame';
+            reviveIframe.style.display = '';
+            viewerLog('Revived iframe for ' + newDocType
+                + ' (had: ' + parked.lastFile + ', want: ' + name + ')');
+            window.__viewerState.lastOpenMode = 'cross-revive';
+
+            if (parked.lastFile === name) {
+                // Same file is already loaded in the parked iframe —
+                // just show it.
+                updateShieldProgress('Opening document…', 90, name);
+                setStatus('Opening ' + (opts.displayName || name));
+                // Drop shield soon — no work needed.
+                docReady = true;
+                relayActivated = SINGLE_USER || true;
+                hideShield();
+            } else {
+                // Different file in this doctype — same-type hot-switch.
+                updateShieldProgress('Opening document…', 30,
+                    'Downloading ' + name);
+                const buf = await filePromise;
+                updateShieldProgress('Opening document…', 50,
+                    'Transferring to editor');
+                if (buf) {
+                    EditorBridge.stage(name, buf);
+                    try { reviveIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+                }
+                if (!SINGLE_USER) {
+                    const newRoom = relayRoom(name);
+                    reviveIframe.contentWindow.postMessage(JSON.stringify({
+                        MessageId: 'RelaySwitchRoom',
+                        Values: { room: newRoom, docName: name }
+                    }), '*');
+                }
+                const base = reviveIframe.src.split('#')[0];
+                const switchSuffix = opts.displayName
+                    ? '&displayName=' + encodeURIComponent(opts.displayName) : '';
+                reviveIframe.src = base + '#switchdoc='
+                    + encodeURIComponent(name) + switchSuffix;
+                setStatus('Opening ' + (opts.displayName || name));
+            }
+        } else {
+            // No parked iframe for this doctype — fresh cold reload
+            // (the original code path).
+            const coolUrl = EDITOR_BASE + '/browser/dist/cool.html?WOPISrc=' + encodeURIComponent(name)
+                          + '&access_token=test'
+                          + (SINGLE_USER ? '' : '&relay=' + encodeURIComponent(relayRoom(name)))
+                          + '&fileStorageUrl=' + encodeURIComponent(FILE_STORAGE_URL)
+                          + '&UserName=' + encodeURIComponent(MY_USER_NAME)
+                          + '&viewerT0=' + window.__viewerT0
+                          + UI_LANG_PARAM
+                          + __coldPlanC
+                          + (opts.displayName
+                              ? '&displayName=' + encodeURIComponent(opts.displayName) : '')
+                          + RECORD_PARAM;
+            // Note: we don't disconnect the OLD iframe here anymore.
+            // It's parked above, may be revived on a future cross-type
+            // back to its doctype. RelayDisconnect would tear down its
+            // WS connection — defeating the parking. The parked iframe's
+            // WS keeps the room alive for free.
+            const newIframe = document.createElement('iframe');
+            newIframe.id = 'editor-frame';
+            newIframe.setAttribute('allow', 'cross-origin-isolated; clipboard-read; clipboard-write');
+            newIframe.setAttribute('referrerpolicy', 'no-referrer');
+            newIframe.style.width = '100%';
+            newIframe.style.height = '100%';
+            newIframe.style.border = 'none';
+            armWOPIReady(newIframe);
+            // If we parked the previous iframe, append a sibling so the
+            // parked one stays alive. If we didn't park (initial open or
+            // un-used iframe), replace it — keeping a stale empty iframe
+            // would consume memory for nothing AND leave duplicate
+            // editor-frame ids that getElementById picks the wrong one of.
+            if (shouldPark) {
+                iframe.parentNode.appendChild(newIframe);
+            } else {
+                iframe.parentNode.replaceChild(newIframe, iframe);
+            }
+            newIframe.src = coolUrl;
+            viewerLog('Editor iframe loading (cold reload — first '
+                + newDocType + ' open)');
+            setStatus('Loading ' + name
+                + (sameType ? '' : ' (type change ' + currentDocType + '→' + newDocType + ')'));
+            window.__viewerState.lastOpenMode = 'cold-typechange';
+
+            // Iter 202: cold-typechange canvas-paint watchdog. The 6 s
+            // warm-restore watchdog inside wasm-loader catches the case
+            // where doc:loaded never fires; this catches the worse one
+            // where doc:loaded DOES fire (runtime ready) but the actual
+            // doc never paints (kit hangs in layout because the snapshot
+            // restored writer state and we're loading calc/impress on
+            // top of it — see CanvasTileLayer's #129 sectionContainer
+            // leak). Symptom: canvas stays white, #StatusDocPos empty.
+            // WasmPrewarmReady gates on canvas paint, so its absence
+            // is the unambiguous "kit is stuck" signal. 180 s budget:
+            // tolerates Azure cold-start prewarm (35-50 s under load)
+            // PLUS a heavy first-paint of a complex doc (a 50-slide
+            // pptx with images/charts/tables takes 60-90 s to render
+            // its first slide; see incident 2026-05-06 with
+            // heavy-50slides.pptx — 60 s budget fired the watchdog,
+            // recreated with planc=0, wiped the snapshot, and put the
+            // user in a permanent cold-loop). On the dev box prewarm
+            // is < 15 s so 180 s has plenty of headroom there.
+            //
+            // Recovery: latch __warmRestoreFailedThisSession + recreate
+            // the iframe with ?planc=0 (no warm-restore) and ?fresh=1
+            // (skip Cache Storage snapshot) so the next attempt is a
+            // pure cold load. Set this session-wide so subsequent
+            // cross-types skip warm-restore too — once warm-restore
+            // wedges in a session it's reproducible for the same
+            // captured snapshot.
+            if (!opts.__crossTypeRetry) {
+                clearTimeout(window.__crossTypeWatchdog);
+                var __watchdogMs = 180000 * (window.__JOBS_SCALE || 1);
+                window.__crossTypeWatchdog = setTimeout(function() {
+                    // WasmPrewarmReady fires only when canvas actually paints.
+                    // If __lastPaintedFile matches the file we expected, the
+                    // load succeeded and we don't need to recover.
+                    if (window.__lastPaintedFile === name) return;
+                    console.warn('[viewer] Cross-type canvas-paint watchdog '
+                        + '(' + (__watchdogMs / 1000) + 's) — no WasmPrewarmReady, '
+                        + 'recreating with planc=0');
+                    window.__warmRestoreFailedThisSession = true;
+                    // Reset state so the retry takes a clean cold path.
+                    currentFile = null;
+                    currentDocType = null;
+                    activeIframeFile = null;
+                    activeIframeDocType = null;
+                    try {
+                        var rec = (typeof RecentFiles !== 'undefined' && RecentFiles.list)
+                            ? RecentFiles.list() : [];
+                        var entry = rec.find(function(r) {
+                            return r.cachedName === name || r.fileId === name;
+                        });
+                        if (entry && typeof openFileBySecret === 'function') {
+                            openFileBySecret(entry.secret, { __crossTypeRetry: true });
+                        }
+                    } catch (e) {
+                        console.error('[viewer] cross-type watchdog retry failed', e);
+                    }
+                }, __watchdogMs);
+            }
+
+            filePromise.then(buf => {
+                if (!buf) return;
+                EditorBridge.stage(name, buf);
+                try { newIframe.contentWindow.__lastUploadedFileSize = buf.byteLength; } catch(e) {}
+                viewerLog('File staged for editor');
+            }).catch(e => { setStatus('Error downloading: ' + e.message); });
+        }
+    }
+    currentDocType = newDocType;
+    // Iframe is now hosting (or about to host) name with newDocType.
+    // The pool's parking logic reads these on the next openFile call
+    // to decide what to park.
+    activeIframeFile = name;
+    activeIframeDocType = newDocType;
+    window.__viewerState.lastOpenStart = t0;
+}
+
+// Treat the hash as a base64url-encoded 128-bit secret when it looks
+// like one (22 url-safe chars — exact length for 16 raw bytes). Plain
+// filenames are legacy and are passed through to openFile() unchanged
+// (will be removed when migration is done).
+function isFragmentSecret(s) {
+    return typeof s === 'string' && /^[A-Za-z0-9_-]{22}$/.test(s);
+}
+
+window.addEventListener('hashchange', function() {
+    const val = currentHashFile();
+    if (!val) return;
+    if (window.JourneyRecorder) JourneyRecorder.noteHashChange();
+    if (isFragmentSecret(val)) {
+        openFileBySecret(val);
+    } else if (val !== currentFile) {
+        openFile(val);
+    }
+});
+
+// Kick off. Start the editor iframe FIRST (prewarm or direct open),
+// then populate the file sidebar in parallel. The Azure file list
+// takes ~7s — don't let it block the editor initialization.
+(async function init() {
+    const val = currentHashFile();
+    if (isFragmentSecret(val)) {
+        startPrewarm();
+        openFileBySecret(val);
+    } else if (val) {
+        openFile(val);
+    } else {
+        startPrewarm();
+    }
+    // File list populates in the background — not on the critical path
+    refresh();
+})();
+</script>
+</body>
+</html>

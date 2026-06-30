@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Viewer (Single User)</title>
+<script>
+// Redirect to the main viewer with single-user mode enabled.
+// This disables the relay server connection — all edits go straight
+// to the local Kit. Full editing and saving is supported, just no
+// co-editing with other browsers.
+window.location.replace('/index.html?singleuser' +
+    (window.location.hash || ''));
+</script>
+</head>
+<body></body>
+</html>
