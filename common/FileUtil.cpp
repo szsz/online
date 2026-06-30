@@ -39,7 +39,17 @@ namespace FileUtil
     std::string createRandomDir(const std::string& path)
     {
         std::string name = Util::rng::getFilename(64);
-        createDirectory(path + '/' + name);
+        // create_directories (plural) ensures the parent `path` exists too.
+        // The non-recursive createDirectory throws filesystem_error with
+        // ENOENT if jailDoc isn't there yet — that happens in WASM where
+        // /tmp/user/docs gets re-created lazily by snapshot-inject on warm
+        // restore, and downloadas can race the mkdir on a fresh init.
+        // Manifested as: kit logs `ERR ToMaster-NNN: Exception while
+        // handling [downloadas ...]: filesystem error: in create_directory:
+        // No such file or directory`, so the kit sends no reply and the
+        // browser's _onDownloadAsMsg never fires — print button silently
+        // does nothing.
+        std::filesystem::create_directories(path + '/' + name);
         return name;
     }
 

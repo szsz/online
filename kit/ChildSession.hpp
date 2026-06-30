@@ -16,11 +16,22 @@
 #include <kit/StateRecorder.hpp>
 #include <kit/Watermark.hpp>
 
-#define LOK_USE_UNSTABLE_API
-#include <LibreOfficeKit/LibreOfficeKit.hxx>
-
 #include <chrono>
 #include <queue>
+
+#ifdef __EMSCRIPTEN__
+// Defined in LO Core's wasmsnapshot.cxx. Returns 1 while
+// wasmshim::warmupCoreFactories is loading-and-disposing module factories.
+// ChildSession drops outbound frames during the window so JSDialog/
+// notebookbar payloads from those throwaway modules don't leak to JS.
+extern "C" int wasm_is_ui_emission_suppressed();
+#endif
+
+namespace lok
+{
+class Document;
+class Office;
+}
 
 class Document;
 class ChildSession;
@@ -111,6 +122,15 @@ public:
 
     bool sendTextFrame(const char* buffer, int length) override
     {
+#ifdef __EMSCRIPTEN__
+        // Phase-1.4 silent warmup: drop JSDialog/notebookbar/sidebar
+        // frames emitted by the throwaway module instances created by
+        // wasmshim::warmupCoreFactories. The user's actual doc-load
+        // happens AFTER warmup returns and the flag is cleared, so no
+        // real-doc frames are affected.
+        if (wasm_is_ui_emission_suppressed())
+            return true;
+#endif
         if (_docManager == nullptr)
         {
 
@@ -120,11 +140,15 @@ public:
             return false;
         }
         const auto msg = "client-" + getId() + ' ' + std::string(buffer, length);
-        return _docManager->sendFrame(msg.data(), msg.size(), WSOpCode::Text);
+        return _docManager->sendFrame(msg, WSOpCode::Text);
     }
 
     bool sendBinaryFrame(const char* buffer, int length) override
     {
+#ifdef __EMSCRIPTEN__
+        if (wasm_is_ui_emission_suppressed())
+            return true;
+#endif
         if (_docManager == nullptr)
         {
             LOG_TRC("No DocManager; dropping binary to client-" << getId());
@@ -132,7 +156,7 @@ public:
             return false;
         }
         const auto msg = "client-" + getId() + ' ' + std::string(buffer, length);
-        return _docManager->sendFrame(msg.data(), msg.size(), WSOpCode::Binary);
+        return _docManager->sendFrame(msg, WSOpCode::Binary);
     }
 
     bool sendProgressFrame(const char* id, const std::string& jsonProps,
@@ -159,7 +183,7 @@ public:
 
     void setDumpTiles(bool dumpTiles) { _isDumpingTiles = dumpTiles; }
 
-    std::string getViewRenderState() { return _viewRenderState; }
+    const std::string& getViewRenderState() const { return _viewRenderState; }
 
     TilePrioritizer::Priority getTilePriority(const TileDesc &desc) const;
 
@@ -174,6 +198,7 @@ private:
     bool loadDocument(const StringVector& tokens);
     bool saveDocumentBackground(const StringVector &tokens);
 
+    bool sendFontRendering(const StringVector& tokens);
     bool getCommandValues(const StringVector& tokens);
 
     bool clientZoom(const StringVector& tokens);
@@ -216,7 +241,7 @@ private:
     bool removeTextContext(const StringVector& tokens);
 #if ENABLE_FEATURE_LOCK || ENABLE_FEATURE_RESTRICTION
     bool updateBlockingCommandStatus(const StringVector& tokens);
-    std::string getBlockedCommandType(std::string command);
+    std::string getBlockedCommandType(const std::string& command);
 #endif
     bool handleZoteroMessage(const StringVector& tokens);
     bool formFieldEvent(const char* buffer, int length, const StringVector& tokens);

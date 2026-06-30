@@ -11,30 +11,43 @@
 
 #pragma once
 
+#include <common/Session.hpp>
+#include <common/StateEnum.hpp>
+#include <common/ThreadPool.hpp>
+#include <common/Util.hpp>
+#include <kit/KitQueue.hpp>
+#include <kit/LogUI.hpp>
+#include <net/Socket.hpp>
+#include <wsd/TileDesc.hpp>
+
+#include <LibreOfficeKit/LibreOfficeKitTypes.h>
+
 #include <Poco/Util/XMLConfiguration.h>
+
 #include <map>
 #include <string>
 
-#include <common/Util.hpp>
-#include <common/StateEnum.hpp>
-#include <common/Session.hpp>
-#include <common/ThreadPool.hpp>
-#include <kit/KitQueue.hpp>
-#include <kit/LogUI.hpp>
-
-#include <wsd/TileDesc.hpp>
-
-#include "Socket.hpp"
-
-#define LOK_USE_UNSTABLE_API
-#include <LibreOfficeKit/LibreOfficeKit.hxx>
-
 #if MOBILEAPP
 
-#include "ClientSession.hpp"
-#include "DocumentBroker.hpp"
+#include <future>
+
+#include <wsd/ClientSession.hpp>
+#include <wsd/DocumentBroker.hpp>
 
 #endif
+
+#ifdef IOS
+void runKitLoopInAThread();
+#endif
+
+namespace lok
+{
+class Document;
+class Office;
+}
+#include <LibreOfficeKit/LibreOfficeKit.h>
+
+
 
 void lokit_main(
 #if !MOBILEAPP
@@ -46,10 +59,6 @@ void lokit_main(
     int docBrokerSocket, const std::string& userInterface,
 #endif
     std::size_t numericIdentifier);
-
-#ifdef IOS
-void runKitLoopInAThread();
-#endif
 
 bool globalPreinit(const std::string& loTemplate);
 /// Wrapper around private Document::ViewCallback().
@@ -169,7 +178,16 @@ public:
         ~ReEntrancyGuard() { _count--; }
     };
 #endif
+
+    /// Handle the poll from the unipoll callback.
     int kitPoll(int timeoutMicroS);
+
+    /// Handle the wake up from the unipoll callback.
+    void kitWakeup();
+
+    /// Handle the 'has any input?' unipoll callback.
+    bool kitHasAnyInput(int mostUrgentPriority);
+
     void setDocument(std::shared_ptr<Document> document) { _document = std::move(document); }
     const std::shared_ptr<Document>& getDocument() const { return _document; }
 
@@ -177,14 +195,18 @@ public:
     static bool pushToMainThread(LibreOfficeKitCallback callback, int type, const char* p,
                                  void* data);
 
-#ifdef IOS
+#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32) || defined(__EMSCRIPTEN__)
     static std::mutex KSPollsMutex;
     static std::condition_variable KSPollsCV;
     static std::vector<std::weak_ptr<KitSocketPoll>> KSPolls;
 
-    std::mutex terminationMutex;
-    std::condition_variable terminationCV;
-    bool terminationFlag;
+    struct TerminationData
+    {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool flag;
+    };
+    std::shared_ptr<TerminationData> termination;
 #endif
 };
 
@@ -208,7 +230,7 @@ public:
     const std::string& getUrl() const { return _url; }
 
     /// Post the message - in the unipoll world we're in the right thread anyway
-    bool postMessage(const char* data, int size, WSOpCode code) const;
+    bool postMessage(const std::string_view data, WSOpCode code) const;
 
     bool createSession(const std::string& sessionId);
 
@@ -221,12 +243,9 @@ public:
 
     void renderTiles(TileCombined& tileCombined);
 
-    bool sendTextFrame(const std::string& message) const
-    {
-        return sendFrame(message.data(), message.size());
-    }
+    bool sendTextFrame(const std::string_view message) const { return sendFrame(message); }
 
-    bool sendFrame(const char* buffer, int length, WSOpCode opCode = WSOpCode::Text) const;
+    bool sendFrame(std::string_view data, WSOpCode opCode = WSOpCode::Text) const;
 
     void alertNotAsync() const
     {
@@ -270,7 +289,7 @@ private:
 
     /// Calculate tile rendering priority from a TileDesc
     Priority getTilePriority(const TileDesc& desc) const override;
-    virtual std::vector<ViewIdInactivity> getViewIdsByInactivity() const override;
+    std::vector<ViewIdInactivity> getViewIdsByInactivity() const override;
 
 public:
     /// Request loading a document, or a new view, if one exists,
@@ -283,7 +302,7 @@ public:
     void onUnload(const ChildSession& session);
 
     /// Get a view ID <-> UserInfo map.
-    std::map<int, UserInfo> getViewInfo() { return _sessionUserInfo; }
+    const std::map<int, UserInfo>& getViewInfo() const { return _sessionUserInfo; }
 
     int getEditorId() const { return _editorId; }
 
@@ -291,7 +310,7 @@ public:
 
     bool haveDocPassword() const { return _haveDocPassword; }
 
-    std::string getDocPassword() const { return _docPassword; }
+    const std::string& getDocPassword() const { return _docPassword; }
 
     DocumentPasswordType getDocPasswordType() const { return _docPasswordType; }
 
@@ -337,6 +356,12 @@ public:
 
     /// Notify all views of viewId and their associated usernames
     void notifyViewInfo();
+
+    /// WASM hot-switch helper: register the ViewCallback on the *current*
+    /// _loKitDocument for the given viewId, so callbacks from the freshly
+    /// loaded document reach the JS side. Mirrors the registerCallback line
+    /// inside Document::onLoad.
+    void registerViewCallback(int viewId);
 
     std::shared_ptr<ChildSession> findSessionByViewId(int viewId);
 
@@ -402,13 +427,28 @@ public:
     /// Returns true iff we have a LOKit Document instance.
     bool isLoaded() const { return !!_loKitDocument; }
 
+    /// Replace the current document with a new one (hot switch).
+    /// Iter A3: don't stash the previous shared_ptr — drop it so
+    /// ~LibLODocument_Impl runs mxComponent->dispose() and breaks
+    /// frame/view back-refs in LO Core's desktop registry. Without
+    /// this, retired docs accumulated across cross-type switches
+    /// and the warm second/third visit regressed to 18-44s
+    /// (vs. cold 10-15s) because every documentLoad has to navigate
+    /// the larger live registry. The "long flush" the prior comment
+    /// warned about applies to MODIFIED docs; switchdocument is
+    /// only invoked after the doc has been saved, so the destructor
+    /// is fast.
+    void setLOKitDocument(std::shared_ptr<lok::Document> newDoc) {
+        _loKitDocument = newDoc;
+    }
+
     /// Return access to the lok::Office instance.
-    std::shared_ptr<lok::Office> getLOKit() { return _loKit; }
+    std::shared_ptr<lok::Office> getLOKit() const { return _loKit; }
 
     /// Return access to the lok::Document instance.
     std::shared_ptr<lok::Document> getLOKitDocument();
 
-    std::string getObfuscatedFileId() { return _obfuscatedFileId; }
+    const std::string& getObfuscatedFileId() const { return _obfuscatedFileId; }
 
     bool isBackgroundSaveProcess() const { return _isBgSaveProcess; }
 
@@ -469,6 +509,9 @@ private:
     std::string _renderOpts;
 
     std::shared_ptr<lok::Document> _loKitDocument;
+    /// Old documents retired during hot-switch — we hold them to avoid the
+    /// slow synchronous destructor. They leak for the lifetime of the session.
+    std::vector<std::shared_ptr<lok::Document>> _retiredDocuments;
 #ifdef __ANDROID__
     static std::shared_ptr<lok::Document> _loKitDocumentForAndroidOnly;
     static std::weak_ptr<DocumentBroker> _documentBrokerForAndroidOnly;

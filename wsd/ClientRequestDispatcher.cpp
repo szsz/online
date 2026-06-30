@@ -171,6 +171,27 @@ findOrCreateDocBroker(DocumentBroker::ChildType type, const std::string& uri,
         return std::make_pair(nullptr, "error: cmd=load kind=recycling");
     }
 
+#ifdef __EMSCRIPTEN__
+    // WASM runs exactly ONE LO main loop per COOLWSD instance: the first
+    // lokit_main owns lok_init_2 + loKit->runLoop, and concurrent ones wait
+    // and attach (see the single-loop guard in kit/Kit.cpp). A second
+    // DocumentBroker would still drive a second lokit_main thread and a
+    // second load against process-global LO/VCL state — the SECOND_INIT race.
+    // The browser co-editor is one-document-per-instance, so any second load
+    // (a co-edit remote-client mirroring a peer's view, or a late-join real
+    // doc replacing the prewarm-blank) must reuse the single existing broker
+    // rather than spawn a rival. The real doc-switch is driven separately via
+    // #switchdoc / wasm_reload_doc_in_place on the existing kit.
+    if (!docBroker && !DocBrokers.empty())
+    {
+        docBroker = DocBrokers.begin()->second;
+        LOG_DBG("WASM single-broker: reusing existing DocBroker ["
+                << docBroker->getDocKey() << "] for requested docKey [" << docKey
+                << "] (one LO main loop per instance)");
+        return std::make_pair(docBroker, std::string());
+    }
+#endif
+
     if (!docBroker)
     {
         Util::assertIsLocked(DocBrokersMutex);
