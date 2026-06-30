@@ -214,7 +214,7 @@ m4_ifelse(MOBILEAPP,[true],
       <div id="about-dialog" tabIndex="0">
         <div id="about-dialog-header">
           <fig id="integrator-logo"></fig>
-          <h1 id="product-name">Collabora Online</h1>
+          <h1 id="product-name">Editor</h1>
         </div>
         <hr/>
         <div id="about-dialog-container">
@@ -297,6 +297,12 @@ m4_dnl This is GLOBAL_JS:
 m4_ifelse(MOBILEAPP, [true],
   [<script type="text/javascript" src="global.js"></script>],
   [<script type="text/javascript" src="%SERVICE_ROOT%/browser/%VERSION%/global.js"></script>]
+)
+
+m4_dnl Templates manifest (loaded as JS to avoid CORS issues with file:// protocol):
+m4_ifelse(MOBILEAPP, [true],
+  [<script type="text/javascript" src="templates/templates.js"></script>],
+  [<script type="text/javascript" src="%SERVICE_ROOT%/browser/%VERSION%/templates/templates.js"></script>]
 )
 
 m4_ifelse(MOBILEAPP,[true],
