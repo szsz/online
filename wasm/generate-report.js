@@ -1,0 +1,254 @@
+#!/usr/bin/env node
+// generate-report.js — Generates an HTML test report from screenshots.
+//
+// Usage:
+//   node generate-report.js --name "Test Name" --desc "Description" \
+//       --shots /tmp/static-deploy/public/shots-foo \
+//       --output /tmp/static-deploy/public/reports/foo.html \
+//       [--status pass|fail]
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
+const args = process.argv.slice(2);
+function flag(name) {
+    const idx = args.indexOf('--' + name);
+    if (idx === -1 || idx + 1 >= args.length) return undefined;
+    return args[idx + 1];
+}
+
+const name    = flag('name')   || 'Unnamed Test';
+const desc    = flag('desc')   || '';
+const shotsDir = flag('shots') || '';
+const output  = flag('output') || '';
+const status  = (flag('status') || 'pass').toLowerCase();  // pass | fail
+
+if (!output) {
+    console.error('Error: --output is required');
+    process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Collect screenshots
+// ---------------------------------------------------------------------------
+let screenshots = [];
+if (shotsDir && fs.existsSync(shotsDir)) {
+    screenshots = fs.readdirSync(shotsDir)
+        .filter(f => /\.(png|jpe?g|gif|webp)$/i.test(f))
+        .sort();
+}
+
+// Compute the relative path from the report HTML to the shots directory.
+// Both live under /tmp/static-deploy/public/ so we use path.relative.
+// Force forward slashes — the output HTML is served to a browser, which
+// doesn't accept Windows backslashes in src attributes.
+const reportDir = path.dirname(output);
+const relShotsDir = shotsDir
+    ? path.relative(reportDir, shotsDir).split(path.sep).join('/')
+    : '';
+
+// ---------------------------------------------------------------------------
+// Build the timestamp
+// ---------------------------------------------------------------------------
+const now = new Date();
+const timestamp = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+
+// ---------------------------------------------------------------------------
+// Status badge
+// ---------------------------------------------------------------------------
+const passed = status === 'pass';
+const badgeColor = passed ? '#16a34a' : '#dc2626';
+const badgeLabel = passed ? 'PASS' : 'FAIL';
+
+// ---------------------------------------------------------------------------
+// Checklist (written by the test via lib/checklist.js)
+// ---------------------------------------------------------------------------
+let checklist = null;
+if (shotsDir) {
+    const checklistFile = path.join(shotsDir, 'checklist.json');
+    if (fs.existsSync(checklistFile)) {
+        try { checklist = JSON.parse(fs.readFileSync(checklistFile, 'utf8')); }
+        catch (e) { console.warn('Failed to parse checklist:', e.message); }
+    }
+}
+let checklistHTML = '';
+if (checklist && checklist.items && checklist.items.length) {
+    const items = checklist.items.map(it => {
+        const icon = it.passed ? '✅' : '❌';
+        const color = it.passed ? '#16a34a' : '#dc2626';
+        const ev = it.evidence ? `<span class="evidence">${escapeHtml(String(it.evidence)).slice(0,300)}</span>` : '';
+        return `<li class="check-item" style="border-left:3px solid ${color};"><span class="check-icon">${icon}</span><span class="check-name">${escapeHtml(it.name)}</span>${ev}</li>`;
+    }).join('');
+    const passed = checklist.items.filter(x => x.passed).length;
+    const total = checklist.items.length;
+    checklistHTML = `
+    <h2 class="section-title">Checklist <span class="check-summary">(${passed}/${total})</span></h2>
+    <ul class="checklist">${items}</ul>
+    <hr class="divider" />`;
+} else {
+    checklistHTML = '<p style="color:#888;">No structured checklist recorded.</p><hr class="divider" />';
+}
+
+function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ---------------------------------------------------------------------------
+// Browser console capture (written by lib/console-capture.js).
+//
+// Two-part rendering:
+//   1. ALWAYS emit a link to the relative console.log path. Even when
+//      the file isn't on local disk yet at the moment this generator
+//      runs (race: the test exits, mirror-uploads to azure later), the
+//      link resolves correctly once the upload completes. Worst case
+//      it 404s for a few minutes.
+//   2. If the local file is readable RIGHT NOW, also emit the inline
+//      embed with highlighting + collapsible details — convenient for
+//      reports that beat the upload race.
+// ---------------------------------------------------------------------------
+const consoleHref = relShotsDir ? relShotsDir + '/console.log' : null;
+const checklistHref = relShotsDir ? relShotsDir + '/checklist.json' : null;
+
+let consoleEmbedHTML = '';
+if (shotsDir) {
+    const consoleFile = path.join(shotsDir, 'console.log');
+    if (fs.existsSync(consoleFile)) {
+        try {
+            const raw = fs.readFileSync(consoleFile, 'utf8');
+            const lineCount = raw.split('\n').filter(Boolean).length;
+            // Highlight pageerror + Uncaught + RuntimeError lines.
+            const html = escapeHtml(raw).replace(
+                /^(.*(?:pageerror|Uncaught|RuntimeError|abort\(|jserror|requestfailed).*)$/gm,
+                '<span style="background:#fee;color:#900;">$1</span>');
+            consoleEmbedHTML = `
+    <details${status === 'fail' ? ' open' : ''}><summary style="cursor:pointer;color:#2563eb;font-size:0.9rem;margin:0.5rem 0;">Show/hide inline capture (${lineCount} line${lineCount===1?'':'s'})</summary>
+    <pre class="console-log">${html}</pre>
+    </details>`;
+        } catch (e) {
+            consoleEmbedHTML = `<p style="color:#888;font-size:0.85rem;">Inline embed failed: ${escapeHtml(e.message)}</p>`;
+        }
+    } else {
+        consoleEmbedHTML = `<p style="color:#888;font-size:0.85rem;">Inline embed unavailable (file not on local disk at report-gen time; use the link above to fetch from blob storage).</p>`;
+    }
+}
+
+let consoleHTML = '';
+if (consoleHref) {
+    consoleHTML = `
+    <h2 class="section-title">Browser console</h2>
+    <p class="artefact-links">
+      <a href="${consoleHref}" download>📄 console.log</a> ·
+      <a href="${checklistHref}">checklist.json</a>
+      ${shotsDir ? `<span style="color:#888;font-size:0.85rem;">(raw artefacts — works even after the inline embed below)</span>` : ''}
+    </p>
+    ${consoleEmbedHTML}
+    <hr class="divider" />`;
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot HTML
+// ---------------------------------------------------------------------------
+let screenshotHTML = '';
+if (screenshots.length === 0) {
+    screenshotHTML = '<p style="color:#888;">No screenshots found.</p>';
+} else {
+    for (const file of screenshots) {
+        const caption = file.replace(/\.\w+$/, '').replace(/[_-]/g, ' ');
+        const src = relShotsDir + '/' + file;
+        screenshotHTML += `
+        <div class="shot">
+            <img src="${src}" alt="${caption}" />
+            <div class="caption">${file}</div>
+        </div>
+        <hr class="divider" />`;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Full HTML
+// ---------------------------------------------------------------------------
+const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${name} — Test Report</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #fff; color: #1a1a1a;
+    line-height: 1.5;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { display: inline-block; margin-bottom: 1.5rem; font-size: 0.9rem; }
+  h1 { margin: 0 0 0.25rem; font-size: 1.75rem; }
+  .meta { color: #666; font-size: 0.9rem; margin-bottom: 0.5rem; }
+  .badge {
+    display: inline-block; padding: 0.2rem 0.75rem; border-radius: 4px;
+    color: #fff; font-weight: 600; font-size: 0.95rem;
+    background: ${badgeColor};
+  }
+  .desc { margin: 1rem 0 1.5rem; font-size: 1rem; color: #444; }
+  .shot { margin: 1.5rem 0 0.5rem; }
+  .shot img { width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 6px; }
+  .caption { font-size: 0.85rem; color: #888; margin-top: 0.35rem; font-family: monospace; }
+  .divider { border: none; border-top: 1px solid #e5e7eb; margin: 1.5rem 0; }
+  .section-title { font-size: 1.25rem; margin: 1.25rem 0 0.5rem; }
+  .check-summary { font-size: 0.85rem; font-weight: normal; color: #666; }
+  .checklist { list-style: none; padding: 0; margin: 0; }
+  .check-item {
+    background: #fafafa; padding: 0.5rem 0.75rem; margin-bottom: 4px;
+    border-radius: 0 4px 4px 0; display: flex; align-items: baseline; gap: 0.5rem;
+  }
+  .check-icon { font-size: 1rem; }
+  .check-name { font-size: 0.95rem; }
+  .evidence {
+    margin-left: auto; font-family: monospace; font-size: 0.78rem;
+    color: #666; max-width: 50%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .console-log {
+    background: #1a1a1a; color: #e5e5e5;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.78rem; line-height: 1.45;
+    padding: 0.75rem 1rem; border-radius: 6px;
+    overflow: auto; max-height: 480px;
+    white-space: pre; tab-size: 4;
+  }
+  .artefact-links { font-size: 0.95rem; margin: 0.5rem 0 0.75rem; }
+  .artefact-links a { font-family: monospace; }
+</style>
+</head>
+<body>
+<div class="container">
+  <a class="back" href="index.html">&larr; Back to Summary</a>
+  <h1>${name}</h1>
+  <div class="meta">${timestamp}</div>
+  <span class="badge">${badgeLabel}</span>
+  <div class="desc">${desc}</div>
+  <hr class="divider" />
+  ${checklistHTML}
+  ${consoleHTML}
+  <h2 class="section-title">Screenshots</h2>
+  ${screenshotHTML}
+</div>
+</body>
+</html>
+`;
+
+// ---------------------------------------------------------------------------
+// Write output
+// ---------------------------------------------------------------------------
+fs.mkdirSync(path.dirname(output), { recursive: true });
+fs.writeFileSync(output, html, 'utf8');
+console.log(`Report written: ${output}  [${badgeLabel}]`);

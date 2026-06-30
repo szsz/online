@@ -2,6 +2,11 @@
 *~
 \#*
 
+# Per-dev AI-skill working lists — ai/tasks, ai/proposals, ai/questions.
+# Folder-based: one .md per entry, status = subfolder; status changes via
+# `git mv`. Replaces the old TASKS.md/PROPOSALS.md/QUESTIONS.md trio (2026-05-28).
+/ai/
+
 # Autofoo
 .deps
 .dirstamp
@@ -199,6 +204,25 @@ eclipsesettingfile.xml
 *.code-workspace
 Makecache
 
+# assistants
+.ai
+.ai-cache
+*.ai.md
+# CLAUDE.md is project documentation (workflow rules, engineering
+# guidelines, skill pointers) — track it so the conventions are
+# shared across clones and survive into future Claude sessions.
+# Per-session transient state stays under .claude/ (still gitignored).
+claude.log
+.claude
+.cursor
+.cursorignore
+.copilot
+copilot.json
+.aider
+.aider.conf.yml
+.aider.history
+.continue
+
 # autoconf stuff
 autogen.input
 
@@ -207,3 +231,37 @@ autogen.input
 
 # SBOM
 collabora-online-sbom.spdx.json
+
+# Visual Studio projects for CODA-W
+windows/coda/.vs
+windows/coda/CODA/bin
+windows/coda/CODA/obj
+windows/coda/CODALib/x64
+windows/coda/CODA/x64/
+windows/coda/PrintPDFAndDelete/obj/
+windows/coda/packages/
+windows/coda/x64/
+
+# CODA-W generated files
+windows/coda/config.props
+
+# CODA-Q
+.flatpak-builder/
+qt/flatpak/build-dir/
+qt/flatpak/repo/
+qt/translations/*.qm
+
+
+#wasm build
+wasm/.env.*
+!wasm/.env.example
+!wasm/.env.deploy.staging.example
+!wasm/.env.deploy.internal.example
+!wasm/.env.deploy.test.example
+wasm/.deploy
+wasm/online-build/
+node_modules/
+.wasm-docs/
+wasm/.tmp-core-download/
+test/samples/ignored/
+storage/

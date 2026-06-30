@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "@azure/identity": "^4.4.0",
+    "@azure/storage-blob": "^12.25.0",
+    "express": "^5.2.1",
+    "puppeteer": "^24.40.0",
+    "ws": "^8.20.0"
+  }
+}

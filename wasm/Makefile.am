@@ -101,8 +101,56 @@ online_LDADD = \
 	@LOBUILDDIR@/workdir/LinkTarget/StaticLibrary/libunoembind.a
 
 # TODO these are just copypasta from core
+#
+# -Oz -g0 at LINK: shrinks online.wasm from 278 MB → 161 MB (-42%
+# raw / -24% brotli q2 on the wire) by enabling emcc's wasm-opt
+# pass at size-optimization level AND stripping debug + name
+# sections. Verified locally 2026-05-18 with cold-open smoke
+# (doc ready at 2.45s, same speed as baseline). Build memory
+# peak: ~14 GB for wasm-opt -Oz on this binary; the CI
+# container's `--memory` was bumped to 32 GB in
+# .github/scripts/wasm-ci/build-online.sh to fit comfortably.
+#
+# Why not -O3: -O3 inlines aggressively for SPEED, which on this
+# codebase grows the binary instead of shrinking it (measured: 278
+# → 302 MB). -Oz is the correct level for size; size also matters
+# more than speed for cold-load latency over the wire.
+#
+# Diagnostic builds: add --profiling-funcs to the flags below to keep
+# the wasm name section (symbolized stack traces; +99 MB raw, and it
+# forces binaryen into limited post-link opts). build-wasm.sh strips
+# the names again before deploy unless WASM_KEEP_NAMES=1. Do NOT ship
+# the flag: the late-join SECOND_INIT OOB it was once thought to fix
+# is a probabilistic runtime race, not an opt-level miscompilation —
+# see ai/proposals/proposed/second-init-wild-pointer-oob.md.
+#
+# ALLOW_MEMORY_GROWTH=1 + MAXIMUM_MEMORY=2GB (2026-06-12): under
+# USE_PTHREADS, growth is a silent no-op unless MAXIMUM_MEMORY is
+# explicit — Emscripten emits the SharedArrayBuffer with max==initial
+# and any allocation past TOTAL_MEMORY traps with "memory access out
+# of bounds". LO PR #36 set these flags on the LO side, but
+# online.wasm is linked HERE with its own -s flags, so the LO-side
+# fix never reached the shipped binary (verified: deployed wasm
+# header read initial=16384 pages, max=16384 pages). The 1 GB cap
+# was crashing every late-join in-place doc switch (prewarm blank +
+# real doc + checkpoint replay in one runtime) → the entire
+# "second browser never loads" test cluster, plus the shape-area
+# OOM tripwires. Mirrors LO PR #36's values: initial 1 GB, max 2 GB.
+#
+# STACK_SIZE + DEFAULT_PTHREAD_STACK_SIZE=8 MiB (2026-06-23): same
+# class of trap as the memory flags above — online.wasm is linked HERE,
+# NOT from LO's soffice link, so LO-side -sSTACK_SIZE never reached the
+# shipped binary (verified: LO soffice.js had STACK_SIZE=8388608 but the
+# deployed online.js read 65536). With the emscripten default 64 KiB
+# stack, enabling spellcheck for docx overflowed the kit thread the
+# moment hunspell checked a recursion-heavy token (e.g. "en-US." in the
+# autospell idle scan): "Stack cookie has been overwritten" → unreachable,
+# which is the crash that forced the -51 dict-scan revert. hunspell's
+# recursive spell()/affix checking needs a desktop-parity stack; 8 MiB
+# (native LO main stack) gives it headroom. Both knobs set since the kit
+# thread's stack tracked the default regardless of which governs it.
 online_LDFLAGS = \
-	-pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
+	-Oz -g0 -pthread -s MODULARIZE -s EXPORT_NAME=createOnlineModule -s USE_PTHREADS=1 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1 -s MAXIMUM_MEMORY=2GB -s STACK_SIZE=8388608 -s DEFAULT_PTHREAD_STACK_SIZE=8388608 -s PTHREAD_POOL_SIZE_STRICT=0 --bind -s FORCE_FILESYSTEM=1 -s WASM_BIGINT=1 -s ERROR_ON_UNDEFINED_SYMBOLS=1 -s FETCH=1 -s ASSERTIONS=1 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS=["UTF16ToString","stringToUTF16","UTF8ToString","stringToNewUTF8","ccall","cwrap","FS","registerType","ClassHandle","HEAPU16","HEAPU32"] -pthread -s USE_PTHREADS=1 -fwasm-exceptions -s EXPORTED_FUNCTIONS=@exports \
 	--pre-js @LOSOURCEDIR@/static/emscripten/environment.js \
 	--pre-js @LOBUILDDIR@/workdir/CustomTarget/static/emscripten_fs_image/soffice.data.js.link \
 	--post-js @LOBUILDDIR@/workdir/CustomTarget/static/unoembind/bindings_uno.js \
@@ -139,7 +187,7 @@ endif
 
 exports: @LOBUILDDIR@/workdir/CustomTarget/desktop/soffice_bin-emscripten-exports/exports
 	cp $< $@
-	printf '_handle_cool_message\n' >>$@
+	printf '_handle_cool_message\n_create_remote_client\n_handle_remote_message\n_close_remote_client\n_poll_remote_client_ready\n_wasm_snapshot_complete\n_wasm_first_doc_snapshot_resume\n_wasm_snapshot_failed\n_wasm_set_preload_disabled\n_wasm_is_ui_emission_suppressed\n_wasm_set_warm_restored\n_wasm_is_warm_restored\n_wasm_reload_doc_in_place\n_wasm_set_quiesce\n_wasm_is_quiesce\n_wasm_coolwsd_parked\n_wasm_wait_coolwsd_parked\n_wasm_coolwsd_resume\n_wasm_quiesce_wake_main\n_wasm_is_plan_c_enabled\n_wasm_warm_restore_reset\n_wasm_warm_restore_solar_mutex_reset\n_wasm_warm_restore_yield_mutex_reset\n_wasm_warm_restore_fakesocket_reset\n_wasm_warm_restore_threadpool_reset\n_notify_coolwsd_server_socket_ready\n_wasm_clear_server_freshly_ready\n_get_heap_base\n_get_temp_dir_path\n' >>$@
 
 soffice.dat%: @LOBUILDDIR@/instdir/program/soffice.dat%
 	cp $< $@
