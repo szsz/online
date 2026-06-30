@@ -16,14 +16,18 @@ if !ENABLE_MOBILEAPP
 L10N_JSON = $(patsubst $(srcdir)/po/help-%.po,$(DIST_FOLDER)/l10n/help-%.json,$(L10N_PO))
 L10N_JSON += $(patsubst $(srcdir)/po/ui-%.po,$(DIST_FOLDER)/l10n/ui-%.json,$(L10N_PO))
 else
-L10N_IOS_ALL_JS = $(DIST_FOLDER)/l10n-all.js
-L10N_JSON = $(L10N_IOS_ALL_JS)
+L10N_ALL_JS = $(DIST_FOLDER)/l10n-all.js
+L10N_CHUNKS_DIR = $(DIST_FOLDER)/l10n-chunks
+L10N_CHUNKS_MANIFEST = $(L10N_CHUNKS_DIR)/l10n-manifest.json
+L10N_JSON = $(L10N_ALL_JS) $(L10N_CHUNKS_MANIFEST)
+L10N_ALL_JS_ENTRY = l10n-all.js
 
-$(L10N_IOS_ALL_JS) : $(wildcard $(srcdir)/po/ui-*.po) $(wildcard $(srcdir)/po/help-*.po) $(shell find $(srcdir)/l10n -name '*.*') $(srcdir)/util/create-l10n-all-js.pl
+$(L10N_ALL_JS) $(L10N_CHUNKS_MANIFEST) : $(wildcard $(srcdir)/po/ui-*.po) $(wildcard $(srcdir)/po/help-*.po) $(shell find $(srcdir)/l10n -name '*.*') $(srcdir)/util/create-l10n-all-js.py
 	find $(srcdir)/po -name 'ui-*.po' -exec $(srcdir)/util/po2json.py {} -o {}.json \;
 	find $(srcdir)/po -name 'help-*.po' -exec $(srcdir)/util/po2json.py {} -o {}.json \;
-	@mkdir -p $(dir $@)
-	perl $(srcdir)/util/create-l10n-all-js.pl >$@
+	@mkdir -p $(dir $(L10N_ALL_JS))
+	@mkdir -p $(L10N_CHUNKS_DIR)
+	python3 $(srcdir)/util/create-l10n-all-js.py --chunks-dir $(L10N_CHUNKS_DIR) >$(L10N_ALL_JS)
 	find $(srcdir)/po -name 'ui-*.po.json' -delete
 	find $(srcdir)/po -name 'help-*.po.json' -delete
 endif
@@ -128,6 +132,10 @@ define npm_source
 	done
 endef
 
+# SVG icons
+icons_dir = $(srcdir)/images
+
+
 COOL_ADMIN_TS = \
 	admin/src/ModalDialogCreator.ts \
 	admin/src/integrator/AdminIntegratorSettings.ts \
@@ -153,12 +161,10 @@ NODE_MODULES_SRC =\
 	autolinker@3.14.1 \
 	dompurify@3.3.2 \
 	json-js@1.1.2 \
-	select2@4.0.13 \
 	l10n-for-node@0.0.1 \
 	@braintree/sanitize-url@6.0.0
 
 COOL_CSS_LST =\
-	$(builddir)/node_modules/select2/dist/css/select2.css \
 	$(srcdir)/css/leaflet.css \
 	$(srcdir)/css/leaflet-spinner.css \
 	$(srcdir)/css/selectionMarkers.css \
@@ -206,10 +212,13 @@ WORKER_NODE_MODULES_JS =\
 $(DIST_FOLDER)/src/app/TaskWorker.js: \
 	$(srcdir)/src/app/TaskWorker.js.m4 \
 	$(srcdir)/src/app/TaskWorkerSrc.js \
+	$(DIST_FOLDER)/src/layer/tile/CanvasTileUtils.js \
 	$(WORKER_NODE_MODULES_JS)
 
 	$(QUIET_M4) m4 -PE -DDEBUG=$(ENABLE_DEBUG) \
+		-DMOBILEAPP=$(ENABLE_MOBILEAPP) \
 		-DNODE_MODULES_JS=$(subst $(SPACE),$(COMMA),$(WORKER_NODE_MODULES_JS)) \
+		-DTILEUTILS_JS=$(DIST_FOLDER)/src/layer/tile/CanvasTileUtils.js \
 		-DWORKER_JS=$(srcdir)/src/app/TaskWorkerSrc.js \
 		$(srcdir)/src/app/TaskWorker.js.m4 > $@
 
@@ -217,19 +226,15 @@ NODE_MODULES_JS =\
 	$(if $(IS_SEPARATE),node_modules/hammerjs/hammer.js,node_modules/hammerjs/hammer.min.js) \
 	node_modules/dompurify/dist/purify.min.js \
 	node_modules/jquery/dist/jquery.js \
-	node_modules/jquery-mousewheel/jquery.mousewheel.js \
 	node_modules/jquery-contextmenu/dist/jquery.contextMenu.js \
 	node_modules/jquery-ui/dist/jquery-ui.js \
 	$(shell find node_modules/jquery-ui/ui/i18n -name '*.js' 2>/dev/null) \
 	node_modules/smartmenus/dist/jquery.smartmenus.js \
-	node_modules/smartmenus/dist/addons/keyboard/jquery.smartmenus.keyboard.js \
 	node_modules/fzstd/umd/index.js \
 	node_modules/gl-matrix/gl-matrix-min.js
 
 COOL_LIBS_JS =\
-	ResizeObserverPolyfill.js \
 	Autolinker.js \
-	select2.js \
 	sanitize-url.js
 
 if !ENABLE_MOBILEAPP
@@ -316,7 +321,6 @@ COOL_JS_LST =\
 	src/canvas/sections/RulerSpacerSection.ts \
 	src/canvas/sections/CompareChangesLabelSection.ts \
 	src/canvas/sections/CommentMarkerSubSection.ts \
-	src/canvas/sections/CommentAnchorAreaSubSection.ts \
 	src/canvas/sections/CommentSection.ts \
 	src/canvas/sections/CommentListSection.ts \
 	src/canvas/sections/CalcGridSection.ts \
@@ -326,7 +330,6 @@ COOL_JS_LST =\
 	src/canvas/sections/DebugOverlaySection.ts \
 	src/canvas/sections/PreloadMapSection.ts \
 	src/canvas/sections/TilesSection.ts \
-	src/canvas/sections/CalcRTLAwareDocumentPosition.ts \
 	src/canvas/sections/AutoFillBaseSection.ts \
 	src/canvas/sections/CellFillMarkerSection.ts \
 	src/canvas/sections/ImpressSelectionRectangle.ts \
@@ -386,12 +389,10 @@ COOL_JS_LST =\
 	src/layer/marker/ProgressOverlay.js \
 	src/layer/marker/TextInput.js \
 	src/layer/marker/A11yTextInput.js \
-	src/layer/LayerGroup.js \
 	src/geometry/LineUtil.js \
 	src/core/Handler.js \
 	src/dom/DomEvent.js \
 	src/dom/Draggable.js \
-	src/dom/CompactViewAccessibility.ts \
 	src/dom/NotebookbarAccessibilityDefinitions.js \
 	src/dom/NotebookbarAccessibility.js \
 	src/map/handler/Map.Scroll.js \
@@ -490,8 +491,6 @@ COOL_JS_LST =\
 	src/control/jsdialog/Widget.OverflowManager.ts \
 	src/control/jsdialog/Widget.Progressbar.js \
 	src/control/jsdialog/Widget.RadioButton.ts \
-	src/control/jsdialog/Widget.FixedTextControl.ts \
-	src/control/jsdialog/Widget.SpinField.ts \
 	src/control/jsdialog/Widget.ScrolledWindow.js \
 	src/control/jsdialog/Widget.SearchEdit.ts \
 	src/control/jsdialog/Widget.SidebarContainers.ts \
@@ -527,7 +526,6 @@ COOL_JS_LST =\
 	src/control/Control.NotebookbarDraw.js \
 	src/control/Control.NotebookbarBuilder.js \
 	src/control/Control.ContextToolbar.ts \
-	src/control/Control.Layers.js \
 	src/control/Control.SidebarBase.ts \
 	src/control/Control.Sidebar.ts \
 	src/control/Notebookbar.CalcTableTab.ts \
@@ -708,7 +706,9 @@ define bundle_cool
 	$(if $(IS_SEPARATE),\
 		@touch $@,
 		$(QUIET_M4) m4 -PE -DIOSAPP=$(ENABLE_IOSAPP) \
-			-DGTKAPP=$(ENABLE_GTKAPP) \
+			-DMACOSAPP=$(ENABLE_MACOSAPP) \
+			-DQTAPP=$(ENABLE_QTAPP) \
+			-DWINDOWSAPP=$(ENABLE_WINDOWSAPP) \
 			-DANDROIDAPP=$(ENABLE_ANDROIDAPP) \
 			-DMOBILEAPPNAME="$(APP_NAME)" \
 			-DVERSION=$(COOL_VERSION) \
@@ -735,7 +735,7 @@ endef
 define bundle_all
 	$(if $(IS_SEPARATE),\
 		@touch $@,\
-		$(QUIET_M4) m4 -PE -DL10N_IOS_ALL_JS=$(L10N_IOS_ALL_JS) \
+		$(QUIET_M4) m4 -PE -DL10N_ALL_JS=$(L10N_ALL_JS) \
 			-DNODE_MODULES_JS=$(subst $(SPACE),$(COMMA),$(NODE_MODULES_JS)) \
 			-DCOOL_LIBS_JS=$(subst $(SPACE),$(COMMA),$(COOL_LIBS_JS_SRC)) \
 			-DCOOL_JS=$(INTERMEDIATE_DIR)/cool-src.js \
@@ -779,9 +779,7 @@ endef
 
 all-local: build-cool
 
-if !ENABLE_MOBILEAPP
 ADMIN_BUNDLE = $(DIST_FOLDER)/admin-bundle.js
-endif
 
 if ENABLE_WASM
 $(DIST_FOLDER)/emscripten-module.js: ../wasm/emscripten-module.js
@@ -847,6 +845,8 @@ if ENABLE_WASM_FALLBACK
 WASM_FALLBACK_FILES += $(DIST_FOLDER)/wasm
 endif
 
+TEMPLATE_MANIFEST = $(DIST_FOLDER)/templates/templates.js
+
 $(TYPESCRIPT_JS_DIR)/%.js: $(srcdir)/%.ts
 	@mkdir -p $(dir $@)
 	$(QUIET_TSC) $(builddir)/node_modules/typescript/bin/tsc --outFile $@ $<
@@ -854,9 +854,9 @@ $(TYPESCRIPT_JS_DIR)/%.js: $(srcdir)/%.ts
 build-cool: \
 	$(COOL_L10N_DST) \
 	$(L10N_JSON) \
-	$(SRC_TS_JS_DST) \
 	$(COOL_IMAGES_DST) \
 	$(COOL_IMAGES_CUSTOM_DST) \
+	$(COOL_TEMPLATES_DST) \
 	$(JQUERY_LIGHTNESS_DIST_IMAGES) \
 	$(JQUERY_MINIFIED_DIST_IMAGES) \
 	$(ADMIN_BUNDLE) \
@@ -871,12 +871,17 @@ build-cool: \
 	$(DIST_FOLDER)/bundle.js \
 	$(DIST_FOLDER)/cool.html \
 	$(WASM_FILES) \
-	$(WASM_FALLBACK_FILES)
+	$(WASM_FALLBACK_FILES) \
+	$(TEMPLATE_MANIFEST) \
+	adminIntegratorSettings
 	@echo "build cool completed"
 if APP_HAS_BRANDING
 	@if test -d "$(APP_BRANDING_DIR)" ; then cp -a "$(APP_BRANDING_DIR)"/branding* $(DIST_FOLDER)/ ; fi
 	@if test -d "$(APP_BRANDING_DIR)" ; then cp -a "$(APP_BRANDING_DIR)"/images/*.svg $(DIST_FOLDER)/images/ ; fi
 	@if test -d "$(APP_BRANDING_DIR)" ; then cp -a "$(APP_BRANDING_DIR)/images/toolbar-bg-logo.svg" $(DIST_FOLDER)/images/toolbar-bg.svg ; fi
+if ENABLE_MACOS
+	@if test -d "$(APP_BRANDING_DIR)" ; then cp -a "$(APP_BRANDING_DIR)/welcome" "$(DIST_FOLDER)/" ; fi
+endif
 	@echo
 	@echo "JS, HTML and CSS has been updated ($(DIST_FOLDER))."
 endif
@@ -885,6 +890,16 @@ if ENABLE_CYPRESS
 	cp -a  "$(srcdir)/../cypress_test/data/multiuser/cypress-multiuser.html" "$(DIST_FOLDER)/cypress-multiuser.html"
 	@echo "Added HTML file for multiuser tests"
 endif
+
+# Stands in for the whole templates subdirectory.
+# Just copy all of it to dist/templates.
+$(TEMPLATE_MANIFEST):
+	mkdir -p $(dir $@)
+	cp -r $(srcdir)/templates $(DIST_FOLDER)
+
+$(DIST_FOLDER)/images/templates/preview/%.png: $(srcdir)/images/templates/preview/%.png
+	@mkdir -p $(dir $@)
+	@cp $< $@
 
 $(DIST_FOLDER)/admin-bundle.js: $(COOL_ADMIN_DST) \
 	$(INTERMEDIATE_DIR)/admin-src.js
@@ -926,7 +941,7 @@ $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist: $(COOL_JS_DST)
 	$(QUIET_CMP) if cmp -s $@.tmp $@; then rm $@.tmp; else mv $@.tmp $@; fi
 
 $(INTERMEDIATE_DIR)/COOL_JS.m4: $(INTERMEDIATE_DIR)/COOL_JS.m4.jslist
-	$(foreach file,$(NODE_MODULES_JS) $(COOL_LIBS_JS) $(patsubst %.ts,%.js,$(COOL_JS_WEBORDER)), $(shell echo -n $(file), >> $(INTERMEDIATE_DIR)/COOL_JS.m4.tmp))
+	$(foreach file,$(L10N_ALL_JS_ENTRY) $(NODE_MODULES_JS) $(COOL_LIBS_JS) $(patsubst %.ts,%.js,$(patsubst $(DIST_FOLDER)/src/%,src/%,$(COOL_JS_WEBORDER))), $(shell echo -n $(file), >> $(INTERMEDIATE_DIR)/COOL_JS.m4.tmp))
 	@truncate $(if $(filter Darwin FreeBSD,$(shell uname -s)),-s -1,--size=-1) $(INTERMEDIATE_DIR)/COOL_JS.m4.tmp
 	@mv $(INTERMEDIATE_DIR)/COOL_JS.m4.tmp $(INTERMEDIATE_DIR)/COOL_JS.m4
 
@@ -941,15 +956,33 @@ $(DIST_FOLDER)/cool.html: $(srcdir)/html/cool.html.m4 \
 	$(QUIET_M4) m4 -PE -I $(INTERMEDIATE_DIR) \
 	    -DBUNDLE=$(IS_BUNDLE) \
 		-DIOSAPP=$(ENABLE_IOSAPP) \
-		-DGTKAPP=$(ENABLE_GTKAPP) \
+		-DMACOSAPP=$(ENABLE_MACOSAPP) \
+		-DQTAPP=$(ENABLE_QTAPP) \
 		-DDEBUG=$(ENABLE_DEBUG) \
+		-DWINDOWSAPP=$(ENABLE_WINDOWSAPP) \
 		-DANDROIDAPP=$(ENABLE_ANDROIDAPP) \
 		-DEMSCRIPTENAPP=$(ENABLE_EMSCRIPTENAPP) \
 		-DMOBILEAPPNAME="$(APP_NAME)" \
 		-DCOOL_CSS="$(subst $(SPACE),$(COMMA),$(COOL_CSS_M4))" \
 		-DGLOBAL_JS="$(DIST_FOLDER)/global.js" \
 		-DVENDOR="$(VENDOR)" \
+		-DINFO_URL="$(INFO_URL)" \
 		$(srcdir)/html/cool.html.m4 > $@
+
+.PHONY: adminIntegratorSettings
+adminIntegratorSettings:
+	@mkdir -p $(DIST_FOLDER)
+	$(QUIET_M4) m4 -PE -I $(INTERMEDIATE_DIR) \
+		-DIOSAPP=$(ENABLE_IOSAPP) \
+		-DMACOSAPP=$(ENABLE_MACOSAPP) \
+		-DQTAPP=$(ENABLE_QTAPP) \
+		-DDEBUG=$(ENABLE_DEBUG) \
+		-DWINDOWSAPP=$(ENABLE_WINDOWSAPP) \
+		-DANDROIDAPP=$(ENABLE_ANDROIDAPP) \
+		-DEMSCRIPTENAPP=$(ENABLE_EMSCRIPTENAPP) \
+		-DMOBILEAPPNAME="$(APP_NAME)" \
+		$(srcdir)/admin/adminIntegratorSettings.html.m4 \
+		> $(DIST_FOLDER)/adminIntegratorSettings.html
 
 node_modules: package.json node_shrinkpack
 	@UV_USE_IO_URING=0 npm ci --offline
@@ -1201,11 +1234,14 @@ pot:
 		src/control/jsdialog/Widget.HTMLContent.ts \
 		src/control/jsdialog/Widget.MobileBorderSelector.js \
 		src/control/jsdialog/Widget.NewSlideLayoutEntry.ts \
+		src/control/jsdialog/Widget.NotebookbarIconView.ts \
 		src/control/jsdialog/Widget.RadioButton.ts \
-		src/control/jsdialog/Widget.FixedTextControl.ts \
-		src/control/jsdialog/Widget.SpinField.ts \
 		src/control/jsdialog/Widget.SidebarContainers.ts \
 		src/control/jsdialog/Widget.TreeView.ts \
+		src/control/jsdialog/Definitions.DialogModification.ts \
+		src/control/Control.NotebookbarBase.ts \
+		src/canvas/sections/FormFieldButton.ts \
+		src/slideshow/engine/SlideShowHandler.ts \
 		src/app/Socket.ts \
 		src/app/TracingEvents.ts \
 		src/app/ServerCommand.ts \
@@ -1222,6 +1258,7 @@ pot:
 		src/map/Map.js \
 		src/map/handler/Map.Feedback.js \
 		src/map/handler/Map.FileInserter.js \
+		src/map/handler/Map.Keyboard.js \
 		src/map/handler/Map.Print.js \
 		src/map/handler/Map.SlideShow.js \
 		src/map/handler/Map.VersionBar.js \
@@ -1230,7 +1267,8 @@ pot:
 		src/map/handler/Map.Settings.ts \
 		src/slideshow/PauseTimer.ts \
 		src/slideshow/PresenterConsole.js \
-		src/slideshow/SlideShowPresenter.ts
+		src/slideshow/SlideShowPresenter.ts \
+		templates/templates.js
 
 	html2po --pot --input=html/cool-help.html --output=po/templates/cool-help.pot --duplicates=merge
 	html2po --pot --input=descriptions/google-play.html --output=po/templates/descriptions.pot --duplicates=merge --keepcomments
@@ -1251,7 +1289,7 @@ clean-local:
 	@rm -f $(abs_srcdir)/jsconfig.json
 	@rm -f $(abs_srcdir)/admin/jsconfig.json
 
-CLEANFILES = tscompile.done $(INTERMEDIATE_DIR)/cool-src.js $(DIST_FOLDER)/bundle.css $(DIST_FOLDER)/bundle.js $(INTERMEDIATE_DIR)/cool-src.js
+CLEANFILES = tscompile.done $(INTERMEDIATE_DIR)/cool-src.js $(DIST_FOLDER)/bundle.css $(DIST_FOLDER)/bundle.js $(INTERMEDIATE_DIR)/cool-src.js admin/adminIntegratorSettings.html
 
 $(abs_srcdir)/jsconfig.json:
 	@printf "{\n \
@@ -1294,7 +1332,7 @@ DUPLICATION_TEST_LOG = "`pwd`/duplication.log"
 check-local: $(MOCHA_JS_DIR)/main.js
 	@echo "Running mocha tests..."
 	@echo > ${MOCHA_TEST_LOG}
-	@if npm test 2> ${MOCHA_TEST_LOG} 1>&2; then \
+	@if (cd $(srcdir) && PATH="$(abs_builddir)/node_modules/.bin:$$PATH" NODE_PATH="$(abs_builddir)/node_modules" npm test) 2> ${MOCHA_TEST_LOG} 1>&2; then \
 		echo "Mocha tests finished successfully. Results in ${MOCHA_TEST_LOG}"; \
 	else \
 		cat ${MOCHA_TEST_LOG}; \
@@ -1302,7 +1340,7 @@ check-local: $(MOCHA_JS_DIR)/main.js
 	fi
 
 	@echo > ${DUPLICATION_TEST_LOG}
-	$(QUIET_JSCPCD) if npm run duplication 2> ${DUPLICATION_TEST_LOG} 1>&2; then \
+	$(QUIET_JSCPCD) if (cd $(srcdir) && PATH="$(abs_builddir)/node_modules/.bin:$$PATH" NODE_PATH="$(abs_builddir)/node_modules" npm run duplication) 2> ${DUPLICATION_TEST_LOG} 1>&2; then \
 		echo "Code duplication tests finished successfully."; \
 	else \
 		cat ${DUPLICATION_TEST_LOG}; \

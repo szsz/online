@@ -5396,11 +5396,18 @@ msgstr ""
 "translate=\"true\">2</a> <a id=\"slide-3-indicator\" href=\"#slide-3\" data-"
 "translate=\"true\">3</a>"
 
-#~ msgid "Scroll up"
-#~ msgstr "Desplazarse hacia arriba"
 
-#~ msgid "Scroll down"
-#~ msgstr "Desplazarse hacia abajo"
+#: src/control/jsdialog/Widget.NotebookbarIconView.ts
+msgid "Open Styles Sidebar"
+msgstr "Abrir barra lateral Estilos"
+
+
+#: src/control/jsdialog/Widget.NotebookbarIconView.ts
+msgid "More options"
+msgstr "Más opciones"
+
+#~ msgid "Paste Slide"
+#~ msgstr "Pegar diapositiva"
 
 #~ msgid "Page margin options"
 #~ msgstr "Opciones de margen de página"

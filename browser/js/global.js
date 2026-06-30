@@ -444,6 +444,17 @@ class MobileAppInitializer extends InitializerBase {
 	constructor() {
 		super();
 
+		// The WASM build sets init-app-type=mobile so MobileAppInitializer
+		// runs (not BrowserInitializer), but the WASM build is loaded inside
+		// our viewer iframe — a host-postMessage scenario, not a true mobile
+		// runtime. Without this listener, window.WOPIPostmessageReady never
+		// flips to true, Map.WOPI.js:541 drops every parent→iframe WOPI
+		// message with "PostMessage ignored: not ready." and silently
+		// loses ForceSave / Show_Button / etc. Mirror BrowserInitializer's
+		// listener (line 393) so the gate opens on Host_PostmessageReady.
+		this._boundPostMessageHandler = this.postMessageHandler.bind(this);
+		window.addEventListener('message', this._boundPostMessageHandler, false);
+
 		window.ThisIsAMobileApp = true;
 		window.HelpFile = document.getElementById("init-help-file").value;
 
@@ -462,6 +473,23 @@ class MobileAppInitializer extends InitializerBase {
 		window.idleTimeoutSecs = 1000000;
 
 		window.canvasSlideshowEnabled = true;
+	}
+
+	postMessageHandler(e) {
+		if (!(e && e.data))
+			return;
+
+		try {
+			var msg = JSON.parse(e.data);
+		} catch (err) {
+			return;
+		}
+
+		if (msg.MessageId === 'Host_PostmessageReady') {
+			window.WOPIPostmessageReady = true;
+			window.removeEventListener('message', this._boundPostMessageHandler, false);
+			console.log('Received Host_PostmessageReady.');
+		}
 	}
 }
 
