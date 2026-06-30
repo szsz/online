@@ -1392,7 +1392,7 @@ window.L.Clipboard = window.L.Class.extend({
 	},
 
 	_substProductName: function (msg) {
-		var productName = (typeof brandProductName !== 'undefined') ? brandProductName : 'Collabora Online Development Edition (unbranded)';
+		var productName = (typeof brandProductName !== 'undefined') ? brandProductName : 'Development Edition (unbranded)';
 		return msg.replace('{productname}', productName);
 	},
 

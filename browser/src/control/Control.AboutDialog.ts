@@ -113,7 +113,7 @@ class AboutDialog {
 			productName =
 				typeof brandProductName === 'string' && brandProductName.length > 0
 					? brandProductName
-					: 'Collabora Online Development Edition (unbranded)';
+					: 'Development Edition (unbranded)';
 		}
 
 		const productURL =
