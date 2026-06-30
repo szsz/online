@@ -158,6 +158,11 @@ interface AppInterface {
 		pivotTableFilterCell: any; // The cell of the current pivot table filter popup.
 		isRTL(): boolean;
 		isSelectedPartSheetView(): boolean;
+		// Assigned at runtime in browser/src/docstatefunctions.js — counts
+		// the visible (non-hidden) parts in the spreadsheet. Referenced
+		// from docdispatcher.ts and elsewhere. Optional because the type
+		// declaration is loaded before the .js initialiser runs.
+		getVisiblePartCount?: () => number;
 	};
 	impress: {
 		partList: any; // Info for parts.

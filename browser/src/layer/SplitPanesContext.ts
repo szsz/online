@@ -242,6 +242,10 @@ export class SplitPanesContext {
 	// returns all the pane rectangles for the provided full-map area (all in core pixels).
 	public getPxBoundList(pxBounds?: Bounds): Bounds[] {
 		if (!pxBounds) {
+			// Defensive: during cross-type hot-switch, the Calc layer being
+			// torn down may still get status: events fired through it. _map
+			// can be null mid-tear-down.
+			if (!this._map) return [];
 			pxBounds = this._map.getPixelBoundsCore() as Bounds;
 		}
 		var topLeft = pxBounds.getTopLeft();
@@ -290,6 +294,8 @@ export class SplitPanesContext {
 	}
 
 	public intersectsVisible(areaPx: Bounds): boolean {
+		// Defensive: see getPxBoundList comment above.
+		if (!this._map) return false;
 		var pixBounds = this._map.getPixelBoundsCore() as Bounds;
 		var boundList = this.getPxBoundList(pixBounds);
 		for (var i = 0; i < boundList.length; ++i) {

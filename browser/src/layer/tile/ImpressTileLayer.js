@@ -194,6 +194,18 @@ window.L.ImpressTileLayer = window.L.CanvasTileLayer.extend({
 		clearTimeout(this._previewInvalidator);
 	},
 
+	// Iter 207 (#129 follow-up) — Impress's beforeAdd registers
+	// 'updateparts' on the map (line 143). Without offing it on
+	// cross-format tear-down, switching impress→writer/calc fires
+	// the old impress callback on the new doc's status messages,
+	// dereferencing a null _docLayer. Override _offMapHandlers to
+	// drop Impress-specific handlers in addition to the base ones.
+	_offMapHandlers: function (map) {
+		window.L.CanvasTileLayer.prototype._offMapHandlers.call(this, map);
+		if (!map) return;
+		try { map.off('updateparts', this.onUpdateParts, this); } catch (e) { /* noop */ }
+	},
+
 	_openMobileWizard: function(data) {
 		window.L.CanvasTileLayer.prototype._openMobileWizard.call(this, data);
 	},

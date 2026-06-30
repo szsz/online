@@ -258,7 +258,7 @@ class Socket {
 							'{productname}',
 							typeof brandProductName !== 'undefined'
 								? brandProductName
-								: 'Collabora Online Development Edition (unbranded)',
+								: 'Development Edition (unbranded)',
 						) + e,
 					cmd: 'socket',
 					kind: 'failed',
@@ -961,15 +961,55 @@ class Socket {
 			return;
 		}
 
+		// Cross-type hot-switch: if the docLayer exists but the type
+		// from the status message differs, tear down the old layer so
+		// the code below creates a new one of the correct type.
+		console.log('_onStatusMsg: docLayer=' + !!this._map._docLayer +
+			' cmd.type=' + command.type +
+			' layer._docType=' + (this._map._docLayer ? (this._map._docLayer as any)._docType : 'N/A'));
+		// Captured BEFORE the cross-type teardown below: true when this status
+		// is a reload onto an already-existing layer of the SAME doc type — i.e.
+		// a same-type hot-switch (docx → docx in the same tab) or a same-type
+		// reconnect. In that case the doc layer is reused and the full UI
+		// re-init below is skipped, but core re-creates the notebookbar with a
+		// new window id, leaving its tab handlers stale (see same-type refresh
+		// after the branch chain). Cross-type differs in type → false (handled
+		// by its own teardown+rebuild); first load has no layer → false.
+		const reloadedSameTypeLayer = !!(this._map._docLayer && command.type &&
+			(this._map._docLayer as any)._docType === command.type);
+		if (this._map._docLayer && command.type &&
+			this._map._docLayer._docType &&
+			this._map._docLayer._docType !== command.type) {
+			console.log('Cross-type switch: ' +
+				this._map._docLayer._docType + ' → ' + command.type +
+				' — removing old doc layer to create correct type');
+			// Discard delayed messages: they were buffered for the OLD
+			// doc-type (e.g. spreadsheet-shaped status: with parts /
+			// splitPanes), and replaying them against the new layer
+			// (e.g. ImpressTileLayer) throws — Impress has no
+			// _splitPanesContext. The new doc-type's own messages will
+			// arrive shortly via the WS.
+			if (this._delayedMessages.length) {
+				console.log('Cross-type: discarding ' +
+					this._delayedMessages.length + ' delayed messages');
+				this._delayedMessages = [];
+			}
+			try {
+				this._map.removeLayer(this._map._docLayer);
+			} catch(e: any) {
+				console.error('Cross-type: removeLayer error:', e);
+			}
+			(this._map as any)._docLayer = null;
+			document.body.setAttribute('data-docType', command.type);
+		}
+
 		if (!this._map._docLayer) {
 			Util.ensureValue(command.type);
+
 			// initialize and append text input before doc layer
 			this._map.initTextInput(command.type);
 
 			// Reinitialize the menubar and top toolbar if browser settings are enabled.
-			// During the initial `initializeBasicUI` call, we don't know if compact mode is enabled.
-			// Before `doclayerinit`, we recheck the compact mode setting and if conditions are met,
-			// add the top toolbar and menubar controls to the map.
 			if (window.prefs.useBrowserSetting) {
 				if (
 					!window.mode.isMobile() &&
@@ -980,7 +1020,7 @@ class Socket {
 					this._map.uiManager.initializeMenubarAndTopToolbar();
 			}
 
-			// first status message, we need to create the document layer
+			// Create the document layer for the new type
 			let tileWidthTwips = this._map.options.tileWidthTwips;
 			let tileHeightTwips = this._map.options.tileHeightTwips;
 			if (this._map.options.zoom !== this._map.options.defaultZoom) {
@@ -1006,9 +1046,22 @@ class Socket {
 				docLayer = new window.L.ImpressTileLayer(options);
 
 			Util.ensureValue(docLayer);
+			(docLayer as any)._createdForType = command.type;
 			this._map._docLayer = docLayer;
 			this._map.addLayer(docLayer);
 			this._map.fire('doclayerinit');
+
+			// Reinitialize UI for the new doc type (toolbar, sidebar,
+			// notebookbar). This is critical for cross-type hot-switches
+			// where the previous layer was a different type.
+			try {
+				this._map.uiManager.initializeSpecializedUI(command.type);
+				if (!window.mode.isMobile())
+					this._map.uiManager.initializeNotebookbarInCore();
+				this._map.uiManager.initializeSidebar();
+			} catch (e: any) {
+				window.app.console.error('UI reinit for ' + command.type + ': ' + e);
+			}
 		} else if (this._reconnecting) {
 			// we are reconnecting ...
 			this._map._docLayer._resetClientVisArea();
@@ -1029,6 +1082,28 @@ class Socket {
 			window.migrating = false;
 			this._map.uiManager.initializeSidebar();
 			this._map.uiManager.refreshTheme();
+		}
+
+		// Same-type doc reload (hot-switch docx→docx in the same tab, or a
+		// same-type reconnect): the branches above reuse the doc layer and do
+		// NOT rebuild the notebookbar (initializeNotebookbarInCore is a no-op
+		// once the notebookbar is already initialized). Core, however, re-creates
+		// the notebookbar/dialog components for the new document with NEW window
+		// ids, so the existing notebookbar's tab-click handlers stay bound to the
+		// stale component and go dead: clicking "Insert" no longer activates the
+		// ribbon, making Shapes / Symbol / shape Area palette unreachable on the
+		// 2nd document (user-reported 2026-06-19, incognito). Rebuild it so its
+		// handlers re-bind to the new doc. Runs once per status; cross-type and
+		// first-load rebuild via the block above instead.
+		if (reloadedSameTypeLayer && !window.mode.isMobile()) {
+			try {
+				if (this._map.uiManager.getCurrentMode &&
+					this._map.uiManager.getCurrentMode() === 'notebookbar') {
+					this._map.uiManager.refreshNotebookbar();
+				}
+			} catch (e: any) {
+				window.app.console.error('notebookbar refresh on same-type doc reload: ' + e);
+			}
 		}
 
 		this._map.fire('docloaded', { status: true });
@@ -1107,7 +1182,11 @@ class Socket {
 	}
 
 	public _onMessage(e: SlurpMessageEvent | MinimalMessageEvent): void {
-		let textMsg = e.textMsg;
+		// In WASM mode, messages arrive as raw {data: string} events from
+		// TheFakeWebSocket, without the slurp queue setting textMsg.
+		let textMsg = e.textMsg || (e as any).data;
+		if (textMsg && textMsg.startsWith && textMsg.startsWith('status:'))
+			console.log('DBG_TOP: _onMessage got status:, len=' + textMsg.length);
 		const imgBytes: Uint8Array | undefined = (e as SlurpMessageEvent).imgBytes;
 
 		if (window.L.Browser.cypressTest) {
@@ -1257,7 +1336,8 @@ class Socket {
 			}
 		}
 
-		if (textMsg.startsWith('status:')) {
+		if (textMsg && (textMsg.startsWith('status:') || textMsg.startsWith('statusupdate:'))) {
+			console.log('DBG: _onMessage intercepting status msg, calling _onStatusMsg');
 			this._onStatusMsg(
 				textMsg,
 				JSON.parse(textMsg.replace('status:', '').replace('statusupdate:', '')),
@@ -1729,7 +1809,7 @@ class Socket {
 						'{productname}',
 						typeof brandProductName !== 'undefined'
 							? brandProductName
-							: 'Collabora Online Development Edition (unbranded)',
+							: 'Development Edition (unbranded)',
 					);
 					msg = msg.replace('{0}', window.expectedServerId);
 					msg = msg.replace('{1}', window.routeToken);
@@ -2270,7 +2350,7 @@ class Socket {
 				'{productname}',
 				typeof brandProductName !== 'undefined'
 					? brandProductName
-					: 'Collabora Online Development Edition (unbranded)',
+					: 'Development Edition (unbranded)',
 			);
 			this._map.fire('infobar', {
 				msg: textMsg,
