@@ -26,6 +26,7 @@ class NavigatorPanel extends SidebarBase {
 	focusQuickFind: boolean;
 	dirtyWidth: boolean = true;
 	currentWidth: number = 0;
+	private floatingIconClickBound: boolean = false;
 
 	constructor(map: any) {
 		super(map, SidebarType.Navigator);
@@ -94,6 +95,13 @@ class NavigatorPanel extends SidebarBase {
 
 		// For calc we do not need to add floating icon
 		if (docType !== 'spreadsheet') {
+			// Idempotent: initializeSpecializedUI fires twice on cold open
+			// (once from the tile layer's beforeAdd, once from Socket.ts on
+			// the status message). Without this, two #floating-navigator
+			// buttons end up in the DOM.
+			while (this.floatingNavIcon.firstChild) {
+				this.floatingNavIcon.removeChild(this.floatingNavIcon.firstChild);
+			}
 			// Create floating navigation button
 			this.createFloatingNavigatorBtn();
 
@@ -272,6 +280,20 @@ class NavigatorPanel extends SidebarBase {
 		}
 
 		if (this.navigationPanel) {
+			// Idempotent: remove any prior navContainer/navHeader/navSearchWrapper
+			// before inserting fresh ones. initializeImpl fires twice on cold open
+			// (TileLayer.beforeAdd + Socket._onStatusMsg) AND on every cross-type
+			// switch — without this guard, every Impress doc-load (cold or after
+			// hot-switch) prepends a second '#navigation-options-wrapper' panel.
+			['navigation-options-wrapper', 'navigation-search-wrapper']
+				.forEach((id) => {
+					const existing = this.navigationPanel.querySelector('#' + id);
+					if (existing) existing.remove();
+				});
+			// navHeader has no id; remove all `.navigation-header` children
+			this.navigationPanel.querySelectorAll(':scope > .navigation-header')
+				.forEach((el) => el.remove());
+
 			// Insert navigation container as the first child & navHeader as next-child of navigator-panel
 			this.navigationPanel.prepend(navContainer);
 			if (this.map.isText()) {
@@ -314,19 +336,28 @@ class NavigatorPanel extends SidebarBase {
 		buttonWrapper.appendChild(button);
 		this.floatingNavIcon.appendChild(buttonWrapper);
 
-		// Click event
-		this.floatingNavIcon.addEventListener(
-			'click',
-			function () {
-				this.showNavigationPanel(true);
-				if (app.map.isPresentationOrDrawing()) {
-					this.switchNavigationTab('tab-slide-sorter');
-				} else {
-					app.map.sendUnoCommand('.uno:Navigator');
-				}
-				this.focusSearch();
-			}.bind(this),
-		);
+		// Click event — attach ONCE per panel instance. createFloatingNavigatorBtn
+		// is called every time initializeImpl runs, and initializeImpl fires
+		// twice on cold open (TileLayer.beforeAdd + Socket._onStatusMsg per the
+		// idempotency comment above). Without this guard a second listener
+		// gets bound on the same element, so a single user click dispatches
+		// .uno:Navigator twice → kit toggles open then closed → panel flashes
+		// and stays closed (the "Writer Navigator only flashes" bug).
+		if (!this.floatingIconClickBound) {
+			this.floatingIconClickBound = true;
+			this.floatingNavIcon.addEventListener(
+				'click',
+				function () {
+					this.showNavigationPanel(true);
+					if (app.map.isPresentationOrDrawing()) {
+						this.switchNavigationTab('tab-slide-sorter');
+					} else {
+						app.map.sendUnoCommand('.uno:Navigator');
+					}
+					this.focusSearch();
+				}.bind(this),
+			);
+		}
 	}
 
 	onNavigator(data: FireEvent) {
@@ -501,8 +532,17 @@ class NavigatorPanel extends SidebarBase {
 			type: 'container',
 			children: [
 				{
+					// Iter 35: was 'edit'; the kit's QuickFind sidebar
+					// has no control named "Find" so the dialogevent
+					// dispatched by `useSearchCallback` (lines 541-587)
+					// was dropped silently → no .uno:ExecuteSearch fired
+					// → _docLayer._searchResults stayed empty (regression-
+					// search). Switch to 'searchedit' so the widget
+					// (Widget.SearchEdit.ts) calls app.searchService
+					// .search(...) directly with SearchItem.SearchString,
+					// matching the proven Ctrl+F status-bar path.
 					id: 'navigator-search',
-					type: 'edit',
+					type: 'searchedit',
 					placeholder: _('Search...'),
 					text: '',
 				} as EditWidgetJSON,

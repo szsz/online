@@ -895,9 +895,55 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 			this._onStateChangedMsg(textMsg);
 		}
 		else if (textMsg.startsWith('status:') || textMsg.startsWith('statusupdate:')) {
-			this._onStatusMsg(textMsg);
+			var oldDocType = this._docType;
+			// Always update _docType from the status message
+			try {
+				var sj = JSON.parse(textMsg.replace('status:', '').replace('statusupdate:', ''));
+				if (sj && sj.type) this._docType = sj.type;
+			} catch(ignore) { /* leave _docType unchanged */ }
 
-			// update tiles and selection because mode could be changed
+			console.log('CTL status: old=' + oldDocType + ' new=' + this._docType + ' msg=' + textMsg.substring(0, 40));
+			var isCrossTypeSwitch = this._docType && oldDocType && this._docType !== oldDocType;
+			if (isCrossTypeSwitch) {
+				// Cross-type switch: the current tile layer can't process a
+				// status message from a different doc type. Remove old layer,
+				// create new one, and reinitialize the UI.
+				console.log('Cross-type switch: ' + oldDocType + ' → ' + this._docType);
+				try {
+					// Remove the old layer and create a correct one
+					var map = this._map;
+					map.removeLayer(this);
+
+					var options = {
+						tileWidthTwips: map.options.tileWidthTwips / app.dpiScale,
+						tileHeightTwips: map.options.tileHeightTwips / app.dpiScale,
+						docType: this._docType,
+					};
+					var newLayer;
+					if (this._docType === 'text')
+						newLayer = new L.WriterTileLayer(options);
+					else if (this._docType === 'spreadsheet')
+						newLayer = new L.CalcTileLayer(options);
+					else if (this._docType === 'presentation' || this._docType === 'drawing')
+						newLayer = new L.ImpressTileLayer(options);
+					if (newLayer) {
+						newLayer._docType = this._docType;
+						map._docLayer = newLayer;
+						map.addLayer(newLayer);
+						// Reinitialize toolbar/notebookbar for the new doc type
+						map.uiManager.initializeSpecializedUI(this._docType);
+						// Feed the status message to the new layer
+						newLayer._onMessage(textMsg, null);
+					}
+				} catch(e) {
+					console.error('Cross-type layer switch error:', e);
+				}
+				return; // Don't continue processing on the old layer
+			} else {
+				this._onStatusMsg(textMsg);
+			}
+
+			// update tiles and selection
 			TileManager.update();
 			app.definitions.otherViewGraphicSelectionSection.updateVisibilities();
 			TextCursorSection.updateVisibilities();
@@ -1543,6 +1589,61 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 		var command = app.socket.parseServerCmd(textMsg);
 		var parser = document.createElement('a');
 		parser.href = window.host;
+
+		// WASM: the kit just wrote print.pdf to its in-memory Emscripten FS at
+		// /tmp/user/docs/<downloadid>/<filename> (kit/ChildSession.cpp:1974-2009;
+		// path is jail-root + downloadid, both already known here). In a normal
+		// coolwsd deploy a C++ HTTP handler would serve that file at
+		// /<urlPrefix>/<doc>/download/<id> — but in WASM there is no listening
+		// HTTP and the XHR below would 404. Short-circuit: read the bytes via
+		// window.__wasmFS (exposed by wasm-loader.js around line 1267 once
+		// Module.FS is up), build a blob: URL, and reuse the existing
+		// filedownloadready → hidden-iframe print pipeline. window.__wasmFS
+		// guard is belt-and-braces against a downloadas: arriving before
+		// Module.FS finishes hooking up — unlikely once saveAs returned, but
+		// cheap to check.
+		if (window.ThisIsTheEmscriptenApp && window.__wasmFS) {
+			var path = '/tmp/user/docs/' + command.downloadid + '/' + command.filename;
+			try {
+				var bytes = window.__wasmFS.readFile(path);
+				var mime = command.id === 'print' ? 'application/pdf'
+					: (command.id === 'slideshow' ? 'application/pdf'
+					: 'application/octet-stream');
+				var blob = new Blob([bytes], {type: mime});
+				var blobUrl = URL.createObjectURL(blob);
+				// Tidy up the kit-side temp dir — in the HTTP flow
+				// ClientRequestDispatcher unlinks after streaming; here
+				// nothing else ever reads it.
+				try { window.__wasmFS.unlink(path); } catch (e) { void e; }
+				try { window.__wasmFS.rmdir('/tmp/user/docs/' + command.downloadid); } catch (e) { void e; }
+
+				this._map.hideBusy();
+				if (this._map['wopi'].DownloadAsPostMessage) {
+					this._map.fire('postMessage', {msgId: 'Download_As', args: {Type: command.id, URL: blobUrl, filename: command.filename}});
+				}
+				else if (command.id === 'print') {
+					this._map.fire('filedownloadready', {url: blobUrl});
+				}
+				else if (command.id === 'slideshow') {
+					this._map.fire('slidedownloadready', {url: blobUrl});
+				}
+				else if (command.id === 'export') {
+					if (!window.L.Browser.cypressTest)
+						this._map._fileDownloader.src = blobUrl;
+					else
+						this._map._fileDownloader.setAttribute('data-src', blobUrl);
+				}
+				// blob URLs leak GC roots; revoke after a long enough delay
+				// to cover the print iframe load + dialog open (mirrors the
+				// 300s _closePrintIframe budget in Map.Print.js).
+				setTimeout(function () { try { URL.revokeObjectURL(blobUrl); } catch (e) { void e; } }, 300000);
+				return;
+			} catch (e) {
+				console.warn('[wasm-print] fallback to HTTP after FS read failed:', e && e.message);
+				// Fall through to the legacy HTTP path below — at least
+				// preserves whatever behavior non-WASM environments expect.
+			}
+		}
 
 		var url = window.makeHttpUrlWopiSrc('/' + this._map.options.urlPrefix + '/',
 			this._map.options.doc, '/download/' + command.downloadid);
@@ -3554,6 +3655,9 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 	},
 
 	_syncTilePanePos: function () {
+		// #129 cross-type swap: this handler may fire after onRemove nulled
+		// this._map (the old layer is still subscribed until _offMapHandlers).
+		if (!this._map || this._isDisposed) return;
 		if (this._container) {
 			var mapPanePos = this._map._getMapPanePos();
 			window.L.DomUtil.setPosition(this._container, new cool.Point(-mapPanePos.x , -mapPanePos.y));
@@ -3842,16 +3946,28 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 	},
 
 	onRemove: function (map) {
-		window.L.DomUtil.remove(this._container);
-		map._removeZoomLimit(this);
+		// Defensive null-guards on members that may be undefined if
+		// onAdd was interrupted mid-init (cross-type swap before
+		// onAdd finished).
+		//
+		// NOTE: an earlier version called map.off(undefined, undefined, this)
+		// here to purge all this-as-context handlers. That broke same-type
+		// hot-switching because Util.stamp's reuse semantics meant some
+		// handlers were also unstamping. Reverted; cross-type cleanup is
+		// best done via per-layer override that explicitly enumerates
+		// what was registered.
+		this._isDisposed = true;
+
+		if (this._container) window.L.DomUtil.remove(this._container);
+		if (map._removeZoomLimit) map._removeZoomLimit(this);
 		this._container = null;
 		this._tileZoom = null;
-		TileManager.clearPreFetch();
+		try { TileManager.clearPreFetch(); } catch(e) { /* ok during cross-type tear-down */ }
 		clearTimeout(this._previewInvalidator);
 
-		app.activeDocument.activeView.clearTextSelection();
+		try { app.activeDocument.activeView.clearTextSelection(); } catch(e) { /* ok during cross-type tear-down */ }
 
-		if (!this._oleCSelections.empty()) {
+		if (this._oleCSelections && !this._oleCSelections.empty()) {
 			this._oleCSelections.clear();
 		}
 
@@ -3859,10 +3975,46 @@ window.L.CanvasTileLayer = window.L.Layer.extend({
 			this._cursorMarker.remove();
 		}
 
-		TextSelections.dispose();
+		try { TextSelections.dispose(); } catch(e) { /* ok during cross-type tear-down */ }
 
-		this._removeSplitters();
-		window.L.DomUtil.remove(this._canvasContainer);
+		try { this._removeSplitters(); } catch(e) { /* ok during cross-type tear-down */ }
+		try { this._removeAddedSections(); } catch(e) { /* ok during cross-type tear-down */ }
+		try { this._offMapHandlers(map); } catch(e) { /* ok during cross-type tear-down */ }
+		if (this._canvasContainer) window.L.DomUtil.remove(this._canvasContainer);
+	},
+
+	// Issue #129 — onAdd registers map listeners directly via this._map.on(...).
+	// L.Layer.removeLayer auto-offs only the handlers from getEvents() (context=layer),
+	// not the ones with context=this._painter, etc. After removeLayer nulls this._map,
+	// any leftover handler that dereferences this._map crashes.
+	_offMapHandlers: function (map) {
+		if (!map) return;
+		try { map.off('zoomend', this._painter && this._painter.update, this._painter); } catch (e) { /* noop */ }
+		try { map.off('sheetgeometrychanged', this._painter && this._painter.update, this._painter); } catch (e) { /* noop */ }
+		try { map.off('move', this._syncTilePanePos, this); } catch (e) { /* noop */ }
+		try { map.off('viewrowcolumnheaders', this._painter && this._painter.update, this._painter); } catch (e) { /* noop */ }
+		try { map.off('messagesdone', TileManager.sendProcessedResponse, TileManager); } catch (e) { /* noop */ }
+		if (window.mode.isMobile() || window.mode.isTablet()) {
+			try { map.off('move', this._painter && this._painter.update, this._painter); } catch (e) { /* noop */ }
+		}
+	},
+
+	// Issue #129 — sectionContainer leak across cross-type swaps.
+	// Mirror every addSection() in onAdd so the section list is empty after tear-down.
+	// Subclasses (CalcTileLayer) extend this for sheet-specific sections.
+	_removeAddedSections: function () {
+		if (!app.sectionContainer) return;
+		var names = [
+			app.CSections.Tiles.name,
+			app.CSections.CompareChangesLabel.name,
+			app.CSections.Overlays.name,
+			app.CSections.Scroll.name,
+			app.CSections.CalcGrid.name,
+			app.CSections.CommentList.name,
+		];
+		for (var i = 0; i < names.length; i++) {
+			try { app.sectionContainer.removeSection(names[i]); } catch (e) { /* not present */ }
+		}
 	},
 
 	getEvents: function () {

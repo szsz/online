@@ -443,6 +443,19 @@ class StatusBar extends JSDialog.Toolbar {
 		return language;
 	}
 
+	// LanguageStatus state-change payload format:
+	//   "<localized-name>;<BCP-47-code>"      e.g. "English (USA);en-US"
+	//   "<localized-name>;<BCP-47-code>;..."  (LO sometimes appends
+	//                                          extra fields — take [1]).
+	// Returns the BCP-47 code or null if the format is unrecognised.
+	// Used by the dict-loader hook to fetch the paragraph's dictionary
+	// reactively (task #196 / iter 43).
+	extractLanguageCodeFromStatus(state) {
+		if (!state) return null;
+		var split = String(state).split(';');
+		return split.length >= 2 ? split[1].trim() || null : null;
+	}
+
 	onCommandStateChanged(e) {
 		var commandName = e.commandName;
 		var state = e.state;
@@ -457,6 +470,23 @@ class StatusBar extends JSDialog.Toolbar {
 		else if (commandName === '.uno:LanguageStatus') {
 			var language = this.extractLanguageFromStatus(state);
 			this.updateLanguageItem(language);
+			// Trigger reactive dict load for the new paragraph
+			// locale. wasm/dict-loader.js exposes
+			// loadDictionaryForLocale; it's idempotent so a cursor
+			// move that crosses the same paragraph boundary twice
+			// short-circuits to a cached promise. Catch + swallow
+			// — spellcheck is best-effort and we never want a
+			// load failure to break the cursor-move signal.
+			var localeCode = this.extractLanguageCodeFromStatus(state);
+			if (localeCode && typeof window.loadDictionaryForLocale === 'function') {
+				// The dict-loader installs the dictionary and notifies the kit
+				// (lok_wasm_dict_installed), which re-spells open documents so a
+				// language switched to before its dictionary loaded gets
+				// squiggles once it arrives. Best-effort; never break the
+				// cursor-move signal on failure.
+				try { window.loadDictionaryForLocale(localeCode).catch(function () {}); }
+				catch (_) { /* dict-loader unavailable in some build modes */ }
+			}
 		}
 		else if (commandName === '.uno:RowColSelCount') {
 			state = this.toLocalePattern('$1 rows, $2 columns selected', '(\\d+) rows, (\\d+) columns selected', state, '$1', '$2');

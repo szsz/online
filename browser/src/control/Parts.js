@@ -42,7 +42,15 @@ window.L.Map.include({
 			isTheSamePart =
 				app.calc.partHashes[docLayer._prevSelectedPart] === app.calc.partHashes[part];
 		} else if ((docType === 'presentation' || docType === 'drawing')) {
-			if (docLayer._prevSelectedPart !== undefined && part < app.impress.partList.length && app.impress.partList[docLayer._prevSelectedPart])
+			// Guard against partList being null (can happen during
+			// switchdocument hot-swap before viewinfo arrives) and against
+			// non-numeric `part` values like 'prev'/'next' which fail the
+			// numeric index lookup with NaN < length.
+			if (docLayer._prevSelectedPart !== undefined &&
+				app.impress && app.impress.partList &&
+				typeof part === 'number' &&
+				part < app.impress.partList.length &&
+				app.impress.partList[docLayer._prevSelectedPart])
 				isTheSamePart = app.impress.partList[docLayer._prevSelectedPart].hash === app.impress.partList[part].hash;
 		} else if (docType === 'text') {
 			isTheSamePart = true;

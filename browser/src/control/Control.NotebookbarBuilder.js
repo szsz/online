@@ -28,6 +28,64 @@ window.L.Control.NotebookbarBuilder = window.L.Control.JSDialogBuilder.extend({
 		const comboboxesFocusingDocument = ['fontnamecombobox', 'fontsizecombobox', 'styles'];
 		const originalCallback = builder.callback;
 		this.callback = function(objectType, eventType, object, data, builderArg) {
+			// Font name + size: invoke the UNO command directly (mirroring
+			// Control.TopToolbar.callback for compact mode). The default
+			// dialogevent path does NOT dispatch .uno:CharFontName /
+			// .uno:FontHeight to LO — only the toolbar's applyFont /
+			// applyFontSize do. Without this, typing "Arial" in the
+			// notebookbar combobox + Enter does nothing visible: the
+			// dropdown text changes but the selected text in the doc
+			// keeps the old font.
+			if (object.id === 'fontnamecombobox') {
+				if (eventType === 'selected') {
+					builder.map.applyFont(data.substr(data.indexOf(';') + 1));
+				} else if (eventType === 'change') {
+					builder.map.applyFont(data);
+				} else {
+					return originalCallback(objectType, eventType, object, data, builderArg);
+				}
+				builder.map.focus();
+				return 'focusHandled';
+			}
+			if (object.id === 'fontsizecombobox') {
+				if (eventType === 'selected') {
+					builder.map.applyFontSize(data.substr(data.indexOf(';') + 1));
+				} else if (eventType === 'change') {
+					builder.map.applyFontSize(data);
+				} else {
+					return originalCallback(objectType, eventType, object, data, builderArg);
+				}
+				builder.map.focus();
+				return 'focusHandled';
+			}
+			// Iter 23 + 25: stylesview iconview select must apply the
+			// chosen paragraph style. Default callback only ships a
+			// generic 'dialogevent' with the row index — kit never
+			// receives .uno:StyleApply, so clicking Heading 1 / Title
+			// / Caption did nothing. Mirror Toolbar.js's onStyleSelect
+			// path.
+			//
+			// Iter 25: use entry.id (not .text) — kit's .uno:StyleApply
+			// expects the underlying style id, which is "Text body" for
+			// the entry visible as "Body Text", "Quotations" for
+			// "Block Quotation", etc. Heading entries happen to have
+			// id == text so the earlier .text-first path worked for
+			// those alone.
+			if (object.id === 'stylesview' && eventType === 'select') {
+				try {
+					var entries = (object && object.entries) ? object.entries : null;
+					var idx = parseInt(data, 10);
+					var entry = (entries && entries[idx]) ? entries[idx] : null;
+					var styleId = entry
+						? (entry.id || entry.text || entry.name || null)
+						: null;
+					if (styleId) {
+						builder.map.applyStyle(styleId, 'ParagraphStyles');
+						builder.map.focus();
+						return 'focusHandled';
+					}
+				} catch (e) { /* fall through to default */ }
+			}
 			if (eventType === 'selected'
 				&& comboboxesFocusingDocument.indexOf(object.id) >= 0) {
 				builder._defaultCallbackHandler(objectType, eventType, object, data, builderArg);

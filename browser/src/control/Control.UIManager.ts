@@ -505,6 +505,57 @@ class UIManager extends window.L.Control {
 	initializeSpecializedUI(docType: string): void {
 		app.console.debug('UIManager: initialize specialized UI for: ' + docType);
 
+		const startWelcomePresentation = window.coolParams.get('welcome');
+
+		// Return early when we are loading welcome slideshow
+		if (startWelcomePresentation) {
+			this.map.on('docloaded', () => {
+				app.dispatcher.dispatch('presentinwindow');
+			});
+			this.map.slideShowPresenter = new SlideShow.SlideShowPresenter(
+				this.map,
+				window.enableAccessibility,
+			);
+			return;
+		}
+
+		// Reset ALL type-specific UI before setting up new type.
+		// This makes the function idempotent for cross-type hot-switching.
+
+		// Hide all type-specific DOM elements (they'll be shown by the right type)
+		{ const el = document.getElementById('spreadsheet-toolbar'); if (el) { el.classList.add('hidden'); el.style.display = ''; } }
+		{ const el = document.getElementById('formulabar-row'); if (el) { el.classList.add('hidden'); el.style.display = ''; } }
+		{ const el = document.getElementById('presentation-controls-wrapper'); if (el) { el.style.display = 'none'; } }
+		{ const el = document.getElementById('selectbackground'); if (el) el.style.display = 'none'; }
+		$('#toolbar-wrapper').removeClass('spreadsheet');
+
+		// Clear stale status-bar text from the previous doc type. Without
+		// this, switching writer→calc leaves "1,652 words" still visible
+		// next to the new "Sheet 1 of 1", and switching to impress leaves
+		// both Writer and Calc text behind. The new type's status:
+		// message will repopulate the relevant field a moment later.
+		{ const el = document.getElementById('StateWordCount'); if (el) el.textContent = ''; }
+		{ const el = document.getElementById('StatusDocPos');   if (el) el.textContent = ''; }
+		{ const el = document.getElementById('SlideStatus');    if (el) el.textContent = ''; }
+
+		// Destroy Calc-specific controls
+		if (this.sheetsBar) { try { this.sheetsBar.remove(); } catch(e) {} this.sheetsBar = null; }
+		if (this.map.formulabar) { try { this.map.formulabar.remove(); } catch(e) {} this.map.formulabar = null; }
+		if (this.map.addressInputField) { try { this.map.addressInputField.remove(); } catch(e) {} this.map.addressInputField = null; }
+
+		// Destroy Impress-specific controls
+		if (this.map.slideShowPresenter) { try { this.map.slideShowPresenter.destroy?.(); } catch(e) {} this.map.slideShowPresenter = null; }
+		if (this.map.presenterConsole) { try { this.map.presenterConsole.destroy?.(); } catch(e) {} this.map.presenterConsole = null; }
+
+		// Clear slide-sorter content (will be repopulated by ImpressTileLayer)
+		{ const el = document.getElementById('slide-sorter'); if (el) el.innerHTML = ''; }
+
+		// Destroy and recreate notebookbar for new doc type
+		if (this.notebookbar) { try { this.notebookbar.onRemove(); } catch(e) {} this.notebookbar = null; }
+
+		// Clear any stale notebookbar DOM
+		{ const el = document.getElementById('toolbar-up'); if (el) el.innerHTML = ''; }
+
 		var isDesktop = window.mode.isDesktop();
 		var currentMode = this.getCurrentMode();
 		var enableNotebookbar = currentMode === 'notebookbar' && !app.isReadOnly();
@@ -544,11 +595,9 @@ class UIManager extends window.L.Control {
 			JSDialog.MessageRouter.flushPending('addressinputfield');
 			$('#toolbar-wrapper').addClass('spreadsheet');
 
-			// remove unused elements
-			window.L.DomUtil.remove(window.L.DomUtil.get('presentation-controls-wrapper'));
-			const selectBackground = document.getElementById('selectbackground');
-			if (selectBackground != null)
-				selectBackground.parentNode?.removeChild(selectBackground);
+			// Hide unused elements (hide, not remove, for cross-type switching)
+			{ const el = document.getElementById('presentation-controls-wrapper'); if (el) el.style.display = 'none'; }
+			{ const el = document.getElementById('selectbackground'); if (el) el.style.display = 'none'; }
 
 			const highlightState = this.getHighlightMode()? 'true' : 'false';
 			this.map['stateChangeHandler'].setItemValue('columnrowhighlight', highlightState);
@@ -556,21 +605,21 @@ class UIManager extends window.L.Control {
 		}
 
 		if (this.map.isPresentationOrDrawing()) {
-			// remove unused elements
-			window.L.DomUtil.remove(window.L.DomUtil.get('spreadsheet-toolbar'));
+			// Hide unused, show presentation controls
+			{ const el = document.getElementById('spreadsheet-toolbar'); if (el) el.style.display = 'none'; }
 			$('#presentation-controls-wrapper').show();
 			this.initializeRuler();
-			this.map.slideShowPresenter = new SlideShow.SlideShowPresenter(this.map, window.enableAccessibility);
-			this.map.presenterConsole = new SlideShow.PresenterConsole(this.map, this.map.slideShowPresenter);
+			if (!this.map.slideShowPresenter)
+				this.map.slideShowPresenter = new SlideShow.SlideShowPresenter(this.map, window.enableAccessibility);
+			if (!this.map.presenterConsole)
+				this.map.presenterConsole = new SlideShow.PresenterConsole(this.map, this.map.slideShowPresenter);
 		}
 
 		if (docType === 'text') {
-			// remove unused elements
-			window.L.DomUtil.remove(window.L.DomUtil.get('spreadsheet-toolbar'));
-			window.L.DomUtil.remove(window.L.DomUtil.get('presentation-controls-wrapper'));
-			const selectBackground = document.getElementById('selectbackground');
-			if (selectBackground != null)
-				selectBackground.parentNode?.removeChild(selectBackground);
+			// Hide unused elements
+			{ const el = document.getElementById('spreadsheet-toolbar'); if (el) el.style.display = 'none'; }
+			{ const el = document.getElementById('presentation-controls-wrapper'); if (el) el.style.display = 'none'; }
+			{ const el = document.getElementById('selectbackground'); if (el) el.style.display = 'none'; }
 
 			this.initializeRuler();
 

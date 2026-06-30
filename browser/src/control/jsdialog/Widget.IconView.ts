@@ -133,6 +133,17 @@ function _iconViewEntry(
 		else if (entry.text) placeholder.title = entry.text;
 		else placeholder.title = '';
 
+		// Phase 1 of the stylesview-preview feature: the title attribute
+		// carries the localized display name and the CSS in
+		// notebookbar.css keys built-in style previews off it. When LO
+		// core gains the per-style visual-properties payload (phase 2),
+		// switch the CSS to key off data-style-id (a stable internal id)
+		// so all UI languages preview correctly + so custom user styles
+		// get a runtime-generated rule too. Setting both today costs ~5
+		// bytes per entry and lets phase 2 land as a CSS-only change.
+		const eAny = entry as any;
+		if (eAny.id) placeholder.setAttribute('data-style-id', String(eAny.id));
+
 		parentContainer.requestRenders(entry, placeholder, entryContainer);
 	} else {
 		_createEntryImage(entryContainer, builder, entry, entry.image);
@@ -456,6 +467,56 @@ JSDialog.iconView = function (
 			iconview.scrollTop = offsetTop;
 		}
 	});
+
+	// Iter 173: when the iconview is bound to a UNO command (e.g.
+	// stylesview → .uno:StyleApply), subscribe to commandstatechanged
+	// so the active entry tracks the kit's reported state. Without
+	// this the iconview stays on its initial selection even when the
+	// kit emits .uno:StyleApply=Heading 1 — exactly the regression-
+	// heading-styles-coedit failure mode (B's stylesview stuck on Body
+	// Text after a remote co-editor applies Heading 1, canvas correct
+	// but widget UI stale). Mirrors the iter 166 combobox fix; iconview
+	// onSelect takes a position so we look up the entry by id/text.
+	const dataAny = data as any;
+	if (dataAny.command && builder.map && builder.map.on) {
+		const findEntryIndex = (state: string): number => {
+			if (!state || !data.entries) return -1;
+			for (let i = 0; i < data.entries.length; i++) {
+				const e = data.entries[i] as any;
+				if (e && (e.id === state || e.text === state || e.name === state))
+					return i;
+			}
+			return -1;
+		};
+		const onCommandStateChanged = (e: any) => {
+			if (e.commandName !== dataAny.command) return;
+			const idx = findEntryIndex(e.state);
+			if (idx < 0) return;
+			// Only fire if the active entry actually differs — avoids a
+			// re-select churn that could flicker selection styling.
+			const activeChild = (iconview as any).children
+				? $(iconview).children('.selected').get(0)
+				: null;
+			const activeIdx = activeChild
+				? Array.prototype.indexOf.call(iconview.children, activeChild)
+				: -1;
+			if (idx !== activeIdx && typeof (iconview as any).onSelect === 'function') {
+				(iconview as any).onSelect(idx);
+			}
+		};
+		builder.map.on('commandstatechanged', onCommandStateChanged);
+		// Apply currently-cached state if present so a freshly-built
+		// iconview shows the right entry on hot-switch / late join.
+		if (builder.map.stateChangeHandler) {
+			const current = builder.map.stateChangeHandler.getItemValue(dataAny.command);
+			if (current) {
+				const idx = findEntryIndex(current);
+				if (idx >= 0 && typeof (iconview as any).onSelect === 'function') {
+					(iconview as any).onSelect(idx);
+				}
+			}
+		}
+	}
 
 	return false;
 };

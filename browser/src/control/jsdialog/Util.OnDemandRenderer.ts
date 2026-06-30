@@ -32,6 +32,34 @@ function onDemandRenderer(
 		const cachedComboboxEntries = builder.rendersCache[controlId];
 		let requestRender = true;
 
+		// Diagnostic: gated on window.__l10nIconviewDebug so it stays
+		// quiet by default but can be flipped by tests / dev sessions
+		// to trace why ribbon iconview entries (controlType ==
+		// 'iconview') don't pick up rendersCache images even though
+		// the sidebar's identical control does. Logs whether the cache
+		// exists for this controlId and whether the specific entry has
+		// an image — the asymmetry vs the sidebar path is what we want
+		// to see.
+		if ((window as any).__l10nIconviewDebug) {
+			const cacheState = !cachedComboboxEntries
+				? 'no-entry'
+				: !cachedComboboxEntries.images
+					? 'no-images-map'
+					: cachedComboboxEntries.images[entryId]
+						? 'hit'
+						: 'miss';
+			(window as any).console.log(
+				'[OnDemandRenderer] controlType=' + controlType +
+				' controlId=' + controlId +
+				' entryId=' + entryId +
+				' cacheState=' + cacheState +
+				' cacheKeys=' +
+				(cachedComboboxEntries
+					? Object.keys(cachedComboboxEntries.images || {}).length
+					: 0),
+			);
+		}
+
 		if (cachedComboboxEntries && cachedComboboxEntries.images[entryId]) {
 			const originalClass = placeholder.classList;
 			window.L.DomUtil.remove(placeholder);

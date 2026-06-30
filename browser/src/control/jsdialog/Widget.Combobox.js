@@ -368,5 +368,50 @@ JSDialog.combobox = function (parentContainer, data, builder) {
 		content.value = text;
 	};
 
+	container.updateEntries = function (newEntries) {
+		entries = [];
+		for (var i = 0; i < newEntries.length; i++) {
+			entries.push({
+				text: newEntries[i].toString(),
+				selected: false,
+				customRenderer: data.customEntryRenderer
+			});
+		}
+		if (JSDialog.GetDropdown(data.id))
+			JSDialog.CloseDropdown(data.id);
+	};
+
+	// Iter 166: when the combobox is bound to a UNO command (e.g.
+	// fontsizecombobox → .uno:FontHeight, fontnamecombobox →
+	// .uno:CharFontName), auto-subscribe to commandstatechanged so the
+	// displayed text reflects the kit's reported state. Without this
+	// the combobox stays at its initial data.text ('12 pt') even when
+	// the kit emits .uno:FontHeight=24 — exactly the regression-
+	// fontsize-coedit / regression-heading-styles-coedit failure mode
+	// (B's notebookbar combobox stuck after a remote font change,
+	// canvas correct but widget UI stale).
+	//
+	// Compact toolbar mode wires this via Toolbar.js's
+	// createFontSizeSelector() — but the notebookbar code path never
+	// calls that. Doing it at widget construction covers every
+	// combobox uniformly without touching each notebookbar variant.
+	if (data.command && builder.map && builder.map.on) {
+		var onCommandStateChanged = function(e) {
+			if (e.commandName !== data.command) return;
+			var state = e.state;
+			if (state === '0') state = '';
+			if (typeof container.onSetText === 'function')
+				container.onSetText(state);
+		};
+		builder.map.on('commandstatechanged', onCommandStateChanged);
+		// Apply currently-cached state if present so a freshly-built
+		// combobox shows the right value on hot-switch / late join.
+		if (builder.map.stateChangeHandler) {
+			var current = builder.map.stateChangeHandler.getItemValue(data.command);
+			if (current && current !== '0' && typeof container.onSetText === 'function')
+				container.onSetText(current);
+		}
+	}
+
 	return false;
 };

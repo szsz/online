@@ -104,12 +104,121 @@ if (window.ThisIsTheEmscriptenApp) {
 
 	globalThis.Module = createEmscriptenModule(
 		isWopi ? 'server' : 'local', isWopi ? encodedWOPI : docURL);
+	// Snapshot restore: before main() runs, restore HEAPU8 from
+	// Cache API if available. This must happen in onRuntimeInitialized
+	// (AFTER initRuntime sets up stack/FS/ctors, BEFORE callMain).
+	// Snapshot restore via preRun — fires BEFORE stackCheckInit and
+	// initRuntime. We restore HEAPU8, then the Emscripten init overwrites
+	// the stack cookie area (fixed 8 bytes at a known address) — which is
+	// fine because our snapshot has the same cookies at the same address.
+	// Snapshot restore: inject into Module.preRun using globalThis
+	// (works in both main thread and Worker contexts).
+	if (!globalThis.Module.preRun) globalThis.Module.preRun = [];
+	globalThis.Module.preRun.push(function() {
+		// Use globalThis — preRun may execute in a Worker where
+		// 'window' is undefined.
+		var g = typeof globalThis !== 'undefined' ? globalThis :
+		        typeof self !== 'undefined' ? self : {};
+		g.__preRunFired = true;
+		var mod = g.Module;
+
+		// If a snapshot exists but its heap blob is still loading from
+		// Cache API, block preRun via addRunDependency until the load
+		// resolves. Without this, preRun fires synchronously, sees
+		// __wasmSnapshotData=null, and skips the restore — silently
+		// downgrading every "warm" visit to a cold start.
+		var promise = g.__wasmSnapshotPromise;
+		var doRestore = function() {
+			var snapData = g.__wasmSnapshotData;
+			g.__preRunState = {
+				hasSnap: !!snapData,
+				snapLen: snapData ? snapData.byteLength : 0,
+				hasHeap: !!(mod && mod.HEAPU8),
+				heapLen: mod && mod.HEAPU8 ? mod.HEAPU8.length : 0,
+			};
+			if (snapData && mod && mod.HEAPU8) {
+				var src = new Uint8Array(snapData);
+				if (src.length <= mod.HEAPU8.length) {
+					mod.HEAPU8.set(src);
+					g.__wasmSnapshotRestored = true;
+				}
+			}
+		};
+
+		if (promise && typeof mod.addRunDependency === 'function') {
+			mod.addRunDependency('snapshot-load');
+			promise.then(function() {
+				doRestore();
+				mod.removeRunDependency('snapshot-load');
+			}).catch(function() {
+				// On any error, proceed with no snapshot. preRun's
+				// removeRunDependency must still fire or main() never runs.
+				mod.removeRunDependency('snapshot-load');
+			});
+		} else {
+			// No snapshot promise — first visit, or addRunDependency not
+			// available (shouldn't happen with -s FORCE_FILESYSTEM=1).
+			doRestore();
+		}
+	});
+	// Capture full abort context for Phase 2.1 debugging — emscripten's
+	// "Aborted(Assertion failed)" without a payload is too generic to act
+	// on. With this hook we get the actual abort string + a JS stack frame
+	// at the moment abort() was called.
+	globalThis.Module.onAbort = function(what) {
+		try {
+			console.log('WASM_ABORT', JSON.stringify({
+				what: String(what).substring(0, 500),
+				stack: new Error().stack ? new Error().stack.substring(0, 1500) : null,
+				wasRestored: !!globalThis.__wasmSnapshotRestored,
+				preRunFired: !!globalThis.__preRunFired,
+				preRunState: globalThis.__preRunState,
+			}));
+		} catch(e) { console.log('onAbort log failed:', e.message); }
+	};
+
 	globalThis.Module.onRuntimeInitialized = function() {
+		// Snapshot killswitch (set in wasm-loader.js): tell LO Core to
+		// skip preloadDocumentModules — those module loads emit
+		// notebookbar/sidebar JSDialog frames that COOL JS never gets
+		// a "remove" for, polluting the Writer UI with Calc tabs and
+		// a duplicate floating-navigator.
+		if (window.__wasmKillswitchPreloadDisabled) {
+			try {
+				globalThis.Module.ccall('wasm_set_preload_disabled',
+					null, ['number'], [1]);
+			} catch (e) {
+				console.warn('wasm_set_preload_disabled failed:', e);
+			}
+			// Pre-arm the firstDocPainted resume latch BEFORE the kit
+			// thread enters wait_for. firstDocPainted unconditionally
+			// queues a MAIN_THREAD_ASYNC_EM_ASM and then waits 120 s on
+			// g_phase2CV with predicate g_phase2ResumeRequested. With the
+			// killswitch on, the JS handler would just call
+			// wasm_snapshot_failed → resume — but the EM_ASM hop sits in
+			// the proxy queue while the main thread is busy (observed
+			// ~33 s on cold-reload), so the next switchdocument blocks
+			// behind the kit thread for that long. Setting the latch now
+			// makes the kit thread's wait_for return immediately.
+			try {
+				globalThis.Module.ccall('wasm_snapshot_failed',
+					null, ['number'], [5 /* KILLED */]);
+			} catch (e) {
+				console.warn('wasm_snapshot_failed (pre-arm) failed:', e);
+			}
+		}
 		map.loadDocument(global.socket);
+		// Mark that the first 'load <docKey>' was queued on the fakesocket.
+		// wasm-loader.js's trySendSwitch uses this as the gate for sending
+		// 'switchdocument', avoiding the 10-15 s wait for __wasmInitialDocLoaded
+		// (which is set via the pthread proxy queue and gets serialized
+		// behind the synchronous post-load main-thread work).
+		window.__wasmFirstLoadDispatched = true;
 	};
 	createOnlineModule(globalThis.Module);
 } else {
 	map.loadDocument(global.socket);
+	window.__wasmFirstLoadDispatched = true;
 }
 
 window.addEventListener('beforeunload', function () {

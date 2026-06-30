@@ -741,9 +741,12 @@ class TileManager {
 	}
 
 	private static computeBorders() {
+		// Guard: during cross-type hot-switch, _docLayer is temporarily null.
+		if (!this._docLayer) return;
 		// Need to compute borders afresh and fetch tiles for them.
 		this._borders = []; // Stores borders for each split-pane.
 		const tileRanges = this.pxBoundsToTileRanges(this._pixelBounds);
+		if (!tileRanges) return;
 
 		const splitPanesContext = this._docLayer.getSplitPanesContext();
 		const paneStatusList = splitPanesContext
@@ -1228,7 +1231,6 @@ class TileManager {
 			'tileheight=' +
 			app.tile.size.y;
 		if (addedSize) app.socket.sendMessage(msg);
-		else window.app.console.log('Skipped empty (too fast) tilecombine');
 	}
 
 	private static sendTileCombineRequest(
@@ -1617,6 +1619,8 @@ class TileManager {
 		}
 
 		if (
+			app.map._docLayer &&
+			app.map._docLayer._debug &&
 			app.map._docLayer._debug.tileInvalidationsOn &&
 			part === app.map._docLayer._selectedPart
 		) {

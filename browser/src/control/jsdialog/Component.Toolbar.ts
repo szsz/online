@@ -230,9 +230,6 @@ class Toolbar extends JSDialogComponent {
 			}
 		});
 
-		window.app.console.log('explicitly hiding: ' + toHide);
-		window.app.console.log('explicitly showing: ' + toShow);
-
 		toHide.forEach((item) => {
 			this.showItem(item, false);
 		});
