@@ -1,0 +1,232 @@
+name: WASM local build, deploy, test (ci-viewer.szebeni.hu)
+
+# workflow_dispatch only — manual trigger to build any commit, deploy
+# locally to the CI stack on the dev box (ci-viewer.szebeni.hu /
+# ci-editor.atgpartners.info / ci-relay.atgpartners.info — see
+# wasm/.env.ci), and run a chosen subset of the test suite against
+# those URLs. Reports land at
+#   coolwasmfiles.z6.web.core.windows.net/local-builds/<id>/tests/
+# linked from
+#   coolwasmfiles.z6.web.core.windows.net/local-builds/
+on:
+  # PR to dev: full sweep (build + deploy CI stack + run all tests +
+  # publish report). Tests are INFORMATIONAL — the auto-merge step at
+  # the end of build-deploy-test fires when build + deploy succeed,
+  # regardless of test outcome. So `dev` always advances on a clean
+  # build/deploy; test failures are visible on the published report
+  # and in the workflow's red status, but they don't gate the merge.
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'wasm/**'
+      - 'kit/**'
+      - 'wsd/**'
+      - 'net/**'
+      - 'common/**'
+      - 'browser/**'
+      - '.github/workflows/wasm-ci-local.yml'
+      - '.github/workflows/wasm-ci.yml'
+      - '.github/workflows/editor-build.yml'
+      - '.github/scripts/wasm-ci/**'
+  workflow_dispatch:
+    inputs:
+      online_sha:
+        description: 'Online commit SHA to build (default: HEAD of selected branch)'
+        required: false
+        default: ''
+      lo_build_id:
+        description: 'Override LO_BUILD_ID (default: read from that commit''s wasm/LO_BUILD_ID)'
+        required: false
+        default: ''
+      test_profile:
+        description: 'basic = single-user/single-browser · non-basic = co-edit/multi-browser · snapshot = snapshot-milestones only · all = everything'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - basic
+          - non-basic
+          - snapshot
+          - all
+
+env:
+  AZURE_STORAGE_ACCOUNT: coolwasmfiles
+  CI_STATE_DIR: /home/localadmin/lo-wasm-ci-state
+  STATIC_SITE_BASE: https://coolwasmfiles.z6.web.core.windows.net
+
+concurrency:
+  group: wasm-ci-local-${{ github.event.inputs.online_sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-lo-build:
+    runs-on: ubuntu-latest
+    outputs:
+      lo_build_id: ${{ steps.lo.outputs.lo_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
+
+      - name: Resolve LO_BUILD_ID
+        id: lo
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          LO_BID="${LO_BUILD_ID_OVERRIDE:-}"
+          if [[ -z "$LO_BID" ]]; then
+              LO_BID="$(grep -v '^[[:space:]]*#' wasm/LO_BUILD_ID | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]')"
+          fi
+          if [[ "$LO_BID" == "__LATEST__" ]]; then
+              LO_BID="$(curl -fsSL "$STATIC_SITE_BASE/lo-builds/latest.txt" 2>/dev/null | tr -d '[:space:]' || true)"
+          fi
+          [[ -z "$LO_BID" ]] && { echo "::error::LO_BUILD_ID empty"; exit 1; }
+          echo "lo_build_id=$LO_BID" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build artefacts exist
+        env:
+          LO_BUILD_ID: ${{ steps.lo.outputs.lo_build_id }}
+        run: |
+          curl -fsSL --head --max-time 30 "$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/MANIFEST.json"
+
+  build-deploy-test:
+    needs: validate-lo-build
+    runs-on: [self-hosted, wasm-build]
+    outputs:
+      app_build_id: ${{ steps.ids.outputs.app_build_id }}
+      lo_build_id:  ${{ steps.ids.outputs.lo_build_id }}
+    steps:
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # On pull_request, GitHub provides a synthetic merge ref
+          # (refs/pull/N/merge) — use the PR head's actual sha so
+          # the build matches what's on the PR branch, not the
+          # already-merged-into-dev preview.
+          ref: ${{ github.event.inputs.online_sha || github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve build IDs
+        id: ids
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          # Reuse the standard resolver but tag the APP_BUILD_ID with `local-`
+          # so it sorts/groups separately from Azure-deploy builds.
+          bash .github/scripts/wasm-ci/resolve-ids.sh
+          # Re-prefix in $GITHUB_OUTPUT
+          APP="$(grep '^app_build_id=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)"
+          # Last-line wins for GitHub Actions outputs; just append the prefixed version.
+          echo "app_build_id=local-$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch LibreOffice artefacts
+        env:
+          LO_BUILD_ID: ${{ steps.ids.outputs.lo_build_id }}
+        run: bash .github/scripts/wasm-ci/fetch-lo.sh
+
+      - name: Build Online (WASM)
+        env:
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/build-online.sh
+
+      # Build per-language hunspell dict bundles before deploy so
+      # /dicts/manifest.json is present on the local CI editor. Without
+      # this, the Group N spellcheck regression tests fail with 404 on
+      # /dicts/. Same step as wasm-ci.yml; cached dicts-src in the
+      # persistent state dir makes re-runs near-instant.
+      - name: Build spellcheck dicts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/wasm/online-build"
+          ln -s "$CI_STATE_DIR/online-build" "$GITHUB_WORKSPACE/wasm/online-build"
+          bash "$GITHUB_WORKSPACE/wasm/build-dicts.sh"
+
+      - name: Deploy locally (config from ~/ENV/online-ci.env on the runner host)
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/deploy-local.sh
+
+      # Critical-subset gate — BLOCKING. Runs a small curated list of
+      # E2E tests (editor-loads smoke + warm-restore + co-edit late-join).
+      # If any fails, the job fails here and the auto-merge step below is
+      # skipped (it requires success()). This is the merge gate that the
+      # build+deploy-only gate lacked: a stack that builds + deploys but
+      # serves a 404 editor (orphan editor-static squatting the ci port)
+      # used to merge anyway because the full suite was informational and
+      # ran AFTER the merge. The full suite stays informational below;
+      # this gate is the fast, stable subset that must be green to merge.
+      - name: Critical-subset gate (blocking — editor-loads + warm + co-edit)
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+        run: bash .github/scripts/wasm-ci/test-critical.sh
+
+      # Auto-merge runs after the critical gate (which must have passed —
+      # see success() below) but before the full informational suite, so
+      # dev advances as soon as build + deploy + critical tests are green.
+      # The full suite still runs (informational) and the report goes up;
+      # its outcome is visible on the published report at
+      # coolwasmfiles/local-builds/<id>/tests/ but doesn't gate the merge.
+      #
+      # The merge uses a GitHub App installation token (minted on the
+      # runner via wasm/tools/gh-app/token.js) — pushes done by the
+      # default GITHUB_TOKEN don't fire downstream workflows
+      # (anti-recursion), but App-token pushes do. Without this the
+      # post-merge `push: dev` event in wasm-ci.yml never fires, so
+      # staging doesn't auto-deploy.
+      - name: Auto-merge PR (build + deploy + critical gate succeeded)
+        # success() ensures a failed critical-subset gate (above) skips
+        # the merge — the gate is now a hard merge requirement.
+        if: success() && github.event_name == 'pull_request'
+        # Don't fail the job on auto-merge failures (e.g. draft PR
+        # rejected by `gh pr merge --admin`, or bot lacking permission).
+        # Without this guard the subsequent test step is silently
+        # skipped — producing a 10-min "completed" run with no test
+        # data. The merge attempt result is informational; the actual
+        # gate is the build+deploy steps above which already exited 0.
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          GH_TOKEN="$(node "$GITHUB_WORKSPACE/wasm/tools/gh-app/token.js")"
+          export GH_TOKEN
+          # Use --admin (not --auto). Two concurrent PRs both green-
+          # passing build-deploy at nearly the same time end up with
+          # the second one behind dev once the first merges; `gh pr
+          # merge --auto` then tries to enable repo-level auto-merge
+          # (which is OFF here), failing with "Auto merge is not
+          # allowed for this repository". The gh-app installation
+          # token used here has admin scope on this repo, so --admin
+          # bypasses the queue path and merges immediately once the
+          # required checks pass on the head SHA. Tests are
+          # informational at this step (per the workflow comment
+          # above), so admin-merge is the intended path.
+          gh pr merge "$PR_NUMBER" --rebase --delete-branch --admin
+
+      - name: Run test suite (profile=${{ github.event.inputs.test_profile || 'all' }})
+        # Tests are informational on PR — they don't gate auto-merge
+        # (that already fired above on a clean build + deploy). The
+        # report still gets published so failures are visible.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        env:
+          APP_BUILD_ID: ${{ steps.ids.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ steps.ids.outputs.lo_build_id }}
+          GIT_SHA:      ${{ github.event.inputs.online_sha || github.event.pull_request.head.sha || github.sha }}
+          GIT_REF:      ${{ github.event.pull_request.head.ref || github.ref }}
+          TEST_PROFILE: ${{ github.event.inputs.test_profile || 'all' }}
+        run: bash .github/scripts/wasm-ci/test-local.sh
+
+      - name: Upload junit.xml as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-xml
+          path: /tmp/static-deploy/public/reports/junit.xml
+          if-no-files-found: ignore

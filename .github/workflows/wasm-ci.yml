@@ -1,0 +1,293 @@
+name: WASM build, deploy, test
+
+# Viewer + relay App Service deploy + test suite.
+# Editor builds live in editor-build.yml (Front Door + Storage); this
+# workflow no longer touches the editor.
+#
+# Two-path policy for deploys (mirrors LO build policy):
+#   1. PR to dev — validate + auto-merge on green (deploy runs on the
+#      post-merge `push: dev` event below).
+#   2. workflow_dispatch — redeploy any past Online commit. Set
+#      `online_sha` to the commit SHA and optionally `lo_build_id` to
+#      override the LO build pinned in that commit's wasm/LO_BUILD_ID.
+# See wasm/CLAUDE.md "How to make changes to LibreOffice / Online".
+on:
+  push:
+    branches: [dev]
+    # Viewer-side + test + CI-infra paths only. Editor-side paths
+    # trigger editor-build.yml instead. Commits touching both fire
+    # both workflows in parallel — each owns its half.
+    paths:
+      - 'wasm/viewer-server.js'
+      - 'wasm/viewer-public/**'
+      - 'wasm/lib/**'
+      - 'wasm/message-relay.js'
+      # editor-static-server.js is test-infra (CI ephemeral + dev-box CI
+      # stack) — the Azure editor lives on FD via editor-build.yml. Changes
+      # to its routing affect every CI test run, so push:dev must re-test.
+      - 'wasm/editor-static-server.js'
+      - 'wasm/tests/**/test-*.js'
+      - 'wasm/run-*tests*.sh'
+      - 'wasm/generate-report.js'
+      - 'wasm/generate-junit.sh'
+      - 'wasm/deploy-azure.sh'
+      - 'wasm/.env.example'
+      - 'wasm/.env.deploy.*.example'
+      - 'wasm/LO_BUILD_ID'
+      - '.github/workflows/wasm-ci.yml'
+      - '.github/scripts/wasm-ci/deploy.sh'
+      - '.github/scripts/wasm-ci/test-and-publish.sh'
+      - '.github/scripts/wasm-ci/publish-app-build.sh'
+      - '.github/scripts/wasm-ci/regen-indexes.sh'
+      - '.github/scripts/wasm-ci/_lib.sh'
+  pull_request:
+    branches: [dev]
+    # PR triggers stay broad (any wasm/** change) so validate-lo-build
+    # runs as a required check on PRs that touch anything wasm-related.
+    paths:
+      - 'wasm/LO_BUILD_ID'
+      - 'wasm/**'
+      - '.github/workflows/wasm-ci.yml'
+      - '.github/scripts/wasm-ci/**'
+  workflow_dispatch:
+    inputs:
+      online_sha:
+        description: 'Online commit SHA to (re)deploy (default: HEAD of selected branch)'
+        required: false
+        default: ''
+      lo_build_id:
+        description: 'Override LO_BUILD_ID (default: read from that commit''s wasm/LO_BUILD_ID)'
+        required: false
+        default: ''
+      skip_tests:
+        description: 'Skip the test job (deploy only)'
+        required: false
+        default: 'false'
+
+env:
+  AZURE_STORAGE_ACCOUNT: coolwasmfiles
+  CI_STATE_DIR: /home/localadmin/lo-wasm-ci-state
+  STATIC_SITE_BASE: https://coolwasmfiles.z6.web.core.windows.net
+
+# Both runners on this box share the docker daemon. flock in the scripts
+# guarantees only one CI build at a time on the host; this group prevents
+# two pushes on this same repo from racing each other.
+concurrency:
+  group: wasm-ci-${{ github.event.inputs.online_sha || github.event.pull_request.head.sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Fail-fast LO_BUILD_ID validation. Runs on github-hosted ubuntu-latest
+  # (no secrets, no docker, no self-hosted runner) so it is safe for fork
+  # PRs and free for public repos. Hits ONLY the public static-website
+  # endpoint of coolwasmfiles, no auth required.
+  # Make this job a "Required status check" in the branch protection rule
+  # for `dev` to harden-block PRs that pin a non-existent LO build.
+  # On PR: green validate-lo-build → auto-merge into dev (the deploy then
+  # runs on the post-merge `push: dev` event).
+  # ─────────────────────────────────────────────────────────────────────
+  validate-lo-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      lo_build_id: ${{ steps.lo.outputs.lo_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve LO_BUILD_ID
+        id: lo
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          LO_BID="${LO_BUILD_ID_OVERRIDE:-}"
+          if [[ -z "$LO_BID" ]]; then
+              if [[ ! -f wasm/LO_BUILD_ID ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::wasm/LO_BUILD_ID is missing"
+                  exit 1
+              fi
+              LO_BID="$(grep -v '^[[:space:]]*#' wasm/LO_BUILD_ID | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]')"
+          fi
+          if [[ "$LO_BID" == "__LATEST__" ]]; then
+              LO_BID="$(curl -fsSL "$STATIC_SITE_BASE/lo-builds/latest.txt" 2>/dev/null | tr -d '[:space:]' || true)"
+              if [[ -z "$LO_BID" ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::__LATEST__ requested but lo-builds/latest.txt is empty/missing — pin a literal ID or wait for a successful libreoffice-core-wasm CI build"
+                  exit 1
+              fi
+          fi
+          echo "Resolved LO_BUILD_ID: $LO_BID"
+          echo "lo_build_id=$LO_BID" >> "$GITHUB_OUTPUT"
+
+      - name: Verify build artefacts exist on coolwasmfiles
+        env:
+          LO_BUILD_ID: ${{ steps.lo.outputs.lo_build_id }}
+        run: |
+          set -euo pipefail
+          MANIFEST_URL="$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/MANIFEST.json"
+          TARBALL_URL="$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/lo-core.tar.zst"
+          ok=true
+          for url in "$MANIFEST_URL" "$TARBALL_URL"; do
+              code="$(curl -fsSL -o /dev/null -w '%{http_code}' --head --max-time 30 "$url" || echo 000)"
+              if [[ "$code" != "200" ]]; then
+                  echo "::error file=wasm/LO_BUILD_ID::Missing artefact: $url (HTTP $code)"
+                  ok=false
+              else
+                  echo "  OK ($code) $url"
+              fi
+          done
+          $ok || { echo "::error file=wasm/LO_BUILD_ID::Pinned LO_BUILD_ID '$LO_BUILD_ID' has no valid build at coolwasmfiles. Update wasm/LO_BUILD_ID to a build listed at $STATIC_SITE_BASE/lo-builds/."; exit 1; }
+
+      # NOTE: auto-merge is no longer here. wasm-ci-local.yml handles
+      # auto-merge on a successful PR build + deploy (using a GitHub
+      # App installation token so the post-merge push: dev event
+      # actually fires). The default GITHUB_TOKEN we have access to
+      # here would suppress that event (anti-recursion), so the staging
+      # deploy below would never trigger.
+      #
+      # This validate-lo-build job stays as a fast PR sanity check
+      # (LO_BUILD_ID points at a real artefact) — it's a lightweight
+      # required status check; the full build/deploy/test runs in
+      # wasm-ci-local.yml.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Heavy jobs only run on push/dispatch — never on PRs. PRs only get the
+  # validate-lo-build gate above.
+  # ─────────────────────────────────────────────────────────────────────
+  build-deploy:
+    needs: validate-lo-build
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, wasm-build]
+    outputs:
+      app_build_id: ${{ steps.ids.outputs.app_build_id }}
+      lo_build_id:  ${{ steps.ids.outputs.lo_build_id }}
+    steps:
+      # Reclaim workspace ownership before checkout. build-online.sh runs
+      # inside docker as root and writes to bind-mounted paths (autom4te.cache,
+      # m4/, storage/). A trap chowns back on EXIT, but if the script is
+      # cancelled mid-flight or the runner reboots, root-owned remnants are
+      # left behind — actions/checkout's `git clean -ffdx` then exits 1.
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
+
+      - name: Resolve build IDs
+        id: ids
+        env:
+          LO_BUILD_ID_OVERRIDE: ${{ github.event.inputs.lo_build_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+        run: bash .github/scripts/wasm-ci/resolve-ids.sh
+
+      # Note: no `Fetch LO` / `Build Online (WASM)` / `Build spellcheck
+      # dicts` steps here — the editor (and its bundled dicts) lives on
+      # Front Door + Storage now, deployed by editor-build.yml. This
+      # workflow ships viewer + relay code only, both pure Node servers
+      # that don't need the WASM build output.
+
+      - name: Resolve current editor build (from editor-builds/latest.txt)
+        id: editor
+        env:
+          STATIC_SITE_BASE: ${{ env.STATIC_SITE_BASE }}
+        # Reads the FD-side latest pointer so the manifest published
+        # below records which editor folder the viewer is iframing.
+        # Falls back to the viewer build id when the pointer is missing
+        # (very early in the cutover; should not happen in steady state).
+        run: |
+          set -euo pipefail
+          EBID="$(curl -fsSL "$STATIC_SITE_BASE/editor-builds/latest.txt" 2>/dev/null \
+              | tr -d '[:space:]' || true)"
+          if [[ -z "$EBID" ]]; then
+              echo "WARN: editor-builds/latest.txt empty/missing — using viewer build id as editor_build_id"
+              EBID="${{ steps.ids.outputs.app_build_id }}"
+          fi
+          echo "Editor build id: $EBID"
+          echo "editor_build_id=$EBID" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy viewer + relay to Azure App Services
+        env:
+          APP_BUILD_ID:    ${{ steps.ids.outputs.app_build_id }}
+          EDITOR_DEPLOY_ID_OVERRIDE: ${{ steps.editor.outputs.editor_build_id }}
+        # deploy.sh sources online-staging-deploy.env and runs
+        # deploy-azure.sh — which now only deploys viewer + relay
+        # (editor App Service was decommissioned). The viewer's
+        # EDITOR_DEPLOY_ID App Setting is set from APP_BUILD_ID by
+        # default; we pass an override so it pins to the *editor*
+        # build (not the viewer build) when they differ.
+        run: bash .github/scripts/wasm-ci/deploy.sh
+
+      - name: Publish build artefacts + index
+        env:
+          APP_BUILD_ID:    ${{ steps.ids.outputs.app_build_id }}
+          EDITOR_BUILD_ID: ${{ steps.editor.outputs.editor_build_id }}
+          LO_BUILD_ID:     ${{ steps.ids.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.event.inputs.online_sha || github.sha }}
+          GIT_REF: ${{ github.event.inputs.online_sha || github.ref }}
+        run: bash .github/scripts/wasm-ci/publish-app-build.sh
+
+  test:
+    needs: build-deploy
+    if: ${{ github.event.inputs.skip_tests != 'true' }}
+    runs-on: [self-hosted, wasm-build]
+    # 360 min ceiling — clean run lands at ~118 min (see
+    # app-builds/2026-05-27-081253/tests/summary.json), but post-LO-
+    # bump 2026-06-03-61 + recent test additions push frequent runs
+    # past the old 180-min cap (see 2026-06-04 runs 26919552567 +
+    # 26928709598 both killed at 3h with no published summary).
+    # Raised to 360 min — the GH Actions default job ceiling. On
+    # abort, test-and-publish.sh's SIGTERM trap now writes a partial
+    # summary.json + run.log + (whatever junit.xml the parallel
+    # runner had emitted) so the app-builds row shows partial
+    # PASS/FAIL counts instead of "no tests yet".
+    timeout-minutes: 360
+    steps:
+      - name: Reclaim workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.online_sha || github.sha }}
+
+      - name: Run test suite + publish report
+        env:
+          APP_BUILD_ID: ${{ needs.build-deploy.outputs.app_build_id }}
+          LO_BUILD_ID:  ${{ needs.build-deploy.outputs.lo_build_id }}
+          GIT_SHA: ${{ github.sha }}
+        run: bash .github/scripts/wasm-ci/test-and-publish.sh
+
+      # Defensive guard: when the test step above gets killed before
+      # it could upload its own summary.json (job timeout / runner
+      # contention / manual cancel) the build's manifest stays at
+      # test_report: null and the app-builds index renders the row as
+      # "no tests yet" indefinitely — indistinguishable from a build
+      # whose tests are still queued. Patch the manifest with an
+      # explicit aborted marker and regen the index so the failure
+      # mode is visible. Always runs; no-op when summary.json is
+      # already up.
+      - name: Mark tests aborted (if test step didn't publish)
+        if: always()
+        env:
+          APP_BUILD_ID:    ${{ needs.build-deploy.outputs.app_build_id }}
+          GIT_SHA:         ${{ github.sha }}
+          TEST_JOB_STATUS: ${{ job.status }}
+        run: bash .github/scripts/wasm-ci/mark-test-aborted.sh
+
+      # Upload junit.xml as a workflow artifact for external consumers.
+      # test-and-publish.sh already uploaded the same file to coolwasmfiles
+      # (under app-builds/<ID>/tests/junit.xml) and wrote a clickable
+      # markdown table to $GITHUB_STEP_SUMMARY with deep-links per test.
+      - name: Upload junit.xml as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-xml
+          path: /tmp/static-deploy/public/reports/junit.xml
+          if-no-files-found: ignore
