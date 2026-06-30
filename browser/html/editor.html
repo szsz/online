@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Editor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background: #f5f5f5;
+        }
+        .upload-box {
+            background: #fff;
+            border-radius: 12px;
+            padding: 48px;
+            text-align: center;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            max-width: 480px;
+            width: 90%;
+        }
+        .upload-box h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
+        .upload-box p { color: #666; margin-bottom: 24px; font-size: 14px; }
+        .drop-zone {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px 20px;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            margin-bottom: 16px;
+        }
+        .drop-zone:hover, .drop-zone.dragover { border-color: #1b6acb; background: #f0f7ff; }
+        .drop-zone-text { color: #888; font-size: 15px; }
+        .drop-zone-text strong { color: #1b6acb; }
+        #file-input { display: none; }
+        .status { color: #666; font-size: 13px; min-height: 20px; margin-top: 8px; }
+        .status.error { color: #c00; }
+        .supported { color: #999; font-size: 12px; margin-top: 16px; }
+        .share-link {
+            margin-top: 16px;
+            padding: 12px;
+            background: #f0f7ff;
+            border-radius: 8px;
+            display: none;
+        }
+        .share-link label { display: block; color: #555; font-size: 13px; margin-bottom: 6px; }
+        .share-link-row { display: flex; gap: 0; }
+        .share-link-row input {
+            flex: 1;
+            padding: 8px 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px 0 0 6px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .share-link-row button {
+            padding: 8px 14px;
+            background: #1b6acb;
+            color: #fff;
+            border: none;
+            border-radius: 0 6px 6px 0;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .btn-open {
+            display: none;
+            margin-top: 12px;
+            padding: 12px 24px;
+            background: #1b6acb;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 15px;
+            width: 100%;
+        }
+        .btn-open:hover { background: #155ba0; }
+    </style>
+</head>
+<body>
+
+<div class="upload-box">
+    <h1>Editor</h1>
+    <p>Open a document to start editing</p>
+    <div class="drop-zone" id="drop-zone">
+        <div class="drop-zone-text">
+            Drop a file here or <strong>click to browse</strong>
+        </div>
+    </div>
+    <input type="file" id="file-input"
+        accept=".odt,.ods,.odp,.docx,.xlsx,.pptx,.doc,.xls,.ppt,.rtf,.txt,.csv" />
+    <div class="status" id="status"></div>
+    <div class="supported">
+        Supported: ODT, ODS, ODP, DOCX, XLSX, PPTX, DOC, XLS, PPT, RTF, TXT, CSV
+    </div>
+    <div class="share-link" id="share-link">
+        <label>Share this link for co-editing:</label>
+        <div class="share-link-row">
+            <input type="text" id="share-url" readonly />
+            <button onclick="copyShareLink()">Copy</button>
+        </div>
+    </div>
+    <button class="btn-open" id="btn-open">Open Document</button>
+</div>
+
+<form id="cool-form" method="post" style="display:none">
+    <input name="access_token" value="test" type="hidden" />
+</form>
+
+<script>
+    var dropZone = document.getElementById('drop-zone');
+    var fileInput = document.getElementById('file-input');
+    var status = document.getElementById('status');
+    var pendingCoolUrl = null;
+
+    // Check if joining an existing room
+    var params = new URLSearchParams(window.location.search);
+    var joinFile = params.get('file');
+    var joinRoom = params.get('room');
+    if (joinFile && joinRoom) {
+        // Joining — download file from storage, upload to editor, then open
+        status.textContent = 'Joining session...';
+        getConfig().then(function() {
+            var fileName = decodeURIComponent(joinFile);
+            // Download from file storage
+            return fetch('/api/files/' + encodeURIComponent(fileName)).then(function(r) {
+                if (!r.ok) throw new Error('File not found');
+                return r.blob();
+            }).then(function(blob) {
+                // Upload to editor app so WASM can load it
+                var editorBase = _editorOrigin || '';
+                return fetch(editorBase + '/wasm/' + encodeURIComponent(fileName), {
+                    method: 'POST', body: blob,
+                });
+            }).then(function() {
+                openInCool(fileName, joinRoom);
+            });
+        }).catch(function(err) {
+            status.className = 'status error';
+            status.textContent = 'Join failed: ' + err.message;
+        });
+    }
+
+    dropZone.addEventListener('click', function() { fileInput.click(); });
+    dropZone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', function() { dropZone.classList.remove('dragover'); });
+    dropZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', function() {
+        if (fileInput.files.length > 0) handleFile(fileInput.files[0]);
+    });
+
+    function handleFile(file) {
+        status.className = 'status';
+        status.textContent = 'Uploading ' + file.name + '...';
+
+        getConfig().then(function() {
+            // Upload to file storage (viewer) for persistence
+            var storageUpload = fetch('/api/files/' + encodeURIComponent(file.name), {
+                method: 'POST',
+                body: file,
+            });
+
+            // Upload to editor app for WASM to load (cross-origin when deployed)
+            var editorBase = _editorOrigin || '';
+            var editorUpload = fetch(editorBase + '/wasm/' + encodeURIComponent(file.name), {
+                method: 'POST',
+                body: file,
+            });
+
+            return Promise.all([storageUpload, editorUpload]);
+        }).then(function(responses) {
+            for (var i = 0; i < responses.length; i++) {
+                if (!responses[i].ok) throw new Error('Upload failed: ' + responses[i].status);
+            }
+            status.textContent = 'Ready to open ' + file.name;
+
+            // Generate room ID from filename + random suffix
+            var roomId = file.name.replace(/[^a-zA-Z0-9]/g, '-') + '-' + Math.random().toString(36).substr(2, 6);
+
+            // Share link uses the viewer's deep-link hash (#file=...).
+            // Per-file relay rooms are derived from the filename in the new
+            // viewer, so no separate &room= is needed.
+            var shareUrl = window.location.origin + '/#file=' + encodeURIComponent(file.name);
+            document.getElementById('share-url').value = shareUrl;
+            document.getElementById('share-link').style.display = 'block';
+
+            // Show open button — navigate to the share URL so the button
+            // and the share link open the same page.
+            var btn = document.getElementById('btn-open');
+            btn.style.display = 'block';
+            btn.onclick = function() { window.location.href = shareUrl; };
+
+            pendingCoolUrl = buildCoolUrl(file.name, roomId);
+        }).catch(function(err) {
+            status.className = 'status error';
+            status.textContent = err.message;
+        });
+    }
+
+    // Relay URL is loaded from /config (set by viewer server) or falls
+    // back to wss://hostname:9091 for local development.
+    var _relayBase = null;
+    var _editorOrigin = null;
+
+    function getConfig() {
+        if (_relayBase !== null) return Promise.resolve();
+        return fetch('/config').then(function(r) { return r.json(); }).then(function(cfg) {
+            _relayBase = cfg.relayUrl || ('wss://' + window.location.hostname + ':9091');
+            _editorOrigin = cfg.editorUrl || '';
+        }).catch(function() {
+            _relayBase = 'wss://' + window.location.hostname + ':9091';
+            _editorOrigin = '';
+        });
+    }
+    // Pre-fetch config on page load
+    getConfig();
+
+    function buildCoolUrl(fileName, roomId) {
+        var relayUrl = (_relayBase || 'wss://' + window.location.hostname + ':9091')
+            + '/room/' + encodeURIComponent(roomId);
+        var base = _editorOrigin || '';
+        // Pass our own origin so the relay-adapter knows where to upload
+        // checkpoint saves (cross-origin iframe can't read parent.origin).
+        return base + '/browser/cool.html?WOPISrc=' + encodeURIComponent(fileName)
+            + '&relay=' + encodeURIComponent(relayUrl)
+            + '&fileStorageUrl=' + encodeURIComponent(window.location.origin);
+    }
+
+    function openInCool(fileName, roomId) {
+        getConfig().then(function() {
+            var coolUrl = buildCoolUrl(fileName, roomId);
+            var form = document.getElementById('cool-form');
+            form.action = coolUrl;
+            form.submit();
+        });
+    }
+
+    function copyShareLink() {
+        var input = document.getElementById('share-url');
+        input.select();
+        navigator.clipboard.writeText(input.value);
+    }
+</script>
+
+</body>
+</html>
