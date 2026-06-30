@@ -99,6 +99,35 @@ class Evented extends BaseClass {
 		context?: any,
 	): Evented {
 		if (!types) {
+			if (context) {
+				// off(undefined, undefined, context) — remove ALL handlers
+				// registered with this specific context, across all event
+				// types. Used by L.Layer.onRemove to undo every map.on()
+				// the layer registered without enumerating each event name.
+				const foreignCtxtId = Util.stamp(context);
+				const suffix = '_' + foreignCtxtId;
+				const eventTypes = Array.from(this._eventsExt.keys());
+				for (const type of eventTypes) {
+					const typeIndex = this._eventsExt.get(type);
+					if (!typeIndex) continue;
+					const idsToRemove: string[] = [];
+					for (const id of typeIndex.keys()) {
+						if (id.endsWith(suffix)) idsToRemove.push(id);
+					}
+					for (const id of idsToRemove) {
+						const listener = typeIndex.get(id);
+						// Mark as no-op so an in-progress fire-loop doesn't
+						// dispatch to the removed handler this turn.
+						if (listener) listener.fn = Util.falseFn;
+						typeIndex.delete(id);
+						const count = this._numEvents.get(type) || 0;
+						if (count > 1) this._numEvents.set(type, count - 1);
+						else this._numEvents.delete(type);
+					}
+					if (typeIndex.size === 0) this._eventsExt.delete(type);
+				}
+				return this;
+			}
 			// clear all handler maps if called without arguments.
 			this._eventsExt.clear();
 			this._eventsAuto.clear();

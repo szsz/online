@@ -133,6 +133,11 @@ window.L.Control.JSDialogBuilder = window.L.Control.extend({
 		this._controlHandlers['borderwindow'] = this._borderwindowHandler;
 		this._controlHandlers['control'] = JSDialog.container;
 		this._controlHandlers['scrollbar'] = this._ignoreHandler;
+		// scrollbarbox is the corner widget where a GtkScrolledWindow's
+		// scrollbars meet (emitted e.g. by the Area dialog's colorsetwin).
+		// It has no client-side rendering — the browser scrolls natively —
+		// so ignore it instead of logging "Unsupported control type".
+		this._controlHandlers['scrollbarbox'] = this._ignoreHandler;
 		this._controlHandlers['toolbox'] = JSDialog.toolbox;
 		this._controlHandlers['spacer'] = JSDialog.spacer;
 		this._controlHandlers['toolitem'] = this._toolitemHandler;
@@ -2112,8 +2117,21 @@ window.L.Control.JSDialogBuilder = window.L.Control.extend({
 		if (!control && data.control)
 			control = this._getItemById(container, this._removeMenuId(data.control.id));
 		if (!control) {
-			window.app.console.warn('executeAction: not found control with id: "' + data.control_id +
-				'" to perform action: "' + data.action_type + '"');
+			// Some control IDs are routinely missing from the DOM in builds
+			// that don't render them (Zotero items hidden when Zotero is
+			// off; server-audit hidden for non-admin users; etc). These
+			// fire on every cold open and bury real warnings. Suppress
+			// silently for the known-conditional set; warn for the rest.
+			var id = String(data.control_id || '');
+			var isConditionalSaaSItem = (
+				(!window.zoteroEnabled && /^zotero/i.test(id)) ||
+				/^references-zoterosetdocprefs-break$/i.test(id) ||
+				/^serveraudit$/i.test(id) ||
+				/^help-serveraudit-break$/i.test(id)
+			);
+			if (!isConditionalSaaSItem)
+				window.app.console.warn('executeAction: not found control with id: "' + id +
+					'" to perform action: "' + data.action_type + '"');
 			return;
 		}
 

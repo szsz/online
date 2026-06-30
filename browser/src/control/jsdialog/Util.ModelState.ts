@@ -20,9 +20,10 @@ class JSDialogModelState {
 	private model: WidgetJSON | null;
 
 	constructor(componentName: string) {
-		app.console.debug(
-			'JSDialogModelState: created new for component: ' + componentName,
-		);
+		if (JSDialog.verbose)
+			app.console.debug(
+				'JSDialogModelState: created new for component: ' + componentName,
+			);
 		this.componentName = componentName;
 		this.model = null;
 	}
@@ -33,23 +34,23 @@ class JSDialogModelState {
 			try {
 				return window.structuredClone(obj);
 			} catch (e) {
-				app.console.debug('JSDialogModelState: ' + e);
+				if (JSDialog.verbose) app.console.debug('JSDialogModelState: ' + e);
 			}
 		}
 
 		// try fallback
 		try {
-			app.console.debug('JSDialogModelState: fallback copy by JSON.parse');
+			if (JSDialog.verbose) app.console.debug('JSDialogModelState: fallback copy by JSON.parse');
 			return JSON.parse(JSON.stringify(obj));
 		} catch (e) {
-			app.console.debug('JSDialogModelState: failed to clone the model: ' + e);
+			if (JSDialog.verbose) app.console.debug('JSDialogModelState: failed to clone the model: ' + e);
 		}
 
 		try {
-			app.console.debug('JSDialogModelState: fallback copy by Object.assign');
+			if (JSDialog.verbose) app.console.debug('JSDialogModelState: fallback copy by Object.assign');
 			return Object.assign({}, obj);
 		} catch (e) {
-			app.console.debug('JSDialogModelState: ' + e);
+			if (JSDialog.verbose) app.console.debug('JSDialogModelState: ' + e);
 		}
 
 		return null;
@@ -59,7 +60,7 @@ class JSDialogModelState {
 		try {
 			return JSON.stringify(obj);
 		} catch (e) {
-			app.console.debug('JSDialogModelState: ' + e);
+			if (JSDialog.verbose) app.console.debug('JSDialogModelState: ' + e);
 		}
 
 		return 'Bad Object';
@@ -72,9 +73,10 @@ class JSDialogModelState {
 			if (snapshot) {
 				return snapshot;
 			} else {
-				app.console.debug(
-					'JSDialogModelState: cannot copy object, use original model',
-				);
+				if (JSDialog.verbose)
+					app.console.debug(
+						'JSDialogModelState: cannot copy object, use original model',
+					);
 				return this.model;
 			}
 		}
@@ -84,9 +86,10 @@ class JSDialogModelState {
 
 	/// replaces complete state of a model
 	public fullUpdate(data: JSDialogJSON) {
-		app.console.debug(
-			'JSDialogModelState: set model for component: ' + this.componentName,
-		);
+		if (JSDialog.verbose)
+			app.console.debug(
+				'JSDialogModelState: set model for component: ' + this.componentName,
+			);
 
 		this.model = data;
 	}
@@ -150,9 +153,10 @@ class JSDialogModelState {
 	/// returns current state of a widget with given id
 	public getById(widgetId: string): WidgetJSON | null {
 		if (!this.model) {
-			app.console.debug(
-				'JSDialogModelState: model missing in component: ' + this.componentName,
-			);
+			if (JSDialog.verbose)
+				app.console.debug(
+					'JSDialogModelState: model missing in component: ' + this.componentName,
+				);
 			return null;
 		}
 
