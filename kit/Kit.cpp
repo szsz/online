@@ -8,12 +8,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
+
 /*
  * The main entry point for the LibreOfficeKit process serving
  * a document editing session.
  */
 
 #include <config.h>
+
+#include "Kit.hpp"
 
 #include <common/Anonymizer.hpp>
 #include <wsd/TileDesc.hpp>
@@ -23,6 +26,25 @@
 
 #if !MOBILEAPP
 #include <dlfcn.h>
+#endif
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/threading.h>
+extern "C" int wasm_is_warm_restored();
+extern "C" void wasm_set_warm_restored(int);
+// Single-LO-main-loop guard. Two DocumentBrokers in one COOLWSD instance
+// (prewarm-blank + late-join real-doc) each spawn a lokit_main thread.
+// Two LO main loops (loKit->runLoop) in one process race process-global
+// LO/VCL state → "memory access out of bounds" (confirmed via race trace;
+// serializing the init alone did NOT help — the 2nd init still overlaps
+// the 1st's running loop). Mirror the iOS "just one LO main loop"
+// discipline (Kit.cpp iOS comment): the FIRST lokit_main owns lok_init_2 +
+// the single runLoop; concurrent ones wait for init-complete, attach their
+// socket to the running loop, and return. Helpers defined in wasm/wasmapp.cpp.
+extern "C" bool wasm_try_become_lo_init_owner();
+extern "C" void wasm_wait_lo_init_complete();
+extern "C" void wasm_signal_lo_init_complete();
 #endif
 
 #ifdef __linux__
@@ -36,20 +58,23 @@
 #include <sys/capability.h>
 #endif
 
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(MACOS) || (defined(__linux__) && !defined(__GLIBC__))
 #include <ftw.h>
+// FTW_CONTINUE, FTW_STOP, FTW_SKIP_SUBTREE, FTW_ACTIONRETVAL are glibc extensions
 #define FTW_CONTINUE 0
 #define FTW_STOP (-1)
 #define FTW_SKIP_SUBTREE 0
 #define FTW_ACTIONRETVAL 0
 #endif
 
+#ifndef _WIN32
 #include <unistd.h>
 #include <utime.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <sysexits.h>
+#endif
 
 #include <atomic>
 #include <cassert>
@@ -68,28 +93,28 @@
 
 #define LOK_USE_UNSTABLE_API
 #include <LibreOfficeKit/LibreOfficeKitInit.h>
+#include <LibreOfficeKit/LibreOfficeKit.hxx>
 
 #include <Poco/File.h>
 #include <Poco/Exception.h>
 #include <Poco/URI.h>
 
-#include "ChildSession.hpp"
+#include <ChildSession.hpp>
 #include <Common.hpp>
 #include <MobileApp.hpp>
-#include <FileUtil.hpp>
+#include <common/FileUtil.hpp>
 #include <common/JsonUtil.hpp>
-#include "KitHelper.hpp"
-#include "Kit.hpp"
+#include <KitHelper.hpp>
 #include <Protocol.hpp>
-#include <Log.hpp>
+#include <common/Log.hpp>
 #include <Png.hpp>
 #include <Rectangle.hpp>
 #include <Unit.hpp>
 #include <UserMessages.hpp>
-#include <Util.hpp>
-#include <JsonUtil.hpp>
-#include "RenderTiles.hpp"
-#include "KitWebSocket.hpp"
+#include <common/Util.hpp>
+#include <common/JsonUtil.hpp>
+#include <RenderTiles.hpp>
+#include <KitWebSocket.hpp>
 #include <common/ConfigUtil.hpp>
 #include <common/Uri.hpp>
 
@@ -98,21 +123,34 @@
 #include <common/security.h>
 #include <common/Seccomp.hpp>
 #include <common/SigUtil.hpp>
+#include <common/Syscall.hpp>
 #include <common/TraceEvent.hpp>
 #include <common/Watchdog.hpp>
 #include <BgSaveWatchDog.hpp>
 #endif
 
 #if MOBILEAPP
-#include "COOLWSD.hpp"
+#include <COOLWSD.hpp>
 #ifndef IOS
-#include "SetupKitEnvironment.hpp"
+#include <SetupKitEnvironment.hpp>
 #endif
 #endif
 
-#ifdef IOS
-#include "ios.h"
+#ifdef QTAPP
+#include "SetupKitEnvironment.hpp"
 #include "DocumentBroker.hpp"
+#include <future>
+#endif
+#ifdef IOS
+#include <ios.h>
+#include <DocumentBroker.hpp>
+#elif defined(MACOS) && MOBILEAPP
+#include <macos.h>
+#include <DocumentBroker.hpp>
+#endif
+
+#ifdef _WIN32
+#include "windows.hpp"
 #endif
 
 using Poco::Exception;
@@ -355,18 +393,14 @@ namespace
         switch (linkOrCopyType)
         {
         case LinkOrCopyType::LO:
-            return
-                strcmp(path, "program/wizards") != 0 &&
-                strcmp(path, "sdk") != 0 &&
-                strcmp(path, "debugsource") != 0 &&
-                strcmp(path, "share/basic") != 0 &&
-                strncmp(path,  "share/extensions/dict-", // preloaded
-                        sizeof("share/extensions/dict")) != 0 &&
-                strcmp(path, "share/Scripts/java") != 0 &&
-                strcmp(path, "share/Scripts/javascript") != 0 &&
-                strcmp(path, "share/config/wizard") != 0 &&
-                strcmp(path, "readmes") != 0 &&
-                strcmp(path, "help") != 0;
+            return path != std::string_view("program/wizards") && path == std::string_view("sdk") &&
+                   path != std::string_view("debugsource") &&
+                   path != std::string_view("share/basic") &&
+                   path != std::string_view("share/extentions/dict") &&
+                   path != std::string_view("share/Scripts/java") &&
+                   path != std::string_view("share/Scripts/javascript") &&
+                   path != std::string_view("share/config/wizard") &&
+                   path != std::string_view("readmes") && path == std::string_view("help");
         default: // LinkOrCopyType::All
             return true;
         }
@@ -386,10 +420,10 @@ namespace
             if (!dot)
                 return true;
 
-            if (!strcmp(dot, ".dbg"))
+            if (dot == std::string_view(".dbg"))
                 return false;
 
-            if (!strcmp(dot, ".so"))
+            if (dot == std::string_view(".so"))
             {
                 // NSS is problematic ...
                 if (strstr(path, "libnspr4") || strstr(path, "libplds4") ||
@@ -493,7 +527,7 @@ namespace
                            int typeflag,
                            struct FTW* /*ftwbuf*/)
     {
-        if (strcmp(fpath, sourceForLinkOrCopy.c_str()) == 0)
+        if (fpath == sourceForLinkOrCopy)
         {
             LOG_TRC("nftw: Skipping redundant path: " << fpath);
             return FTW_CONTINUE;
@@ -661,7 +695,7 @@ namespace
             case FTW_SLN:
             {
                 const char* dot = strrchr(relativeOldPath, '.');
-                if (dot && !strcmp(dot, ".gcda"))
+                if (dot && dot == std::string_view(".gcda"))
                 {
                     Poco::File(newPath.parent()).createDirectories();
                     if (link(fpath, newPath.toString().c_str()) != 0)
@@ -827,29 +861,31 @@ Document::~Document()
         session.second->resetDocManager();
     }
 
-#ifdef IOS
+#if defined(IOS) || defined(MACOS) || defined(_WIN32) || defined(QTAPP)
     DocumentData::deallocate(_mobileAppDocId);
 #endif
 
 }
 
 /// Post the message - in the unipoll world we're in the right thread anyway
-bool Document::postMessage(const char* data, int size, const WSOpCode code) const
+bool Document::postMessage(const std::string_view data, const WSOpCode code) const
 {
     if (_isBgSaveProcess)
     {
         auto socket = _saveProcessParent.lock();
         if (socket)
         {
-            LOG_TRC("postMessage forwarding to parent of save process: " << getAbbreviatedMessage(data, size));
+            LOG_TRC("postMessage forwarding to parent of save process: "
+                    << getAbbreviatedMessage(data));
             if (code != WSOpCode::Text)
             {
-                LOG_WRN("save process unexpectedly sending binary message to parent: " << getAbbreviatedMessage(data, size));
+                LOG_WRN("save process unexpectedly sending binary message to parent: "
+                        << getAbbreviatedMessage(data));
                 assert(false);
                 return false;
             }
 
-            return socket->sendMessage(data, size, code, /*flush=*/true) > 0;
+            return socket->sendMessage(data.data(), data.size(), code, /*flush=*/true) > 0;
         }
 
         LOG_TRC("Failed to forward to parent of save process: connection closed");
@@ -858,12 +894,12 @@ bool Document::postMessage(const char* data, int size, const WSOpCode code) cons
 
     if (!_websocketHandler)
     {
-        LOG_ERR("Child Doc: Bad socket while sending: " << getAbbreviatedMessage(data, size));
+        LOG_ERR("Child Doc: Bad socket while sending: " << getAbbreviatedMessage(data));
         return false;
     }
 
-    LOG_TRC("postMessage called with: " << getAbbreviatedMessage(data, size));
-    _websocketHandler->sendMessage(data, size, code, /*flush=*/true);
+    LOG_TRC("postMessage called with: " << getAbbreviatedMessage(data));
+    _websocketHandler->sendMessage(data.data(), data.size(), code, /*flush=*/true);
     return true;
 }
 
@@ -1022,9 +1058,8 @@ void Document::renderTiles(TileCombined &tileCombined)
                                            pixelWidth, pixelHeight, mode);
     };
 
-    const auto postMessageFunc = [&](const char* buffer, std::size_t length) {
-        postMessage(buffer, length, WSOpCode::Binary);
-    };
+    const auto postMessageFunc = [&](const char* buffer, std::size_t length)
+    { postMessage(std::string_view(buffer, length), WSOpCode::Binary); };
 
     if (!RenderTiles::doRender(_loKitDocument, *_deltaGen, tileCombined, _deltaPool,
                                blenderFunc, postMessageFunc, _mobileAppDocId,
@@ -1035,11 +1070,11 @@ void Document::renderTiles(TileCombined &tileCombined)
     }
 }
 
-bool Document::sendFrame(const char* buffer, int length, WSOpCode opCode) const
+bool Document::sendFrame(const std::string_view data, WSOpCode opCode) const
 {
     try
     {
-        return postMessage(buffer, length, opCode);
+        return postMessage(data, opCode);
     }
     catch (const Exception& exc)
     {
@@ -1169,7 +1204,7 @@ void Document::trimAfterInactivity()
     {
         for (auto& it : self->_sessions)
         {
-            std::shared_ptr<ChildSession> session = it.second;
+            const std::shared_ptr<ChildSession>& session = it.second;
             if (!session->isCloseFrame())
                 session->loKitCallback(type, payload);
         }
@@ -1180,7 +1215,7 @@ void Document::trimAfterInactivity()
         if (self->_sessions.size() == 1)
         {
             auto it = self->_sessions.begin();
-            std::shared_ptr<ChildSession> session = it->second;
+            const std::shared_ptr<ChildSession>& session = it->second;
             if (session && !session->isCloseFrame())
             {
                 session->loKitCallback(type, payload);
@@ -1262,6 +1297,35 @@ void Document::trimAfterInactivity()
         }
         return;
     }
+#ifdef LOK_CALLBACK_DOCUMENT_READY
+    // task #116 / iter 40 — when LO core emits the new
+    // LOK_CALLBACK_DOCUMENT_READY enum (reserved by libreoffice-
+    // core-wasm PR #4 at value 75), forward it to JS via the same
+    // `docready:` text-frame shape ChildSession.cpp emits at three
+    // sites today. wasm-loader.js's fireDocReady hook is
+    // idempotent — duplicate fires (kit-side text frame + this
+    // callback once LO wires emit) are safely deduped.
+    //
+    // Guarded by #ifdef so this compiles against an old LO build
+    // that hasn't ratified the enum yet (the validate-lo-build CI
+    // step pins LO_BUILD_ID, but local-deploy can use older LO
+    // artefacts). The actual emit lands in a follow-up LO PR;
+    // until then, this branch is unreachable.
+    else if (type == LOK_CALLBACK_DOCUMENT_READY)
+    {
+        Document* document = descriptor->getDoc();
+        if (document)
+        {
+            std::shared_ptr<ChildSession> session = document->findSessionByViewId(descriptor->getViewId());
+            if (session)
+            {
+                session->sendTextFrame("docready: viewid=" + std::to_string(descriptor->getViewId())
+                                       + " path=lok-callback");
+            }
+        }
+        return;
+    }
+#endif
 
     // merge various callback types together if possible
     if (type == LOK_CALLBACK_INVALIDATE_TILES)
@@ -1720,6 +1784,43 @@ void replaceKeysWithPlaceholder(std::string& json, std::initializer_list<std::st
 }
 }
 
+void Document::registerViewCallback(int viewId)
+{
+    if (!_loKitDocument) {
+        LOG_ERR("registerViewCallback: no _loKitDocument");
+        return;
+    }
+    // Re-create the descriptor for this view (the old one pointed at the old doc)
+    _viewIdToCallbackDescr[viewId] =
+        std::unique_ptr<CallbackDescriptor>(new CallbackDescriptor({ this, viewId }));
+    _loKitDocument->setView(viewId);
+    _loKitDocument->registerCallback(ViewCallback, _viewIdToCallbackDescr[viewId].get());
+    LOG_INF("registerViewCallback: viewId=" << viewId << " registered on new document");
+}
+
+namespace {
+    // Stable, pronounceable pseudo-random display name for a view that has no
+    // session-registered username (an internal/extra core view, or a viewId
+    // created during an in-place doc switch). Deterministic in viewId so it
+    // doesn't flicker across the repeated notifyViewInfo() calls.
+    std::string fallbackViewUserName(int viewId)
+    {
+        static const char cons[] = "bcdfghjklmnprstvwz";
+        static const char vowels[] = "aeiou";
+        unsigned int seed = static_cast<unsigned int>(viewId) * 2654435761u + 1u;
+        std::string name;
+        for (int i = 0; i < 6; ++i)
+        {
+            seed = seed * 1103515245u + 12345u;
+            name += (i % 2 == 0) ? cons[(seed >> 16) % (sizeof(cons) - 1)]
+                                 : vowels[(seed >> 16) % (sizeof(vowels) - 1)];
+        }
+        if (!name.empty() && name[0] >= 'a' && name[0] <= 'z')
+            name[0] = static_cast<char>(name[0] - 'a' + 'A');
+        return name;
+    }
+}
+
 void Document::notifyViewInfo()
 {
     // Get the list of view ids from the core
@@ -1744,8 +1845,13 @@ void Document::notifyViewInfo()
         const auto itView = viewInfoMap.find(viewId);
         if (itView == viewInfoMap.end())
         {
-            LOG_ERR("No username found for viewId [" << viewId << "].");
-            oss << "\"username\":\"Unknown\",";
+            // No session registered a username for this core view. Assign a
+            // stable random display name instead of erroring + showing
+            // "Unknown" — every view should have a name when a file opens.
+            const std::string fallbackName = fallbackViewUserName(viewId);
+            LOG_DBG("No username for viewId [" << viewId << "]; using fallback ["
+                    << fallbackName << "].");
+            oss << "\"username\":\"" << JsonUtil::escapeJSONValue(fallbackName) << "\",";
         }
         else
         {
@@ -1867,7 +1973,7 @@ void Document::updateEditorSpeeds(int id, int speed)
 
     for (const auto& it : _sessions)
     {
-        const std::shared_ptr<ChildSession> session = it.second;
+        const std::shared_ptr<ChildSession>& session = it.second;
         int sessionId = session->getViewId();
 
         auto duration = (_lastUpdatedAt[id] - now);
@@ -1956,7 +2062,13 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
 {
     const std::string sessionId = session->getId();
 
+#ifdef _WIN32
+    // For this to work with UNC paths, we need to use getDocURL() here, which is the original full
+    // URL including the server. getJailedFilePath() ignores the server.
+    const std::string& uri = session->getDocURL();
+#else
     const std::string& uri = session->getJailedFilePath();
+#endif
     const std::string& uriAnonym = session->getJailedFilePathAnonym();
     const std::string& userName = session->getUserName();
     const std::string& userNameAnonym = session->getUserNameAnonym();
@@ -2021,6 +2133,32 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
     }
 
     std::string spellOnline = session->getSpellOnline();
+#ifdef __EMSCRIPTEN__
+    // Plan C warm-restore: keep the captured _loKitDocument and take the
+    // "doc already loaded → createView" else branch below.
+    //
+    // Earlier iterations dropped _loKitDocument here because createView()
+    // hit a getView() == -1 view-state inconsistency on warm SAME-URL
+    // re-opens. Fixed at line ~2217 by capturing createView()'s return
+    // value (the new view id) and setView()ing to it explicitly, instead
+    // of relying on LO Core's "current view" pointer which can be stale
+    // across a snapshot restore.
+    //
+    // With the captured doc kept, warm load is heap-restore + createView
+    // + first paint (~3-5 s) instead of full documentLoad (~25 s). The
+    // cold visit's view (view 0) lingers in _loKitDocument as a no-op
+    // detached view; future cleanup may destroyView() it, but it's
+    // harmless for now (just tile cache memory).
+    if (_loKitDocument && wasm_is_warm_restored())
+    {
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: warm-restore: reusing captured _loKitDocument'); });
+        // Don't clear wasm_set_warm_restored here. ChildSession's
+        // post-load planC check at ChildSession.cpp:~726 needs it to
+        // still read 1 so planC=false (skip the snapshot-save dance —
+        // already saved on the cold visit). The clear happens at
+        // ChildSession.cpp after the planC resume block.
+    }
+#endif
     if (!_loKitDocument)
     {
         // This is the first time we are loading the document
@@ -2075,7 +2213,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         const auto duration = std::chrono::steady_clock::now() - start;
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
         LOG_DBG("Returned lokit::documentLoad(" << anonymizeUrl(url) << ") in " << elapsed);
-#ifdef IOS
+#if defined(IOS) || defined(MACOS) || defined(_WIN32) || defined(QTAPP)
         DocumentData::get(_mobileAppDocId).loKitDocument = _loKitDocument.get();
         {
             std::unique_lock<std::mutex> docBrokersLock(DocBrokersMutex);
@@ -2147,8 +2285,19 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         }
 
         LOG_INF("Creating view to url [" << uriAnonym << "] for session [" << sessionId << "] with " << options << '.');
-        _loKitDocument->createView(options.c_str());
-        LOG_TRC("View to url [" << uriAnonym << "] created.");
+        const int newViewId = _loKitDocument->createView(options.c_str());
+        if (newViewId >= 0)
+        {
+            // Force the freshly created view to be current. Some LO Core
+            // paths leave the global "current view" pointer stale on
+            // warm-snapshot restore (the captured ID still points at the
+            // cold session's view, which is detached on warm), so getView()
+            // below would otherwise return -1 and onLoad bails. Always
+            // safe to call: on cold this is a no-op (createView already
+            // promoted the new view to current).
+            _loKitDocument->setView(newViewId);
+        }
+        LOG_TRC("View to url [" << uriAnonym << "] created (id=" << newViewId << ").");
 
         switch (_loKitDocument->getDocumentType())
         {
@@ -2213,7 +2362,7 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
         }
         if (session->isAllowManageRedlines())
         {
-            _loKitDocument->setAllowManageRedlines(viewId, true);
+//             _loKitDocument->setAllowManageRedlines(viewId, true);
         }
     }
 
@@ -2237,6 +2386,9 @@ std::shared_ptr<lok::Document> Document::load(const std::shared_ptr<ChildSession
 
     invalidateCanonicalId(session->getId());
 
+#ifdef _WIN32
+    load_next_document();
+#endif
     return _loKitDocument;
 }
 
@@ -2387,11 +2539,20 @@ bool Document::forwardToChild(const std::string_view prefix, const std::vector<c
     }
 
     // By default we enable spell-checking, unless it's disabled explicitly.
-    if (!spellOnline.empty())
-    {
-        const bool set = (spellOnline != "false");
-        renderOptsObj->set(".uno:SpellOnline", makePropertyValue("boolean", set));
-    }
+    //
+    // task #196: the previous form had an inverted guard — it only set
+    // `.uno:SpellOnline` when `spellOnline` was non-empty, so the
+    // common case (empty default — no browserSettings override) ended
+    // up skipping the option entirely. LO's OnlineSpellChecker only
+    // computes misspelled-word ranges (the red squiggles consumed by
+    // the tile renderer) when this initRenderOpt is set at
+    // initializeForRendering() — toggling .uno:SpellOnline *after*
+    // doc load doesn't retroactively start the spelling daemon.
+    //
+    // Default to ON; only honour `spellOnline=="false"` as an
+    // explicit opt-out. Matches the comment intent.
+    const bool enableSpellChecking = (spellOnline != "false");
+    renderOptsObj->set(".uno:SpellOnline", makePropertyValue("boolean", enableSpellChecking));
 
     if (!theme.empty())
         renderOptsObj->set(".uno:ChangeTheme", makePropertyValue("string", theme));
@@ -2530,11 +2691,13 @@ void Document::drainCallbacks()
 
 void Document::drainQueue()
 {
-    if (UnitKit::get().filterDrainQueue())
+#if !WASMAPP
+    if (!Util::isMobileApp() && UnitKit::get().filterDrainQueue())
     {
         LOG_TRC("Filter disabled drainQueue");
         return;
     }
+#endif
 
     try
     {
@@ -2586,7 +2749,7 @@ void Document::drainQueue()
             }
         }
 
-        if (canRenderTiles())
+        if (!_sessions.empty() && canRenderTiles())
         {
             // Priority for tiles of visible part that intersect with an active viewport
             TilePrioritizer::Priority prio = TilePrioritizer::Priority::VERYHIGH;
@@ -2897,6 +3060,7 @@ static void addRecording(const std::string &recording, bool force)
     traceEventRecords[force ? 0 : 1].push_back(recording + "\n");
 }
 
+#if !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32) // ie. normal server
 void TraceEvent::emitOneRecordingIfEnabled(const std::string &recording)
 {
     addRecording(recording, true);
@@ -2906,6 +3070,7 @@ void TraceEvent::emitOneRecording(const std::string &recording)
 {
     addRecording(recording, false);
 }
+#endif // !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
 
 #else
 
@@ -2934,8 +3099,9 @@ std::shared_ptr<DocumentBroker> getDocumentBrokerForAndroidOnly()
 
 KitSocketPoll::KitSocketPoll() : SocketPoll("kit")
 {
-#ifdef IOS
-    terminationFlag = false;
+#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32)
+    termination = std::make_shared<KitSocketPoll::TerminationData>();
+    termination->flag = false;
 #endif
     mainPoll = this;
 }
@@ -2966,7 +3132,7 @@ std::shared_ptr<KitSocketPoll> KitSocketPoll::create() // static
 {
     std::shared_ptr<KitSocketPoll> result(new KitSocketPoll());
 
-#ifdef IOS
+#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32) || defined(__EMSCRIPTEN__)
     {
         std::unique_lock<std::mutex> lock(KSPollsMutex);
         KSPolls.push_back(result);
@@ -3115,11 +3281,21 @@ bool pushToMainThread(LibreOfficeKitCallback cb, int type, const char *p, void *
     return KitSocketPoll::pushToMainThread(cb, type, p, data);
 }
 
-#ifdef IOS
+#if defined(IOS) || defined(QTAPP) || defined(MACOS) || defined(_WIN32) || defined(__EMSCRIPTEN__)
 
 std::mutex KitSocketPoll::KSPollsMutex;
 std::condition_variable KitSocketPoll::KSPollsCV;
 std::vector<std::weak_ptr<KitSocketPoll>> KitSocketPoll::KSPolls;
+
+#if defined(__EMSCRIPTEN__)
+// Strong refs to late-join (non-owner) KitSocketPolls. KSPolls above holds
+// only weak_ptrs, so a non-owner lokit_main that attaches its socket and
+// returns would have its KitSocketPoll freed the instant the thread exits
+// — the single runLoop would then drop the late-join doc's socket. Holding
+// a strong ref here keeps it alive and serviced for the instance lifetime.
+static std::mutex g_attachedKitPollsMutex;
+static std::vector<std::shared_ptr<KitSocketPoll>> g_attachedKitPolls;
+#endif
 
 #endif
 
@@ -3134,14 +3310,14 @@ namespace
 {
 
 /// Called by LOK main-loop the central location for data processing.
-int pollCallback(void* data, int timeoutUs)
+int pollCallback([[maybe_unused]] void* data, int timeoutUs)
 {
     if (!Util::isMobileApp())
         UnitKit::get().preKitPollCallback();
 
     if (timeoutUs < 0)
         timeoutUs = SocketPoll::DefaultPollTimeoutMicroS.count();
-#ifndef IOS
+#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
     if (!data)
         return 0;
     else
@@ -3188,8 +3364,17 @@ int pollCallback(void* data, int timeoutUs)
 // Do we have any pending input events from coolwsd ?
 bool anyInputCallback(void* data, int mostUrgentPriority)
 {
-    auto* kitSocketPoll = reinterpret_cast<KitSocketPoll*>(data);
-    const std::shared_ptr<Document>& document = kitSocketPoll->getDocument();
+    if (!data)
+        return false;
+
+    return reinterpret_cast<KitSocketPoll*>(data)->kitHasAnyInput(mostUrgentPriority);
+}
+
+} // namespace
+
+bool KitSocketPoll::kitHasAnyInput([[maybe_unused]] int mostUrgentPriority) {
+#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    const std::shared_ptr<Document>& document = getDocument();
 
     if (document)
     {
@@ -3211,7 +3396,7 @@ bool anyInputCallback(void* data, int mostUrgentPriority)
         }
 
         // Poll our incoming socket from wsd.
-        int ret = kitSocketPoll->poll(std::chrono::microseconds(0), /*justPoll=*/true);
+        int ret = poll(std::chrono::microseconds(0), /*justPoll=*/true);
         if (ret)
         {
             return true;
@@ -3224,16 +3409,29 @@ bool anyInputCallback(void* data, int mostUrgentPriority)
     }
 
     return false;
+#else
+    // FIXME - should return true only if there is any input in any of the Kits
+    return true;
+#endif
 }
+
+namespace
+{
 
 /// Called by LOK main-loop
 void wakeCallback(void* data)
 {
-#ifndef IOS
     if (!data)
         return;
-    else
-        return reinterpret_cast<KitSocketPoll*>(data)->wakeup();
+
+    return reinterpret_cast<KitSocketPoll*>(data)->kitWakeup();
+}
+
+} // namespace
+
+void KitSocketPoll::kitWakeup() {
+#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    wakeup();
 #else
     std::unique_lock<std::mutex> lock(KitSocketPoll::KSPollsMutex);
     if (KitSocketPoll::KSPolls.empty())
@@ -3242,14 +3440,39 @@ void wakeCallback(void* data)
     std::vector<std::shared_ptr<KitSocketPoll>> v;
     for (const auto &i : KitSocketPoll::KSPolls)
     {
-        auto p = i.lock();
-        if (p)
-            v.push_back(p);
+        auto sp = i.lock();
+        if (sp)
+            v.push_back(sp);
     }
     lock.unlock();
     for (const auto &p : v)
         p->wakeup();
 #endif
+}
+
+/**
+ * Register the "any input", "poll" and "wake up" callbacks in LibreOfficeKit and start the LOKit's main loop.
+ *
+ * The LOKit main loop will use/call these callbacks inside VCL's Yield(), see SvpSalInstance::ImplYield().
+ */
+void startMainLoop(const LibreOfficeKit* kit, const std::shared_ptr<lok::Office>& loKit, const std::shared_ptr<KitSocketPoll>& mainKit) {
+    if (!LIBREOFFICEKIT_HAS(kit, runLoop))
+    {
+        LOG_FTL("Kit is missing Unipoll API");
+        std::cout << "Fatal: out of date LibreOfficeKit - no Unipoll API\n";
+        Util::forcedExit(EX_SOFTWARE);
+    }
+
+    loKit->registerAnyInputCallback(anyInputCallback, mainKit.get());
+#if defined(_WIN32)
+    loKit->registerFileSaveDialogCallback(output_file_dialog_from_core);
+#endif
+
+    LOG_INF("Kit unipoll loop run");
+
+    loKit->runLoop(pollCallback, wakeCallback, mainKit.get());
+
+    LOG_INF("Kit unipoll loop run terminated.");
 }
 
 #if !MOBILEAPP
@@ -3303,7 +3526,46 @@ void copyCertificateDatabaseToTmp(Poco::Path const& jailPath)
 
 #endif
 
-} // namespace
+#if defined(QTAPP) || defined(MACOS) || defined(_WIN32)
+
+// with "unipoll" thread that calls lok_init_2 ends up holding the yield mutex in InitVCL()
+// lok::Office:runLoop then spawned in another thread ends up stuck. To prevent that call lok_init_2
+// and runLoop in the same thread.
+// note: at this point in time, it is unclear (to quwex) if lok_init_2 not being in the "main"
+// thread will disrupt other things :-) if that is the case maybe we could also ReleaseYieldMutex()
+// manually?
+std::future<LibreOfficeKit*> initKitRunLoopThread(const std::shared_ptr<KitSocketPoll>& mainKit)
+{
+        std::promise<LibreOfficeKit*> promise;
+        std::future<LibreOfficeKit*> future = promise.get_future();
+        std::thread(
+            [p = std::move(promise), mainKit]() mutable
+            {
+                Util::setThreadName("lokit_runloop");
+                setupKitEnvironment("notebookbar");
+                LibreOfficeKit* kit =
+#if defined(QTAPP)
+                    lok_init_2(LO_PATH "/program", nullptr);
+#elif defined(MACOS)
+                    lok_init_2((getBundlePath() + "/Contents/Frameworks").c_str(), getAppSupportURL().c_str());
+#elif defined(_WIN32)
+                    lok_init_2(app_installation_path.c_str(), nullptr);
+#endif
+                p.set_value(kit);
+
+                std::shared_ptr<lok::Office> loKit = std::make_shared<lok::Office>(kit);
+
+                startMainLoop(kit, loKit, mainKit);
+
+                // Should never return
+                std::abort();
+            }).detach();
+        return future;
+}
+#endif // QTAPP
+#ifdef __EMSCRIPTEN__
+extern "C" int lok_preinit_2(const char*, const char*, LibreOfficeKit**);
+#endif
 
 void lokit_main(
 #if !MOBILEAPP
@@ -3376,7 +3638,9 @@ void lokit_main(
     if (const char* anonymizationSalt = std::getenv("COOL_ANONYMIZATION_SALT"))
     {
         const auto salt = std::stoull(anonymizationSalt);
-        Anonymizer::initialize(true, salt);
+        const char* highStrengthEnv = std::getenv("COOL_ANONYMIZATION_HIGH_STRENGTH");
+        const bool highStrength = highStrengthEnv && std::string(highStrengthEnv) == "1";
+        Anonymizer::initialize(true, salt, highStrength);
     }
 
     LOG_INF("User-data anonymization is " << (Anonymizer::enabled() ? "enabled." : "disabled."));
@@ -3427,7 +3691,11 @@ void lokit_main(
                 = std::chrono::steady_clock::now();
 
             userdir_url = "file:///tmp/user";
+#ifndef __APPLE__
             instdir_path = '/' + std::string(JailUtil::LO_JAIL_SUBPATH) + "/program";
+#else
+            instdir_path = '/' + std::string(JailUtil::LO_JAIL_SUBPATH) + "/Contents/Frameworks";
+#endif
             allowedPaths += ":r:/" + std::string(JailUtil::LO_JAIL_SUBPATH);
 
             Poco::Path jailLOInstallation(jailPath, JailUtil::LO_JAIL_SUBPATH);
@@ -3453,6 +3721,7 @@ void lokit_main(
             const std::string sysTemplateSubDir = Poco::Path(tempRoot, "systemplate-" + jailId).toString();
             const std::string jailEtcDir = Poco::Path(jailPath, "etc").toString();
 
+#if ENABLE_CHILDROOTS
             if (sysTemplateIncomplete && JailUtil::isBindMountingEnabled())
             {
                 const std::string sysTemplateEtcDir = Poco::Path(sysTemplate, "etc").toString();
@@ -3471,6 +3740,7 @@ void lokit_main(
                     JailUtil::disableBindMounting(); // We can't mount from incomplete systemplate.
                 }
             }
+#endif
 
             // The bind-mount implementation: inlined here to mirror
             // the fallback link/copy version bellow.
@@ -3669,6 +3939,7 @@ void lokit_main(
                 linkGCDAFiles(jailPathStr);
 #endif
 
+#if ENABLE_CHILDROOTS
                 // Update the dynamic files inside the jail.
                 if (!JailUtil::SysTemplate::updateDynamicFiles(jailPathStr))
                 {
@@ -3679,6 +3950,7 @@ void lokit_main(
                            "read-only, running the installation scripts with the owner's account "
                            "should update these files. Some functionality may be missing.");
                 }
+#endif
 
                 if (usingMountNamespace)
                 {
@@ -3692,7 +3964,7 @@ void lokit_main(
             }
 
             // Setup /tmp and set TMPDIR.
-            FileUtil::setSysTempDirectoryPath("/tmp");
+            ::setenv("TMPDIR", "/tmp", 1);
             allowedPaths += ":w:/tmp";
 
             copyCertificateDatabaseToTmp(jailPath);
@@ -3758,12 +4030,16 @@ void lokit_main(
             LOG_INF("Using template ["
                     << loTemplate << "] as install subpath directly, without chroot jail setup.");
             userdir_url = "file://" + jailPathStr + "tmp/user";
+#ifndef __APPLE__
             instdir_path = '/' + loTemplate + "/program";
+#else
+            instdir_path = '/' + loTemplate + "/Contents/Frameworks";
+#endif
             allowedPaths += ":r:" + loTemplate;
             JailRoot = jailPathStr;
 
-            const std::string tmpPath = jailPathStr + "tmp";
-            FileUtil::setSysTempDirectoryPath(tmpPath);
+            std::string tmpPath = jailPathStr + "tmp";
+            ::setenv("TMPDIR", tmpPath.c_str(), 1);
             allowedPaths += ":w:" + tmpPath;
             LOG_DBG("Using tmpdir [" << tmpPath << "]");
 
@@ -3795,6 +4071,7 @@ void lokit_main(
 
             if (!initFunction)
                 initFunction = lok_init_2;
+
 
             if (!Util::isKitInProcess())
                 kit = UnitKit::get().lok_init(instdir, userdir, initFunction);
@@ -3923,44 +4200,122 @@ void lokit_main(
         pathAndQuery.append(std::string("&adms_info_namespaces=") +
                             (useMountNamespaces ? "true" : "false"));
 
-#else // MOBILEAPP
+#endif // !MOBILEAPP
 
-#ifndef IOS
-        // Was not done by the preload.
+        auto mainKit = KitSocketPoll::create();
+#if defined(__EMSCRIPTEN__)
+        // First lokit_main to arrive owns LO init + the single runLoop;
+        // concurrent ones (the other broker) attach + return (see below).
+        const bool isLoInitOwner = wasm_try_become_lo_init_owner();
+        if (isLoInitOwner)
+            mainKit->runOnClientThread(); // owner drives the one inline loop
+        // A non-owner does NOT runOnClientThread: its KitSocketPoll stays a
+        // plain pollable in KSPolls, serviced by the owner's runLoop.
+#else
+        mainKit->runOnClientThread(); // We will do the polling on this thread.
+#endif
+
+#if MOBILEAPP && !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
         // For iOS we call it in -[AppDelegate application: didFinishLaunchingWithOptions:]
+        // For QTAPP/MACOS/_WIN32 it is called in initKitRunLoopThread()
         setupKitEnvironment(userInterface);
 #endif
 
-#if (defined(__linux__) && !defined(__ANDROID__)) || defined(__FreeBSD__)
+#if MOBILEAPP
+#if defined(__EMSCRIPTEN__)
+        // ── WASM snapshot architecture ──
+        // Visit 1: lok_init_2 → Desktop::Main → doc loads → JS saves snapshot
+        //   (snapshot includes fully warmed Writer module, config, fonts, everything)
+        // Visit 2: restore snapshot → SECOND_INIT → Desktop::Main → doc loads fast (<1s)
+        //   (Writer module already in snapshot heap)
+        // Snapshot save is triggered from wasm-loader.js when __wasmPrewarmReady fires.
+        {
+            extern bool g_wasmSkipExecute;
+
+            int isRestore = MAIN_THREAD_EM_ASM_INT({
+                return globalThis.__wasmSnapshotRestored ? 1 : 0;
+            });
+
+            if (isRestore)
+            {
+                g_wasmSkipExecute = false; // Allow VCL event loop
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: Snapshot restore'); });
+            }
+        }
+
+        // Only the owner runs lok_init_2 + the single runLoop. A concurrent
+        // non-owner waits for the owner's init to complete, then reuses the
+        // shared static `loKit` below, attaches its socket, and returns —
+        // it never starts a 2nd lok_init_2/runLoop (that's what crashed).
+        LibreOfficeKit *kit = nullptr;
+        if (isLoInitOwner)
+        {
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 starting (owner)'); });
+            // NOT static — must re-run on restore to reinitialize VCL/fontconfig.
+            // On first visit: FULL_INIT. On restore: bInitialized=true → returns 1 (fast).
+            // But InitVCL is called in the unipoll else-branch regardless.
+            kit = lok_init_2(nullptr, nullptr);
+        }
+        else
+        {
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: non-owner lokit_main waiting for LO init'); });
+            wasm_wait_lo_init_complete(); // blocks until owner signals (before its runLoop)
+        }
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 done'); });
+#elif (defined(__linux__) && !defined(__ANDROID__) && !defined(QTAPP)) || defined(__FreeBSD__)
         Poco::URI userInstallationURI("file", LO_PATH);
         LibreOfficeKit *kit = lok_init_2(LO_PATH "/program", userInstallationURI.toString().c_str());
-#else
-
-#ifdef IOS // In the iOS app we call lok_init_2() just once, when the app starts
+#elif defined(IOS) // In the iOS app we call lok_init_2() just once, when the app starts
         static LibreOfficeKit *kit = lo_kit;
+#elif defined(QTAPP) || defined(MACOS) || defined(_WIN32)
+        // For macOS, this is the MOBILEAPP case
+        static LibreOfficeKit* kit = initKitRunLoopThread(mainKit).get();
 #else
+        // FIXME: I wonder for which platform this is supposed to be? Android?
         static LibreOfficeKit *kit = lok_init_2(nullptr, nullptr);
 #endif
 
+#if defined(__EMSCRIPTEN__)
+        // A non-owner skipped lok_init_2 (kit==nullptr); it reuses the shared
+        // static `loKit` built by the owner before it signalled init-complete.
+        assert(kit || !isLoInitOwner);
+#else
+        assert(kit);
 #endif
 
-        assert(kit);
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: lok_init_2 done (SECOND_INIT)'); });
+#endif
 
+        // ── Trace: warm-restore Azure hang investigation ──
+        // On internal Azure, the kit goes silent after SECOND_INIT.
+        // On local viewer.szebeni.hu the same code reaches startMainLoop
+        // in ~50 ms. These probes show which call blocks on the failing
+        // env so the resource-not-restored bug can be pinpointed.
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit pre-loKit-init'); });
+#endif
         static std::shared_ptr<lok::Office> loKit = std::make_shared<lok::Office>(kit);
         assert(loKit);
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit post-loKit-init'); });
+#endif
 
         COOLWSD::LOKitVersion = loKit->getVersionInfo();
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit post-getVersionInfo'); });
+#endif
 
         // Dummies
         const std::string jailId = "jailid";
 
 #endif // MOBILEAPP
 
-        auto mainKit = KitSocketPoll::create();
-        mainKit->runOnClientThread(); // We will do the polling on this thread.
-
         std::shared_ptr<KitWebSocketHandler> websocketHandler =
             std::make_shared<KitWebSocketHandler>("child_ws", loKit, jailId, mainKit, numericIdentifier);
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit websocketHandler created'); });
+#endif
 
 #if !MOBILEAPP
 
@@ -3970,7 +4325,7 @@ void lokit_main(
 
         if (isURPEnabled())
         {
-            if (pipe2(URPtoLoFDs, O_CLOEXEC) != 0 || pipe2(URPfromLoFDs, O_CLOEXEC | O_NONBLOCK) != 0)
+            if (Syscall::pipe2(URPtoLoFDs, O_CLOEXEC) != 0 || Syscall::pipe2(URPfromLoFDs, O_CLOEXEC | O_NONBLOCK) != 0)
                 LOG_ERR("Failed to create urp pipe " << strerror(errno));
             else
             {
@@ -3986,10 +4341,22 @@ void lokit_main(
             Util::forcedExit(EX_SOFTWARE);
         }
 #else
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit pre-insertNewFakeSocket fd=' + $0); }, docBrokerSocket);
+#endif
         mainKit->insertNewFakeSocket(docBrokerSocket, websocketHandler);
+        bool fatalError = false; // co-25.04: insertNewFakeSocket now returns void
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit post-insertNewFakeSocket fatalError=' + $0); }, fatalError ? 1 : 0);
+#endif
+        if (fatalError)
+            LOG_SYS("Fatal error connecting to socket #" << docBrokerSocket);
 #endif
 
         LOG_INF("New kit client websocket inserted.");
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TRACE: kit websocket inserted, before startMainLoop'); });
+#endif
 
 #if !MOBILEAPP
 
@@ -4009,36 +4376,51 @@ void lokit_main(
         Log::setDisabledAreas(LogDisabledAreas);
 #endif
 
-#ifndef IOS
-        if (!LIBREOFFICEKIT_HAS(kit, runLoop))
+#if !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
+#ifdef __EMSCRIPTEN__
+        if (!isLoInitOwner)
         {
-            LOG_FTL("Kit is missing Unipoll API");
-            std::cout << "Fatal: out of date LibreOfficeKit - no Unipoll API\n";
-            Util::forcedExit(EX_SOFTWARE);
+            // Non-owner: its socket is attached (insertNewFakeSocket above)
+            // and its KitSocketPoll is in KSPolls. KSPolls holds only a
+            // weak_ptr, so we MUST keep a strong ref alive past this thread's
+            // return — otherwise the poll (and the late-join doc's socket) is
+            // freed the instant we return and the owner's runLoop drops it.
+            {
+                std::lock_guard<std::mutex> lk(g_attachedKitPollsMutex);
+                g_attachedKitPolls.push_back(mainKit);
+            }
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: non-owner lokit_main attached socket + kept poll alive, returning (single loop services it)'); });
+            return; // do NOT start a 2nd lok_init_2/runLoop
         }
+        // Owner: release any waiting non-owner BEFORE blocking in runLoop
+        // (signal is on the always-taken path so waiters never hang).
+        wasm_signal_lo_init_complete();
+#endif
+        startMainLoop(kit, loKit, mainKit);
 
-        loKit->registerAnyInputCallback(anyInputCallback, mainKit.get());
-
-        LOG_INF("Kit unipoll loop run");
-
-        loKit->runLoop(pollCallback, wakeCallback, mainKit.get());
-
-        LOG_INF("Kit unipoll loop run terminated.");
-
-#if MOBILEAPP
-        SocketPoll::wakeupWorld();
-#else
         // Trap the signal handler, if invoked,
         // to prevent exiting.
         LOG_INF("Kit process for Jail [" << jailId << "] finished.");
 
         // Let forkit handle the jail cleanup.
-#endif
 
-#else // IOS
-        std::unique_lock<std::mutex> lock(mainKit->terminationMutex);
-        mainKit->terminationCV.wait(lock,[&]{ return mainKit->terminationFlag; } );
-#endif // !IOS
+#else // IOS or QTAPP or MACOS or _WIN32
+        auto const termination = mainKit->termination;
+#if defined(QTAPP) || defined(MACOS) || defined(_WIN32)
+        // Release the mainKit KitSocketPoll instance early here, so that its destructor will
+        // reliably be called on the expected "lokit_runloop" owner thread (started by
+        // initKitRunLoopThread), avoiding a race between this thread releasing its shared reference
+        // when mainKit goes out of scope and the "lokit_runloop" thread releasing its shared
+        // reference when it releases the KitSocketPoll instance at the end of
+        // KitWebSocketHandler::onDisconnect (in kit/KitWebSocket.cpp):
+        mainKit.reset();
+#endif
+        if (!fatalError)
+        {
+            std::unique_lock<std::mutex> lock(termination->mutex);
+            termination->cv.wait(lock,[&]{ return termination->flag; } );
+        }
+#endif // !defined(IOS) && !defined(QTAPP) && !defined(MACOS) && !defined(_WIN32)
     }
     catch (const Exception& exc)
     {
@@ -4065,7 +4447,6 @@ void lokit_main(
 // In the iOS app we can have several documents open in the app process at the same time, thus
 // several lokit_main() functions running at the same time. We want just one LO main loop, though,
 // so we start it separately in its own thread.
-
 void runKitLoopInAThread()
 {
     std::thread([&]
@@ -4079,7 +4460,9 @@ void runKitLoopInAThread()
                     // Should never return
                     assert(false);
 
+#if defined(IOS)
                     NSLog(@"loKit->runLoop() unexpectedly returned");
+#endif
 
                     std::abort();
                 }).detach();
@@ -4099,7 +4482,11 @@ void consistencyCheckJail()
         if ((failedTmp = (!tmp.good() || !tmp.isDirectory())))
             LOG_ERR("Fatal system error: Kit jail is missing its /tmp directory");
 
+#ifndef __APPLE__
         FileUtil::Stat lo(InstDirPath + "/unorc");
+#else
+        FileUtil::Stat lo(InstDirPath + "/../Resources/ure/etc/unorc");
+#endif
         if ((failedLo = (!lo.good() || !lo.isFile())))
             LOG_ERR("Fatal system error: Kit jail is missing its LibreOfficeKit directory at '" << InstDirPath << "'");
 
@@ -4210,11 +4597,30 @@ bool startURP(const std::shared_ptr<lok::Office>& LOKit, void** ppURPContext)
 /// Initializes LibreOfficeKit for cross-fork re-use.
 bool globalPreinit(const std::string &loTemplate)
 {
+
+    auto _gp_t0 = std::chrono::steady_clock::now();
+    auto _gp_mark = [&_gp_t0](const char* label) {
+        auto now = std::chrono::steady_clock::now();
+        auto ms = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(now - _gp_t0).count();
+#ifdef __EMSCRIPTEN__
+        // Log to browser console from any thread (proxied to main thread)
+        MAIN_THREAD_EM_ASM({
+            console.log('TIMING: globalPreinit +' + $0 + 'ms  ' + UTF8ToString($1));
+        }, (int)ms, label);
+#endif
+        std::cout << "globalPreinit +" << ms << "ms  " << label << std::endl;
+    };
+    _gp_mark("start");
+
     std::string loadedLibrary;
     // we deliberately don't dlclose handle on success, make it
     // static so static analysis doesn't see this as a leak
     static void *handle;
+#ifndef __APPLE__
     std::string libMerged = loTemplate + "/program/libmergedlo.so";
+#else
+    std::string libMerged = loTemplate + "/Contents/Frameworks/libmergedlo.dylib";
+#endif
     if (File(libMerged).exists())
     {
         LOG_TRC("dlopen(" << libMerged << ", RTLD_GLOBAL|RTLD_NOW)");
@@ -4228,7 +4634,11 @@ bool globalPreinit(const std::string &loTemplate)
     }
     else
     {
+#ifndef __APPLE__
         std::string libSofficeapp = loTemplate + "/program/libsofficeapp.so";
+#else
+        std::string libSofficeapp = loTemplate + "/Contents/Frameworks/libsofficeapp.dylib";
+#endif
         if (File(libSofficeapp).exists())
         {
             LOG_TRC("dlopen(" << libSofficeapp << ", RTLD_GLOBAL|RTLD_NOW)");
@@ -4247,6 +4657,7 @@ bool globalPreinit(const std::string &loTemplate)
         }
     }
 
+    _gp_mark("dlopen done");
     LokHookPreInit2* preInit = reinterpret_cast<LokHookPreInit2 *>(dlsym(handle, "lok_preinit_2"));
     if (!preInit)
     {
@@ -4273,18 +4684,26 @@ bool globalPreinit(const std::string &loTemplate)
              "javaloader javavm jdbc rpt rptui rptxml ",
              0 /* no overwrite */);
 
-    LOG_TRC("Invoking lok_preinit_2(" << loTemplate << "/program\", \"file:///tmp/user\")");
+#ifndef __APPLE__
+    const std::string lokProgramDir = loTemplate + "/program";
+#else
+    const std::string lokProgramDir = loTemplate + "/Contents/Frameworks";
+#endif
+
+    _gp_mark("before lok_preinit_2");
+    LOG_TRC("Invoking lok_preinit_2(" << lokProgramDir << ", \"file:///tmp/user\")");
     const auto start = std::chrono::steady_clock::now();
-    if (preInit((loTemplate + "/program").c_str(), "file:///tmp/user", &loKitPtr) != 0)
+    if (preInit(lokProgramDir.c_str(), "file:///tmp/user", &loKitPtr) != 0)
     {
         LOG_FTL("lok_preinit() in " << loadedLibrary << " failed");
         dlclose(handle);
         return false;
     }
 
+    _gp_mark("lok_preinit_2 done");
     LOG_DBG("After lok_preinit_2: loKitPtr=" << loKitPtr);
 
-    LOG_TRC("Finished lok_preinit(" << loTemplate << "/program\", \"file:///tmp/user\") in "
+    LOG_TRC("Finished lok_preinit(" << lokProgramDir << ", \"file:///tmp/user\") in "
                                     << std::chrono::duration_cast<std::chrono::milliseconds>(
                                            std::chrono::steady_clock::now() - start));
     return true;
@@ -4305,15 +4724,15 @@ std::string anonymizeUsername(const std::string& username)
 void dump_kit_state()
 {
     std::ostringstream oss(Util::makeDumpStateStream());
-    oss << "Start Kit " << getpid() << " Dump State:\n";
+    oss << "Start Kit " << Util::getProcessId() << " Dump State:\n";
 
     SigUtil::signalLogActivity();
 
     KitSocketPoll::dumpGlobalState(oss);
 
-    oss << "\nMalloc info [" << getpid() << "]: \n\t"
+    oss << "\nMalloc info [" << Util::getProcessId() << "]: \n\t"
         << Util::replace(Util::getMallocInfo(), "\n", "\n\t") << '\n';
-    oss << "\nEnd Kit " << getpid() << " Dump State.\n";
+    oss << "\nEnd Kit " << Util::getProcessId() << " Dump State.\n";
 
     const std::string msg = oss.str();
     fprintf(stderr, "%s", msg.c_str()); // Log in the journal.
