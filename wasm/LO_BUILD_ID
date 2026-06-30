@@ -1,0 +1,363 @@
+# Pinned LibreOffice WASM build ID — points to artefacts at
+# https://coolwasmfiles.z6.web.core.windows.net/lo-builds/<ID>/
+# Format: YYYY-MM-DD-<run_number> (matches the libreoffice-core-wasm CI run on dev branch).
+#
+# Bump this file via a PR to dev. The validate-lo-build job in
+# .github/workflows/wasm-ci.yml verifies the artefact exists before
+# auto-merge fires. See wasm/CO-EDITING-ARCHITECTURE.md
+# "Build & release policy" for the full workflow.
+#
+# Use the literal token __LATEST__ to follow lo-builds/latest.txt
+# (convenient for development; pin a literal ID for reproducibility).
+#
+# History:
+#   2026-04-26-3   first successful LO CI build
+#   2026-05-03-18  git_sha b8763b46 ("WASM: weak stub for
+#                  wasm_quiesce_wake_main in standalone soffice.js")
+#   2026-05-08-20  git_sha dd239876 ("WASM: reserve
+#                  LOK_CALLBACK_DOCUMENT_READY=75 protocol number").
+#                  Reserved the enum value Online's kit/Kit.cpp
+#                  forwards (#ifdef-guarded; emit is in 2026-05-12-21).
+#   2026-05-12-21  git_sha 69c442f9 ("WASM: emit
+#                  LOK_CALLBACK_DOCUMENT_READY from
+#                  doc_registerCallback"). The kit's docready: text
+#                  frame now fires for every cold load + hot-switch,
+#                  unblocking regression-event-driven-docready.
+#   2026-05-18-24  git_sha 00ece5fd ("WASM: pack de/en-US/es/fr
+#                  langpacks + repoint submodules to upstream (online
+#                  task #193)"). Bundles de/en-US/es/fr translations
+#                  into instdir so the styles sidebar CAN localise.
+#                  Pairs with kit-side switchdocument lang-respect
+#                  (online dev 0945dea9) for the UI-chrome half of
+#                  #193. The sidebar deck content (paragraph style
+#                  names like "Heading 1") still rendered English
+#                  because StyleList.cxx used the internal name.
+#   2026-05-19-26  git_sha ffb379fd ("WASM #193: sidebar Styles deck
+#                  shows localised DisplayName"). StyleList.cxx caches
+#                  UNO DisplayName at tree-build time and uses it at
+#                  set_text for the hierarchical TreeView. Probe
+#                  showed sidebar STILL English — turned out
+#                  treeview_NN selectors belong to the FLAT-LIST view
+#                  (m_xFmtLb), not the TreeView (m_xTreeBox). Default
+#                  view is flat.
+#   2026-05-20-27  git_sha 055b3225 ("WASM #193 follow-up: flat-list
+#                  view uses DisplayName too"). Extended the fix to
+#                  m_xFmtLb. Probe STILL showed English at runtime
+#                  because…
+#   2026-05-20-28  git_sha da81f271 ("WASM #193: CustomRenderHdl
+#                  fallback uses localised name"). Wired UNO
+#                  DisplayName through every set_text + canvas-draw
+#                  path. Iconview tiles now German.
+#   2026-05-21-30  git_sha 63a63148 ("WASM #196: enable spell squiggle
+#                  painting in LOK tile mode"). Root cause for #196:
+#                  sw/source/core/text/inftxt.cxx:687 gated
+#                  red-spell-squiggle painting on `OnWin() &&
+#                  IsOnlineSpell()`. In LOK tile rendering OnWin()
+#                  is false (no native window — output goes to
+#                  VirtualDevice tile buffers), so the squiggle was
+#                  suppressed entirely regardless of the
+#                  .uno:SpellOnline option set by kit/Kit.cpp. Fix
+#                  changes the gate to `(OnWin() ||
+#                  comphelper::LibreOfficeKit::isActive())` matching
+#                  the established pattern from viewsh.cxx:213.
+#   2026-05-21-31  git_sha f77b564b ("WASM #193 follow-up: drop UNO
+#                  DisplayName indirection — use GetName() directly").
+#                  Hypothesis was wrong: GetName() does NOT return
+#                  localised in StyleList iteration context. Probe
+#                  post-deploy showed treeview_NN still English.
+#   2026-05-22-32  current pin — git_sha affd98c6 (Revert "WASM #193
+#                  follow-up: drop UNO DisplayName indirection").
+#                  Restores lcl_GetLocalisedStyleName helper.
+#                  Corrected understanding: UNO style families
+#                  getByName is a locale-aware key resolver — it
+#                  accepts the English-canonical key even when the
+#                  doc stores the German aName. For the ~10 well-
+#                  known styles (Title, Subtitle, Heading 1-4,
+#                  Standard, Text body, Quotations, Preformatted
+#                  Text) getPropertyValue("DisplayName") returns
+#                  the German translation. For styles UNO can't
+#                  translate ("List 2" etc.) the helper falls back
+#                  to sInternalName — same English as before.
+#                  Expected treeview improvement: Title→Titel,
+#                  Subtitle→Untertitel, Heading 1→Überschrift 1,
+#                  etc.
+#   2026-05-22-34  git_sha 7eea7ded ("WASM #196 diag: log spell
+#                  paint-gate state in LOK mode"). Used SAL_INFO,
+#                  produced zero output in captured iframe console —
+#                  SAL_INFO/SAL_WARN are preprocessor-gated by
+#                  SAL_DETAIL_ENABLE_LOG_INFO and compiled out in
+#                  WASM release builds. Diag wasted; needed fprintf.
+#   2026-05-22-35  git_sha 87a889df ("WASM #196 diag: use
+#                  fprintf(stderr) for spell paint-gate log").
+#                  Replaces -34's SAL_INFO with fprintf which
+#                  emscripten routes to console.error and IS captured
+#                  by puppeteer page.on('console'). Editor build with
+#                  -35 produces the `lok-spell-paint` lines in
+#                  snapshot-milestones / regression-spellcheck-squiggle
+#                  iframe console.log to identify which of three
+#                  hypotheses is the #196 blocker.
+#   2026-05-22-36  git_sha 3db65a69 ("WASM #193 diag: log UNO
+#                  DisplayName at both call sites"). 2026-05-23 probe
+#                  result: iconview render produced German tiles in
+#                  the ribbon ("Fließtext", "Blockzitat", "Titel",
+#                  "Untertitel") but the iconview fprintf didn't fire
+#                  — the LOK-active gate evaluates FALSE during
+#                  toolbox-control construction (which happens BEFORE
+#                  SfxLokInit completes). See
+#                  project_193_uno_diag_2026_05_23.md.
+#   2026-05-23-38  git_sha 9e3014918dc0 ("WASM #196 diag: log
+#                  DrawWaveLine cache + bitmap state"). 2026-05-23
+#                  test result against test env: ZERO lok-wave-line
+#                  lines despite plenty of lok-spell-paint with
+#                  bWrong=1 wrongListPtr=non-null. The drop happens
+#                  between SetWrong and the DrawWaveLine call — i.e.
+#                  somewhere in fntcache.cxx's wrong-list gate or
+#                  inside lcl_DrawLineForWrongListData's early-exit
+#                  paths.
+#   2026-05-23-39  current pin — git_sha 1605498f3259 ("WASM #196
+#                  diag: log fntcache wrong-list gate + early-exits").
+#                  Adds fprintf at both:
+#                  - fntcache.cxx::SwFntObj::DrawText (line ~1635)
+#                    where the wrong-list gate evaluates GetWrong/
+#                    Grammar/Smart and decides whether to call
+#                    lcl_DrawLineForWrongListData.
+#                  - lcl_DrawLineForWrongListData (line 658): logs
+#                    each of its three early-exit paths (pWList null,
+#                    pWList->Check failed, font too small) + a
+#                    success entry log when it reaches the iteration.
+#                  Together these pinpoint exactly WHERE the squiggle
+#                  drops between SetWrong and DrawWaveLine.
+#   2026-05-25-42  current pin — git_sha 98ae1fdcc907 ("WASM #196
+#                  diag: log SwFntObj::DrawText entry unconditionally").
+#                  Previous -39 diag was inside an else-if branch
+#                  which never fired. This puts fprintf at the very
+#                  top of SwFntObj::DrawText (before any branching),
+#                  gated only on LOK-active + non-null GetWrong().
+#                  Answers binary question: does fntcache get
+#                  reached at all in LOK tile mode, or is sw using
+#                  a completely different text-paint path?
+#   2026-05-25-43  git_sha 7584030a ("WASM #196 diag: log which fntcache
+#                  branch fires when hasWrong=1"). Adds fprintf BEFORE
+#                  the `if (rInf.GetGreyWave())` decision in
+#                  SwFntObj::DrawText logging greyWave/symbol/len/
+#                  wrongInnerWouldEnter. Pinpoints which branch
+#                  swallows wrong-list path in LOK mode.
+#   2026-05-25-45  git_sha 65c532773864 ("WASM #196 diag: log wrong-list
+#                  state on Check failure"). Adds fprintf in
+#                  WrongListIterator::Check returning false in LOK mode.
+#                  -43 proved fntcache enters wrong-list inner branch
+#                  but pWList->Check returns false for ALL 56 painted
+#                  ranges. -45 logs Count() + first entry pos/len OR
+#                  merged-para extent count to distinguish empty-list
+#                  vs mismatched-indices hypotheses.
+#   2026-05-26-46  git_sha 63454bad ("WASM #196 diag: trace
+#                  spell-daemon idle chain"). -45 proved wrong-list
+#                  Count()=0 (daemon never populates entries). -46
+#                  instruments DocumentTimerManager StartIdling +
+#                  DoIdleJobs + SwTextFrame::AutoSpell_ entries to
+#                  pinpoint where the LOK idle-spell chain breaks
+#                  (thread not started? idle never schedules? Layout
+#                  job not chosen? AutoSpell never invoked?).
+#   2026-05-26-47  git_sha 12bce240 ("WASM #196 diag: trace
+#                  spell-checker invocation inside AutoSpell_").
+#                  -46 proved daemon runs + AutoSpell_ executes 5x
+#                  but produces zero entries. -47 instruments the
+#                  per-word loop: xSpell non-null, hasLang, isValid
+#                  result (first 12 words). Distinguishes null
+#                  checker / wrong lang / dictionary returning valid
+#                  for known misspellings.
+#   2026-05-26-49  git_sha 36b84645 ("WASM #196 fix: enable DICPATH
+#                  dictionary scan in EMSCRIPTEN"). -47 proved
+#                  xSpell.is()=true but hasLanguage()=0 — no dicts
+#                  registered. Root cause: WASM configmgr is
+#                  bundle-only; extension-format files written by
+#                  dict-loader.js were never picked up. -49 enables
+#                  the legacy DICPATH/system-dir scan in EMSCRIPTEN
+#                  pointing at $BRAND_BASE_DIR/share/dict. Pairs
+#                  with the dict-loader.js flat-path write in the
+#                  same online PR.
+#   2026-05-28-51  git_sha 64bb48e598bb ("WASM #196 fix: EMSCRIPTEN
+#                  takes precedence in dict scan"). REVERTED in dev
+#                  — this enables spellcheck activation for the first
+#                  time, exposing a stack overflow inside the WASM
+#                  pthread stack ("Stack overflow! Stack cookie has
+#                  been overwritten ... received 0x00000000 0x00000000"
+#                  → unreachable). Cascade kills 30+ tests (97p/17f →
+#                  66p/51f baseline regression across 2026-05-28 →
+#                  2026-05-29). Per-commit pass/fail correlation on
+#                  coolwasmfiles/local-builds shows the drop is
+#                  entirely between SHAs 5ce51ae7 (-50) and 021bb577
+#                  (-51); the ONLY diff is this LO bump. Spell-check
+#                  pixel rendering remains an open issue (#196 Phase 2)
+#                  but needs to be unblocked WITHOUT triggering the
+#                  thread-stack overflow first.
+#   2026-05-28-52  binary-identical to -51 (regen-indexes.sh fix only).
+#                  Same regression behaviour; pinned dev briefly
+#                  between -51 merge and the revert.
+#   2026-06-02-57  current pin — cherry-pick branch HEAD a02d4285f876
+#                  off safe base d1964f6d34a3 (parent of the -51
+#                  spellcheck-stack-overflow trigger 64bb48e598bb).
+#                  Cherry-picked four commits in chronological order:
+#                  - 14241f8344f3 ← 5b54180df793 (regen-indexes script
+#                    fix: stop clobbering app-builds + root index)
+#                  - d093a929b98e ← 040db1b85407 (WASM #header-footer:
+#                    LOK-gate the DeleteHeader/Footer warning dialog)
+#                  - 93afb903cd38 ← 9e27eab54765 (svx: map round-quadrat
+#                    → mso_sptRoundRectangle — was sptNil → blank shape,
+#                    LO PR #31)
+#                  - a02d4285f876 ← f39cd5e2bae9 (svx: map quadrat,
+#                    circle, frame, doorplate to existing MSO types,
+#                    LO PR #32)
+#                  Ships the user-reported shape-insertion fixes
+#                  WITHOUT the -51 spellcheck regression. The
+#                  spellcheck activation path is still broken (same
+#                  as -50) — separate fix tracked in LO branch
+#                  fix/spellcheck-stack-overflow-on-50 (gated on a
+#                  smoke test before merging to LO dev). See online
+#                  ai/questions/answered/lo-build-id-bump-after-shape-fixes.md
+#   2026-06-02-60  current pin — branch fix/allow-memory-growth-for-
+#                  area-dialog (HEAD 7b32358e8282) off cherry-pick/
+#                  shape-fixes-on-50. Adds ONE commit on top of -57:
+#                  `-s ALLOW_MEMORY_GROWTH=1` in
+#                  solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk.
+#                  Initial heap stays at 1 GiB; the hard cap is lifted
+#                  so allocations grow on demand. Fixes the
+#                  user-reported `Aborted(Cannot enlarge memory arrays
+#                  to size 1236799488 bytes (OOM))` when opening the
+#                  shape Area dialog on Writer/Impress. Tracked at
+#                  ai/tasks/in-progress/shape-area-oom-master.md.
+#                  Track A (this bump) ships immediate relief; Track B
+#                  is the LO-side root fix profiled in
+#                  ai/proposals/proposed/shape-area-dialog-allocation-
+#                  profile.md (lazy bitmap preview generation in
+#                  SvxPresetListBox).
+#   2026-06-03-61  git_sha 3ab81591c0f0a9bc4017bce47ff726453737ed9e
+#                  (branch fix/cold-open-console-spam). LO PR #33's
+#                  FRMLOAD strip — INTENDED to remove ~50 stderr lines
+#                  of cold-open chatter. SHIPPED ON A POISONED BASE:
+#                  the branch's ancestry includes 64bb48e598bb (the
+#                  -51 "EMSCRIPTEN takes precedence in dict scan"
+#                  commit) which was DELIBERATELY EXCLUDED from the
+#                  cherry-pick branches of -57/-60 because it
+#                  triggers a worker-thread stack overflow on
+#                  spellcheck activation that times out every test
+#                  needing the editor to reach ready state. Build
+#                  2026-06-04-144856 showed 71p / 60f vs the 111p /
+#                  17f baseline — 44 extra failures all timing out at
+#                  waitForFunction(StateWordCount). REVERTED to -60.
+#                  Re-cherry-pick FRMLOAD strip onto the safe base
+#                  d1964f6d34a3 (parent of 64bb48e598bb) and re-bump
+#                  in a follow-up PR.
+#   2026-06-02-60  REVERTED back to this from -61 on 2026-06-04 after
+#                  -61 caused 44 timeouts. See history block above.
+#   2026-06-04-62  current pin — git_sha e402ab28ba5a (branch cleanup/
+#                  dev-drop-poisoned-commit-2026-06-04 = LO PR #34's
+#                  cleanup branch HEAD). Functionally equivalent to
+#                  the cherry-pick branch we used for -60 PLUS the
+#                  FRMLOAD strip from LO PR #33, MINUS the poison
+#                  from 64bb48e598bb (whose effect was reverted in
+#                  the same PR). LO PR #34 dropped the -51 poison
+#                  from LO dev itself so future LO PRs branched off
+#                  raw dev now have a clean base — no more cherry-
+#                  pick workaround needed. Recovers the FRMLOAD strip
+#                  (-50 cold-open lines) that -61 was supposed to
+#                  ship but couldn't because its base was poisoned.
+#   2026-06-05-69  git_sha edeb86df9f8c (branch fix/maximum-memory-
+#                  2gb-2026-06-06 = LO PR #36). One-line addition to
+#                  solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk:
+#                  `-s MAXIMUM_MEMORY=2GB`. PR #182's
+#                  ALLOW_MEMORY_GROWTH=1 was a silent no-op under
+#                  USE_PTHREADS: emscripten emits the SAB with
+#                  maximum=initial=1 GiB. Diagnostic probe (Online
+#                  wasm/probes/probe-shape-area-profile.js + brotli-
+#                  decoded import-section parse) showed
+#                  Module.HEAPU8.byteLength stayed at exactly 1 GiB
+#                  and env.memory in the wasm binary declared
+#                  initial=maximum=16384 pages. Adding
+#                  MAXIMUM_MEMORY=2GB makes growth actually engage up
+#                  to 2 GiB, unblocking the 3 shape-area Area-dialog
+#                  tests. Removes regression-impress-area-dialog /
+#                  regression-writer-insert-shape-area / regression-
+#                  writer-shape-area-oom from LO_BLOCKED_TESTS.
+#   2026-06-07-70  git_sha b91240fa9d72 (LO PR #37). Removes 17 #196
+#                  diagnostic fprintf(stderr) clusters from sw/vcl
+#                  that were added across LO -35..-47 during the
+#                  spellcheck-squiggle investigation cycle and never
+#                  cleaned up. Each was gated on
+#                  comphelper::LibreOfficeKit::isActive() and fired
+#                  on every paint / idle tick / wrong-list lookup in
+#                  LOK mode — producing hundreds of stderr lines per
+#                  second on a live document. Emscripten routed
+#                  stderr to console.log via the pthread mailbox,
+#                  which is what the user saw as the
+#                  __emscripten_thread_mailbox_await stack-trace
+#                  spam (reported 2026-06-07: "more than 500000
+#                  lines"). Files cleaned: sw inftxt.cxx wrong.cxx
+#                  DocumentTimerManager.cxx fntcache.cxx txtedt.cxx
+#                  + vcl textline.cxx. 6 files, +1/-195 lines. See
+#                  ai/memory/project_196_root_cause.md — the
+#                  diagnoses these prints produced are preserved,
+#                  the prints themselves are not needed for the
+#                  open fix (DrawWaveLine pixel emission, separate
+#                  effort).
+#   2026-06-18-74  git_sha 92dfb924 (LO PR #39). PaletteManager OOB
+#                  guard — clamps SetPalette(nPos) to [0, mnNumOfPalettes)
+#                  and bounds-checks GetPaletteName()'s unchecked
+#                  aNames[mnCurrentPalette]. Fixes the Area-dialog
+#                  Color-tab crash: opening Area on a shape activates the
+#                  Color tab, which calls SetPalette(get_active()) with an
+#                  index past the live palette list (color palettes aren't
+#                  all loaded in WASM) → aNames[idx] returns a garbage
+#                  OUString → rtl_uString_acquire faults ("memory access
+#                  out of bounds"; same corruption also surfaced as
+#                  "unaligned access" / "function signature mismatch").
+#                  Root-caused via a names-kept WASM build (--profiling-
+#                  funcs + WASM_KEEP_NAMES=1 + --clean reconfigure).
+#                  Re-enables tripwires regression-writer-shape-area-oom /
+#                  -writer-insert-shape-area / -impress-area-dialog.
+#   2026-06-22-87  git_sha 30cbf5e24f15 (LO PR #43). Enables spellcheck
+#                  on docx via TWO coupled fixes:
+#                  (1) lingucomponent/source/lingutil/lingutil.cxx —
+#                      reorder GetOldStyleDics so `#if defined EMSCRIPTEN`
+#                      precedes SYSTEM_DICTS/IOS in all three blocks
+#                      (DICT/HYPH/THES). WASM defines BOTH SYSTEM_DICTS and
+#                      EMSCRIPTEN; with SYSTEM_DICTS first the scan hit
+#                      DICT_SYSTEM_DIR (/usr/share/hunspell, absent in the
+#                      VFS) instead of $BRAND_BASE_DIR/share/dict where
+#                      dict-loader.js writes the dicts → hasLanguage(en-US)
+#                      false → spellcheck never activated.
+#                  (2) solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk —
+#                      DEFAULT_PTHREAD_STACK_SIZE 64 KiB → 1 MiB. (1) alone
+#                      was previously shipped as 64bb48e598bb (-51) and
+#                      REVERTED: activating spellcheck overflowed the 64 KiB
+#                      worker pthread stack (hunspell recursion on the
+#                      autospell daemon), cascading 30+ test timeouts. The
+#                      larger stack gives the daemon headroom. The OnWin
+#                      paint-gate fix (-30, inftxt.cxx) is already in-tree,
+#                      so registered dicts → populated wrong-list →
+#                      DrawWaveLine emits the red squiggle. Removes
+#                      regression-spellcheck-squiggle from LO_BLOCKED_TESTS.
+#                      NOTE: -87 was INCOMPLETE — it bumped the WRONG stack.
+#                      Verified on deploy: dicts register but the overflow
+#                      STILL fired. Do not pin online to -87; use -88.
+#   2026-06-22-88  git_sha 7df4f91d561e (LO PR #44). The real fix on top of
+#                  -87: solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk —
+#                  STACK_SIZE 128 KiB → 4 MiB. Writer autospell runs as idle
+#                  work on the MAIN thread (DocumentTimerManager::DoIdleJobs →
+#                  SwTextFrame::AutoSpell_); under -sPROXY_TO_PTHREAD main()
+#                  runs on the proxied-main pthread whose stack = STACK_SIZE,
+#                  NOT DEFAULT_PTHREAD_STACK_SIZE. -87's 1 MiB worker bump did
+#                  not help (proven by elimination — overflow persisted).
+#                  4 MiB main stack gives hunspell suggestion recursion the
+#                  headroom it needs. Pairs with removing
+#                  regression-spellcheck-squiggle from LO_BLOCKED_TESTS.
+#                  NOTE: -88 ALSO incomplete — STACK_SIZE is the wrong knob.
+#   2026-06-22-89  git_sha 9ea54cd31970 (LO PR #45). The proxied-main thread
+#                  (soffice_main under -sPROXY_TO_PTHREAD, runs the LO main
+#                  loop + autospell idle scan) is governed by
+#                  DEFAULT_PTHREAD_STACK_SIZE, not STACK_SIZE — proven because
+#                  -88's STACK_SIZE 128K→4M left the overflow at the IDENTICAL
+#                  cookie address. Set BOTH STACK_SIZE and
+#                  DEFAULT_PTHREAD_STACK_SIZE to desktop-parity 8 MiB. Overflow
+#                  signature was checkStackCookie ← Browser_mainLoop_runner.
+2026-06-27-110
