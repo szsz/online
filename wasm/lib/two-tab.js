@@ -1,0 +1,176 @@
+// lib/two-tab.js — utilities for puppeteer tests that drive TWO COOL
+// tabs (or browsers). All access to the editor iframe goes through
+// re-acquiring helpers so a viewer-side `replaceChild` of
+// `#editor-frame.src` mid-test doesn't poison every subsequent
+// frame.evaluate / waitForFunction with `Error: frame got detached`.
+//
+// Pattern: any time you'd write
+//     await frame.waitForFunction(() => ...);
+// instead write
+//     await waitInFrame(page, () => ..., { timeout: 60000 });
+// and the helper will re-resolve the active cool.html frame each
+// poll, surviving up to N iframe replacements.
+//
+// History:
+//   - openSecretInBrowser (lib/open-via-viewer.js) already returns
+//     the frame that's loading the FILE (not the bootstrap blank). But
+//     in scenarios where the viewer fires a SECOND replaceChild after
+//     return (kit switchdoc, watchdog reload, prewarm re-shuffle), the
+//     returned frame ref still becomes stale.
+//   - regression-paste-coedit, mouse-select-copypaste, and the e2e/
+//     latejoin/paste-table tests all hit this. Each used to embed its
+//     own ad-hoc retry; this lib centralises the pattern so future
+//     fixes touch ONE place.
+
+'use strict';
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Resolve the iframe that's currently displaying the FILE (not the
+// bootstrap blank-docx prewarm). Always queries the DOM fresh — never
+// hands back a stale ref. Returns null if not found yet.
+//
+// Two lookup paths, tried in order:
+//   1. Element-anchored via ElementHandle.contentFrame() — survives the
+//      kit's url() lag after a paste / hash navigation, where
+//      page.frames() briefly has the stale URL.
+//   2. URL-match fallback via page.frames().find() — handles cases
+//      where contentFrame() returns null (e.g. mid-replaceChild the
+//      element exists but isn't yet bound to a Frame).
+// Either returning a non-null Frame is acceptable; both filter out the
+// __prewarm_blank bootstrap iframe by URL substring.
+
+// Widen the helper DEFAULT timeouts under parallel-run contention. These
+// are PATIENCE waits (2-browser tests are slow when the runner runs
+// JOBS≥2 Chromes on one host), not perf-budget assertions. Mirrors
+// env.scaleTimeout's JOBS_SCALE; read process.env directly to keep this
+// lib dependency-free. Callers that pass an explicit opts.timeout keep
+// full control (only the DEFAULTS scale). Fixes the 2-browser
+// contention-timeout flakes (latejoin-copypaste, etc.) that pass solo.
+const JOBS_SCALE = (() => {
+    const n = Number(process.env.JOBS_SCALE || process.env.TIMEOUT_SCALE || 1);
+    return Number.isFinite(n) && n >= 1 ? n : 1;
+})();
+
+async function getActiveEditorFrame(page) {
+    try {
+        const src = await page.evaluate(() => {
+            const el = document.getElementById('editor-frame');
+            return el && el.src ? el.src : '';
+        }).catch(() => '');
+        if (!src || src.indexOf('cool.html') < 0) return null;
+        if (src.indexOf('__prewarm_blank') >= 0) return null;
+        // Path 1: element-anchored contentFrame().
+        try {
+            const el = await page.$('iframe#editor-frame');
+            if (el) {
+                const frame = await el.contentFrame().catch(() => null);
+                if (frame && !frame.isDetached?.()) return frame;
+            }
+        } catch (_) {}
+        // Path 2: URL-match fallback.
+        return page.frames().find(f => f.url() === src) || null;
+    } catch (_) { return null; }
+}
+
+// Like frame.waitForFunction(predicate) but re-resolves the frame on
+// every poll. Survives mid-test iframe replacements that would
+// otherwise produce `frame got detached`. predicate runs INSIDE the
+// editor frame and must return truthy when the condition is met.
+async function waitInFrame(page, predicate, opts) {
+    opts = opts || {};
+    const timeout = opts.timeout || (60000 * JOBS_SCALE);
+    const pollInterval = opts.pollInterval || 250;
+    const deadline = Date.now() + timeout;
+    const predStr = predicate.toString();
+    let lastErr = null;
+    while (Date.now() < deadline) {
+        const frame = await getActiveEditorFrame(page);
+        if (frame) {
+            try {
+                const r = await frame.evaluate(new Function('return (' + predStr + ')()'));
+                if (r) return r;
+            } catch (e) {
+                // `frame got detached`, `Execution context was destroyed`,
+                // or `Target closed` — all recoverable by re-resolving on
+                // the next poll. Capture the most recent error for the
+                // post-timeout exception message.
+                lastErr = e;
+            }
+        }
+        await sleep(pollInterval);
+    }
+    const reason = lastErr ? ' (last error: ' + (lastErr.message || lastErr) + ')' : '';
+    throw new Error('waitInFrame timed out after ' + timeout + 'ms' + reason);
+}
+
+// Run a single evaluate inside the active editor frame, with one
+// retry on detach. For one-shot reads (char count, selection text,
+// etc.) where waitInFrame's polling is overkill.
+async function evalInFrame(page, fn, ...args) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const frame = await getActiveEditorFrame(page);
+        if (frame) {
+            try { return await frame.evaluate(fn, ...args); }
+            catch (e) {
+                if (attempt === 2) throw e;
+                await sleep(300);
+                continue;
+            }
+        }
+        await sleep(300);
+    }
+    throw new Error('evalInFrame: no active editor frame after 3 attempts');
+}
+
+// Wait for the editor to reach the "doc loaded + state bar populated"
+// state. Replaces the common pair of frame.waitForFunction calls in
+// every 2-browser test:
+//     await frame.waitForFunction(() => window.__wasmInitialDocLoaded === true);
+//     await frame.waitForFunction(() =>
+//         /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''));
+async function waitForDocReady(page, opts) {
+    opts = opts || {};
+    const timeout = opts.timeout || (90000 * JOBS_SCALE);
+    await waitInFrame(page,
+        () => window.__wasmInitialDocLoaded === true,
+        { timeout });
+    await waitInFrame(page,
+        () => /character/i.test(
+            document.querySelector('#StateWordCount')?.textContent || ''),
+        { timeout: Math.min(timeout, 30000 * JOBS_SCALE) });
+}
+
+// Read the current character count from the state bar. -1 if the
+// state bar isn't populated yet.
+async function getCharCount(page) {
+    return evalInFrame(page, () => {
+        const t = document.querySelector('#StateWordCount')?.textContent || '';
+        const m = t.match(/([\d,]+)\s*character/);
+        return m ? parseInt(m[1].replace(/,/g, '')) : -1;
+    }).catch(() => -1);
+}
+
+// Wait until the character count satisfies pred(count). Useful for
+// "doc grew by at least N" assertions after paste / type.
+async function waitForCharCount(page, pred, opts) {
+    opts = opts || {};
+    const timeout = opts.timeout || (12000 * JOBS_SCALE);
+    const deadline = Date.now() + timeout;
+    let last = -1;
+    while (Date.now() < deadline) {
+        last = await getCharCount(page);
+        if (pred(last)) return last;
+        await sleep(250);
+    }
+    return last;
+}
+
+module.exports = {
+    getActiveEditorFrame,
+    waitInFrame,
+    evalInFrame,
+    waitForDocReady,
+    getCharCount,
+    waitForCharCount,
+};
