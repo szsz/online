@@ -41,6 +41,23 @@ class NotebookbarBase extends JSDialogComponent {
 			);
 			this.map.on('updatetoolbarcommandvalues', this.onCommandValues, this);
 		}
+		// Wire up the font-name combobox so the dropdown actually
+		// populates from .uno:CharFontName. Without this call the
+		// notebookbar's font picker shows only the single hard-coded
+		// "Carlito" entry from Control.NotebookbarWriter.js:691 and
+		// changes never flow to LO. The compact toolbar already calls
+		// this in Control.TopToolbar.js:342 — for the notebookbar we
+		// have to do it here in onAdd. Idempotent — Map.createFontSelector
+		// guards against duplicate registration.
+		if (typeof (this.map as any).createFontSelector === 'function') {
+			try {
+				(this.map as any).createFontSelector('fontnamecombobox');
+			} catch (e) {
+				// Some doc types (e.g. spreadsheet) may use a different
+				// combobox id; failure here just means the standard
+				// notebookbar pipeline runs unchanged. Don't throw.
+			}
+		}
 	}
 
 	// when we hide the UI
