@@ -51,6 +51,12 @@
 
 using namespace COOLProtocol;
 
+#ifdef __EMSCRIPTEN__
+// Resolved by libsofficeapp.a; declared at file scope (extern "C" is
+// not allowed inside a function body in C++).
+extern "C" int wasm_is_warm_restored();
+#endif
+
 static constexpr float TILES_ON_FLY_MIN_UPPER_LIMIT = 10.0;
 static constexpr int SYNTHETIC_COOL_PID_OFFSET = 10000000;
 
@@ -903,6 +909,19 @@ bool ClientSession::_handleInput(const char *buffer, int length)
     }
     else if (getDocURL().empty())
     {
+#ifdef __EMSCRIPTEN__
+        // WASM warm-restore only: drop early messages instead of erroring.
+        // On a cold WASM visit (no snapshot) the original error must still
+        // fire — relay-adapter relies on it to flow control its replay.
+        // Swallowing it on cold caused step4 of the hot-switch test to
+        // time out (no shield drop, no doc render).
+        if (wasm_is_warm_restored())
+        {
+            LOG_WRN("Dropping early message [" << tokens[0]
+                    << "] before doc loaded (warm-restore replay race)");
+            return false;
+        }
+#endif
         sendTextFrameAndLogError("error: cmd=" + tokens[0] + " kind=nodocloaded");
         return false;
     }
@@ -1245,6 +1264,14 @@ bool ClientSession::_handleInput(const char *buffer, int length)
     {
         return forwardToChild(firstLine, docBroker);
     }
+#if WASMAPP
+    else if (tokens.equals(0, "switchdocument"))
+    {
+        // WASM: hot document switch — forward to ChildSession where the
+        // actual documentLoad happens without tearing down the DocumentBroker.
+        return forwardToChild(firstLine, docBroker);
+    }
+#endif
     else if (tokens.equals(0, "loggingleveloverride"))
     {
         if (tokens.size() > 0)

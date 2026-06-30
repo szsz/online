@@ -31,6 +31,16 @@ public:
     void stop();
     void dumpState(std::ostream& os) const;
 
+#ifdef __EMSCRIPTEN__
+    /// Plan C — called from the COOLWSD main poll loop when wasmshim::isQuiesce()
+    /// returns true. Joins _acceptPoll on the SAME thread (the COOLWSD thread is
+    /// itself parking), so we cannot join from any other context. Caller is
+    /// responsible for joining PrisonerPoll / WebServerPoll separately and for
+    /// blocking on the resume condvar after this returns.
+    void joinAcceptPoll();
+    void restartAcceptPoll();
+#endif
+
 private:
     class AcceptPoll : public TerminatingPoll {
     public:
@@ -41,6 +51,14 @@ private:
     };
     /// This thread & poll accepts incoming connections.
     AcceptPoll _acceptPoll;
+
+#ifdef __EMSCRIPTEN__
+    /// Plan-C: SocketPoll::joinThread → removeSockets() destroys every
+    /// shared_ptr in the poll, including the listener. On restart the
+    /// poll has nothing to accept on. Keep a separate ref here so the
+    /// listener fd survives the join, and re-insert in restartAcceptPoll.
+    std::shared_ptr<ServerSocket> _serverSocket;
+#endif
 
 #if !MOBILEAPP
     Admin& _admin;

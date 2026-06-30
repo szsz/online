@@ -306,6 +306,13 @@ private:
     /// The actual main implementation.
     void innerMain();
 
+#ifdef __EMSCRIPTEN__
+public:
+    /// Release stale poll objects from a snapshot so their destructors
+    /// don't try to join dead threads (which would deadlock).
+    static void leakSnapshotPolls();
+#endif
+
     static void appendAllowedHostsFrom(const Poco::Util::LayeredConfiguration& conf, const std::string& root, std::vector<std::string>& allowed);
     static void appendAllowedAliasGroups(const Poco::Util::LayeredConfiguration& conf, std::vector<std::string>& allowed);
 
