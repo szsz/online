@@ -5445,11 +5445,18 @@ msgstr ""
 "translate=\"true\">2</a> <a id=\"slide-3-indicator\" href=\"#slide-3\" data-"
 "translate=\"true\">3</a>"
 
-#~ msgid "Scroll up"
-#~ msgstr "Nach oben blättern"
 
-#~ msgid "Scroll down"
-#~ msgstr "Nach unten blättern"
+#: src/control/jsdialog/Widget.NotebookbarIconView.ts
+msgid "Open Styles Sidebar"
+msgstr "Vorlagen-Seitenleiste öffnen"
+
+
+#: src/control/jsdialog/Widget.NotebookbarIconView.ts
+msgid "More options"
+msgstr "Weitere Optionen"
+
+#~ msgid "Paste Slide"
+#~ msgstr "Folie einfügen"
 
 #~ msgid "Page margin options"
 #~ msgstr "Seitenrandoptionen"
