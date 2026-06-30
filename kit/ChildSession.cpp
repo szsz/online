@@ -9,18 +9,53 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+/*
+ * Kit process child session handling LOK commands.
+ * Classes: ChildSession - Document session command processing
+ */
+
 #include <config.h>
 
 #include "ChildSession.hpp"
 
+#include <algorithm>
+#include <cctype>
+
+#ifdef __EMSCRIPTEN__
+#include <string_view>
+// Forward-declared instead of #include <wasmsnapshot.hxx> because
+// LO Core's desktop/inc/ is not on Online's include path (and exposing
+// it would invite leakage of other internal LO headers). The symbol
+// resolves via libsofficeapp.a at link time.
+namespace wasmshim {
+    void firstDocPainted(std::string_view docTypeHint);
+}
+#endif
+
 #include <common/Anonymizer.hpp>
 #include <common/HexUtil.hpp>
 #include <common/Log.hpp>
+#include <common/NumUtil.hpp>
 #include <common/Unit.hpp>
 #include <common/Util.hpp>
 
 #define LOK_USE_UNSTABLE_API
+#include <LibreOfficeKit/LibreOfficeKit.hxx>
 #include <LibreOfficeKit/LibreOfficeKitEnums.h>
+
+#ifdef __EMSCRIPTEN__
+// Plan B + warm-restore C entry points exported by libsofficeapp.a.
+// Declared at file scope (after LibreOfficeKit.h is included) because
+// extern "C" is not allowed inside a function body in C++.
+extern "C" int wasm_is_warm_restored();
+extern "C" void wasm_set_warm_restored(int);
+extern "C" int wasm_reload_doc_in_place(LibreOfficeKitDocument*, const char*);
+extern "C" void wasm_set_quiesce(int);
+extern "C" void wasm_wait_coolwsd_parked();
+extern "C" void wasm_coolwsd_resume();
+extern "C" void wasm_quiesce_wake_main();
+extern "C" int wasm_is_plan_c_enabled();
+#endif
 
 #include <Poco/StreamCopier.h>
 #include <Poco/URI.h>
@@ -45,7 +80,7 @@
 #include <common/TraceEvent.hpp>
 #include <common/SpookyV2.h>
 #include <common/Uri.hpp>
-#include "KitHelper.hpp"
+#include <KitHelper.hpp>
 #include <Png.hpp>
 #include <Clipboard.hpp>
 #include <CommandControl.hpp>
@@ -56,9 +91,13 @@
 #endif
 
 #if WASMAPP
-#include "wasmapp.hpp"
+#include <wasmapp.hpp>
+#include <emscripten/fetch.h>
+#include <emscripten.h>
+#include <emscripten/threading.h>
 #endif
 
+#include <cassert>
 #include <climits>
 #include <fstream>
 #include <sstream>
@@ -294,10 +333,455 @@ bool ChildSession::_handleInput(const char *buffer, int length)
     {
         return dialogEvent(tokens);
     }
+#if WASMAPP
+    else if (tokens.equals(0, "switchdocument"))
+    {
+        // Hot document switch: fetch new document and load it.
+        if (tokens.size() < 2)
+        {
+            sendTextFrameAndLogError("error: cmd=switchdocument kind=syntax");
+            return false;
+        }
+        const std::string arg = tokens[1];
+        LOG_INF("SWITCHDOC: arg=" << arg);
+        InputProcessingManager processInput(getProtocol(), false);
+        WatchdogGuard watchdogGuard;
+
+        // Phase timing — every step posted to the JS console so we can see
+        // exactly where the 40 s of a "hot" switch goes (documentLoad,
+        // initializeForRendering, status:, etc.). Quick to read without
+        // wading through the loolkit log.
+        const auto swT0 = std::chrono::steady_clock::now();
+        auto swMs = [&swT0]() {
+            return (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - swT0).count();
+        };
+        // Accumulate phase timings in a C++ buffer instead of firing
+        // MAIN_THREAD_ASYNC_EM_ASM per-phase. Reason: the kit's main
+        // thread blocks for ~10 s inside loKit->documentLoad on a
+        // cross-type switch, queueing many ASYNC_EM_ASM calls. When
+        // they all flush at once after documentLoad returns, puppeteer's
+        // CDP console listener appears to drop or coalesce them — the
+        // observed effect is "0 SWITCHDOC marks captured" for every
+        // cross-type transition (see test-crosstype-timing.js Iter 1
+        // baseline). One batched MAIN_THREAD_EM_ASM at completion is
+        // strictly more reliable.
+        std::ostringstream swPhasesBuf;
+#ifdef __EMSCRIPTEN__
+#define SW_MARK(label) do { \
+        const int __sw_t = swMs(); \
+        swPhasesBuf << "[+" << __sw_t << "ms] " << (label) << "\n"; \
+        MAIN_THREAD_ASYNC_EM_ASM({ console.log('SWITCHDOC[+' + $0 + 'ms] ' + UTF8ToString($1)); }, __sw_t, (label)); \
+    } while (0)
+#else
+#define SW_MARK(label) ((void)0)
+#endif
+        SW_MARK("entered handler");
+
+        std::string fileUrl;
+        // Hoisted out of the url= branch so we can pass them to
+        // wasmAppRebindSaveTarget at the end of a successful switch.
+        // Empty docRemoteUrl signals "this was a local-file switch — no
+        // server-side save target to rebind".
+        std::string switchTempPath;
+        std::string switchDocRemoteUrl;
+        if (arg.substr(0, 4) == "url=")
+        {
+            const std::string remoteUrl = arg.substr(4);
+            LOG_INF("SWITCHDOC: fetching from " << remoteUrl);
+
+            SW_MARK("fetch:start");
+            emscripten_fetch_attr_t attr;
+            emscripten_fetch_attr_init(&attr);
+            strcpy(attr.requestMethod, "GET");
+            attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
+            emscripten_fetch_t* fetch = emscripten_fetch(&attr, remoteUrl.c_str());
+            if (fetch->status != 200 || fetch->numBytes == 0)
+            {
+                LOG_ERR("SWITCHDOC: fetch failed, status=" << fetch->status);
+                emscripten_fetch_close(fetch);
+                sendTextFrameAndLogError("error: cmd=switchdocument kind=fetchfailed");
+                return false;
+            }
+            LOG_INF("SWITCHDOC: fetched " << fetch->numBytes << " bytes");
+            SW_MARK("fetch:done");
+
+            static int switchCounter = 0;
+            const std::string tempPath = "/tempdoc_switch" + std::to_string(++switchCounter);
+            FILE* f = fopen(tempPath.c_str(), "w");
+            if (f)
+            {
+                fwrite(fetch->data, 1, fetch->numBytes, f);
+                fclose(f);
+            }
+            emscripten_fetch_close(fetch);
+            fileUrl = "file://" + tempPath;
+            LOG_INF("SWITCHDOC: wrote to " << tempPath);
+            SW_MARK("file:written");
+            switchTempPath = tempPath;
+            switchDocRemoteUrl = remoteUrl;
+        }
+        else
+        {
+            fileUrl = arg;
+        }
+
+        auto loKit = _docManager->getLOKit();
+        std::shared_ptr<lok::Document> newDoc;
+
+        // Plan B — try in-place reload first. Reuses the existing frame
+        // and skips ~30 s of model creation + view setup + factory init
+        // inside loKit->documentLoad. Only works for same-format swaps;
+        // for cross-format we fall through to the full documentLoad.
+        // Same-format detection: compare new file's extension to the
+        // existing doc's reported document type.
+        bool inPlaceTried = false;
+        bool inPlaceOk = false;
+        // Per-doctype in-place reload cap. Earlier blanket cap=0 was a
+        // workaround for a docx-specific 3rd-click hang inside
+        // loadComponentFromURL("_self"); xlsx/pptx are not affected and
+        // benefit measurably from the in-place path (~2 s vs the ~12 s
+        // documentLoad fallback). Stay at cap=0 for docx until the
+        // docx-specific frame/view ref accumulation is fixed. Skip the
+        // in-place branch on the very first switch after warm-restore —
+        // Kit.cpp's drop-and-reload path (which only fires once due to
+        // the warm-restored flag clear in iter5) is the right path
+        // there; running both back-to-back trips the same dispose
+        // ordering issue we're avoiding for docx.
+        static int s_consecutiveInPlace = 0;
+
+        // Map the target doc → expected doc type FIRST so the cap decision
+        // can read it. Source of truth is the explicit `type=<ext>` token
+        // the viewer sends on the switchdocument command: the production
+        // url= switch writes the fetched bytes to an EXTENSION-LESS temp
+        // file (/tempdoc_switch<N>), and the v2 opaque fileId in the remote
+        // URL has no extension either, so sniffing the path yields
+        // LOK_DOCTYPE_OTHER and the per-doctype in-place cap never engages.
+        // Fall back to sniffing the fileUrl extension (covers the test-only
+        // `else` branch that passes a real file://….ext path).
+        auto extToDoctype = [](std::string ext) -> int {
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (ext == "docx" || ext == "doc" || ext == "odt" || ext == "rtf" || ext == "txt")
+                return LOK_DOCTYPE_TEXT;
+            if (ext == "xlsx" || ext == "xls" || ext == "ods" || ext == "csv" || ext == "tsv")
+                return LOK_DOCTYPE_SPREADSHEET;
+            if (ext == "pptx" || ext == "ppt" || ext == "odp")
+                return LOK_DOCTYPE_PRESENTATION;
+            return LOK_DOCTYPE_OTHER;
+        };
+        int desiredType = LOK_DOCTYPE_OTHER;
+        std::string typeToken;
+        if (getTokenString(tokens, "type", typeToken) && !typeToken.empty())
+        {
+            desiredType = extToDoctype(typeToken);
+            LOG_INF("SWITCHDOC: desiredType from type=" << typeToken
+                    << " => " << desiredType);
+        }
+        if (desiredType == LOK_DOCTYPE_OTHER)
+        {
+            const auto dotPos = fileUrl.find_last_of('.');
+            if (dotPos != std::string::npos)
+                desiredType = extToDoctype(fileUrl.substr(dotPos + 1));
+        }
+
+        // Iter A7 reverted: cap=1 for TEXT regressed cold cross-type
+        // by ~3 s on impress→writer because LO Core's in-place
+        // loadComponentFromURL still returns -1 for docx target,
+        // costing one failed in-place attempt before falling through
+        // to documentLoad. The "docx 3rd-click hang" comment from
+        // before A3 may have been the original cause, but disposeOld
+        // alone didn't unlock docx in-place. Cap stays 0 for TEXT.
+        // Iter B2: lift the per-doctype cap for calc/impress from 1 to a
+        // high ceiling. The cap=1 was a leftover throttle from when the
+        // warm-restore clamp (now removed in B1) meant in-place only ever
+        // ran once anyway; with B1 the in-place reload succeeds (rc==0) on
+        // warm-restored instances on EVERY switch, so cap=1 was forcing
+        // every OTHER same-type open back onto the slow documentLoad path.
+        // A non-trivial ceiling (rather than unbounded) keeps a periodic
+        // full documentLoad as a safety valve that flushes any frame/view
+        // back-ref state accumulated across many consecutive in-place
+        // reloads (the historical concern that motivated the cap). TEXT
+        // stays 0 — LO Core's in-place loadComponentFromURL returns -1 for
+        // docx targets, so attempting it only wastes a round-trip.
+        int kInPlaceCap = 0;
+        if (desiredType == LOK_DOCTYPE_SPREADSHEET ||
+            desiredType == LOK_DOCTYPE_PRESENTATION)
+        {
+            kInPlaceCap = 64;
+        }
+#ifdef __EMSCRIPTEN__
+        // Iter B1: previously this unconditionally zeroed the cap when
+        // wasm_is_warm_restored() — but the viewer ALWAYS boots from the
+        // prewarm snapshot, so the flag is ~always 1 on the very first
+        // switchdocument and the in-place path was perma-disabled. The
+        // intended clear in the `load` re-attach branch never ran (that
+        // branch early-returns before reaching the clear at line ~817).
+        // The flag is now cleared in the warm-restore re-attach branch
+        // itself (loadDocument `load` handler), so by the time a real
+        // switchdocument arrives warm_restored is already 0. Keep no
+        // extra clamp here; rely on wasm_reload_doc_in_place's rc==-1
+        // fallback if LO Core genuinely can't do in-place.
+#endif
+
+        std::shared_ptr<lok::Document> existing = _docManager->getLOKitDocument();
+        if (existing && existing->get() && s_consecutiveInPlace < kInPlaceCap)
+        {
+            // Iter A6: try in-place even for cross-type (was gated to
+            // existingType == desiredType). The LO Core function
+            // wasm_reload_doc_in_place loads the new model into the
+            // existing frame via XComponentLoader::loadComponentFromURL
+            // with target=_self. If the frame can't host the new
+            // doctype, the call returns -1 and we fall back to
+            // documentLoad below. Cross-type cold currently spends
+            // 10-15s in documentLoad doing model+factory+filter init
+            // for the new doctype; reusing the existing frame avoids
+            // most of that.
+            inPlaceTried = true;
+            SW_MARK("inPlace:start");
+            int rc = wasm_reload_doc_in_place(existing->get(), fileUrl.c_str());
+            SW_MARK("inPlace:done");
+            if (rc == 0)
+            {
+                LOG_INF("SWITCHDOC: in-place reload succeeded (consecutive=" << (s_consecutiveInPlace + 1) << ")");
+                inPlaceOk = true;
+                s_consecutiveInPlace++;
+                newDoc = existing;  // same lok::Document wrapper, but
+                                    // its underlying mxComponent now
+                                    // points at the new file's model.
+            }
+            else
+            {
+                LOG_INF("SWITCHDOC: in-place reload returned " << rc << ", falling back to documentLoad");
+            }
+        }
+        if (!inPlaceOk)
+            s_consecutiveInPlace = 0;
+
+        if (!inPlaceOk)
+        {
+            // Iter A3: drop the previous doc BEFORE documentLoad. The
+            // in-place path explicitly disposes its old XComponent
+            // (init.cxx wasm_reload_doc_in_place) "because the old
+            // XComponent stayed alive through frame/view back-refs and
+            // accumulated state across multiple hot-switches". Cross-
+            // type documentLoad has the same issue — old refs persist
+            // through `existing` AND _docManager's _loKitDocument, and
+            // every documentLoad has to navigate the live registry.
+            // Dropping both refs here triggers ~LibLODocument_Impl
+            // → mxComponent->dispose(), breaking the back-refs that
+            // make warm cross-type 18-44s vs cold 10-15s.
+            SW_MARK("disposeOld:start");
+            const int __sw_dispose_start = swMs();
+            _docManager->setLOKitDocument(nullptr);
+            existing.reset();
+            SW_MARK("disposeOld:done");
+            const int __sw_dispose_end = swMs();
+
+            LOG_INF("SWITCHDOC: calling documentLoad(" << fileUrl << ")");
+            SW_MARK("documentLoad:start");
+#ifdef __EMSCRIPTEN__
+            // Iter A4: sync mark around documentLoad. Async marks
+            // queued during the multi-second LO Core call get
+            // coalesced or dropped by puppeteer's CDP listener, so
+            // cross-type runs see ZERO marks. Synchronous fires
+            // immediately, blocks the kit thread for the JS round-
+            // trip (~1-3ms), and gives reliable book-end timestamps
+            // independent of the queue-flush timing at the end.
+            MAIN_THREAD_EM_ASM({
+                console.log('SWITCHDOC_SYNC[+' + $0 + 'ms] documentLoad:about-to-call (disposeOld='
+                          + ($1 - $2) + 'ms)');
+            }, swMs(), __sw_dispose_end, __sw_dispose_start);
+#endif
+            // Iter A5 attempted to omit Language= on subsequent loads
+            // to skip init.cxx:2928-2949 (resetTheCurrencyTable +
+            // setLanguageAndLocale). Both warm cross-type transitions
+            // timed out (>48s). Reverted — apparently the per-load
+            // locale reset is load-bearing for calc/impress models
+            // even though the docs say it sets process-global state.
+            //
+            // Pass the session's lang (captured from the initial `load
+            // url=... lang=<code>` command at Session.cpp:220-226) instead
+            // of hardcoding en-US. Hot-switch preserves the user's UI
+            // language; previously every cross-type or same-type switch
+            // silently reverted the kit-side locale to en-US, which
+            // matters for #193 once non-en-US langpacks are present in
+            // the LO WASM build. Falls back to en-US when getLang() is
+            // empty (defensive — initial load always sets _lang since
+            // Socket.ts always includes lang=String.locale on the load
+            // command, but the kit shouldn't crash if it's somehow not
+            // there).
+            const std::string& sessionLang = getLang();
+            // NB: do NOT pass Batch=true here. A Batch load makes LO core
+            // (lo_documentLoadWithOptions) set the *process-global*
+            // DialogCancelMode to LOKSilent — which it never restores — so
+            // every modal dialog opened afterwards on this (switched-to)
+            // document is silently cancelled in Dialog::ImplStartExecute. The
+            // symptom: on the 2nd doc opened in a tab, the shape Area dialog,
+            // Insert Special Character, etc. never appear. The initial
+            // (interactive) document load passes no Batch and leaves the mode
+            // at the normal LOK 'Silent', under which dialogs open; matching
+            // that here keeps dialogs working after a hot switch.
+            const std::string switchDocOpts =
+                "Language=" + (sessionLang.empty() ? std::string("en-US") : sessionLang);
+            auto* rawDoc = loKit->documentLoad(fileUrl.c_str(), switchDocOpts.c_str());
+            SW_MARK("documentLoad:done");
+#ifdef __EMSCRIPTEN__
+            MAIN_THREAD_EM_ASM({
+                console.log('SWITCHDOC_SYNC[+' + $0 + 'ms] documentLoad:returned');
+            }, swMs());
+#endif
+            newDoc = std::shared_ptr<lok::Document>(rawDoc);
+            if (!newDoc || !newDoc->get())
+            {
+                LOG_ERR("SWITCHDOC: failed to load " << fileUrl << ": " << loKit->getError());
+                sendTextFrameAndLogError("error: cmd=switchdocument kind=faileddocloading");
+                return false;
+            }
+            _docManager->setLOKitDocument(newDoc);
+            SW_MARK("setLOKitDocument:done");
+            newDoc->initializeForRendering("");
+            SW_MARK("initializeForRendering:done");
+            _viewId = newDoc->getView();
+            _docManager->registerViewCallback(_viewId);
+            SW_MARK("registerViewCallback:done");
+        }
+        else
+        {
+            // In-place path: same document object, refresh the view.
+            newDoc->initializeForRendering("");
+            SW_MARK("initializeForRendering:done");
+            _viewId = newDoc->getView();
+            _docManager->registerViewCallback(_viewId);
+            SW_MARK("registerViewCallback:done");
+        }
+
+        // Make the freshly-loaded document's view the current one. The initial
+        // load makes its (first/only) view current implicitly, but on a hot
+        // switch the previous document's view shell stays "current" (or is
+        // released, leaving SfxViewShell::Current() null). Modal dialogs opened
+        // afterwards on the 2nd document (.uno:FormatArea / shape Area, Insert
+        // Special Character, etc.) ask SfxDialogController::InstallLOKNotifierHdl
+        // for a notifier, which returns SfxViewShell::Current(); if that is not
+        // the new doc's view, Dialog::ImplStartExecute fails, the dialog is torn
+        // down before its open is sent and never appears. Activating the new
+        // view restores SfxViewShell::Current() so dialogs work after a switch.
+        newDoc->setView(_viewId);
+        SW_MARK("setView:done");
+
+        sendTextFrame("invalidatetiles: EMPTY");
+
+        const std::string status = LOKitHelper::documentStatus(newDoc->get());
+        SW_MARK("documentStatus:done");
+        sendTextFrame("status: " + status);
+        SW_MARK("status_sent");
+
+        _docManager->notifyViewInfo();
+        sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
+        std::ostringstream loadedMsg;
+        loadedMsg << "loaded: viewid=" << _viewId
+                  << " views=" << _docManager->getViewsCount()
+                  << " isfirst=true";
+        sendTextFrame(loadedMsg.str());
+
+        // Event-driven doc-ready signal (replaces JS DOM polling in
+        // wasm-loader.js). Authoritative: the C++ side knows the doc
+        // is loaded; the JS side has historically had to infer this
+        // by polling status text + canvas pixel-hash, which is fragile
+        // (60 s timeouts on Azure cold loads). One frame per load
+        // path: cold (loadDocument), hot-switch (here), warm-restore
+        // re-attach. JS hooks `docready:` and routes it through a
+        // single `fireDocReady()` that fans out to existing signals.
+        // Phase 1 keeps the polling running in parallel + logs
+        // [event-vs-poll]; Phase 4 deletes the polling.
+        sendTextFrame("docready: viewid=" + std::to_string(_viewId)
+                      + " type=" + LOKitHelper::getDocumentTypeAsString(newDoc->get())
+                      + " path=switch");
+
+        _isDocLoaded = true;
+        LOG_INF("SWITCHDOC: complete, viewId=" << _viewId);
+        // Re-target the wasm-side save path. Without this, every save
+        // post-switch (Ctrl+S) reads the prewarm tempfile and POSTs to
+        // the prewarm URL, so the user-doc room's checkpoint never
+        // rotates to the actual saved content (broker logs CHECKPOINT
+        // ROTATED with the OLD hash, late joiners see stale state).
+        if (!switchTempPath.empty() && !switchDocRemoteUrl.empty())
+        {
+            wasmAppRebindSaveTarget(switchTempPath, switchDocRemoteUrl);
+        }
+        SW_MARK("complete");
+#ifdef __EMSCRIPTEN__
+        // Iter A4: synchronous EM_ASM. The previous ASYNC variant
+        // queued the lambda for later execution, but $0 was
+        // blob.c_str() — by the time JS ran, blob had gone out of
+        // scope and the C-string pointed at freed memory, so cross-
+        // type runs (where the per-phase async marks are dropped
+        // during the long documentLoad block) saw NEITHER kind of
+        // mark. Synchronous blocks switchdocument briefly while JS
+        // copies the string, but blob stays valid through the call.
+        // Tests grep for SWITCHDOC_TIMINGS_BEGIN/END.
+        {
+            const std::string blob = swPhasesBuf.str();
+            MAIN_THREAD_EM_ASM({
+                console.log('SWITCHDOC_TIMINGS_BEGIN\n' + UTF8ToString($0)
+                            + 'SWITCHDOC_TIMINGS_END');
+            }, blob.c_str());
+        }
+#endif
+#undef SW_MARK
+        return true;
+    }
+#endif
     else if (tokens.equals(0, "load"))
     {
         if (_isDocLoaded)
         {
+#ifdef __EMSCRIPTEN__
+            // Plan C warm-restore: the captured snapshot already has
+            // _isDocLoaded=true with the (cold-visit) doc fully loaded.
+            // Treat the new "load" command as a re-attach: re-send the
+            // status+loaded frames so COOL JS can render the existing
+            // model instead of the stock "docalreadyloaded" error.
+            if (wasm_is_warm_restored() && getLOKitDocument())
+            {
+                LOG_INF("LOAD: warm-restore re-attach — re-sending status/loaded for existing doc");
+                const std::string status = LOKitHelper::documentStatus(getLOKitDocument()->get());
+                sendTextFrame("status: " + status);
+                _docManager->notifyViewInfo();
+                sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
+                std::ostringstream loadedMsg;
+                loadedMsg << "loaded: viewid=" << _viewId
+                          << " views=" << _docManager->getViewsCount()
+                          << " isfirst=true";
+                sendTextFrame(loadedMsg.str());
+
+                // Event-driven doc-ready (warm-restore re-attach path).
+                // The snapshot already has the doc fully loaded; we're
+                // just re-binding the JS view to the existing kit-side
+                // model. Same `docready:` shape as cold/switch — JS
+                // routes all three through fireDocReady().
+                sendTextFrame("docready: viewid=" + std::to_string(_viewId)
+                              + " type=" + LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get())
+                              + " path=warm");
+                // Iter B1: consume the warm-restore one-shot HERE. The
+                // cold-load clear at line ~817 lives in the full load
+                // path, which this early-return never reaches — so on a
+                // warm-booted viewer (the common case) the flag stayed 1
+                // forever and the in-place switchdoc optimisation was
+                // perma-disabled (ChildSession switchdocument clamped
+                // kInPlaceCap=0 on warm_restored). The re-attach has now
+                // completed: the JS view is bound to the restored model,
+                // so the warm-restore special-casing is done. Subsequent
+                // switchdocument commands are ordinary same-session
+                // switches and should use the in-place fast path.
+                if (wasm_is_warm_restored())
+                {
+                    LOG_INF("SWITCHDOC: clearing warm_restored after warm-restore re-attach");
+                    wasm_set_warm_restored(0);
+                }
+                return true;
+            }
+#endif
             sendTextFrameAndLogError("error: cmd=load kind=docalreadyloaded");
             return false;
         }
@@ -314,6 +798,88 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         uiLog.logSaveLoad("load", Poco::URI(getJailedFilePath()).getPath(), timeStart);
 
         LOG_TRC("isDocLoaded state after loadDocument: " << _isDocLoaded);
+
+#ifdef __EMSCRIPTEN__
+        // Phase-2 snapshot trigger: fire exactly once when the very
+        // first user document loads on this LOK runtime instance.
+        // wasmshim::firstDocPainted() is one-shot (atomic CAS); later
+        // doc opens (cross-module switchdoc, second user file) are
+        // no-ops. Doc-type hint helps JS plan cross-module switching
+        // on warm restore.
+        if (_isDocLoaded && getLOKitDocument())
+        {
+            const char* docTypeHint = "text";
+            switch (getLOKitDocument()->getDocumentType())
+            {
+                case LOK_DOCTYPE_TEXT:         docTypeHint = "text"; break;
+                case LOK_DOCTYPE_SPREADSHEET:  docTypeHint = "spreadsheet"; break;
+                case LOK_DOCTYPE_PRESENTATION: docTypeHint = "presentation"; break;
+                case LOK_DOCTYPE_DRAWING:      docTypeHint = "drawing"; break;
+                default:                       docTypeHint = "other"; break;
+            }
+
+            // Plan C — quiesce-and-rebuild for warm-restore.
+            //
+            // Sequence (cold visit):
+            //   1. set quiesce flag    -> COOLWSD's main loop sees it on next iteration
+            //   2. wake mainWait->poll -> break COOLWSD out of its 256 s poll early
+            //   3. wait until COOLWSD reports parked (joined PrisonerPoll/AcceptPoll/WebServerPoll)
+            //   4. firstDocPainted     -> queue Module.__firstDocLoaded, block on g_phase2CV
+            //   5. (JS captures HEAPU8 with kit blocked + COOLWSD parked, then resumes us)
+            //   6. clear quiesce flag  -> COOLWSD won't re-park on its next loop iteration
+            //   7. resume COOLWSD      -> COOLWSD respawns its polls and re-enters main loop
+            //
+            // Why both kit and COOLWSD must be parked: the snapshot is the
+            // process heap. Any thread mutating heap state mid-capture
+            // gives a torn snapshot. kit thread is parked by firstDocPainted
+            // (CV wait); COOLWSD by the self-park branch in COOLWSD::innerMain.
+            // Other emscripten worker threads (proxy worker, audio worker)
+            // are short-lived per-message workers — they're idle by the
+            // time we get here because of InputProcessingManager(false).
+            //
+            // Skip the dance entirely when the snapshot subsystem is
+            // disabled — JS will just call wasm_snapshot_failed and
+            // there's no value in parking COOLWSD for nothing.
+#ifdef __EMSCRIPTEN__
+            const bool planC = !wasm_is_warm_restored() &&
+                               (wasm_is_plan_c_enabled() == 1);
+            if (planC)
+            {
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC begin — set_quiesce(1)'); });
+                wasm_set_quiesce(1);
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: quiesce_wake_main'); });
+                wasm_quiesce_wake_main();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: wait_coolwsd_parked'); });
+                wasm_wait_coolwsd_parked();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd parked, calling firstDocPainted'); });
+            }
+#endif
+            wasmshim::firstDocPainted(docTypeHint);
+#ifdef __EMSCRIPTEN__
+            MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: firstDocPainted returned'); });
+            if (planC)
+            {
+                wasm_set_quiesce(0);
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: planC resume — coolwsd_resume'); });
+                wasm_coolwsd_resume();
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: coolwsd_resume returned'); });
+            }
+            // Consume the warm-restore one-shot AFTER the planC check
+            // above (which needs warm_restored=1 to skip the dance) and
+            // AFTER firstDocPainted (CAS one-shot, no-op on warm anyway).
+            // Subsequent same-session doc-switches must see warm_restored=0
+            // so the in-place reload optimisation in
+            // ChildSession::loadDocument is not perma-disabled (line ~483
+            // forces kInPlaceCap=0 while warm_restored is set).
+            if (wasm_is_warm_restored())
+            {
+                MAIN_THREAD_EM_ASM({ console.log('TIMING: kit: clearing warm_restored after first onLoad'); });
+                wasm_set_warm_restored(0);
+            }
+#endif
+        }
+#endif
+
         return _isDocLoaded;
     }
     else if (tokens.equals(0, "extractlinktargets"))
@@ -492,8 +1058,21 @@ bool ChildSession::_handleInput(const char *buffer, int length)
     }
     else if (!_isDocLoaded)
     {
+#ifdef __EMSCRIPTEN__
+        // Warm-restore only — see ClientSession.cpp comment.
+        if (wasm_is_warm_restored())
+        {
+            LOG_WRN("Dropping early Kit message [" << tokens[0]
+                    << "] before doc loaded (warm-restore replay race)");
+            return false;
+        }
+#endif
         sendTextFrameAndLogError("error: cmd=" + tokens[0] + " kind=nodocloaded");
         return false;
+    }
+    else if (tokens.equals(0, "renderfont"))
+    {
+        sendFontRendering(tokens);
     }
     else if (tokens.equals(0, "setclientpart"))
     {
@@ -574,11 +1153,11 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                tokens.equals(0, "rendershapeselection") ||
                tokens.equals(0, "removetextcontext") ||
                tokens.equals(0, "dialogevent") ||
+               tokens.equals(0, "switchdocument") ||
                tokens.equals(0, "completefunction")||
                tokens.equals(0, "formfieldevent") ||
                tokens.equals(0, "traceeventrecording") ||
                tokens.equals(0, "sallogoverride") ||
-               tokens.equals(0, "setviewreadonly") ||
                tokens.equals(0, "rendersearchresult") ||
                tokens.equals(0, "contentcontrolevent") ||
                tokens.equals(0, "a11ystate") ||
@@ -663,6 +1242,11 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 newTokens.push_back(firstLine.substr(4)); // Copy the remaining part.
                 return unoCommand(newTokens);
             }
+            else if (tokens[1].find(".uno:SaveGraphic") != std::string::npos)
+            {
+                // SaveGraphic is not a document save - it exports an image
+                return unoCommand(tokens);
+            }
             else if (tokens[1].find(".uno:Save") != std::string::npos)
             {
                 LOG_ERR("Unexpected UNO Save command in client");
@@ -713,7 +1297,8 @@ bool ChildSession::_handleInput(const char *buffer, int length)
             if (!saving)
             { // fallback to foreground save
 
-                UnitKit::get().preSaveHook();
+                if (!Util::isMobileApp())
+                    UnitKit::get().preSaveHook();
 
                 // Disable processing of other messages while saving document
                 InputProcessingManager processInput(getProtocol(), false);
@@ -849,33 +1434,6 @@ bool ChildSession::_handleInput(const char *buffer, int length)
                 getLOKit()->setOption("sallogoverride", tokens[1].c_str());
             }
         }
-        else if (tokens.equals(0, "setviewreadonly"))
-        {
-            // Propagate the browser-side Viewing/Editing toggle to core so it can
-            // block direct-canvas interactions (shape drag, arrow-key move) and
-            // gate comment/redline commands via the dispatch filter.
-            bool readOnly = false;
-            std::string value;
-            if (tokens.size() > 1 && getTokenString(tokens[1], "value", value))
-                readOnly = (value == "true");
-
-            if (getLOKitDocument())
-            {
-                getLOKitDocument()->setView(_viewId);
-                getLOKitDocument()->setViewReadOnly(_viewId, readOnly);
-
-                // Browser only sends setviewreadonly when the user has WOPI
-                // write permission, so this path is the Viewing/Editing toggle
-                // on a fully editable doc. Block comments and redline management
-                // in Viewing mode too - comment-only docs (e.g. PDFs) are set
-                // up separately at session start and never reach this branch.
-                getLOKitDocument()->setAllowChangeComments(_viewId, !readOnly);
-                getLOKitDocument()->setAllowManageRedlines(_viewId, !readOnly);
-
-                LOG_DBG("setviewreadonly: viewId=" << _viewId
-                        << " readOnly=" << readOnly);
-            }
-        }
         else if (tokens.equals(0, "rendersearchresult"))
         {
             return renderSearchResult(buffer, length, tokens);
@@ -985,9 +1543,18 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     // Note: _isDocLoaded is set on our return.
     const bool isFirstView = !_docManager->isLoaded();
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad (loadComponentFromURL) starting...'); });
+#endif
     const bool loaded = _docManager->onLoad(getId(), getJailedFilePathAnonym(), renderOpts);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: onLoad done loaded=' + $0 + ' viewId=' + $1); }, loaded ? 1 : 0, _viewId);
+#endif
     if (!loaded || _viewId < 0)
     {
+#ifdef __EMSCRIPTEN__
+        MAIN_THREAD_EM_ASM({ console.log('TIMING: loadDocument returning false (loaded=' + $0 + ' viewId=' + $1 + ')'); }, loaded ? 1 : 0, _viewId);
+#endif
         // Failed and communicated with the reason; do not send errors to the client.
         LOG_ERR("Failed to get LoKitDocument instance for [" << getJailedFilePathAnonym() << ']');
         return false;
@@ -998,6 +1565,9 @@ bool ChildSession::loadDocument(const StringVector& tokens)
                                               << getUserNameAnonym() << "] in session: [" << getId()
                                               << "], template: [" << getDocTemplate() << ']');
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post-onLoad checks done, viewid=' + $0); }, _viewId);
+#endif
     if (!getDocTemplate().empty())
     {
         // If we aren't chroot-ed, we need to use the absolute path.
@@ -1033,9 +1603,18 @@ bool ChildSession::loadDocument(const StringVector& tokens)
             copyForUpload(url);
     }
 
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre setView'); });
+#endif
     getLOKitDocument()->setView(_viewId);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post setView'); });
+#endif
 
     _docType = LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get());
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post getDocumentTypeAsString docType_len=' + $0); }, (int)_docType.size());
+#endif
     if (_docType != "text" && part != -1)
     {
         getLOKitDocument()->setPart(part);
@@ -1043,10 +1622,19 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     }
     else
         _currentPart = getLOKitDocument()->getPart();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post setPart/getPart'); });
+#endif
 
     // Respond by the document status
     LOG_DBG("Sending status after loading view " << _viewId);
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre documentStatus'); });
+#endif
     const std::string status = LOKitHelper::documentStatus(getLOKitDocument()->get());
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post documentStatus len=' + $0); }, (int)status.size());
+#endif
     if (status.empty() || !sendTextFrame("status: " + status))
     {
         LOG_ERR("Failed to get/forward document status [" << status << ']');
@@ -1054,11 +1642,23 @@ bool ChildSession::loadDocument(const StringVector& tokens)
     }
 
     // Inform everyone (including this one) about updated view info
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre notifyViewInfo'); });
+#endif
     _docManager->notifyViewInfo();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post notifyViewInfo'); });
+#endif
     sendTextFrame("editor: " + std::to_string(_docManager->getEditorId()));
 
     // now we have the doc options parsed and set.
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: pre updateActivityHeader'); });
+#endif
     _docManager->updateActivityHeader();
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: post updateActivityHeader'); });
+#endif
 
     // Notify that we've loaded this view.
     std::ostringstream oss;
@@ -1066,6 +1666,31 @@ bool ChildSession::loadDocument(const StringVector& tokens)
         << " isfirst=" << (isFirstView ? "true" : "false");
     sendTextFrame(oss.str());
 
+    // Event-driven doc-ready (cold-load path). See switchdocument
+    // emit site for the rationale; this is the cold-load counterpart.
+    {
+        const std::string drFrame =
+            "docready: viewid=" + std::to_string(_viewId)
+            + " type=" + LOKitHelper::getDocumentTypeAsString(getLOKitDocument()->get())
+            + " path=cold";
+#ifdef __EMSCRIPTEN__
+        // Iter 2 diagnostic: confirm the cold-load emit actually fires
+        // by sync-logging immediately before sendTextFrame. The JS-side
+        // accessor hook on TheFakeWebSocket.onmessage logs `bridge:doc_ready
+        // kit-cold` when it sees the frame. If we see THIS console line
+        // but NOT the JS-side mark, the channel is dropping the frame.
+        // If we DON'T see THIS line, the cold-load loadDocument path
+        // simply isn't being reached for this scenario.
+        MAIN_THREAD_EM_ASM({
+            console.log('[KIT] about to sendTextFrame(' + UTF8ToString($0) + ')');
+        }, drFrame.c_str());
+#endif
+        sendTextFrame(drFrame);
+    }
+
+#ifdef __EMSCRIPTEN__
+    MAIN_THREAD_EM_ASM({ console.log('TIMING: Loaded session (status+tiles sent to JS)'); });
+#endif
     LOG_INF("Loaded session " << getId());
     return true;
 }
@@ -1105,6 +1730,69 @@ bool ChildSession::saveDocumentBackground([[maybe_unused]] const StringVector& t
     }
 
     return false;
+}
+
+bool ChildSession::sendFontRendering(const StringVector& tokens)
+{
+    std::string font, text, decodedFont, decodedChar;
+    bool success;
+
+    if (tokens.size() < 3 ||
+        !getTokenString(tokens[1], "font", font))
+    {
+        sendTextFrameAndLogError("error: cmd=renderfont kind=syntax");
+        return false;
+    }
+
+    getTokenString(tokens[2], "char", text);
+
+    try
+    {
+        URI::decode(font, decodedFont);
+        URI::decode(text, decodedChar);
+    }
+    catch (Poco::SyntaxException& exc)
+    {
+        LOG_ERR(exc.message());
+        sendTextFrameAndLogError("error: cmd=renderfont kind=syntax");
+        return false;
+    }
+
+    const std::string response = "renderfont: " + tokens.cat(' ', 1) + '\n';
+
+    std::vector<char> output;
+    output.resize(response.size());
+    std::memcpy(output.data(), response.data(), response.size());
+
+    const auto start = std::chrono::steady_clock::now();
+    // renderFont use a default font size (25) when width and height are 0
+    int width = 0, height = 0;
+
+    getLOKitDocument()->setView(_viewId);
+
+    ScopedBytes ptrFont(getLOKitDocument()->renderFont(decodedFont.c_str(), decodedChar.c_str(), &width, &height));
+
+    const auto duration = std::chrono::steady_clock::now() - start;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+    LOG_TRC("renderFont [" << font << "] rendered in " << elapsed);
+
+    if (!ptrFont)
+    {
+        return sendTextFrame(output.data(), output.size());
+    }
+
+    const auto mode = static_cast<LibreOfficeKitTileMode>(getLOKitDocument()->getTileMode());
+
+    if (Png::encodeBufferToPNG(ptrFont.get(), width, height, output, mode))
+    {
+        success = sendTextFrame(output.data(), output.size());
+    }
+    else
+    {
+        success = sendTextFrameAndLogError("error: cmd=renderfont kind=failure");
+    }
+
+    return success;
 }
 
 bool ChildSession::getStatus()
@@ -1150,7 +1838,7 @@ void insertUserNames(const std::map<int, UserInfo>& viewInfo, std::string& json)
     Poco::JSON::Parser parser;
     const Poco::JSON::Object::Ptr root = parser.parse(json).extract<Poco::JSON::Object::Ptr>();
     std::vector<std::string> directions { "Undo", "Redo" };
-    for (auto& directionName : directions)
+    for (const auto& directionName : directions)
     {
         Poco::JSON::Object::Ptr direction = root->get(directionName).extract<Poco::JSON::Object::Ptr>();
         if (direction->get("actions").type() == typeid(Poco::JSON::Array::Ptr))
@@ -1331,6 +2019,13 @@ std::string ChildSession::getJailDocRoot() const
 
 bool ChildSession::downloadAs(const StringVector& tokens)
 {
+#ifdef IOS
+    NSLog(@"We should never come here, aborting");
+    std::abort();
+#elif defined(_WIN32)
+    // Presumably ditto for CODA-W
+    std::abort();
+#else
     std::string name, id, format, filterOptions;
 
     if (tokens.size() < 5 ||
@@ -1365,10 +2060,6 @@ bool ChildSession::downloadAs(const StringVector& tokens)
         filterOptions += std::string(",Watermark=") + getWatermarkText() + std::string("WATERMARKEND");
     }
 
-#ifdef IOS
-    NSLog(@"We should never come here, aborting");
-    std::abort();
-#else
     // Prevent user inputting anything funny here.
     // A "name" should always be a name, not a path
     const Poco::Path filenameParam(name);
@@ -1405,7 +2096,7 @@ bool ChildSession::downloadAs(const StringVector& tokens)
     // Register download id -> URL mapping in the DocumentBroker
     const std::string docBrokerMessage =
         "registerdownload: downloadid=" + tmpDir + " url=" + urlToSend + " clientid=" + getId();
-    _docManager->sendFrame(docBrokerMessage.c_str(), docBrokerMessage.length());
+    _docManager->sendFrame(docBrokerMessage);
 
     // Send download id to the client
     sendTextFrame("downloadas: downloadid=" + tmpDir + " port=" + std::to_string(ClientPortNumber) +
@@ -1707,7 +2398,20 @@ bool ChildSession::paste(const char* buffer, int length, const StringVector& tok
 
     const std::string firstLine = getFirstLine(buffer, length);
     const char* data = buffer + firstLine.size() + 1;
-    const int size = length - firstLine.size() - 1;
+    int size = length - firstLine.size() - 1;
+#if defined QTAPP || defined _WIN32
+    // In CODA-Q, to work around a qtwebchannel "Could not convert argument QJsonValue(object,
+    // QJsonObject()) to target type QString ." bug, _pasteTypedBlob in browser/src/map/Clipboard.js
+    // base64-encoded the payload:
+    //
+    // The same root problem in CODA-W, although there we end up with a "the server encountered a
+    // unknown error while parsing the [object command" error message.
+    std::string dec;
+    [[maybe_unused]] auto const res = macaron::Base64::Decode(std::string_view(data, size), dec);
+    assert(res.empty());
+    data = dec.data();
+    size = dec.size();
+#endif
     bool success = false;
     std::string result = "pasteresult: ";
     if (size > 0)
@@ -1822,10 +2526,10 @@ bool ChildSession::insertFile(const StringVector& tokens)
             macaron::Base64::Decode(data, binaryData);
             const std::string tempFile = FileUtil::createRandomTmpDir() + '/' + name;
             std::ofstream fileStream;
-            fileStream.open(tempFile);
+            fileStream.open(tempFile, std::ios::out | std::ios::binary);
             fileStream.write(binaryData.data(), binaryData.size());
             fileStream.close();
-            url = "file://" + tempFile;
+            url = Poco::URI(Poco::Path(tempFile)).toString();
         }
 
         std::string command;
@@ -1954,7 +2658,9 @@ bool ChildSession::keyEvent(const StringVector& tokens,
     // Don't close LO window!
     constexpr int KEY_CTRL = 0x2000;
     constexpr int KEY_W = 0x0216;
+#if !MOBILEAPP
     constexpr int KEY_INSERT = 0x0505;
+#endif
     if (keycode == (KEY_CTRL | KEY_W))
     {
         return true;
@@ -1971,11 +2677,12 @@ bool ChildSession::keyEvent(const StringVector& tokens,
     getLOKitDocument()->setView(_viewId);
     if (target == LokEventTargetEnum::Document)
     {
+#if !MOBILEAPP
         // Check if override mode is disabled.
         if (type == LOK_KEYEVENT_KEYINPUT && charcode == 0 && keycode == KEY_INSERT &&
             !ConfigUtil::getBool("overwrite_mode.enable", false))
             return true;
-
+#endif
         getLOKitDocument()->postKeyEvent(type, charcode, keycode);
     }
     else if (winId != 0)
@@ -2453,11 +3160,8 @@ bool ChildSession::renderNextSlideLayer(SlideCompressor& scomp, const unsigned w
             std::string json = jsonMsg;
             Poco::JSON::Parser parser;
             Poco::JSON::Object::Ptr root = parser.parse(json).extract<Poco::JSON::Object::Ptr>();
-            if (EnableExperimental)
-            {
-                root->set("cacheKey", cacheKey);
-                root->set("isCompressed", isCompressed);
-             }
+            root->set("cacheKey", cacheKey);
+            root->set("isCompressed", isCompressed);
 
             json = JsonUtil::jsonToString(root);
 
@@ -2492,71 +3196,45 @@ bool ChildSession::renderNextSlideLayer(SlideCompressor& scomp, const unsigned w
             if (size_t start = json.find("%IMAGECHECKSUM%"); start != std::string::npos)
                 json.replace(start, 15, std::to_string(pixmapHash));
 
-            if (EnableExperimental) // ZSTD
+            // Use ZSTD to compress the slide layer
+            if (size_t start = json.find("%IMAGETYPE%"); start != std::string::npos)
+                json.replace(start, 11, "zstd");
+
+            root = parser.parse(json).extract<Poco::JSON::Object::Ptr>();
+            root->set("width", width);
+            root->set("height", height);
+            json = JsonUtil::jsonToString(root);
+
+            std::string response = "zstdslidelayer: " + json;
+
+            response += "\n";
+
+            size_t compressed_max_size = ZSTD_COMPRESSBOUND(pixmap->size());
+            size_t max_required_size = response.size() + compressed_max_size;
+            output.resize(max_required_size);
+            std::memcpy(output.data(), response.data(), response.size());
+
+            if (tileMode == LibreOfficeKitTileMode::LOK_TILEMODE_BGRA)
             {
-                if (size_t start = json.find("%IMAGETYPE%"); start != std::string::npos)
-                    json.replace(start, 11, "zstd");
-
-                {
-                    root = parser.parse(json).extract<Poco::JSON::Object::Ptr>();
-                    root->set("width", width);
-                    root->set("height", height);
-                    json = JsonUtil::jsonToString(root);
-                }
-
-                std::string response = "zstdslidelayer: " + json;
-
-                response += "\n";
-
-                size_t compressed_max_size = ZSTD_COMPRESSBOUND(pixmap->size());
-                size_t max_required_size = response.size() + compressed_max_size;
-                output.resize(max_required_size);
-                std::memcpy(output.data(), response.data(), response.size());
-                std::vector<char> compressedOutPut;
-                compressedOutPut.resize(ZSTD_COMPRESSBOUND(pixmap->size()));
-
-                if (tileMode == LibreOfficeKitTileMode::LOK_TILEMODE_BGRA)
-                {
-                    png_row_info rowInfo;
-                    rowInfo.rowbytes = pixmap->size();
-                    // Following function just needs row size to transform from BGRA to RGBA
-                    // We have a flat array so its safe to pass pixmap size as row size
-                    Png::unpremultiply_bgra_data(nullptr, &rowInfo, pixmap->data());
-                }
-                size_t compSize = ZSTD_compress(&output[response.size()], compressed_max_size,
-                                                pixmap->data(), pixmap->size(), -3);
-
-                if (ZSTD_isError(compSize))
-                {
-                    output.resize(0);
-                    LOG_ERR("Failed to compress slidelayer of size " << pixmap->size() << " with "
-                                                                    << ZSTD_getErrorName(compSize));
-                    return;
-                }
-                output.resize(response.size() + compSize);
-
-                LOG_TRC("Compressed slidelayer of size " << pixmap->size() << " to size " << compSize);
+                png_row_info rowInfo;
+                rowInfo.rowbytes = pixmap->size();
+                // Following function just needs row size to transform from BGRA to RGBA
+                // We have a flat array so its safe to pass pixmap size as row size
+                Png::unpremultiply_bgra_data(nullptr, &rowInfo, pixmap->data());
             }
-            else // PNG
+            size_t compSize = ZSTD_compress(&output[response.size()], compressed_max_size,
+                                            pixmap->data(), pixmap->size(), -3);
+
+            if (ZSTD_isError(compSize))
             {
-                if (size_t start = json.find("%IMAGETYPE%"); start != std::string::npos)
-                    json.replace(start, 11, "png");
-
-                std::string response = "slidelayer: " + json;
-
-                response += "\n";
-
-                output.reserve(response.size() + pixmap->size());
-                output.resize(response.size());
-
-                std::memcpy(output.data(), response.data(), response.size());
-
-                if (!Png::encodeSubBufferToPNG(pixmap->data(), 0, 0, width, height, width, height, output, tileMode))
-                {
-                    LOG_ERR("Failed to encode into PNG.");
-                    output.resize(0);
-                }
+                output.resize(0);
+                LOG_ERR("Failed to compress slidelayer of size " << pixmap->size() << " with "
+                                                                << ZSTD_getErrorName(compSize));
+                return;
             }
+            output.resize(response.size() + compSize);
+
+            LOG_TRC("Compressed slidelayer of size " << pixmap->size() << " to size " << compSize);
         });
     return true;
 }
@@ -2824,7 +3502,7 @@ bool ChildSession::resizeWindow(const StringVector& tokens)
 
 bool ChildSession::sendWindowCommand(const StringVector& tokens)
 {
-    const unsigned winId = (tokens.size() > 1 ? std::stoul(tokens[1]) : 0);
+    const unsigned winId = (tokens.size() > 1 ? NumUtil::u64FromString(tokens[1], 0) : 0);
 
     getLOKitDocument()->setView(_viewId);
 
@@ -3107,20 +3785,21 @@ bool ChildSession::exportAs(const StringVector& tokens)
 
     const bool isPDF = extension == "pdf";
     const bool isEPUB = extension == "epub";
+
+    // We don't have the FileId at this point, just a new filename to save-as.
+    // So here the filename will be obfuscated with some hashing, which later will
+    // get a proper FileId that we will use going forward.
+    LOG_DBG("Calling LOK's exportAs with: [" << anonymizeUrl(wopiFilename) << ']');
+
+    getLOKitDocument()->setView(_viewId);
+
+    std::string encodedWopiFilename;
+    Poco::URI::encode(wopiFilename, "", encodedWopiFilename);
+
+    _exportAsWopiUrl = std::move(encodedWopiFilename);
+
     if (isPDF || isEPUB)
     {
-        // We don't have the FileId at this point, just a new filename to save-as.
-        // So here the filename will be obfuscated with some hashing, which later will
-        // get a proper FileId that we will use going forward.
-        LOG_DBG("Calling LOK's exportAs with: [" << anonymizeUrl(wopiFilename) << ']');
-
-        getLOKitDocument()->setView(_viewId);
-
-        std::string encodedWopiFilename;
-        Poco::URI::encode(wopiFilename, "", encodedWopiFilename);
-
-        _exportAsWopiUrl = std::move(encodedWopiFilename);
-
         const std::string arguments = "{"
             "\"SynchronMode\":{"
                 "\"type\":\"boolean\","
@@ -3135,8 +3814,14 @@ bool ChildSession::exportAs(const StringVector& tokens)
         return true;
     }
 
-    sendTextFrameAndLogError("error: cmd=exportas kind=unsupported");
-    return false;
+    // For image export (triggered from the image context menu).
+    // SaveGraphic writes the image in its native format to /tmp/
+    // and fires LOK_CALLBACK_EXPORT_FILE. If no graphic is selected,
+    // the command is a no-op.
+    // NOTE: new document export formats must be handled above this,
+    // like PDF and EPUB.
+    getLOKitDocument()->postUnoCommand(".uno:SaveGraphic", nullptr, false);
+    return true;
 }
 
 bool ChildSession::setClientPart(const StringVector& tokens)
@@ -3441,7 +4126,7 @@ bool ChildSession::updateBlockingCommandStatus(const StringVector& tokens)
     return true;
 }
 
-std::string ChildSession::getBlockedCommandType(std::string command)
+std::string ChildSession::getBlockedCommandType(const std::string& command)
 {
     if(CommandControl::RestrictionManager::getRestrictedCommandList().find(command)
     != CommandControl::RestrictionManager::getRestrictedCommandList().end())
@@ -3933,11 +4618,10 @@ void ChildSession::loKitCallback(const int type, const std::string& payload)
 
         if (exportWasRequested)
         {
-            // The payload from LOKit is already a properly encoded file:// URL
-            // (e.g., spaces as %20). Pass it through as-is — do NOT re-encode
-            // with Poco::URI::encode(), which would double-encode percent signs
-            // (%20 -> %2520) producing a path that doesn't match the file on disk.
-            sendTextFrame("exportas: url=" + payload + " filename=" + _exportAsWopiUrl);
+            std::string encodedURL;
+            Poco::URI::encode(payload, "", encodedURL);
+
+            sendTextFrame("exportas: url=" + encodedURL + " filename=" + _exportAsWopiUrl);
 
             _exportAsWopiUrl.clear();
             return;
@@ -3951,12 +4635,23 @@ void ChildSession::loKitCallback(const int type, const std::string& payload)
             CODocument *document = DocumentData::get(_docManager->getMobileAppDocId()).coDocument;
             [[document viewController] exportFileURL:payloadURL];
         });
+#elif defined(_WIN32)
+        // We don't need to do any registerdownload thing for CODA-W. When we come here, the PDF has
+        // been exported by core already and the user will continue editing the same document. Some
+        // "registerdownload" with a weird relative URI ../..//foo.pdf is surely a meaningless thing
+        // to do?
+        //
+        // When we eventually turn CODA-W's "Export as" functionality into "Save As" where you
+        // continue editing the saved and differently named copy, the PDF and EPUB cases that
+        // continue to be more like "Export" need to be put into a separate "Export" menu. Or
+        // something.
 #else
         // Register download id -> URL mapping in the DocumentBroker
         auto url = std::string("../../") + payload.substr(payload.find_last_of('/'));
         auto downloadId = Util::rng::getFilename(64);
-        std::string docBrokerMessage = "registerdownload: downloadid=" + downloadId + " url=" + url + " clientid=" + getId();
-        _docManager->sendFrame(docBrokerMessage.c_str(), docBrokerMessage.length());
+        const std::string docBrokerMessage =
+            "registerdownload: downloadid=" + downloadId + " url=" + url + " clientid=" + getId();
+        _docManager->sendFrame(docBrokerMessage);
         std::string message = "downloadas: downloadid=" + downloadId + " port=" + std::to_string(ClientPortNumber) + " id=export";
         sendTextFrame(message);
 #endif
@@ -4005,6 +4700,15 @@ void ChildSession::loKitCallback(const int type, const std::string& payload)
         sendTextFrame("tooltip: " + payload);
         break;
     }
+    case LOK_CALLBACK_DOCUMENT_READY:
+        // The per-session switch has nothing to do for this event — swallow it
+        // so it doesn't fall through to the "Unknown callback event" default
+        // and spam an ERR on every open. NB: LOK_CALLBACK_DOCUMENT_READY is an
+        // enum value (=75 in LibreOfficeKitEnums.h), NOT a #define, so it must
+        // NOT be #ifdef-guarded — #ifdef on an enum is always false and would
+        // compile the case out (which is exactly the latent bug at
+        // Kit.cpp:1300, where the Document-level handler never compiles in).
+        break;
     default:
         LOG_ERR("Unknown callback event (" << lokCallbackTypeToString(type) << "): " << payload);
     }
@@ -4018,6 +4722,9 @@ void ChildSession::saveLogUiBackground()
 
 void LogUiCommands::logLine(LogUiCommandsLine &line, bool isUndoChange)
 {
+    if constexpr (Util::isMobileApp())
+        return;
+
     // log command
     double timeDiffStart = std::chrono::duration<double>(line._timeStart - _session._docManager->getLogUiCmd().getKitStartTimeSec()).count();
 
@@ -4069,6 +4776,9 @@ void LogUiCommands::logLine(LogUiCommandsLine &line, bool isUndoChange)
 
 void LogUiCommands::logSaveLoad(std::string cmd, const std::string & path, std::chrono::steady_clock::time_point timeStart)
 {
+    if constexpr (Util::isMobileApp())
+        return;
+
     LogUiCommandsLine uiLogLine;
     uiLogLine._timeStart = timeStart;
     uiLogLine._timeEnd = std::chrono::steady_clock::now();
@@ -4099,12 +4809,18 @@ void LogUiCommands::logSaveLoad(std::string cmd, const std::string & path, std::
 LogUiCommands::LogUiCommands(ChildSession& session, const StringVector* tokens)
     : _session(session), _tokens(tokens)
 {
+    if constexpr (Util::isMobileApp())
+        return;
+
     if (_session._isDocLoaded)
         _document = session.getLOKitDocument();
 }
 
 LogUiCommands::~LogUiCommands()
 {
+    if constexpr (Util::isMobileApp())
+        return;
+
     auto document = _document.lock();
     if (!document)
         return;
