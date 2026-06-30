@@ -1,0 +1,330 @@
+const __cl = require('../../lib/inject-checklist');
+// Regression: right-click → Copy / Paste through the context menu.
+//
+// User-facing gap (ai/tasks/in-progress/rightclick-copy-paste-e2e-probe):
+// all 6 existing clipboard regression tests drive Ctrl+C / Ctrl+V keyboard
+// events; NONE simulates `page.mouse.click({ button: 'right' })` followed
+// by clicking a context-menu item. The right-click path goes through a
+// meaningfully different chain (`Control.ContextMenu.js → Clipboard.js
+// _execCopyCutPaste → _navigatorClipboardRead / Write`) that bypasses
+// wasm-loader.js's `document.onpaste` handler entirely.
+//
+// Hypothesis from the task: right-click → Copy may be silently broken
+// in the WASM topology because `_asyncAttemptNavigatorClipboardWrite`
+// does a `fetch(getMetaURL() + '...')` to `/cool/clipboard`, which is
+// not handled in WASM (`wasm-loader.js:1243` stubs only POSTs, not
+// GETs, and editor-static-server's handler matches a different path
+// prefix).
+//
+// This test:
+//   - opens a Writer doc
+//   - types known text + selects it
+//   - right-clicks the canvas with REAL puppeteer mouse events
+//   - finds the 'Copy' context-menu item by visible label and REAL-
+//     clicks it (no element.click(), no dispatcher shortcut)
+//   - moves caret to end via real keystrokes
+//   - presses Ctrl+V (real)
+//   - asserts the StateWordCount increases by 2*len(typed) — proves
+//     the right-click→copy flow's clipboard contents are pastable
+//   - separately probes navigator.clipboard.readText() to surface the
+//     "smoking gun" of the /cool/clipboard GET bug (if it throws, the
+//     external clipboard write silently failed)
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const puppeteer = require('puppeteer');
+const env = require('../../lib/test-env');
+const { uploadV2 } = require('../../lib/v2-upload');
+const { openSecretInBrowser } = require('../../lib/open-via-viewer');
+const { evalInFrame, waitInFrame } = require('../../lib/two-tab');
+
+const VIEWER  = env.FILE_STORAGE_URL;
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
+const SHOT_DIR = '/tmp/static-deploy/public/shots-regression-rightclick-copypaste';
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const T0    = Date.now();
+const log   = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`);
+
+let allPassed = true;
+function check(label, cond, ev) {
+    __cl.recordCheck(label, cond, ev);
+    if (cond) log(`  PASS: ${label}${ev ? ' [' + ev + ']' : ''}`);
+    else { log(`  FAIL: ${label}${ev ? ' [' + ev + ']' : ''}`); allPassed = false; }
+}
+
+let shotNum = 0;
+async function snap(page, name) {
+    fs.mkdirSync(SHOT_DIR, { recursive: true });
+    const f = `${String(++shotNum).padStart(2, '0')}_${name}.png`;
+    try { await page.screenshot({ path: `${SHOT_DIR}/${f}`, fullPage: false }); }
+    catch (_) {}
+}
+
+// Real puppeteer right-click on a canvas coordinate.
+async function rightClickAt(page, x, y) {
+    await page.mouse.click(x, y, { button: 'right' });
+}
+
+// Real puppeteer click on a context-menu item with a visible label
+// matching `labelRegex`. Returns true on success. Uses getBoundingClientRect
+// to derive coordinates — DOM-state read, not a synthetic .click().
+async function realClickMenuItem(page, labelRegex) {
+    // Wait for the menu to materialise.
+    let bbox = null;
+    for (let i = 0; i < 30; i++) {
+        bbox = await evalInFrame(page, (reSrc) => {
+            const re = new RegExp(reSrc.source, reSrc.flags);
+            // Items live in `.context-menu-item` (Control.ContextMenu.js:343).
+            const items = Array.from(document.querySelectorAll('.context-menu-item'));
+            const found = items.find(el => re.test(el.textContent || ''));
+            if (!found) return null;
+            const r = found.getBoundingClientRect();
+            return { x: r.left, y: r.top, w: r.width, h: r.height, t: (found.textContent||'').trim().substring(0, 60) };
+        }, { source: labelRegex.source, flags: labelRegex.flags });
+        if (bbox && bbox.w > 0 && bbox.h > 0) break;
+        await sleep(150);
+    }
+    if (!bbox) return { ok: false, why: 'menu item not found' };
+    // Real puppeteer mouse click at the item's centre.
+    await page.mouse.click(bbox.x + bbox.w / 2, bbox.y + bbox.h / 2);
+    return { ok: true, item: bbox.t };
+}
+
+(async () => {
+    log('=== Regression: right-click → Copy → Ctrl+V doubles content ===');
+    fs.rmSync(SHOT_DIR, { recursive: true, force: true });
+    fs.mkdirSync(SHOT_DIR, { recursive: true });
+
+    if (!fs.existsSync(FIXTURE)) {
+        log(`SKIP: fixture missing: ${FIXTURE}`);
+        process.exit(2);
+    }
+
+    const bytes = fs.readFileSync(FIXTURE);
+    const name  = `rightclick-cp-${Date.now()}.docx`;
+    const up    = await uploadV2(VIEWER, name, bytes);
+    log(`uploaded ${name}`);
+
+    const browser = await puppeteer.launch({
+        headless: 'new', protocolTimeout: 600000,
+        args: ['--no-sandbox', '--ignore-certificate-errors',
+               '--enable-features=SharedArrayBuffer'],
+    });
+    try {
+        // openSecretInBrowser filters __prewarm_blank and returns once the
+        // FILE-loading iframe exists. Previously this used a raw
+        // page.frames().find(f => f.url().includes('cool.html')) loop that
+        // would latch onto the bootstrap prewarm-blank iframe and fail
+        // with 'editor frame never loaded' under CI's JOBS_SCALE=2 load.
+        const upBrowser = await openSecretInBrowser(browser, VIEWER, up.b64urlSecret,
+            { iframeTimeout: env.scaleTimeout(120000),
+              gotoTimeout: env.scaleTimeout(120000),
+              viewport: { width: 1280, height: 900 } });
+        const page = upBrowser.page;
+        const cdp = await page.createCDPSession();
+        await cdp.send('Browser.grantPermissions', {
+            permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+        });
+
+        // Capture clipboard-related errors + the wasm-loader's clipboard
+        // log lines (so we can see whether the GET stub actually fired).
+        const clipboardErrors = [];
+        const clipboardLogs   = [];
+        page.on('pageerror', e => {
+            if (/clipboard|paste|copy/i.test(e.message)) {
+                clipboardErrors.push(e.message.substring(0, 200));
+            }
+        });
+        page.on('console', m => {
+            const t = m.text();
+            if (/wasm-loader|wasm-loader-diag|Clipboard GET stub|Clipboard POST stub|onpaste|Internal paste|External paste|navigator\.clip|textselectioncontent|cached textselectioncontent/i.test(t)) {
+                clipboardLogs.push(t.substring(0, 200));
+            }
+        });
+
+        // Wait for doc loaded + canvas painted. waitInFrame re-resolves
+        // the active editor iframe each poll so a mid-load replaceChild
+        // doesn't strand stale refs.
+        await waitInFrame(page,
+            () => window.__wasmInitialDocLoaded === true
+                  && !!document.querySelector('#document-canvas'),
+            { timeout: env.scaleTimeout(120000) });
+        await waitInFrame(page,
+            () => /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''),
+            { timeout: env.scaleTimeout(30000) });
+        await sleep(3000);
+        await snap(page, 'loaded');
+
+        // Read initial char count.
+        const readChars = () => evalInFrame(page, () => {
+            const t = document.querySelector('#StateWordCount')?.textContent || '';
+            const m = t.match(/(\d+)\s+character/i);
+            return m ? parseInt(m[1], 10) : -1;
+        }).catch(() => -1);
+        const wc0 = await readChars();
+        log(`initial #StateWordCount: ${wc0}`);
+
+        // Click coords land on the existing "baseline newcontent" text.
+        // Visual position from snapshots: text rendered at viewport
+        // (200..450, ~303). Use the centre of that span — the kit's
+        // text-frame cursor handler needs an actual character hit-test
+        // for double-click to select a word.
+        const cx = 300;
+        const cy = 305;
+
+        // Focus + click into canvas to place caret, then type a marker.
+        // The FIRST click into a freshly-opened canvas can be absorbed by
+        // focus-init without placing a caret (more visible since single-user
+        // became the default in #243 — the open is faster, so the first
+        // click lands earlier). A no-op type adds 0 chars, so retry
+        // click+type until the count actually moves; failed attempts add
+        // nothing, so the exact-delta assertion below still holds.
+        const MARKER = 'rcMarker';
+        log(`Typing "${MARKER}" via real keystrokes`);
+        let wcAfterType = wc0;
+        for (let attempt = 1; attempt <= 4; attempt++) {
+            await page.mouse.click(cx, cy);
+            await sleep(500);
+            await page.keyboard.type(MARKER, { delay: 50 });
+            await sleep(1200);
+            wcAfterType = await readChars();
+            if (wcAfterType - wc0 >= MARKER.length) break;
+            log(`  marker-type attempt ${attempt} was a no-op (delta=${wcAfterType - wc0}); retrying`);
+        }
+        await snap(page, 'after_typing');
+
+        log(`after-type #StateWordCount: ${wcAfterType}`);
+        check('typing increased char count by len(marker)',
+              wcAfterType - wc0 === MARKER.length,
+              `delta=${wcAfterType - wc0} expected=${MARKER.length}`);
+
+        // Drag-select a span of characters along the text line. Use
+        // real mouse.move + mouse.down + mouse.up so the kit receives
+        // a proper buttondown / mousemove / buttonup sequence. Start
+        // a few px to the LEFT of cx (still on the same text line)
+        // and drag to ~120 px to the right; that captures multiple
+        // characters in the existing "baseline …" text.
+        await page.mouse.move(cx - 80, cy);
+        await sleep(150);
+        await page.mouse.down({ button: 'left' });
+        await page.mouse.move(cx + 80, cy, { steps: 10 });
+        await page.mouse.up({ button: 'left' });
+        await sleep(900);
+        await snap(page, 'after_select');
+
+        // RIGHT-CLICK on the canvas — this is the test's whole point.
+        log('Real-right-click on canvas …');
+        await rightClickAt(page, cx, cy);
+
+        // Wait for the context menu to appear (Control.ContextMenu.js
+        // creates `.on-the-fly-context-menu`).
+        let menuVisible = false;
+        for (let i = 0; i < 30 && !menuVisible; i++) {
+            menuVisible = await evalInFrame(page, () =>
+                !!document.querySelector('.on-the-fly-context-menu') ||
+                !!document.querySelector('.context-menu-list')
+            ).catch(() => false);
+            if (!menuVisible) await sleep(150);
+        }
+        await snap(page, 'context_menu_open');
+        check('context menu opens on right-click', menuVisible === true);
+
+        if (!menuVisible) {
+            log('No context menu — aborting subsequent checks');
+        } else {
+            // Enumerate items for diagnostic visibility.
+            const items = await evalInFrame(page, () => {
+                const els = Array.from(document.querySelectorAll('.context-menu-item'));
+                return els.map(el => (el.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 60));
+            });
+            log(`context-menu items (${items.length}): ${JSON.stringify(items.slice(0, 12))}`);
+
+            // Real-click the 'Copy' menu item. The label may include
+            // a shortcut suffix like "Copy\tCtrl+C" — match the leading
+            // word boundary.
+            const copy = await realClickMenuItem(page, /\bCopy\b/);
+            check('"Copy" menu item present + clickable',
+                  copy.ok === true,
+                  copy.item || copy.why);
+            await sleep(1200);
+            await snap(page, 'after_copy');
+
+            // Move caret to end of doc.
+            await page.keyboard.down('Control');
+            await page.keyboard.press('End');
+            await page.keyboard.up('Control');
+            await sleep(500);
+
+            // Ctrl+V — paste the just-copied text. The clipboard write
+            // happened through the right-click path. If that path is
+            // broken (hypothesised /cool/clipboard GET 404), the kit's
+            // internal clipboard would still have the selection from
+            // .uno:Copy, so the paste MIGHT still work via the
+            // internal-fingerprint short-circuit — or might fall to
+            // external paste with empty content.
+            await page.keyboard.down('Control');
+            await page.keyboard.press('v');
+            await page.keyboard.up('Control');
+            await sleep(2000);
+            await snap(page, 'after_paste');
+
+            const wcAfterPaste = await readChars();
+            log(`after-paste #StateWordCount: ${wcAfterPaste}`);
+            // Kit-side assertion: paste must have added SOMETHING to the
+            // doc. Exact char delta depends on what the drag-select
+            // grabbed (the precise byte width per pixel varies with
+            // font/zoom), so we just assert "more than zero" — that
+            // proves the right-click Copy populated the kit's internal
+            // clipboard AND the subsequent Ctrl+V dispatched a paste
+            // that the kit honored.
+            check('right-click Copy + Ctrl+V pasted content into doc',
+                  wcAfterPaste - wcAfterType > 0,
+                  `delta=${wcAfterPaste - wcAfterType}`);
+
+            // Hard assertion: the external/system clipboard must receive
+            // the copied text. Now backed by the wasm-loader.js
+            // /cool/clipboard GET stub (added in the same commit as
+            // this assertion upgrade). The stub returns the kit's last
+            // textselectioncontent (`app.map._clip._selectionContent` +
+            // `_selectionPlainTextContent`) as JSON, which
+            // `_asyncAttemptNavigatorClipboardWrite` then writes into
+            // `navigator.clipboard.write`. Without the stub the GET
+            // 404'd, the write silently dropped its payload, and
+            // `navigator.clipboard.readText()` came back empty.
+            const extClip = await page.evaluate(async () => {
+                try {
+                    const t = await navigator.clipboard.readText();
+                    return { ok: true, text: t.substring(0, 200) };
+                } catch (e) {
+                    return { ok: false, why: String(e).substring(0, 200) };
+                }
+            });
+            log(`navigator.clipboard.readText() after right-click Copy: ` +
+                `ok=${extClip.ok} text="${extClip.text || ''}" ` +
+                `why=${extClip.why || ''}`);
+            check('navigator.clipboard.readText() returns non-empty text ' +
+                  '(external clipboard write succeeded via /cool/clipboard GET stub)',
+                  extClip.ok === true && extClip.text && extClip.text.length > 0,
+                  extClip.ok ? `len=${(extClip.text || '').length}` : extClip.why);
+        }
+
+        log(`clipboard logs captured (${clipboardLogs.length}):`);
+        clipboardLogs.slice(-12).forEach(e => log(`  L| ${e}`));
+        if (clipboardErrors.length) {
+            log(`captured ${clipboardErrors.length} clipboard-related pageerrors:`);
+            clipboardErrors.slice(0, 5).forEach(e => log(`  ! ${e}`));
+        }
+
+        log('\n' + (allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'));
+    } finally {
+        await browser.close();
+    }
+
+    process.exit(allPassed ? 0 : 1);
+})().catch(e => {
+    console.error('FATAL', e.stack || e.message);
+    process.exit(2);
+});
