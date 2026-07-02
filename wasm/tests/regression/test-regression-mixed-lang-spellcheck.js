@@ -113,6 +113,29 @@ async function clickInCanvas(page, frame, fractionDown) {
     await page.mouse.click(px, py);
 }
 
+async function readLanguageStatus(frame) {
+    return frame.evaluate(() =>
+        (window.app && window.app.map && window.app.map['stateChangeHandler']
+            && window.app.map['stateChangeHandler'].getItemValue('.uno:LanguageStatus')) || '(unset)');
+}
+
+// Click into the paragraph whose .uno:LanguageStatus matches langRe by
+// scanning candidate vertical fractions. Paragraph wrap counts differ
+// with each LO core's font metrics, so any single hardcoded fraction
+// eventually lands in the wrong paragraph (this bit us when the en-US
+// paragraph started wrapping to two lines and 0.40 hit English, not
+// German). Pure UI: real mouse clicks + status-bar state reads.
+async function clickParagraphByLanguage(page, frame, langRe, fractions) {
+    for (const f of fractions) {
+        await clickInCanvas(page, frame, f);
+        await sleep(1500);
+        const status = await readLanguageStatus(frame);
+        log(`  click@${f} → LanguageStatus "${status}"`);
+        if (langRe.test(status)) return { fraction: f, status };
+    }
+    return null;
+}
+
 (async () => {
     log('=== Regression: mixed-language paragraph spellcheck wiring ===');
     fs.rmSync(SHOT_DIR, { recursive: true, force: true });
@@ -166,18 +189,13 @@ async function clickInCanvas(page, frame, fractionDown) {
               `loaded=[${initial.loaded.join(',')}]`);
         if (!initial.hasResolver) process.exit(allPassed ? 0 : 1);
 
-        // Click into the GERMAN paragraph. Empirically the fixture's
-        // paragraph layout under the post-FD viewport puts German in
-        // the ~35-45% vertical band (English wraps to a single short
-        // line at the top, then German wraps 2-3 lines, then French
-        // wraps 2 lines). Earlier coords (0.50) landed in French.
+        // Click into the GERMAN paragraph — scan fractions until the
+        // status bar reports German (layout-robust across LO cores).
         log('clicking into German paragraph');
-        await clickInCanvas(page, frame, 0.40);
-        await sleep(2000);
-        const deLangStatus = await frame.evaluate(() =>
-            (window.app && window.app.map && window.app.map['stateChangeHandler']
-                && window.app.map['stateChangeHandler'].getItemValue('.uno:LanguageStatus')) || '(unset)');
-        log(`  .uno:LanguageStatus after German click: "${deLangStatus}"`);
+        const deHit = await clickParagraphByLanguage(page, frame,
+            /German|Deutsch|;de\b|;de-/i, [0.40, 0.44, 0.48, 0.36, 0.52, 0.32]);
+        log(`  German paragraph ${deHit
+            ? `found at ${deHit.fraction} ("${deHit.status}")` : 'NOT found by scan'}`);
         await snap(page, 'after_click_german_paragraph');
 
         const gotDe = await waitForLoadedLang(frame, 'de',
@@ -185,10 +203,12 @@ async function clickInCanvas(page, frame, fractionDown) {
         check('loadDictionary fired for German (de) within 15s',
               gotDe, gotDe ? 'ok' : 'timed out — LanguageStatus → dict chain broken?');
 
-        // Click into the FRENCH paragraph (~85%).
+        // Click into the FRENCH paragraph (scan, same rationale).
         log('clicking into French paragraph');
-        await clickInCanvas(page, frame, 0.83);
-        await sleep(500);
+        const frHit = await clickParagraphByLanguage(page, frame,
+            /French|Fran|;fr\b|;fr-/i, [0.83, 0.78, 0.72, 0.88, 0.66, 0.60]);
+        log(`  French paragraph ${frHit
+            ? `found at ${frHit.fraction} ("${frHit.status}")` : 'NOT found by scan'}`);
         await snap(page, 'after_click_french_paragraph');
 
         // 'fr-FR' resolves to manifest 'fr_FR' via iter 43's resolver.
@@ -204,7 +224,10 @@ async function clickInCanvas(page, frame, fractionDown) {
             performance.getEntriesByType('resource')
                 .filter(e => /\/dicts\/(en|de|fr)/.test(e.name))
                 .length);
-        await clickInCanvas(page, frame, 0.20);
+        const enHit = await clickParagraphByLanguage(page, frame,
+            /English|;en\b|;en-/i, [0.20, 0.24, 0.28, 0.16, 0.32]);
+        log(`  English paragraph ${enHit
+            ? `found at ${enHit.fraction} ("${enHit.status}")` : 'NOT found by scan'}`);
         await sleep(2000);
         const fetchesAfter = await frame.evaluate(() =>
             performance.getEntriesByType('resource')
