@@ -151,7 +151,22 @@ async function areaPaletteFlow(page, frame, ifr, label) {
     }
     if (area) await page.mouse.click(area.x + area.w / 2 + ifr.left, area.y + area.h / 2 + ifr.top);
     let palette = false;
-    for (let i = 0; i < 30 && !palette; i++) { palette = await frame.evaluate(() => { const e = document.querySelector('#colorset-img'); return !!(e && e.getBoundingClientRect().width > 0); }).catch(() => false); if (!palette) await sleep(250); }
+    // The Area dialog's built-in colour grid is emitted differently depending
+    // on the LO core: the Collabora lineage uses a `colorset` drawingarea
+    // (rendered client-side as #colorset-img), while upstream emits it as a
+    // `coloriconview` iconview (#coloriconview with coloriconview_N swatch
+    // entries). Both are the real, interactive palette — accept either.
+    for (let i = 0; i < 40 && !palette; i++) {
+        palette = await frame.evaluate(() => {
+            const drawing = document.querySelector('#colorset-img');
+            if (drawing && drawing.getBoundingClientRect().width > 0) return true;
+            const iconview = document.querySelector('#coloriconview');
+            if (iconview && iconview.getBoundingClientRect().width > 0
+                && iconview.querySelector('.ui-iconview-entry')) return true;
+            return false;
+        }).catch(() => false);
+        if (!palette) await sleep(250);
+    }
     await snap(page, label + '_area');
     await page.keyboard.press('Escape'); await sleep(400); await page.keyboard.press('Escape'); await sleep(400);
     return { ribbon: true, shape: !!tile, areaItem: !!area, palette };
