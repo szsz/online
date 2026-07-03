@@ -16,10 +16,12 @@
 declare var JSDialog: any;
 
 class OverflowManager {
+	static readonly MAX_RETRIES = 40; // 40 × 250ms = 10s of self-heal window
 	parentContainer: HTMLElement;
 	data: ContainerWidgetJSON;
 	lastMaxWidth: number = -1;
 	scheduledRefresh: TaskId = '';
+	retriesLeft: number = OverflowManager.MAX_RETRIES;
 
 	constructor(parentContainer: Element, data: ContainerWidgetJSON) {
 		this.parentContainer = parentContainer as HTMLElement;
@@ -75,7 +77,12 @@ class OverflowManager {
 	onRefresh(event: Event & { force?: boolean }) {
 		this.scheduledRefresh = '';
 		if (!this.parentContainer) return;
-		if (this.lastMaxWidth === window.innerWidth) return;
+		// event.force bypasses the width cache: the initial layout can run
+		// before the core's welded/interim widget content arrives, measure
+		// empty groups (requiredWidth 0 → assume overflow) and fold them —
+		// without force the ribbon then stays folded until a window resize.
+		if (!(event && event.force) && this.lastMaxWidth === window.innerWidth)
+			return;
 
 		// check our visibility
 		let parentNode = this.parentContainer;
@@ -96,12 +103,37 @@ class OverflowManager {
 
 		const maxWidth = this.calculateMaxWidth();
 
+		// The container (or its content) may not be laid out yet — during
+		// document load the first refresh can run while widths are still 0.
+		// hasOverflow() then reports overflow for every group and everything
+		// folds; with lastMaxWidth cached the ribbon would stay folded until
+		// a real window resize. Detect the degenerate measurement, fold
+		// conservatively for now, but drop the cache and retry so the layout
+		// self-heals once sizes are real.
+		const degenerate =
+			this.parentContainer.scrollWidth === 0 ||
+			this.parentContainer.offsetWidth === 0 ||
+			maxWidth <= 0;
+
 		// then hide required
 		for (let i = groups.length - 1; i >= 0; i--) {
 			const element: OverflowGroupContainer = groups[i];
 			if (maxWidth >= 0 && this.hasOverflow(maxWidth)) {
 				if (typeof element.foldGroup === 'function') element.foldGroup();
 			}
+		}
+
+		if (degenerate && this.retriesLeft > 0) {
+			this.retriesLeft--;
+			this.lastMaxWidth = -1;
+			setTimeout(() => {
+				if (this.scheduledRefresh !== '') return; // resize already queued one
+				this.scheduledRefresh = app.layoutingService.appendLayoutingTask(
+					() => this.onRefresh(event),
+				);
+			}, 250);
+		} else if (!degenerate) {
+			this.retriesLeft = OverflowManager.MAX_RETRIES;
 		}
 	}
 }

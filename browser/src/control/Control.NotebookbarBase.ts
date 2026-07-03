@@ -17,6 +17,9 @@ class NotebookbarBase extends JSDialogComponent {
 	/// reference to old JS Notebookbar
 	impl: any = null;
 
+	/// debounce for post-update overflow re-layout
+	private _overflowRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
 	constructor(map: any, impl: any) {
 		super(map, 'Notebookbar', 'notebookbar');
 		this.impl = impl;
@@ -130,6 +133,17 @@ class NotebookbarBase extends JSDialogComponent {
 	protected onJSUpdate(e: any) {
 		if (super.onJSUpdate(e)) {
 			this.impl?.setInitialized(true);
+			// Core content (welded notebookbar interim widgets like the
+			// font name/size comboboxes) can arrive after the ribbon's
+			// initial overflow layout measured the groups empty and folded
+			// them. Re-run the layout (debounced) so the ribbon expands —
+			// otherwise it stays folded until a window resize.
+			if (this._overflowRefreshTimer)
+				clearTimeout(this._overflowRefreshTimer);
+			this._overflowRefreshTimer = setTimeout(() => {
+				this._overflowRefreshTimer = null;
+				this.map.fire('refreshoverflows', { force: true });
+			}, 100);
 			return true;
 		}
 		return false;
