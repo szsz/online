@@ -143,7 +143,7 @@ async function joinPart(browser, id, secret) {
     log(`--- ${id} joining (co-edit) ---`);
     const up = await openSecretInBrowser(browser, VIEWER, secret, {
         iframeTimeout: LOAD_TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-        isolatedContext: true, coEditing: true, viewport: { width: 1400, height: 900 },
+        isolatedContext: true, coEditing: true, viewport: { width: 1920, height: 1080 },
     });
     const part = wire({ id, page: up.page, context: up.context, dead: false });
     await waitInFrame(part.page,
@@ -163,7 +163,7 @@ async function joinPart(browser, id, secret) {
 
         const upA = await openViaViewer(browser, VIEWER, NAME, bytes, {
             iframeTimeout: LOAD_TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-            isolatedContext: true, coEditing: true, viewport: { width: 1400, height: 900 },
+            isolatedContext: true, coEditing: true, viewport: { width: 1920, height: 1080 },
         });
         const A = parts.A = wire({ id: 'A', page: upA.page, context: upA.context, dead: false });
         const secret = upA.b64urlSecret;
@@ -212,7 +212,7 @@ async function joinPart(browser, id, secret) {
         log('--- pristine reference (no shapes) for comparison ---');
         const refUp = await openViaViewer(browser, VIEWER, 'coedit-shape-ref-' + Date.now() + '.docx', bytes, {
             iframeTimeout: LOAD_TIMEOUT, gotoTimeout: env.scaleTimeout(60000),
-            isolatedContext: true, coEditing: false, viewport: { width: 1400, height: 900 },
+            isolatedContext: true, coEditing: false, viewport: { width: 1920, height: 1080 },
         });
         const REF = parts.REF = wire({ id: 'REF', page: refUp.page, context: refUp.context, dead: false });
         await waitInFrame(REF.page, () => /character/i.test(document.querySelector('#StateWordCount')?.textContent || ''), { timeout: LOAD_TIMEOUT });

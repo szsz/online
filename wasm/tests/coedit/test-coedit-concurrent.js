@@ -30,7 +30,7 @@ const { waitInFrame, evalInFrame } = require('../../lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const LOAD_TIMEOUT = env.scaleTimeout(120000);
 const CONVERGE_TIMEOUT = env.scaleTimeout(60000);
-const VP = { width: 1400, height: 900 };
+const VP = { width: 1920, height: 1080 };
 const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 
 const T0 = Date.now();
