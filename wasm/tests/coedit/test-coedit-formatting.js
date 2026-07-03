@@ -30,7 +30,7 @@ const { waitInFrame, evalInFrame } = require('../../lib/two-tab');
 const VIEWER = env.FILE_STORAGE_URL;
 const LOAD_TIMEOUT = env.scaleTimeout(120000);
 const PROP_TIMEOUT = env.scaleTimeout(30000);
-const VP = { width: 1400, height: 900 };
+const VP = { width: 1920, height: 1080 };
 const SHOT_DIR = '/tmp/static-deploy/public/shots-coedit-formatting';
 const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 
@@ -128,16 +128,24 @@ async function setFontSize(part, size) {
     for (let i = 0; i < 10; i++) {
         const tab = await evalInFrame(page, () => { const e = document.querySelector('#Home-tab-label'); if (!e || !e.offsetParent) return null; const r = e.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; }).catch(() => null);
         if (tab && tab.w) { await page.mouse.click(tab.x + tab.w / 2 + ifr.left, tab.y + tab.h / 2 + ifr.top); await sleep(400); }
-        const box = await evalInFrame(page, () => { const e = document.querySelector('#fontsizecombobox input, #fontsizecombobox .ui-combobox-content, #fontsizecombobox'); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 0 ? { x: r.left, y: r.top, w: r.width, h: r.height } : null; }).catch(() => null);
+        // The size field is a real <input> in the combo (probe: id
+        // #fontsizecombobox-input-notebookbar). Click it, select-all, type,
+        // Enter — applies to the current selection.
+        const box = await evalInFrame(page, () => {
+            const e = document.querySelector('#fontsizecombobox-input-notebookbar')
+                   || document.querySelector('#fontsizecombobox input.ui-combobox-content')
+                   || document.querySelector('#fontsizecombobox input');
+            if (!e) return null; const r = e.getBoundingClientRect();
+            return r.width > 0 ? { x: r.left, y: r.top, w: r.width, h: r.height } : null;
+        }).catch(() => null);
         if (box) {
-            await page.mouse.click(box.x + Math.min(box.w / 2, 20) + ifr.left, box.y + box.h / 2 + ifr.top); await sleep(400);
-            // select-all in the little input and type the new size
+            await page.mouse.click(box.x + box.w / 2 + ifr.left, box.y + box.h / 2 + ifr.top); await sleep(400);
             await page.keyboard.down('Control'); await page.keyboard.press('KeyA'); await page.keyboard.up('Control');
-            await page.keyboard.type(String(size), { delay: 40 });
-            await page.keyboard.press('Enter'); await sleep(1500);
+            await page.keyboard.type(String(size), { delay: 50 });
+            await page.keyboard.press('Enter'); await sleep(1800);
             return true;
         }
-        await sleep(400);
+        await sleep(500);
     }
     return false;
 }
@@ -201,14 +209,11 @@ async function joinPart(browser, id, secret) {
         await selectLastWord(A);
         const fsOk = await setFontSize(A, 36);
         await A.page.keyboard.press('Escape');
+        check('A: font-size combo reachable at 1920 viewport', fsOk);
         if (fsOk) {
             const bChg2 = await waitCanvasChanged(B, bBefore2, PROP_TIMEOUT);
             await snap(A, 'A_fontsize'); await snap(B, 'B_sees_fontsize');
             check('font-size change in A propagates to B (canvas changed)', bChg2.changed, `Bsig ${bBefore2}->${bChg2.sig}`);
-        } else {
-            // Non-fatal: the notebookbar font-size combo driver is finicky;
-            // bold/italic above already prove formatting attributes converge.
-            log('  ~ SKIP font-size combo (driver could not open the combo)');
         }
 
         // save, C late-joins → must render formatted word (differs from pristine)
