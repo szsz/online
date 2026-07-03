@@ -48,22 +48,29 @@ function check(label, cond, ev) {
 const LO_ROOT = process.env.LO_SOURCE_ROOT
     || path.join(process.env.HOME || '/home/localadmin', 'libreoffice-core-wasm');
 
+// Each suspect lists candidate paths: the LO source layout differs
+// between the Collabora lineage and upstream master (e.g. upstream moved
+// SvxPresetListBox from svx/source/tbxctrls/ to cui/source/tabpages/).
+// The suspect passes if the symbol is found in any candidate.
 const SUSPECTS = [
     {
         label: 'Suspect 1: SvxPresetListBox::FillPresetListBoxImpl exists',
-        file:  'svx/source/tbxctrls/SvxPresetListBox.cxx',
+        files: [
+            'svx/source/tbxctrls/SvxPresetListBox.cxx', // Collabora lineage
+            'cui/source/tabpages/SvxPresetListBox.cxx', // upstream master
+        ],
         // Match the function definition line: must catch the template
         // signature regardless of inline reformatting.
         re:    /void\s+SvxPresetListBox::FillPresetListBoxImpl\s*\(/,
     },
     {
         label: 'Suspect 2: PaletteManager::LoadPalettes exists',
-        file:  'svx/source/tbxctrls/PaletteManager.cxx',
+        files: ['svx/source/tbxctrls/PaletteManager.cxx'],
         re:    /void\s+PaletteManager::LoadPalettes\s*\(/,
     },
     {
         label: 'Suspect 3: SvxAreaTabDialog::SvxAreaTabDialog ctor exists',
-        file:  'cui/source/tabpages/tabarea.cxx',
+        files: ['cui/source/tabpages/tabarea.cxx'],
         re:    /SvxAreaTabDialog::SvxAreaTabDialog\s*\(/,
     },
 ];
@@ -81,22 +88,18 @@ const SUSPECTS = [
     }
 
     for (const s of SUSPECTS) {
-        const abs = path.join(LO_ROOT, s.file);
         let ok = false;
         let ev = '';
-        try {
-            if (!fs.existsSync(abs)) {
-                ev = 'file missing: ' + abs;
-            } else {
-                const src = fs.readFileSync(abs, 'utf8');
-                ok = s.re.test(src);
-                if (!ok) {
-                    ev = 'pattern ' + s.re + ' not found in ' + s.file;
-                }
-            }
-        } catch (e) {
-            ev = 'read error: ' + e.message;
+        const tried = [];
+        for (const rel of s.files) {
+            const abs = path.join(LO_ROOT, rel);
+            tried.push(rel);
+            try {
+                if (!fs.existsSync(abs)) continue;
+                if (s.re.test(fs.readFileSync(abs, 'utf8'))) { ok = true; ev = rel; break; }
+            } catch (e) { /* try next candidate */ }
         }
+        if (!ok) ev = 'symbol ' + s.re + ' not found in any of: ' + tried.join(', ');
         check(s.label, ok, ev);
     }
 
