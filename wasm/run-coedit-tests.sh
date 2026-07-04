@@ -21,6 +21,7 @@ TESTS=(
   "tests/coedit/test-coedit-feature-table.js|insert-table propagation + late-join"
   "tests/coedit/test-coedit-formatting.js|formatting (bold/italic/font-size) propagation"
   "tests/coedit/test-coedit-rejoin-storm.js|rejoin storm (repeated leave/rejoin)"
+  "tests/coedit/test-coedit-spell-correct.js|language + spellcheck + spell-correct convergence"
 )
 
 echo "Co-editing suite — VIEWER=$VIEWER_URL EDITOR=$EDITOR_URL RELAY=$RELAY_URL"
