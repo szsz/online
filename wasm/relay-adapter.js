@@ -1477,9 +1477,23 @@
                             p = fetchViaParent(s.v2FileId);
                         } else {
                             var opts = s.kind === 'editor-wasm' ? {} : { mode: 'cors' };
+                            // Bound the fetch. A stalled network request (seen on
+                            // Azure cold-loads) would otherwise never resolve OR
+                            // reject, hanging the whole late-join chain forever —
+                            // surfacing to the user as "Activation pending: waiting
+                            // for checkpoint download" growing without bound. Abort
+                            // at 30s (matches fetchViaParent) so the stall becomes a
+                            // rejection that the retry wrapper below can recover from.
+                            var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+                            if (ctl) opts = Object.assign({}, opts, { signal: ctl.signal });
+                            var toId = ctl ? setTimeout(function(){ ctl.abort(); }, 30000) : null;
                             p = origFetch(s.url, opts).then(function(r) {
+                                if (toId) clearTimeout(toId);
                                 if (!r.ok) throw new Error(s.kind + ' ' + r.status);
                                 return r.arrayBuffer();
+                            }, function(err) {
+                                if (toId) clearTimeout(toId);
+                                throw err;
                             });
                         }
                         return p.catch(function(e) {
@@ -1488,7 +1502,25 @@
                             return tryNext(idx + 1);
                         });
                     }
-                    tryNext(0).then(function(buf) {
+                    // The relay ADVERTISED this checkpoint (hash + locator), so
+                    // the bytes exist — a failed/aborted fetch is almost always a
+                    // transient network stall, not a permanent miss. Retry the
+                    // whole source list a few times with exponential backoff before
+                    // giving up, instead of leaving the joiner stuck forever on
+                    // "waiting for checkpoint download". lateJoinFileReady guards
+                    // against retrying after a success already landed.
+                    var _DL_MAX = 4;
+                    function fetchCheckpointWithRetry(attempt) {
+                        return tryNext(0).catch(function(e) {
+                            if (lateJoinFileReady || attempt >= _DL_MAX) throw e;
+                            var backoff = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+                            console.log('[relay] Checkpoint fetch failed (attempt ' + attempt +
+                                        '/' + _DL_MAX + '): ' + e.message + ' — retrying in ' + backoff + 'ms');
+                            return new Promise(function(res) { setTimeout(res, backoff); })
+                                .then(function() { return fetchCheckpointWithRetry(attempt + 1); });
+                        });
+                    }
+                    fetchCheckpointWithRetry(1).then(function(buf) {
                         // Decrypt if encrypted (legacy E2E relay encryption)
                         return decryptFileBytes(new Uint8Array(buf)).then(function(dec) {
                             return dec.buffer || dec;
@@ -1594,7 +1626,16 @@
                             console.error('[relay] switchdoc trigger failed: ' + e.message);
                         }
                     }).catch(function(e) {
-                        console.error('[relay] Late-join file sync failed: ' + e.message);
+                        console.error('[relay] Late-join file sync FAILED after ' + _DL_MAX +
+                                      ' attempts: ' + e.message);
+                        // Surface a terminal failure to the parent viewer so it can
+                        // show a real error / offer a reload instead of leaving the
+                        // user staring at an ever-growing "Joining session…" that
+                        // never resolves (the reported checkpoint-download hang).
+                        try { parent.postMessage(JSON.stringify({
+                            MessageId: 'RelayLateJoinFailed',
+                            Values: { error: e.message }
+                        }), '*'); } catch(_e) {}
                     });
                 } catch(e) {
                     console.log('[relay] Join-response parse error: ' + e.message);
