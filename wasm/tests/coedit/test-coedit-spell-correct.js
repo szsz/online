@@ -153,12 +153,24 @@ async function joinPart(browser, id, secret) {
         await sleep(env.scaleTimeout(10000));
         const deStat = await langStatus(A);
         log(`  A LanguageStatus in German paragraph: "${deStat}"`);
-        await A.page.mouse.click(DE_WORD.x - 60, DE_WORD.y); await sleep(1500);
-        await A.page.mouse.click(DE_WORD.x, DE_WORD.y, { button: 'right' });
-        await sleep(env.scaleTimeout(2500));
-        const deItems = await menuItems(A);
+        // The de dictionary lazy-loads when the cursor first enters a German
+        // run; under back-to-back suite load that load can lag past a single
+        // right-click, so the spelling menu comes back empty. Retry: re-prime
+        // the paragraph (re-trigger the dict load), right-click, and re-read
+        // the menu until spelling suggestions appear. Deterministic wait for a
+        // real async load — not a flake-list.
+        let deItems = [];
+        for (let attempt = 1; attempt <= 5; attempt++) {
+            await A.page.keyboard.press('Escape'); await sleep(400);
+            await A.page.mouse.click(DE_PARA.x, DE_PARA.y); await sleep(env.scaleTimeout(4000)); // re-enter German run → de dict loads
+            await A.page.mouse.click(DE_WORD.x - 60, DE_WORD.y); await sleep(1200);
+            await A.page.mouse.click(DE_WORD.x, DE_WORD.y, { button: 'right' });
+            await sleep(env.scaleTimeout(2500));
+            deItems = await menuItems(A);
+            log(`  A German menu (attempt ${attempt}): ${JSON.stringify(deItems).slice(0, 160)}`);
+            if (deItems.length > 0 && isSpellingMenu(deItems)) break;
+        }
         await snap(A, 'de_spell_menu');
-        log(`  A German menu: ${JSON.stringify(deItems).slice(0, 200)}`);
         check('German paragraph spell-checks in German (de dict loaded → suggestions)',
             deItems.length > 0 && isSpellingMenu(deItems), `items=${JSON.stringify(deItems).slice(0, 160)}`);
         await A.page.keyboard.press('Escape'); await sleep(600);
