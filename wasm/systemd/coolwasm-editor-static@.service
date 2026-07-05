@@ -1,0 +1,35 @@
+# coolwasm-editor-static@.service — on-box editor-static-server
+# (wasm/editor-static-server.js: serves cool.html + online.wasm + /wasm/<id>).
+#
+#   coolwasm-editor-static@online.service     → dev stack (:6931/:6932)
+#   coolwasm-editor-static@online-ci.service  → CI  stack (:7931/:7932)
+#
+# dev (@online): the launcher + server defaults supply everything not in
+#   online.env — HTTP_PORT=6931, HTTPS_PORT=6932, PUB=/tmp/static-deploy/public,
+#   DOCS=/tmp/static-deploy/.wasm-docs, wasm.atgpartners.info certs.
+# CI  (@online-ci): online-ci.env sets HTTP_PORT/HTTPS_PORT/PUB/DOCS + certs.
+#
+# deploy.sh restarts THIS unit (systemctl restart) after staging new assets,
+# instead of the old pgrep+kill+nohup dance (which double-launched against a
+# Restart=always unit and fought for the port). Ephemeral test-deploy/worktree
+# editor-static instances are NOT systemd-managed and keep the legacy path.
+#
+# Install: wasm/systemd/install-stack-units.sh
+
+[Unit]
+Description=coolwasm editor-static-server (ENV=%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ENV_FILE=/home/localadmin/ENV/%i.env
+WorkingDirectory=/home/localadmin/online
+ExecStart=/usr/bin/bash /home/localadmin/online/wasm/launch-editor-static.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/coolwasm/editor-static-%i.log
+StandardError=append:/var/log/coolwasm/editor-static-%i.log
+
+[Install]
+WantedBy=multi-user.target

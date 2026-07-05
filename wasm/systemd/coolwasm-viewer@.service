@@ -1,0 +1,39 @@
+# coolwasm-viewer@.service — on-box viewer-server (wasm/viewer-server.js).
+#
+# Templated by ENV-file basename:
+#   coolwasm-viewer@online.service      → dev  stack (viewer.szebeni.hu   :6934)
+#   coolwasm-viewer@online-ci.service   → CI   stack (ci-viewer.szebeni.hu :7934)
+#
+# Environment=ENV_FILE is PINNED per instance, so the CI runner exporting
+# ENV_FILE=online-ci.env into a deploy job can NEVER clobber which stack a
+# unit serves (the drift that motivated the original launch-relay-dev unit).
+#
+# Restart=always is the fix for the silent CI-viewer outage: deploy.sh does
+# not restart the viewer (it is long-lived), so before this a crashed viewer
+# stayed dead until someone noticed. Now systemd revives it in seconds.
+#
+# Runs as root: TLS privkeys under /etc/letsencrypt/live/*/ are root-only.
+# The DOC_STORAGE_KEY mint in launch-viewer.sh falls back to the repo owner's
+# az session when root has no az context (see launch-viewer.sh).
+#
+# Install: wasm/systemd/install-stack-units.sh
+
+[Unit]
+Description=coolwasm viewer-server (ENV=%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ENV_FILE=/home/localadmin/ENV/%i.env
+WorkingDirectory=/home/localadmin/online
+ExecStart=/usr/bin/bash /home/localadmin/online/wasm/launch-viewer.sh
+Restart=always
+RestartSec=5
+# Give az / the mint fallback time; don't count startup as a crash-loop.
+TimeoutStartSec=120
+StandardOutput=append:/var/log/coolwasm/viewer-%i.log
+StandardError=append:/var/log/coolwasm/viewer-%i.log
+
+[Install]
+WantedBy=multi-user.target

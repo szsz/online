@@ -1,0 +1,30 @@
+# coolwasm-sni-router.service — the shared SNI router on :443.
+#
+# One instance for the whole box: it reads ROUTES from online.env, which maps
+# every hostname (dev + CI viewer/editor/relay) to its internal port. It does
+# NOT terminate TLS (SNI passthrough), so it needs no certs — only the :443
+# bind, which requires root (or CAP_NET_BIND_SERVICE).
+#
+# Restart=always: if the router dies, EVERY stack goes dark (this was the
+# single point of failure behind "ci-viewer is down" — a dead backend looks
+# the same as a dead router from outside).
+#
+# Install: wasm/systemd/install-stack-units.sh
+
+[Unit]
+Description=coolwasm SNI router (:443 → per-host backends)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ENV_FILE=/home/localadmin/ENV/online.env
+WorkingDirectory=/home/localadmin/online
+ExecStart=/usr/bin/bash /home/localadmin/online/wasm/launch-sni-router.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/coolwasm/sni-router.log
+StandardError=append:/var/log/coolwasm/sni-router.log
+
+[Install]
+WantedBy=multi-user.target
