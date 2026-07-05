@@ -23,6 +23,7 @@ TESTS=(
   "tests/coedit/test-coedit-rejoin-storm.js|rejoin storm (repeated leave/rejoin)"
   "tests/coedit/test-coedit-spell-correct.js|language + spellcheck + spell-correct convergence"
   "tests/coedit/test-coedit-latejoin-checkpoint-retry.js|late-join w/ unsaved edits — no checkpoint-download hang"
+  "tests/coedit/test-coedit-spell-correct-latejoin.js|spell-correct then late-join — correction must reach the joiner"
 )
 
 echo "Co-editing suite — VIEWER=$VIEWER_URL EDITOR=$EDITOR_URL RELAY=$RELAY_URL"

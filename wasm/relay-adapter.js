@@ -1182,7 +1182,35 @@
                             console.error('[relay] Save failed: ' + saveResult.error);
                             return;
                         }
+                        var prevHash = lastKnownHash;
                         lastKnownHash = saveResult.hash;
+                        // Checkpoint invariant: only rotate when the saved bytes
+                        // actually ADVANCED past the current checkpoint. If the
+                        // save produced byte-identical output (same hash), the
+                        // on-disk file did NOT capture whatever is live in the
+                        // model — e.g. a spell-correction or a language change
+                        // applied via the context menu, which LO does not always
+                        // re-serialize on .uno:Save once the word is deselected
+                        // (the doc reads back "unmodified", so saveToServer POSTs
+                        // the unchanged original). Rotating here would prune the
+                        // messageLog to saveAtSeq and DROP those edits for future
+                        // late-joiners, who would then permanently diverge from
+                        // the live peers (reproduced: corrector 447 vs joiner 446).
+                        // Skip the rotation so those edits stay replayable from
+                        // the log until a save genuinely persists them.
+                        if (prevHash && saveResult.hash === prevHash) {
+                            console.log('[relay] Save produced unchanged bytes (hash=' +
+                                (saveResult.hash || '').substring(0, 16) +
+                                '…) — skipping checkpoint rotation so unpersisted live edits ' +
+                                'stay in the replay log (late-joiners would otherwise diverge)');
+                            try {
+                                parent.postMessage(JSON.stringify({
+                                    MessageId: 'SaveComplete',
+                                    Values: { hash: (saveResult.hash || '').substring(0, 16), bytes: bytes.length, rotated: false },
+                                }), '*');
+                            } catch(e) {}
+                            return;
+                        }
                         // Rotate the relay checkpoint. Relay prunes
                         // messageLog to seq > saveAtSeq so future late
                         // joiners land on the new baseline.
