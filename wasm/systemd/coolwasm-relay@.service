@@ -1,0 +1,32 @@
+# coolwasm-relay@.service — on-box message-relay (wasm/message-relay.js).
+#
+#   coolwasm-relay@online.service     → dev stack (relay.atgpartners.info    :9091)
+#   coolwasm-relay@online-ci.service  → CI  stack (ci-relay.atgpartners.info :9092)
+#
+# PINNED Environment=ENV_FILE is the whole point: previously deploy.sh's
+# relay restart did `pgrep -f message-relay | head -1` + relaunch with the
+# AMBIENT ENV_FILE. When a CI job (which exports ENV_FILE=online-ci.env) ran
+# deploy.sh, it could kill the dev relay and relaunch it with CI's port/cert
+# → relay.atgpartners.info → dead socket → every co-edit test SSL_ERROR_SYSCALL.
+# With one pinned unit per stack, deploy.sh restarts the RIGHT relay by name
+# (see deploy.sh systemd-aware restart) and env can't leak between stacks.
+#
+# Install: wasm/systemd/install-stack-units.sh
+
+[Unit]
+Description=coolwasm message-relay (ENV=%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ENV_FILE=/home/localadmin/ENV/%i.env
+WorkingDirectory=/home/localadmin/online
+ExecStart=/usr/bin/bash /home/localadmin/online/wasm/launch-relay.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/coolwasm/relay-%i.log
+StandardError=append:/var/log/coolwasm/relay-%i.log
+
+[Install]
+WantedBy=multi-user.target

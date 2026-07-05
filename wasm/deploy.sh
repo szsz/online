@@ -207,7 +207,19 @@ if [ "$DO_RESTART" = true ]; then
     # started with (parsed from /proc/<pid>/environ).
     EDITOR_PIDS=$(pgrep -f "node .*editor-static-server\.js" || true)
     if [ -n "$EDITOR_PIDS" ]; then
+        SD_EDITOR_UNITS=""   # systemd-managed editor-static units to restart once
         for PID in $EDITOR_PIDS; do
+            # If this process is supervised by a coolwasm systemd unit,
+            # restart it THROUGH systemd — never kill+nohup it, which would
+            # race Restart=always and double-launch on the port. Collect the
+            # unit; restart after the loop (dedup). The unit re-execs the
+            # launcher with its PINNED ENV_FILE, so the correct PUB/port/cert
+            # is used regardless of what ENV_FILE this deploy inherited.
+            SD_UNIT=$(ps -o unit= -p "$PID" 2>/dev/null | tr -d ' ')
+            if [[ "$SD_UNIT" == coolwasm-editor-static@* ]]; then
+                case " $SD_EDITOR_UNITS " in *" $SD_UNIT "*) : ;; *) SD_EDITOR_UNITS="$SD_EDITOR_UNITS $SD_UNIT" ;; esac
+                continue
+            fi
             # Extract the env this process was started with so we can
             # relaunch it identically. ENV_FILE / HTTP_PORT / HTTPS_PORT
             # / EDITOR_SSL_CERT / EDITOR_SSL_KEY / PUB / DOCS are the
@@ -257,6 +269,11 @@ if [ "$DO_RESTART" = true ]; then
             sudo -b -n env $ENVS nohup bash "$SCRIPT_DIR/launch-editor-static.sh" \
                 > "/tmp/editor-static-restart-$PID.log" 2>&1 200>&- &
         done
+        # Restart any systemd-managed editor-static units (deduped above).
+        for U in $SD_EDITOR_UNITS; do
+            echo "  Restarting $U via systemd"
+            sudo -n systemctl restart "$U" 2>/dev/null || true
+        done
         sleep 3
         NEW_PIDS=$(pgrep -f "node .*editor-static-server\.js" | tr '\n' ' ')
         echo "  editor-static-server restarted (new PIDs: $NEW_PIDS)"
@@ -265,6 +282,19 @@ if [ "$DO_RESTART" = true ]; then
     fi
 
     # ── Restart message-relay so every client reconnects against new code ──
+    # Prefer systemd: restart the relay unit for THIS deploy's tier only,
+    # derived from ENV_FILE (online → dev, online-ci → ci). This both fixes
+    # the old `head -1` bug (which relaunched an arbitrary relay with the
+    # ambient — possibly wrong-tier — ENV_FILE) and avoids disturbing the
+    # OTHER tier's relay/clients. Falls back to the legacy kill+nohup when the
+    # relay isn't under systemd (unmigrated box / worktree run).
+    RELAY_INSTANCE="$(basename "${ENV_FILE:-online.env}" .env)"
+    RELAY_UNIT="coolwasm-relay@${RELAY_INSTANCE}"
+    if systemctl is-active --quiet "$RELAY_UNIT" 2>/dev/null; then
+        echo "  Restarting $RELAY_UNIT via systemd"
+        sudo -n systemctl restart "$RELAY_UNIT" 2>/dev/null || true
+        sleep 2
+    else
     RELAY_PID=$(pgrep -f "node.*message-relay" | head -1)
     if [ -n "$RELAY_PID" ]; then
         kill "$RELAY_PID" 2>/dev/null || true
@@ -285,6 +315,7 @@ if [ "$DO_RESTART" = true ]; then
         nohup bash "$SCRIPT_DIR/launch-relay.sh" > /tmp/relay.log 2>&1 200>&- &
         sleep 2
     fi
+    fi   # end systemd-vs-legacy relay restart
 fi
 
 # ── Build-fingerprint metadata file (observability) ──

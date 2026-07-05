@@ -115,11 +115,27 @@ if [[ "$STORAGE_BACKEND" == "azure" \
    && -z "${DOC_STORAGE_KEY:-}" \
    && -z "${DOC_STORAGE_SAS_URL:-}" ]]; then
     if command -v az >/dev/null 2>&1; then
-        echo "Minting DOC_STORAGE_KEY for $DOC_STORAGE_ACCOUNT via MI control-plane…"
-        if KEY="$(az storage account keys list \
+        echo "Minting DOC_STORAGE_KEY for $DOC_STORAGE_ACCOUNT…"
+        # Try az directly first (works when the invoking user has an az
+        # login / MI with the control-plane "list keys" role). Under
+        # systemd this script runs as ROOT, which usually has no az context
+        # — fall back to running az as the box's login user (the owner of
+        # this repo), whose az session IS authenticated. Without this,
+        # root's mint returned empty and the viewer silently fell back to
+        # DefaultAzureCredential → every /api/v2/file PUT 500'd.
+        KEY="$(az storage account keys list \
                     --account-name "$DOC_STORAGE_ACCOUNT" \
-                    --query '[0].value' -o tsv 2>/dev/null)" \
-           && [[ -n "$KEY" ]]; then
+                    --query '[0].value' -o tsv 2>/dev/null || true)"
+        if [[ -z "$KEY" && "${EUID:-$(id -u)}" -eq 0 ]]; then
+            _mint_user="$(stat -c '%U' "$SCRIPT_DIR" 2>/dev/null || true)"
+            if [[ -n "$_mint_user" && "$_mint_user" != "root" ]]; then
+                echo "  root has no az context — minting as '$_mint_user'…"
+                KEY="$(sudo -u "$_mint_user" -H az storage account keys list \
+                            --account-name "$DOC_STORAGE_ACCOUNT" \
+                            --query '[0].value' -o tsv 2>/dev/null || true)"
+            fi
+        fi
+        if [[ -n "$KEY" ]]; then
             export DOC_STORAGE_KEY="$KEY"
             echo "  OK — viewer will use shared-key auth (data-plane bridge)."
         else
