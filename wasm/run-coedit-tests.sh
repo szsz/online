@@ -24,6 +24,8 @@ TESTS=(
   "tests/coedit/test-coedit-spell-correct.js|language + spellcheck + spell-correct convergence"
   "tests/coedit/test-coedit-latejoin-checkpoint-retry.js|late-join w/ unsaved edits — no checkpoint-download hang"
   "tests/coedit/test-coedit-spell-correct-latejoin.js|spell-correct then late-join — correction must reach the joiner"
+  "tests/coedit/test-coedit-convergence-conflict.js|convergence under conflict (same-position / select-all-delete / 3-browser)"
+  "tests/coedit/test-coedit-churn-load-budget.js|churn storm + per-join load-time budget"
 )
 
 echo "Co-editing suite — VIEWER=$VIEWER_URL EDITOR=$EDITOR_URL RELAY=$RELAY_URL"
