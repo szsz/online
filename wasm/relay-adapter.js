@@ -219,6 +219,11 @@
             kitQueue = []; // drop any pending messages from old room
             _preActivateQueue = []; // drop pre-activate input from old room
             lateJoinFileReady = false;
+            // Re-arm the switchdoc-complete gate for the new room; a stale
+            // "loaded" flag from the previous room must not let the next join
+            // skip waiting for its own switchdocument.
+            _pendingSwitchDoc = null;
+            window.__wasmSwitchDocLoaded = false;
 
             // Reset encryption state — every doc has its own per-file
             // AES-GCM key. Without this, A continues to use the OLD
@@ -314,6 +319,19 @@
 
     // --- Intercept document fetch for late-join file redirect ---
     var lateJoinFileReady = false;
+    // Filename this late-join queued a switchdocument for (null if none). The
+    // activation poll waits for wasm-loader to signal this doc has actually
+    // loaded before starting replay, so replayed edits land on the real
+    // checkpoint doc and not the prewarm blank (which switchdocument replaces).
+    var _pendingSwitchDoc = null;
+    // Generous cap: wait this long after base-ready for switchdoc-complete
+    // before activating anyway. Must exceed the base-ready → switchdoc-complete
+    // gap, which on a loaded box can be 40s+ (the switch runs near the end of a
+    // cold load). A truly BROKEN switch is handled separately by wasm-loader's
+    // HotSwitchFailed watchdog (25s no-canvas-change) + 60s hard timeout, which
+    // cold-reloads — so this cap only needs to not fire during a slow-but-fine
+    // switch. 30s was too tight and re-exposed the replay-before-switch race.
+    var SWITCH_WAIT_CAP = 120000;
     var origFetch = window.fetch;
 
     // --- Send message to Kit via local session ---
@@ -1645,6 +1663,12 @@
                             // (no RelaySwitchRoom) they're equal, so #230's late-join path
                             // is unchanged.
                             if (wopiSrc && wopiSrc === currentRoomDoc) {
+                                // Remember we queued a switch so the activation
+                                // poll holds replay until this doc is loaded.
+                                // Reset the kit-set flag so it reflects THIS
+                                // switch's completion, not any prior switch.
+                                _pendingSwitchDoc = wopiSrc;
+                                window.__wasmSwitchDocLoaded = false;
                                 window.location.hash = '#switchdoc=' + encodeURIComponent(wopiSrc);
                                 console.log('[relay] late-join → queued switchdocument on existing kit (single LO main loop): ' + wopiSrc);
                             } else {
@@ -1789,10 +1813,29 @@
     function startActivationPoll() {
         if (activationPollInterval) clearInterval(activationPollInterval);
         var pollStart = Date.now();
+        var switchWaitStart = 0;
         var lastReportedReason = '';
         activationPollInterval = setInterval(function() {
             if (activated) { clearInterval(activationPollInterval); activationPollInterval = null; return; }
-            if (coolwsdReady && lateJoinFileReady && !activated) {
+            var baseReady = coolwsdReady && lateJoinFileReady;
+            if (baseReady && !switchWaitStart) switchWaitStart = Date.now();
+            // If this join queued a switchdocument, hold replay until the REAL
+            // checkpoint doc has loaded — otherwise the replayed messages apply
+            // to the prewarm blank and switchdocument then discards them, so the
+            // joiner silently loses every unsaved edit (reproduced: joiner ends
+            // on the bare base doc). The kit sets __wasmSwitchDocLoaded=true at
+            // the exact switchdocument-complete point (ChildSession.cpp); we
+            // reset it to false when we queue this join's switch, so the flag
+            // reflects THIS switch, not a stale prior one.
+            var switchDone = !_pendingSwitchDoc || window.__wasmSwitchDocLoaded === true;
+            // Bounded fallback: never hang activation if the switch is broken
+            // (hot-switch watchdog territory) — after SWITCH_WAIT_CAP proceed
+            // anyway, degrading to the previous (lossy but non-hanging) path.
+            var switchCapped = switchWaitStart && (Date.now() - switchWaitStart > SWITCH_WAIT_CAP);
+            if (baseReady && (switchDone || switchCapped) && !activated) {
+                if (!switchDone && switchCapped)
+                    console.warn('[relay] switchdoc-complete wait timed out after ' + (SWITCH_WAIT_CAP / 1000) +
+                                 's — activating anyway (replayed edits may be lost)');
                 activateClient();
                 clearInterval(activationPollInterval);
                 activationPollInterval = null;
@@ -1801,7 +1844,7 @@
             // Report what we're still waiting on so a stuck activation is
             // diagnosable from the console (and so the parent viewer can
             // surface "Joining session…" instead of looking frozen).
-            var waiting = !coolwsdReady ? 'editor' : 'checkpoint download';
+            var waiting = !coolwsdReady ? 'editor' : (!lateJoinFileReady ? 'checkpoint download' : 'switchdoc');
             var elapsed = ((Date.now() - pollStart) / 1000).toFixed(0);
             if (waiting !== lastReportedReason || (elapsed % 5 === 0 && elapsed > 0)) {
                 lastReportedReason = waiting;

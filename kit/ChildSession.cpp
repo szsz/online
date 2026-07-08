@@ -711,6 +711,16 @@ bool ChildSession::_handleInput(const char *buffer, int length)
         }
         SW_MARK("complete");
 #ifdef __EMSCRIPTEN__
+        // Signal switchdocument-complete to the iframe so late-join replay
+        // holds until the REAL checkpoint doc has loaded. Without this, a
+        // joiner with many UNSAVED messages replays them onto the prewarm
+        // blank and this switchdocument then discards them → the joiner
+        // silently loses every edit (ends on the bare base doc). There is no
+        // reliable JS-side signal for "switch documentLoad complete" (kit
+        // emits status, not a 2nd docready; canvas-visible can trip on the
+        // blank's paint) — so the kit sets the flag directly at the exact
+        // completion point. relay-adapter's activation poll gates replay on it.
+        MAIN_THREAD_ASYNC_EM_ASM({ globalThis.__wasmSwitchDocLoaded = true; });
         // Iter A4: synchronous EM_ASM. The previous ASYNC variant
         // queued the lambda for later execution, but $0 was
         // blob.c_str() — by the time JS ran, blob had gone out of
