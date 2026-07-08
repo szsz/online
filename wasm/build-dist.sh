@@ -10,7 +10,10 @@
 #   4. Upload   to https://<acct>.blob.core.windows.net/contentpreview/
 #               collabora-<URL-safe-UTC-timestamp>/...
 #               with Content-Encoding: br on every blob (omitted when
-#               --skip-brotli left the files uncompressed).
+#               --skip-brotli left the files uncompressed). Finally writes
+#               latest-collabora.txt at the container root (plain text, no
+#               compression) holding this build's timestamp — flipped last
+#               so a half-uploaded build never becomes "latest".
 #
 # Usage:
 #   wasm/build-dist.sh -a <storage-account>
@@ -141,6 +144,20 @@ mkdir -p "$DST"
 # cp -a preserves perms/symlinks/mtimes — matters for deterministic
 # brotli output (modtime doesn't affect content, but keeps diffs sane).
 cp -a "$SRC/." "$DST/"
+
+# Ensure branding assets exist — cool.html references them, so create
+# empty placeholders for any the build didn't emit (avoids 404s at load).
+BRANDING_FILES=(
+    "branding.js"
+    "branding.css"
+    "branding-desktop.css"
+)
+for f in "${BRANDING_FILES[@]}"; do
+    if [[ ! -e "$DST/$f" ]]; then
+        : > "$DST/$f"
+        echo "  Created empty $f"
+    fi
+done
 
 # Hardcoded prune list. Anything not in here survives.
 DROP=(
@@ -356,6 +373,26 @@ BLOB_TOTAL=$(find "$DST" -type f ! -name '*.br.tmp.*' | wc -l | tr -d ' ')
 echo "  Uploading $BLOB_TOTAL blobs in parallel (-P 8) with $ENC_NOTE..."
 find "$DST" -type f ! -name '*.br.tmp.*' -print0 | \
     xargs -0 -n1 -P 8 -I{} bash -c 'upload_one "$@"' _ {}
+
+# ── Step 4b: flip the root "latest" pointer ──────────────────────────
+# Written LAST so a half-uploaded build never becomes "latest". Plain
+# text, never brotli — consumers read it directly. Lives at the container
+# root (no $BLOB_PREFIX), so it can't reuse upload_one (which would add a
+# $BLOB_PREFIX path and a Content-Encoding: br header).
+LATEST_TMP="$(mktemp)"
+printf '%s' "$STAMP" > "$LATEST_TMP"
+az storage blob upload \
+    --auth-mode login \
+    --account-name "$STORAGE_ACCOUNT" \
+    --container-name "$CONTAINER" \
+    --name "latest-collabora.txt" \
+    --file "$LATEST_TMP" \
+    --content-type "text/plain; charset=utf-8" \
+    --overwrite \
+    --no-progress \
+    --only-show-errors > /dev/null
+rm -f "$LATEST_TMP"
+echo "  latest-collabora.txt (root) → $STAMP"
 
 echo ""
 echo "Upload complete."
