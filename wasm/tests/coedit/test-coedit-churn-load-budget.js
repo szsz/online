@@ -52,7 +52,22 @@ async function cc(p) {
     }).catch(() => -1);
 }
 async function stable(p, ms) { const d = Date.now() + ms; let pv = -1; while (Date.now() < d) { const c = await cc(p); if (c > 0 && c === pv) return c; pv = c; await sleep(700); } return pv; }
-async function convergeAll(parts, tgt, ms) { const d = Date.now() + ms; let cs = {}; while (Date.now() < d) { cs = {}; let ok = true; for (const [id, p] of Object.entries(parts)) { const c = await cc(p); cs[id] = c; if (c !== tgt) ok = false; } if (ok) return { ok: true, cs }; await sleep(600); } return { ok: false, cs }; }
+// Target-FREE convergence: wait until every live client reports the SAME
+// positive char count (converged to a common value), whatever that value is.
+// Comparing against a pre-snapshotted target is racy under churn — an in-flight
+// edit can bump everyone AFTER the snapshot, so all clients agree yet != the
+// stale target (false failure). What we actually care about is that they all
+// AGREE, which is the real convergence property.
+async function convergeAll(parts, ms) {
+    const d = Date.now() + ms; let cs = {};
+    while (Date.now() < d) {
+        cs = {}; const vals = [];
+        for (const [id, p] of Object.entries(parts)) { const c = await cc(p); cs[id] = c; vals.push(c); }
+        if (vals.length && vals.every(v => v > 0 && v === vals[0])) return { ok: true, cs, val: vals[0] };
+        await sleep(600);
+    }
+    return { ok: false, cs };
+}
 async function timedJoin(browser, secret, tag) {
     const t = Date.now();
     const up = await openSecretInBrowser(browser, VIEWER, secret, { isolatedContext: true, coEditing: true, viewport: VP, iframeTimeout: LT, gotoTimeout: env.scaleTimeout(60000) });
@@ -87,16 +102,16 @@ async function save(p) { await p.bringToFront().catch(() => {}); await p.keyboar
             const ups = await Promise.all(joiners);
             ups.forEach((u, i) => { live['J' + (seq - ups.length + 1 + i)] = u; });
             for (const u of ups) await typeEnd(u.page, 'x');
-            const tgt = await stable(upA.page, CONVERGE_MS());
+            await stable(upA.page, CONVERGE_MS()); // let A settle before checking agreement
             const parts = {}; for (const [id, u] of Object.entries(live)) if (u && !u._dead) parts[id] = u.page;
-            const cr = await convergeAll(parts, tgt, CONVERGE_MS());
-            check(`round ${r}: all ${Object.keys(parts).length} live converge`, cr.ok, `target=${tgt} ${JSON.stringify(cr.cs)}`);
+            const cr = await convergeAll(parts, CONVERGE_MS());
+            check(`round ${r}: all ${Object.keys(parts).length} live converge`, cr.ok, `converged@${cr.val || '-'} ${JSON.stringify(cr.cs)}`);
             if (r % 2 === 1) { const vic = Object.keys(live).filter(k => k !== 'A' && !live[k]._dead); if (vic.length) { const v = vic[0]; log(`  ${v} leaves`); try { await live[v].context.close(); } catch (e) {} live[v]._dead = true; } }
         }
         seq++; const F = await timedJoin(browser, secret, 'F' + seq); live.F = F;
-        const tgt = await stable(upA.page, CONVERGE_MS());
-        const cr = await convergeAll({ A: upA.page, F: F.page }, tgt, CONVERGE_MS());
-        check('final fresh joiner replays full storm', cr.ok, `target=${tgt} ${JSON.stringify(cr.cs)}`);
+        await stable(upA.page, CONVERGE_MS());
+        const cr = await convergeAll({ A: upA.page, F: F.page }, CONVERGE_MS());
+        check('final fresh joiner replays full storm', cr.ok, `converged@${cr.val || '-'} ${JSON.stringify(cr.cs)}`);
         check('no crash / checkpoint-mismatch across storm', errs.length === 0, errs.slice(0, 3).join(' | '));
     } catch (e) {
         check('harness ran without exception', false, (e && e.stack || String(e)).slice(0, 200));
