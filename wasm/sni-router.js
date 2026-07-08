@@ -7,7 +7,7 @@
 // Configure via env:
 //   PORT        listen port (default 443)
 //   ROUTES      semicolon-separated host=backend mappings, e.g.
-//               "viewer.szebeni.hu=127.0.0.1:6934;wasm.atgpartners.info=127.0.0.1:6932;relay.atgpartners.info=127.0.0.1:9091"
+//               "viewer.atgpartners.info=127.0.0.1:6934;wasm.atgpartners.info=127.0.0.1:6932;relay.atgpartners.info=127.0.0.1:9091"
 //   DEFAULT     fallback backend "host:port" when SNI doesn't match any route
 //   CONNECT_TIMEOUT_MS   backend connect timeout (default 5000)
 //   IDLE_TIMEOUT_MS      close if no data for this long (default 0 = never)

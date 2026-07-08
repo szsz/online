@@ -9,7 +9,7 @@
 //   HTTPS_PORT           HTTPS port               (default: 6932)
 //   SSL_CERT, SSL_KEY    PEM paths; if both set + readable, listen HTTPS
 //   FILE_STORAGE_URL     viewer origin, used for CSP frame-ancestors
-//                        (default: https://viewer.szebeni.hu)
+//                        (default: https://viewer.atgpartners.info)
 //
 // Caching contract (matters when troubleshooting "the WASM redownloads
 // every time"):

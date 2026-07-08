@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('../../lib/test-env');
 
-const VIEWER = env.VIEWER_URL || 'https://viewer.szebeni.hu';
+const VIEWER = env.VIEWER_URL || 'https://viewer.atgpartners.info';
 // 3 visually-distinct docx files. We use real fixtures (not the
 // same source padded with trailing bytes) so the wasm-loader's
 // canvas-change hot-switch watchdog actually fires when the

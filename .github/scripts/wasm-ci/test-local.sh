@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the test suite against the dev-box's locally-deployed environment
-# (viewer.szebeni.hu / wasm.atgpartners.info / relay.atgpartners.info)
+# (viewer.atgpartners.info / wasm.atgpartners.info / relay.atgpartners.info)
 # and publish the report under coolwasmfiles/local-builds/<APP_BUILD_ID>/.
 #
 # Inputs (env):

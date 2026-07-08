@@ -71,7 +71,7 @@ function put(url, body, headers) {
 /**
  * Upload an encrypted file to the viewer via /api/v2/file/:fileId.
  *
- * @param {string} viewerUrl  e.g. 'https://viewer.szebeni.hu'
+ * @param {string} viewerUrl  e.g. 'https://viewer.atgpartners.info'
  * @param {string} name       plaintext filename (e.g. 'test.docx') —
  *                            never sent to server; encrypted under nameKey
  * @param {Buffer} bytes      file content bytes

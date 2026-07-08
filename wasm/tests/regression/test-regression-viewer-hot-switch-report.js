@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('../../lib/test-env');
 
-const VIEWER = env.VIEWER_URL || 'https://viewer.szebeni.hu';
+const VIEWER = env.VIEWER_URL || 'https://viewer.atgpartners.info';
 // Write the report under the editor-static's public root so it's
 // reachable at https://wasm.atgpartners.info/reports/hot-switch/.
 // /tmp/hot-switch-report/ is left as a fallback symlink for older
@@ -79,7 +79,7 @@ async function detectShieldState(page) {
 }
 
 // Detect actual doc-content readiness in the cool.html iframe.
-// The iframe is cross-origin (viewer.szebeni.hu vs wasm.atgpartners.info),
+// The iframe is cross-origin (viewer.atgpartners.info vs wasm.atgpartners.info),
 // so parent can't reach contentDocument — use page.frames() to get the
 // CDPFrame directly and evaluate inside it.
 //

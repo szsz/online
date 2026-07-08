@@ -41,7 +41,7 @@ Service / Front Door.
 
 | Env | Viewer | Editor | Relay | Notes |
 |---|---|---|---|---|
-| **Local (dev box)** | `viewer.szebeni.hu` (port 6934 behind SNI) | `wasm.atgpartners.info` (port 6932 behind SNI) | `relay.atgpartners.info` (port 9091 behind SNI) | Runs via `wasm/launch-{viewer,editor-static,relay,sni-router}.sh`. Plaintext storage; no encryption boundary. |
+| **Local (dev box)** | `viewer.atgpartners.info` (port 6934 behind SNI) | `wasm.atgpartners.info` (port 6932 behind SNI) | `relay.atgpartners.info` (port 9091 behind SNI) | Runs via `wasm/launch-{viewer,editor-static,relay,sni-router}.sh`. Plaintext storage; no encryption boundary. |
 | **Azure test** | `wasm-viewer-test.azurewebsites.net` | `wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net` (per-deploy folder `/<EDITOR_DEPLOY_ID>/`) | `wasm-relay-test.azurewebsites.net` | Throwaway env wrapped by `/test-deploy`; env file at `~/ENV/online-test-deploy.env`. |
 | **Azure internal** | `wasm-viewer-internal.azurewebsites.net` | same FD endpoint, different `EDITOR_DEPLOY_ID` App Setting | `wasm-relay-internal.azurewebsites.net` | Manual deploy via `wasm/deploy-internal.sh`; env at `~/ENV/online-internal-deploy.env`. |
 | **Azure staging** | `szebeni-wasm-viewer.azurewebsites.net` | same FD endpoint, staging `EDITOR_DEPLOY_ID` | `szebeni-wasm-relay.azurewebsites.net` | CI-driven via merge to `dev`; env at `~/ENV/online-staging-deploy.env`. |

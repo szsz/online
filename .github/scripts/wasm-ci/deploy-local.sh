@@ -13,7 +13,7 @@
 # All hostnames / ports / cert paths are sourced from $ENV_FILE — never
 # hardcode them here. To target the ad-hoc dev stack instead, point
 # ENV_FILE at wasm/.env (but the dev box's CI workflow should always
-# use wasm/.env.ci, so the live ad-hoc editor at viewer.szebeni.hu is
+# use wasm/.env.ci, so the live ad-hoc editor at viewer.atgpartners.info is
 # never disturbed by a CI run).
 #
 # Inputs (env):

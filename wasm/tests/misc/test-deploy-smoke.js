@@ -11,13 +11,13 @@
 //
 // Usage:
 //   node wasm/test-deploy-smoke.js
-//   SMOKE_URL=https://viewer.szebeni.hu/#file=... node wasm/test-deploy-smoke.js
+//   SMOKE_URL=https://viewer.atgpartners.info/#file=... node wasm/test-deploy-smoke.js
 
 'use strict';
 const puppeteer = require('puppeteer');
 
 const URL = process.env.SMOKE_URL ||
-    'https://viewer.szebeni.hu/#file=oFEV3Kl6xln4lr8rX5r95g';
+    'https://viewer.atgpartners.info/#file=oFEV3Kl6xln4lr8rX5r95g';
 const TIMEOUT_MS = parseInt(process.env.SMOKE_TIMEOUT_MS || '90000', 10);
 
 async function main() {

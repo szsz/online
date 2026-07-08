@@ -960,7 +960,7 @@ ${body}
 
     fs.writeFileSync(path.join(OUT_DIR, 'index.html'), html);
     log(`Report written: ${OUT_DIR}/index.html`);
-    log(`URL: https://viewer.szebeni.hu/report/snapshot-milestones/`);
+    log(`URL: https://viewer.atgpartners.info/report/snapshot-milestones/`);
 
     // task #116 telemetry: aggregate event-vs-poll outcomes across
     // every session captured this run. Writes

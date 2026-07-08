@@ -11,7 +11,7 @@ const puppeteer = require('puppeteer');
         const page = await browser.newPage();
         try {
             const t0 = Date.now();
-            await page.goto('https://viewer.szebeni.hu/#file=oFEV3Kl6xln4lr8rX5r95g', { waitUntil:'load', timeout:30000 });
+            await page.goto('https://viewer.atgpartners.info/#file=oFEV3Kl6xln4lr8rX5r95g', { waitUntil:'load', timeout:30000 });
             await new Promise(r => setTimeout(r, 60000));
             const editor = page.frames().find(f => f.url().includes('cool.html'));
             const dom = editor ? await editor.evaluate(() => {

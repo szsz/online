@@ -8,7 +8,7 @@
 #   bash wasm/iterate.sh --no-test   # build + deploy, skip the milestone report
 #
 # After deploy the script kicks off test-snapshot-milestones.js which
-# republishes https://viewer.szebeni.hu/report/snapshot-milestones/ with
+# republishes https://viewer.atgpartners.info/report/snapshot-milestones/ with
 # a fresh per-iteration cold/warm × writer/calc/impress run, screenshots
 # at every milestone, and the iframe DOM verification banner. The report
 # stamp is the iteration's deploy timestamp so each iteration overwrites
@@ -75,7 +75,7 @@ if [ "$NO_DEPLOY" != true ]; then
 fi
 
 # 5. Run milestone report — re-publishes
-#    https://viewer.szebeni.hu/report/snapshot-milestones/ with fresh
+#    https://viewer.atgpartners.info/report/snapshot-milestones/ with fresh
 #    cold/warm runs for writer/calc/impress and DOM-verified screenshots
 #    so every iteration's effect on warm-path reliability is visible.
 #    Skipped if --no-test or --no-deploy (no point running against stale

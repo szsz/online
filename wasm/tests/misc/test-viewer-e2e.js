@@ -1,5 +1,5 @@
 // Test: End-to-end viewer interaction with real keyboard/mouse.
-// Opens https://viewer.szebeni.hu, waits for file list, clicks a file,
+// Opens https://viewer.atgpartners.info, waits for file list, clicks a file,
 // waits for doc to load, types text, saves with Ctrl+S.
 // Tests both cold start (deep link) and warm start (click from sidebar).
 // ALL input via real keyboard/mouse — no postMessage or internal APIs.
@@ -10,7 +10,7 @@ const path = require('path');
 const { uploadV2 } = require('../../lib/v2-upload');
 const { seedRecentFiles, waitForSidebar } = require('../../lib/v2-test-helper');
 
-const VIEWER = process.env.VIEWER_URL || 'https://viewer.szebeni.hu';
+const VIEWER = process.env.VIEWER_URL || 'https://viewer.atgpartners.info';
 const SHOT_DIR = '/tmp/static-deploy/public/shots-viewer-e2e';
 const TIMEOUT = 120000;
 const T0 = Date.now();
