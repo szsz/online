@@ -71,6 +71,32 @@ repo at `~/ENV/online-*.env`:
 
 Example templates ship with `wasm/.env.deploy.{test,internal,staging}.example`.
 
+### Service supervision (on-box stacks)
+
+The dev + CI on-box stacks run under **systemd** (not ad-hoc `nohup`), one
+unit per service with `Restart=always` and a **pinned** `Environment=ENV_FILE`
+so a CI job's exported `ENV_FILE` can never make a restart relaunch the wrong
+tier on the wrong port/cert:
+
+| Unit | Instance | Port |
+|---|---|---|
+| `coolwasm-viewer@.service` | `@online` / `@online-ci` | 6934 / 7934 |
+| `coolwasm-editor-static@.service` | `@online` / `@online-ci` | 6932 / 7932 |
+| `coolwasm-relay@.service` | `@online` / `@online-ci` | 9091 / 9092 |
+| `coolwasm-sni-router.service` | shared | 443 |
+
+`%i` is the ENV-file basename (`@online` → `online.env`, `@online-ci` →
+`online-ci.env`). Bring up / recover a stack with
+`sudo bash wasm/systemd/install-stack-units.sh [all|dev|ci]` (idempotent:
+installs the units, frees any ad-hoc ports, enables + starts). Day-to-day:
+`systemctl {status,restart} coolwasm-viewer@online-ci`,
+`journalctl -u coolwasm-relay@online -f`; logs at `/var/log/coolwasm/`. Unit
+files live in `wasm/systemd/`; `launch-*.sh` remain the ExecStart entrypoints.
+The viewer launcher mints `DOC_STORAGE_KEY` as the repo owner when run as root
+(root has no `az` context). See `wasm/deploy.sh` — it is systemd-aware: it
+`systemctl restart`s a managed editor-static/relay unit instead of kill+nohup,
+targeting the deploy's own tier.
+
 ### Operating-principle boundaries
 
 - `/dev-iterate` and `/fix-bug` may verify against **local stack** and
@@ -154,7 +180,8 @@ Reserved: 0x01, 0x09 (ack; relay ignores today).
 **Late joiner, checkpoint already registered**
 1. WS connect, `0x04`.
 2. Relay: `checkpointHash` set → `serveCheckpoint(ws)` → `0x05 {first:false, hash, locator, seq, cursors, msgCount}`, `_joinBuffering=true`, `_joinBuffer = messageLog`.
-3. Client fetches bytes from `locator`, verifies `sha256 === hash`, loads into Kit, applies `cursors` as peer cursor decorations, replays `_joinBuffer` through local Kit.
+3. Client fetches bytes from `locator`, verifies `sha256 === hash`, loads into Kit (via `switchdocument` onto the existing prewarm Kit — single LO main loop), applies `cursors` as peer cursor decorations, replays `_joinBuffer` through local Kit.
+   - **Replay must wait for `switchdocument` to COMPLETE.** Replay is gated on the kit's switchdoc-complete signal (`window.__wasmSwitchDocLoaded`, set by `MAIN_THREAD_ASYNC_EM_ASM` at the `SWITCHDOC "complete"` point in `kit/ChildSession.cpp`), NOT merely on kit-preinit. Otherwise, with many unsaved messages, the ~90-frame replay finishes and applies to the *prewarm blank* before `switchdocument` loads the checkpoint doc — which then discards every replayed edit, so the joiner silently lands on the bare base doc. `relay-adapter.js startActivationPoll` holds activation (and thus replay) until the flag is set, with a 30 s bounded fallback so a broken switch degrades rather than hangs.
 4. Client sends `0x06 {hash}`.
 5. Relay compares `clientHash === expected`. Match → replay buffered frames, `activeClients.add`, `announceJoin`. Mismatch → `0x0A {expected, locator, seq}`, client re-downloads from the authoritative locator.
 
@@ -171,6 +198,7 @@ Reserved: 0x01, 0x09 (ack; relay ignores today).
    - `seq` = last broadcast message seq processed when the save started
    - `cursors` = snapshot of the relay's current cursor map (server authoritative; see below)
 4. Relay: `registerCheckpoint(hash, locator, seq, cursors)` replaces the current checkpoint and prunes `messageLog` to `seq' > seq`.
+   - **No-op-save invariant:** `relay-adapter.js saveAndUploadCheckpoint` only sends `0x07` (rotate + prune) when the saved bytes actually ADVANCED past the current checkpoint (`hash !== prevHash`). A byte-identical save does NOT rotate — otherwise it would prune the messageLog while the on-disk file failed to capture a live-but-unpersisted edit (e.g. a spell-correction / language change that LO didn't re-serialize), dropping that edit for late-joiners while live peers keep it. Skipping rotation keeps the edit replayable.
 5. Already-connected peers don't reload — they're live-synced.
 6. Future late joiners load from the new checkpoint and start replay from messages `seq' > seq`.
 
@@ -257,6 +285,8 @@ Every co-editing test MUST verify:
 ## Known limitations
 
 - **Warm-path snapshot + cold-reload** — on v2-via-viewer opens the iframe is spawned cold-reload style (`cool.html?WOPISrc=<fileId>`, no `#switchdoc=`). The snapshot restores Kit at the blank-loaded state and a post-restore `switchdocument` is needed to open the target. See `wasm-loader.js` for the current `snapshot:queuing_switchdoc_for_cold_reload` mechanism.
-- **Kit-cooperation needed for "doc fully rendered" + "loading failed"** — today `WasmDocReady` fires from DOM polling (status bar + canvas heuristics). The right signal is a new `LOK_CALLBACK_DOCUMENT_PAINTED` from Kit; likewise for `load_error:`. Pending in LO Core C++.
+- **Kit-cooperation needed for "doc fully rendered" + "loading failed"** — today `WasmDocReady` fires from DOM polling (status bar + canvas heuristics). The right signal is a new `LOK_CALLBACK_DOCUMENT_PAINTED` from Kit; likewise for `load_error:`. Pending in LO Core C++. (A narrow, related signal already exists: the kit sets `window.__wasmSwitchDocLoaded` at `switchdocument`-complete, used to gate late-join replay — see the late-joiner flow above.)
+- **Cold FIRST-load is slow (~25–45 s).** A fresh browser context (new user / first visit) has no Cache-Storage snapshot, so it pays full WASM cold-start (compile + `Desktop::Main` + prewarm) before the doc loads; warm restore is ~7–10 s. The fix is to ship a prebuilt snapshot as a static asset so fresh contexts restore instead of cold-initializing — tracked in `ai/tasks/todo/ship-prebuilt-snapshot-fast-first-load.md`.
+- **Spell-correction / language change may not persist to the saved file.** Applying a spell-correction or character-language change via the context menu, then deselecting before save, can leave LO reporting the doc "unmodified" so `.uno:Save` re-serializes stale bytes. Live co-editing converges and the no-op-save invariant (above) keeps late-joiners consistent, but the file written to storage can be stale. The durable fix (persist on save) is tracked in `ai/tasks/todo/fix-spell-language-edits-not-persisted-on-save.md`.
 - **messageLog cap** — 50,000 entries before silent truncation. With save-rotation pruning any session with at least one save stays well under the cap. Unsaved multi-hour sessions can lose early history; log compaction (merge redundant cursor-moves) is a follow-up.
 - **Legacy `/api/files/*`** — still used for plaintext uploads by tests that bypass the viewer and for non-v2 files. V2 files (64-hex fileId) save through `WasmFileSave` postMessage → viewer-side encryption → `/api/v2/file/<fileId>`; the editor never sees the key. Legacy path is still exercised by `test-save-conflict.js` and `test-regression-viewer-cache.js`.

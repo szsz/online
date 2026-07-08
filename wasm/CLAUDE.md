@@ -1,7 +1,7 @@
 # CLAUDE.md — wasm/ project instructions
 
 Quick reference for Claude Code. Full architecture contract lives in
-**[CO-EDITING-ARCHITECTURE.md](./CO-EDITING-ARCHITECTURE.md)** — read that before making non-trivial changes
+**[CO-EDITING-ARCHITECTURE.md](./docs/CO-EDITING-ARCHITECTURE.md)** — read that before making non-trivial changes
 to the relay protocol, checkpoint lifecycle, or v2 encryption flow.
 
 ## What this project is
@@ -12,14 +12,14 @@ A browser-only LibreOffice co-editor built on three services:
 Host header; each service has its own cert.
 
 **Hostnames per environment** (dev / test / internal / staging / prod /
-CI stack) live in `CO-EDITING-ARCHITECTURE.md`'s `## Services` section
+CI stack) live in `docs/CO-EDITING-ARCHITECTURE.md`'s `## Services` section
 — don't hard-code them here; they change per dev box and per deploy
 target.
 
 ## Key files
 - `viewer-server.js` — HTTP: sidebar, `/api/v2/file`, `/api/blobs`, legacy `/api/files`
 - `viewer-public/index.html` — viewer UI; `openFileBySecret`, shield, prewarm
-- `message-relay.js` — WS protocol; frames 0x00–0x0A (see CO-EDITING-ARCHITECTURE.md)
+- `message-relay.js` — WS protocol; frames 0x00–0x0A (see docs/CO-EDITING-ARCHITECTURE.md)
 - `relay-adapter.js` — iframe-side client of message-relay
 - `wasm-loader.js` — iframe-side hash-switch bridge, snapshot load/save
 - `deploy.sh` — apply snapshot inject, rehash, **restart relay**
@@ -231,10 +231,10 @@ Online commit + its pinned LO build is reproducible.
   validate gate catches it on PR open, but it wastes a CI cycle.
 
 ## When in doubt
-- Protocol changes → read CO-EDITING-ARCHITECTURE.md's "Relay protocol — frames" first.
+- Protocol changes → read docs/CO-EDITING-ARCHITECTURE.md's "Relay protocol — frames" first.
 - Deploy is failing → check `wasm/.env` for the three namespaces;
   `launch-relay.sh` refuses if `RELAY_SSL_CERT` is unreadable.
-- Warm path is fragile (see CO-EDITING-ARCHITECTURE.md "Known limitations") — snapshot
+- Warm path is fragile (see docs/CO-EDITING-ARCHITECTURE.md "Known limitations") — snapshot
   restore + `__wasmInitialDocLoaded` flag interaction is the current
   debugging surface.
 
