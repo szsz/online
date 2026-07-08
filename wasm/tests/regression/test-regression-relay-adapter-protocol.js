@@ -4,7 +4,7 @@
 // Background: the WebSocket protocol between relay-adapter and
 // message-relay uses single-byte frame-type prefixes (0x00 = user
 // input, 0x06 = checkpoint register, 0x07 = activation, etc. —
-// see CO-EDITING-ARCHITECTURE.md "Relay protocol — frames" for the
+// see wasm/docs/CO-EDITING-ARCHITECTURE.md "Relay protocol — frames" for the
 // full table). A refactor that swaps types or removes a sender
 // silently breaks coordination across browsers (relay drops the
 // frame as unknown-type → peers never see updates → silent

@@ -22,7 +22,7 @@
 //      ships EVERY upstream spell dictionary (2026-06-25). That is a
 //      large on-server total, but it is NOT a client cost: bundles are
 //      lazy-loaded — the editor fetches only the language(s) a document
-//      uses (see wasm/DICTIONARIES.md), and they are served as static
+//      uses (see wasm/docs/DICTIONARIES.md), and they are served as static
 //      files from coolwasmfiles storage, not through any App Service
 //      payload limit. The cap is just a runaway-build guard.
 //   5. Every entry's file URL is fetchable with the expected

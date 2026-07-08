@@ -10,7 +10,7 @@ visible to LibreOffice in the browser-only (WASM) editor — and how to add more
 - Loading is **lazy / two-tier**: one *primary* dictionary is preloaded at
   start-up (the user's `navigator.language`); every other language is fetched
   *reactively* the first time the cursor enters a paragraph in that language.
-- `DEFAULT_LANGS` in [`build-dicts.sh`](./build-dicts.sh) is **all** spell
+- `DEFAULT_LANGS` in [`build-dicts.sh`](../build-dicts.sh) is **all** spell
   dictionaries `LibreOffice/dictionaries` ships, so any document language can
   be loaded on demand. Shipping more is cheap — the client only ever fetches
   what a document actually uses.
@@ -19,7 +19,7 @@ visible to LibreOffice in the browser-only (WASM) editor — and how to add more
 
 ## Pipeline (end to end)
 
-1. **Build** — [`build-dicts.sh`](./build-dicts.sh) pulls each language from
+1. **Build** — [`build-dicts.sh`](../build-dicts.sh) pulls each language from
    upstream `github.com/LibreOffice/dictionaries` and emits, under
    `wasm/online-build/dicts/`:
    - `<lang>.tar.gz` — gzip tar of just the data files (`.dic`/`.aff`, plus
@@ -28,7 +28,7 @@ visible to LibreOffice in the browser-only (WASM) editor — and how to add more
 2. **Serve** — `/dicts/` ships as static viewer assets (also mirrored to
    `coolwasmfiles` storage). They are plain static files, not an App-Service
    payload.
-3. **Client** — [`dict-loader.js`](./dict-loader.js):
+3. **Client** — [`dict-loader.js`](../dict-loader.js):
    - **Primary (eager):** during the editor's `preRun` it holds an
      `addRunDependency('dict-preload')`, maps `navigator.language` to a manifest
      entry, fetches that bundle, un-tars it in JS, and `FS.writeFile`s the files
@@ -36,7 +36,7 @@ visible to LibreOffice in the browser-only (WASM) editor — and how to add more
      user's own language is spell-checkable from the first keystroke.
    - **Reactive (lazy):** exposes `window.loadDictionaryForLocale(bcp47)`. The
      status-bar `.uno:LanguageStatus` handler
-     ([`Control.StatusBar.js`](../browser/src/control/Control.StatusBar.js))
+     ([`Control.StatusBar.js`](../../browser/src/control/Control.StatusBar.js))
      calls it whenever the cursor enters a paragraph in a new language, fetching
      that bundle on demand (idempotent — cached in `state.loaded`).
    - **Filename normalization:** the scanner derives a dictionary's locale from
@@ -93,7 +93,7 @@ hunspell suggestions → picking one replaces the word.
 
 ## Adding or changing languages
 
-1. Edit `DEFAULT_LANGS` in [`build-dicts.sh`](./build-dicts.sh). Use the
+1. Edit `DEFAULT_LANGS` in [`build-dicts.sh`](../build-dicts.sh). Use the
    upstream directory names — `bash wasm/build-dicts.sh --list` prints them all.
 2. `bash wasm/build-dicts.sh` (optionally `bash wasm/build-dicts.sh en de fr`
    for a subset). It fetches, packages, and rewrites `manifest.json`; dirs with

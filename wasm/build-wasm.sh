@@ -12,7 +12,7 @@
 #   $HOME/libreoffice-core-wasm) bind-mounted into the container,
 #   building LO core in-container. The output is NOT publishable —
 #   only the CI-built artefact (referenced by wasm/LO_BUILD_ID) gets
-#   deployed. See wasm/CO-EDITING-ARCHITECTURE.md "Build & release
+#   deployed. See wasm/docs/CO-EDITING-ARCHITECTURE.md "Build & release
 #   policy".
 #
 # Usage:

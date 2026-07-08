@@ -271,12 +271,15 @@ edit → Ctrl+S triggers a download of the modified file.
 
 ## 5. Lifecycle and timing
 
-- **First visit on this browser/origin pair**: ~10–40 s to
+- **First visit on this browser/origin pair**: ~25–45 s to
   `content_verified` (canvas painted + status text). The editor's
-  Service Worker is installing, the WASM binary is streaming, the
-  document is parsing.
-- **Subsequent visits**: ~3–8 s. WASM is in Cache Storage; only
-  the document load happens.
+  Service Worker is installing, the WASM binary is streaming and
+  compiling (no V8 code cache yet), LibreOffice is cold-initializing,
+  and the document is parsing — the cold-init dominates, not the
+  download.
+- **Subsequent visits**: ~7–10 s. WASM is in Cache Storage and a
+  HEAPU8 snapshot warm-restores LibreOffice, so only the document
+  load happens.
 - **Editor iframe ↔ parent handshake**: the iframe registers the
   Service Worker, gates Kit's startup on the SW being active, then
   starts fetching `/wasm/<id>`. From your side: be ready to answer

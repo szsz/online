@@ -43,7 +43,7 @@ FETCH_DIR="$SCRIPT_DIR/online-build/dicts-src"
 
 # Default set: EVERY spell dictionary LibreOffice/dictionaries ships, so any
 # document language a user opens can be loaded on demand (the editor fetches a
-# language's bundle lazily — see wasm/DICTIONARIES.md). Directory names are the
+# language's bundle lazily — see wasm/docs/DICTIONARIES.md). Directory names are the
 # upstream repo names (run `bash wasm/build-dicts.sh --list` to refresh this).
 # build-dicts.sh auto-skips any dir without hunspell .dic/.aff files (some are
 # hyphenation/thesaurus-only or complex-script), so they drop out cleanly.
