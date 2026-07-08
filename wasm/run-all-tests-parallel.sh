@@ -170,7 +170,7 @@ Failed: <span class="fail-count">${FAILED}</span></p>
 HTMLEOF
 
 echo "Summary: $PASSED/$TOTAL passed (${FAILED} failed). Wall: ${TOTAL_WALL}s"
-echo "URL: https://viewer.szebeni.hu/reports/"
+echo "URL: https://viewer.atgpartners.info/reports/"
 
 # JUnit XML for CI consumers (GitHub Actions, etc). The CI publisher
 # can pass --base-url to inject per-test report URLs into <system-out>.

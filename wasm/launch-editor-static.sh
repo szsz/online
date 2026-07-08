@@ -27,7 +27,7 @@ fi
 
 # editor-static-specific defaults. We deliberately use distinct env var
 # names from the viewer launcher (which uses SSL_CERT / SSL_KEY for its
-# own viewer.szebeni.hu cert via .env). EDITOR_SSL_* keeps the two
+# own viewer.atgpartners.info cert via .env). EDITOR_SSL_* keeps the two
 # launchers from clobbering each other when both source the same .env.
 : "${HTTP_PORT:=6931}"
 : "${HTTPS_PORT:=6932}"

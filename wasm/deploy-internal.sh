@@ -3,7 +3,7 @@
 #
 # Three-tier deploy model:
 #
-#   local     → viewer.szebeni.hu                    (dev box)
+#   local     → viewer.atgpartners.info                    (dev box)
 #               bash wasm/deploy.sh    (or /local-deploy skill)
 #
 #   internal  → wasm-viewer-internal.azurewebsites.net  (Azure, manual)

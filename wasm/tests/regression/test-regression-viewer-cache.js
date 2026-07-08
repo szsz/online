@@ -3,7 +3,7 @@ const __cl = require('../../lib/inject-checklist');
 // + honour conditional GET, so that opening the same document twice doesn't
 // re-fetch the bytes from the storage backend.
 //
-// Endpoints under test (viewer.szebeni.hu):
+// Endpoints under test (viewer.atgpartners.info):
 //   /api/files/<name>  — Cache-Control: no-cache, ETag + Last-Modified,
 //                        304 on If-None-Match / If-Modified-Since match.
 //   /blank.docx        — Cache-Control: public, max-age=3600 (it's a

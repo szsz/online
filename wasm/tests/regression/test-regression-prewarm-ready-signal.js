@@ -26,7 +26,7 @@
 const puppeteer = require('puppeteer');
 const env = require('../../lib/test-env');
 
-const VIEWER = env.FILE_STORAGE_URL || 'https://viewer.szebeni.hu';
+const VIEWER = env.FILE_STORAGE_URL || 'https://viewer.atgpartners.info';
 
 const T0 = Date.now();
 function elapsed() { return ((Date.now() - T0) / 1000).toFixed(1) + 's'; }

@@ -188,4 +188,4 @@ Total: ${TOTAL} · Pass: ${PASSED} · Fail: ${FAILED} · Skip: ${SKIPPED}</p>
 HTMLEOF
 
 echo "Summary: ${PASSED}/${TOTAL} pass (${FAILED} fail, ${SKIPPED} skip). Wall: ${TOTAL_WALL}s"
-echo "URL: https://viewer.szebeni.hu/reports-focused/"
+echo "URL: https://viewer.atgpartners.info/reports-focused/"

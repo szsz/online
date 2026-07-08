@@ -3,7 +3,7 @@
 #
 # Four-tier deploy model:
 #
-#   local     viewer.szebeni.hu                        (dev box)
+#   local     viewer.atgpartners.info                        (dev box)
 #             bash wasm/deploy.sh    (or /local-deploy skill)
 #
 #   test      wasm-viewer-test.azurewebsites.net       (Azure, manual, throwaway)

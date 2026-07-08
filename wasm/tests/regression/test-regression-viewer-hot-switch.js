@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('../../lib/test-env');
 
-const VIEWER = env.VIEWER_URL || 'https://viewer.szebeni.hu';
+const VIEWER = env.VIEWER_URL || 'https://viewer.atgpartners.info';
 const FIXTURES = [
     { label: 'writer',  name: 'test document.docx', src: '/home/localadmin/online/test/data/test document.docx' },
     { label: 'calc',    name: 'testdoc.xlsx',       src: '/home/localadmin/online/test/data/testdoc.xlsx' },

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deploy-local.sh — sync source-tracked code into the running on-host
-# deployments at viewer.szebeni.hu:6934 / wasm.atgpartners.info:6932 /
+# deployments at viewer.atgpartners.info:6934 / wasm.atgpartners.info:6932 /
 # wasm.atgpartners.info:9091.
 #
 # Layout being synced TO:

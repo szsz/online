@@ -6,7 +6,7 @@
 // `%BRANDING_THEME%` etc. The pre-FD-migration editor-server.js
 // substituted these per-request; deploy-front-door.sh substitutes
 // them via sed at upload time for the Front Door path. The local
-// editor-static-server.js (which serves viewer.szebeni.hu and CI's
+// editor-static-server.js (which serves viewer.atgpartners.info and CI's
 // Phase 1 locally-spawned stack) MUST do the same — otherwise the
 // kit reads cool.html, finds a literal `%ACCESS_TOKEN%`, appends
 // it to the document fetch URL, and `/wasm/<id>?access_token=

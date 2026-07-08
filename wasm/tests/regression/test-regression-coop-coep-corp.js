@@ -19,7 +19,7 @@
 //   1. Each of the three headers is present.
 //   2. Each has the exact expected value (no looser variants —
 //      same-origin-allow-popups would re-isolate but break our
-//      embed flow with viewer.szebeni.hu).
+//      embed flow with viewer.atgpartners.info).
 //
 // Runtime: <300ms, single HEAD request.
 

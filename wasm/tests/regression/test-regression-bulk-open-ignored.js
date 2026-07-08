@@ -20,7 +20,7 @@
 // Output
 // ------
 //   * Report HTML:  /tmp/static-deploy/public/reports/regression-bulk-open-ignored.html
-//                   (rendered at https://viewer.szebeni.hu/reports/regression-bulk-open-ignored.html)
+//                   (rendered at https://viewer.atgpartners.info/reports/regression-bulk-open-ignored.html)
 //   * Screenshots:  /tmp/static-deploy/public/shots-regression-bulk-open-ignored/<NN>_<name>.png
 //
 // The test itself exits 0 unless something crashes the harness. Per-file

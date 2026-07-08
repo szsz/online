@@ -2,7 +2,7 @@
 // and capture console + doc-ready state for each.
 'use strict';
 const puppeteer = require('puppeteer');
-const URL = 'https://viewer.szebeni.hu/#file=r-k3SlUVSwcRHQIJftyp3w';
+const URL = 'https://viewer.atgpartners.info/#file=r-k3SlUVSwcRHQIJftyp3w';
 const T0 = Date.now();
 function log(m) { console.log('[' + ((Date.now()-T0)/1000).toFixed(1) + 's] ' + m); }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
