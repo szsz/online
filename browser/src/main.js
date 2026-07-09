@@ -34,6 +34,19 @@ else if (wopiSrc !== '' && accessHeader !== '') {
 
 var filePath = global.coolParams.get('file_path');
 
+// Content-viewer mode: the Tresorit content-preview app embeds this editor
+// same-origin and stages the document into its own service worker
+// (collabora-sw.js), serving it at /local-file/<id>. We detect the mode by the
+// localFileId param (only content-preview sets it) together with an empty
+// WOPISrc, and hand the doc id + target FS path to the preRun doc-loader in
+// emscripten-module.js. In this mode wasm-loader.js also skips registering
+// /sw-bridge.js (collabora-sw.js owns scope /) — see wasm-loader.js.
+var localFileId = global.coolParams.get('localFileId');
+var isContentViewer = (localFileId !== '' && wopiSrc === '');
+if (isContentViewer) {
+	globalThis.__coolContentViewer = { localFileId: localFileId, filePath: filePath };
+}
+
 app.localeService = new LocaleService();
 app.setPermission(global.coolParams.get('permission') || 'edit');
 app.serverConnectionService = new ServerConnectionService();
@@ -104,7 +117,7 @@ else
 if (wopiSrc === '' && filePath === '' && !window.ThisIsAMobileApp) {
 	map.uiManager.showInfoModal('wrong-wopi-src-modal', '', errorMessages.wrongwopisrc, '', _('OK'), null, false);
 }
-if (host === '' && !window.ThisIsAMobileApp) {
+if (host === '' && !window.ThisIsAMobileApp && !isContentViewer) {
 	map.uiManager.showInfoModal('empty-host-url-modal', '', errorMessages.emptyhosturl, '', _('OK'), null, false);
 }
 

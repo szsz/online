@@ -9,6 +9,14 @@
 
     var params = new URLSearchParams(window.location.search);
     var wopiSrc = params.get('WOPISrc') || '';
+    // Content-viewer mode (Tresorit content-preview embed): localFileId is set
+    // and there is no WOPISrc. In this mode collabora-sw.js (in the content
+    // viewer's origin) owns scope / and serves both the editor assets and the
+    // document (at /local-file/<id>), so we must NOT register our own
+    // /sw-bridge.js (it would fight for scope /), and there is no parent-viewer
+    // relay to bridge to. The document is loaded by the preRun step in
+    // emscripten-module.js instead.
+    var isContentViewer = (!!params.get('localFileId') && !wopiSrc);
     // displayName is the plaintext filename the user sees in the title bar
     // and #document-name-input. For v2-encrypted opens the WOPISrc is an
     // opaque fileId; the parent viewer passes the decrypted filename as
@@ -282,6 +290,12 @@
     // Folding both responsibilities into /sw-bridge.js avoids that
     // class of bug entirely.
     window.__swBridgeReady = new Promise(function(resolve, reject) {
+        if (isContentViewer) {
+            // collabora-sw.js already controls scope /; resolve so the
+            // preInit gate (cache-bust-build.js) doesn't block _main().
+            mark('sw-bridge:skipped', 'content-viewer mode (collabora-sw owns /)');
+            return resolve(null);
+        }
         if (!('serviceWorker' in navigator)) {
             mark('sw-bridge:unavailable', 'no navigator.serviceWorker');
             return reject(new Error('serviceWorker unavailable'));
