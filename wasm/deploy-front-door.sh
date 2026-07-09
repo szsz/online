@@ -214,6 +214,45 @@ cat > "$EDIR_CONTENT/build-info.json" <<EOF
 }
 EOF
 
+# ── Tresorit-standard flat CDN layout ──────────────────────────────
+# Alongside the per-deploy <APP_BUILD_ID>/browser/dist/ tree (which the
+# co-editing viewer pins via EDITOR_DEPLOY_ID), also publish a FLAT
+# collabora-<version>/ folder: cool.html + every asset directly under
+# it, no browser/dist/ nesting. This is the layout the Tresorit
+# content-preview app (and its collabora-sw.js) expects from a standard
+# Collabora CDN, so content-preview needs no build-specific path
+# rewriting — it just points VITE_COLLABORA_CDN_URL at this origin and
+# requests /collabora-<version>/<asset>.
+#
+# The folder is a copy of the fully-finalized browser/dist/ tree
+# (cool.html already placeholder-substituted, fingerprints baked, loader
+# scripts overwritten, heavy assets + .br sidecars present), so the flat
+# editor is byte-identical to the nested one. It lands in $STAGE before
+# the azcopy upload and the Pattern β brotli swap below, so both pick it
+# up automatically (the swap's `find $STAGE -name '*.br'` covers it).
+#
+# `version` is a per-build UTC timestamp in the extended-ISO form the
+# content-preview build REQUIRES: YYYY-MM-DDTHH-MM-SSZ (its vite config
+# validates this exact shape and refuses anything else — so APP_BUILD_ID's
+# YYYY-MM-DD-<n> form can't be reused here). This matches the Tresorit CDN
+# convention (a timestamp that changes itself per build). Overridable via
+# CV_VERSION for reproducible/pinned deploys.
+# latest-collabora.txt is the bare pointer the content-preview build reads
+# to learn which version to pin (VITE_COLLABORA_WASM_VERSION), mirroring
+# the Tresorit CDN's latest pointer.
+CV_VERSION="${CV_VERSION:-$(date -u +%Y-%m-%dT%H-%M-%SZ)}"
+CV_DIR="$STAGE/collabora-$CV_VERSION"
+mkdir -p "$CV_DIR"
+cp -r "$EDIR_CONTENT/browser/dist/." "$CV_DIR/"
+# Spell dictionaries live a level up from browser/dist in the nested
+# layout; put them under the flat folder too so dict-loader.js resolves
+# collabora-<version>/dicts/<lang>.tar.gz.
+if [[ -d "$EDIR_CONTENT/dicts" ]]; then
+    cp -r "$EDIR_CONTENT/dicts" "$CV_DIR/dicts"
+fi
+printf '%s' "$CV_VERSION" > "$STAGE/latest-collabora.txt"
+echo "  Staged flat CDN layout: collabora-$CV_VERSION/ (+ latest-collabora.txt)"
+
 # ── Upload ─────────────────────────────────────────────────────────
 # Use account key (faster, less role plumbing). Mint it via control-
 # plane RBAC if not provided in env.
@@ -368,7 +407,9 @@ echo "    overwrote $BR_TOTAL canonical blob(s) with brotli content + Content-En
 echo "  Smoke test via $EDITOR_FD_URL ..."
 SMOKE_FAILED=0
 for path in "/$APP_BUILD_ID/build-info.json" \
-            "/$APP_BUILD_ID/browser/dist/cool.html"; do
+            "/$APP_BUILD_ID/browser/dist/cool.html" \
+            "/collabora-$CV_VERSION/cool.html" \
+            "/latest-collabora.txt"; do
     url="$EDITOR_FD_URL$path"
     code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 30 -I "$url" || echo 000)"
     printf '    %-72s %s\n' "$url" "$code"
@@ -383,3 +424,5 @@ fi
 
 echo ""
 echo "Deploy complete: $EDITOR_FD_URL/$APP_BUILD_ID/"
+echo "  Flat CDN layout: $EDITOR_FD_URL/collabora-$CV_VERSION/ (content-preview)"
+echo "  content-preview build: VITE_COLLABORA_WASM_VERSION=$CV_VERSION  VITE_COLLABORA_CDN_URL=$EDITOR_FD_URL"
