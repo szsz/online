@@ -13,6 +13,12 @@ set -uo pipefail
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL='*'
 
+# New setup: content-viewer tests (tests/content-viewer/*) drive the Tresorit
+# content-viewer (which now serves the viewer domain) via /collabora-tester and
+# take their base URL from BASE_URL. The exec loop sets BASE_URL to
+# $CONTENT_VIEWER_URL for those scripts (legacy-viewer tests use $FILE_STORAGE_URL).
+export CONTENT_VIEWER_URL="${CONTENT_VIEWER_URL:-https://wasm-viewer-test.azurewebsites.net}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The test scripts (node) write screenshots with paths like
@@ -198,6 +204,20 @@ TESTS=(
     "regression-flake-budget|tests/regression/test-regression-flake-budget.js|Regression: KNOWN_FLAKE / LO_BLOCKED budget|Tripwire that guards .github/scripts/wasm-ci/test-and-publish.sh's KNOWN_FLAKE_TESTS and LO_BLOCKED_TESTS arrays against silent growth. Counts entries and asserts they're under the budgets in test-regression-flake-budget.js. Adding a new flake/block entry requires bumping the budget in the SAME commit — keeps the lists honest. Static check, ~50ms wall time.|none"
     "regression-bulk-open-ignored|tests/regression/test-regression-bulk-open-ignored.js|Regression: Bulk Open (test/samples/ignored)|Discovers every file in test/samples/ignored/, opens them sequentially in a single Chromium, types 'hello world' at the top via real keyboard, verifies via canvas pixel-diff + StateWordCount delta. Produces an HTML report with per-file open times + before/after screenshots at /tmp/static-deploy/public/reports/regression-bulk-open-ignored.html. Corpus is gitignored — local-only test; exits 0 regardless of per-file verify result so the run never blocks the suite.|shots-regression-bulk-open-ignored"
     "regression-open-progress-stages|tests/regression/test-regression-open-progress-stages.js|Feature: multi-stage open progress on the shield|The viewer shield shows a live stage checklist (#shield-stages) during file open, driven by WasmOpenStage postMessages from the iframe wasm-loader's mark() stream + the kit's statusindicator import %. Asserts >=5 stages flip to done before the shield drops, the bar is monotonically non-decreasing, and the doc still opens.|shots-regression-open-progress-stages"
+    # ── Content-viewer (Tresorit content-viewer embed) single-user suite ──
+    # Run against $CONTENT_VIEWER_URL (the exec loop / worker sets BASE_URL for these).
+    "cv-snapshot-milestones|tests/content-viewer/test-cv-snapshot-milestones.js|Content-Viewer: Load Milestones|Cold/warm load + editor-interactive, writer/calc/impress, via /collabora-tester|none"
+    "cv-singleuser|tests/content-viewer/test-cv-singleuser.js|Content-Viewer: Single-User Edit/Save|Open, type, copy/paste (internal+external), Save→download→reopen persistence, readonly toggle|none"
+    "cv-comment-author|tests/content-viewer/test-cv-comment-author.js|Content-Viewer: Comment Author|The content-viewer user name authors inserted comments (not LocalUser#0)|none"
+    "cv-search|tests/content-viewer/test-cv-search.js|Content-Viewer: Search|Ctrl+F finds + selects a token|none"
+    "cv-notebookbar|tests/content-viewer/test-cv-notebookbar.js|Content-Viewer: Notebookbar|Notebookbar renders in the embed + font-name/size comboboxes populated from the doc|none"
+    "cv-filename-open|tests/content-viewer/test-cv-filename-open.js|Content-Viewer: Tricky Filenames|Open files whose names have spaces/parens/awkward dots|none"
+    "cv-multiopen|tests/content-viewer/test-cv-multiopen.js|Content-Viewer: Multi-Open|Multiple documents per browser session all reach interactive|none"
+    "cv-heading-style|tests/content-viewer/test-cv-heading-style.js|Content-Viewer: Heading Style|Apply Heading 1 via the notebookbar styles iconview|none"
+    "cv-insert-table|tests/content-viewer/test-cv-insert-table.js|Content-Viewer: Insert Table|Insert-table control opens the table-size picker in the embed|none"
+    "cv-insert-image|tests/content-viewer/test-cv-insert-image.js|Content-Viewer: Insert Image|Paste an image; the Picture context tab appears|none"
+    "cv-chart|tests/content-viewer/test-cv-chart.js|Content-Viewer: Chart Render|A doc with an embedded chart renders in the embed|none"
+    "cv-xlsx-sheet-nav|tests/content-viewer/test-cv-xlsx-sheet-nav.js|Content-Viewer: Calc Sheet Nav|Calc sheet chrome + nav control in the embed|none"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
@@ -215,6 +235,9 @@ for entry in "${TESTS[@]}"; do
     echo "========================================"
     echo "  Running: $title  ($script)"
     echo "========================================"
+
+    # Content-viewer tests target $CONTENT_VIEWER_URL; all others the legacy viewer.
+    if [[ "$script" == tests/content-viewer/* ]]; then export BASE_URL="$CONTENT_VIEWER_URL"; else unset BASE_URL; fi
 
     t_start=$SECONDS
     status="pass"
