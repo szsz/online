@@ -386,6 +386,20 @@ class Socket {
 			msg += ' deviceFormFactor=' + window.deviceFormFactor;
 		}
 
+		// Content-viewer (NotWOPIButIframe, local-storage) sessions have no WOPI
+		// CheckFileInfo, so WSD defaults the comment/edit author to "LocalUser#0".
+		// Forward the UserName cool param as author= so inserted comments are
+		// attributed to the real user (parseDocOptions overwrites the LocalStorage
+		// default). Scoped to the non-WOPI iframe path — WOPI/co-edit sessions get
+		// their author server-side and must not be overridden here.
+		if ((this._map.options as any).notWopiButIframe) {
+			const cp = (window as any).coolParams;
+			const userName = cp && cp.get('UserName');
+			if (userName) {
+				msg += ' author=' + encodeURIComponent(userName);
+			}
+		}
+
 		msg += ' timezone=' + Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 		if (this._map.options.renderingOptions) {
