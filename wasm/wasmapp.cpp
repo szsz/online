@@ -50,6 +50,21 @@ extern "C" EMSCRIPTEN_KEEPALIVE void signal_js_ready(int snapshotRestored)
     std::cout << "signal_js_ready: snapshotRestored=" << snapshotRestored << std::endl;
 }
 
+// user_name binding (declared in wasmapp.hpp): cool.html's ?UserName= query
+// param → local-loader.js ccall's wasm_set_user_name at onRuntimeInitialized
+// (before HULLO) → LocalStorage::getLocalFileInfo (wsd/Storage.cpp) reads
+// user_name as the document author, so comments / Track Changes show the
+// provided name. ccall('string') hands us a transient buffer freed when the
+// call returns, so the name must be copied into owned storage, never aliased.
+static std::string g_userNameStorage;
+const char* user_name = nullptr;
+
+extern "C" EMSCRIPTEN_KEEPALIVE void wasm_set_user_name(const char* name)
+{
+    g_userNameStorage = (name != nullptr) ? name : "";
+    user_name = g_userNameStorage.empty() ? nullptr : g_userNameStorage.c_str();
+}
+
 // Return the __heap_base address for partial heap snapshot
 extern "C" EMSCRIPTEN_KEEPALIVE uintptr_t get_heap_base()
 {
