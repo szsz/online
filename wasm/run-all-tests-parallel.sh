@@ -22,6 +22,9 @@ JOBS="${JOBS:-2}"
 # parallelism. See lib/test-env.js scaleTimeout() — tests that route
 # their timeouts through it widen automatically when JOBS_SCALE > 1.
 export JOBS_SCALE="${JOBS_SCALE:-$JOBS}"
+# Content-viewer tests (tests/content-viewer/*) run against $CONTENT_VIEWER_URL;
+# the worker sets BASE_URL for them (legacy-viewer tests use $FILE_STORAGE_URL).
+export CONTENT_VIEWER_URL="${CONTENT_VIEWER_URL:-https://wasm-viewer-test.azurewebsites.net}"
 mkdir -p "$REPORTS_DIR" "$LOG_DIR"
 
 # Parse TESTS array from canonical runner.
@@ -61,6 +64,12 @@ SCALE="${JOBS_SCALE:-1}"
 case "$SCALE" in *.*) SCALE_INT=$(printf '%.0f' "$SCALE") ;; *) SCALE_INT="$SCALE" ;; esac
 WRAPPER_TIMEOUT=$(( 1800 * SCALE_INT ))
 [ "$WRAPPER_TIMEOUT" -lt 1800 ] && WRAPPER_TIMEOUT=1800
+
+# Content-viewer tests target the content-viewer stack (BASE_URL); others the
+# legacy viewer. CONTENT_VIEWER_URL is exported by the parent runner.
+case "$script" in
+    tests/content-viewer/*) export BASE_URL="${CONTENT_VIEWER_URL:-}" ;;
+esac
 
 t_start=$(date +%s)
 status="pass"
