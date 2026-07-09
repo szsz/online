@@ -1,0 +1,41 @@
+# coolwasm-content-viewer@.service — on-box content-preview static host
+# (wasm/content-viewer-server.js). Serves the Tresorit content-preview SPA
+# in place of the legacy viewer (coolwasm-viewer@).
+#
+# Templated by ENV-file basename, same as coolwasm-viewer@:
+#   coolwasm-content-viewer@online.service      → dev stack (viewer.<domain> :6934)
+#   coolwasm-content-viewer@online-ci.service   → CI  stack (ci-viewer.<domain> :7934)
+#
+# To swap the viewer for the content-viewer on a stack:
+#   sudo systemctl disable --now coolwasm-viewer@online
+#   sudo systemctl enable  --now coolwasm-content-viewer@online
+# Both bind the same PORT, so only one may run per stack at a time.
+#
+# Environment=ENV_FILE is PINNED per instance (a CI deploy exporting
+# ENV_FILE=online-ci.env can never clobber which stack a unit serves).
+# CONTENT_VIEWER_DIST defaults to ~/content-preview/dist in the launcher;
+# override here or in the ENV file to point at a specific build.
+#
+# Runs as root: the viewer host's TLS privkeys under /etc/letsencrypt/live/*/
+# are root-only. Restart=always revives a crashed static host in seconds.
+#
+# Install: wasm/systemd/install-stack-units.sh
+
+[Unit]
+Description=coolwasm content-viewer static host (ENV=%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ENV_FILE=/home/localadmin/ENV/%i.env
+WorkingDirectory=/home/localadmin/online
+ExecStart=/usr/bin/bash /home/localadmin/online/wasm/launch-content-viewer.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+StandardOutput=append:/var/log/coolwasm/content-viewer-%i.log
+StandardError=append:/var/log/coolwasm/content-viewer-%i.log
+
+[Install]
+WantedBy=multi-user.target
