@@ -1901,6 +1901,15 @@
                         // doctype module loaded — see #170.
                         var watchdogMs = 8000;
                         var skipWatchdog = false;
+                        // Content-viewer embed: never reload the iframe. The
+                        // content-preview host manages this iframe and attaches
+                        // its load-status listener to window.app.map; a
+                        // location.reload() here swaps app.map out from under it,
+                        // so the host misses Document_Loaded and stays stuck
+                        // "loading". The content-viewer path has no warm-restore
+                        // to salvage anyway (it loads the doc via /local-file in
+                        // preRun), so the watchdog is pure downside here.
+                        if (isContentViewer) skipWatchdog = true;
                         try {
                             var mp = new URLSearchParams(window.location.search);
                             var nm = mp.get('WOPISrc') || mp.get('displayName') || '';
