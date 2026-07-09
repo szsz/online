@@ -1,7 +1,32 @@
 # Tresorit content-viewer integration — plan
 
-Status: **planning** (no PR until explicitly approved). Progress tracked
-via the CI-local lane → https://coolwasmfiles.z6.web.core.windows.net/local-builds/
+Status: **core validated end-to-end** (no PR until explicitly approved).
+Progress tracked via the CI-local lane →
+https://coolwasmfiles.z6.web.core.windows.net/local-builds/
+
+## Validated (2026-07-09)
+
+`wasm/tests/content-viewer/test-content-viewer-open.js` drives content-preview's
+`/collabora-tester` through the real file `<input>` against a fresh editor build
+and **passes**: top page cross-origin isolated (SAB), editor iframe navigates to
+`cool.html?...&localFileId=...`, content-viewer mode engages
+(`sw-bridge:skipped`), the preRun loader fetches `/local-file/<id>` and writes it
+to the FS (`[content-viewer] wrote 23KB to /tmp/test.docx`), and the .docx opens
+(`#StateWordCount` → "32 words, 91 characters"; content-preview's own state badge
+→ `DOCUMENT_LOADED`). No WASM abort/OOB.
+
+Done so far:
+- [x] Bitbucket auth (credential store) — content-preview push works.
+- [x] Deployment host: `content-viewer-server.js` + `launch-content-viewer.sh` +
+      `systemd/coolwasm-content-viewer@.service` (smoke-tested).
+- [x] Editor content-viewer mode (main.js / emscripten-module.js.m4 /
+      wasm-loader.js / relay-adapter.js) — built + E2E-proven.
+- [x] content-preview SW flat-CDN mapping (opt-in `VITE_COLLABORA_CDN_FLAT`).
+- [x] E2E acceptance test.
+
+Not yet done: wire the content-viewer host into the live dev/CI stacks + point
+at the FD editor build (Phase 3 deploy); CI-local E2E publishing; save
+round-trip + readonly-mode coverage; prod host doc-flow contract (Phase 5).
 
 ## Goal
 
