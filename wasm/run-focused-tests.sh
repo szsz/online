@@ -27,6 +27,14 @@ JOBS="${JOBS:-2}"
 # doubles waits, JOBS=4 quadruples. Override with explicit JOBS_SCALE if
 # the relationship isn't linear for some test environment.
 export JOBS_SCALE="${JOBS_SCALE:-$JOBS}"
+
+# New setup: the Tresorit content-viewer now serves the viewer domain and
+# embeds our WASM editor. The tests under tests/content-viewer/ drive that
+# stack (via /collabora-tester) and take their base URL from BASE_URL — the
+# worker sets it to $CONTENT_VIEWER_URL for those scripts so they hit the
+# content-viewer rather than the legacy viewer ($FILE_STORAGE_URL).
+export CONTENT_VIEWER_URL="${CONTENT_VIEWER_URL:-https://wasm-viewer-test.azurewebsites.net}"
+
 mkdir -p "$REPORTS_DIR" "$LOG_DIR"
 
 # Focused test list. Each entry: slug|script|title|description|shots-dir
@@ -64,6 +72,20 @@ TESTS=(
     # Perf gate
     "snapshot-milestones|tests/snapshot/test-snapshot-milestones.js|Snapshot Milestones|Per-doc cold/warm × N=3 trials (writer calc impress)|none"
     "regression-snapshot-survival|tests/regression/test-regression-snapshot-survival.js|Regression: Snapshot Survival across watchdog cycle|Heavy 50-slide pptx that exceeds the cross-type canvas-paint watchdog: snapshot must survive in Cache Storage so the next visit can warm-restore. See incident 2026-05-06.|shots-regression-snapshot-survival"
+    # ── Content-viewer (Tresorit content-viewer embed) single-user suite ──
+    # Run against $CONTENT_VIEWER_URL (the worker sets BASE_URL for these).
+    "cv-snapshot-milestones|tests/content-viewer/test-cv-snapshot-milestones.js|Content-Viewer: Load Milestones|Cold/warm load + editor-interactive, writer/calc/impress, via /collabora-tester|none"
+    "cv-singleuser|tests/content-viewer/test-cv-singleuser.js|Content-Viewer: Single-User Edit/Save|Open, type, copy/paste (internal+external), Save→download→reopen persistence, readonly toggle|none"
+    "cv-comment-author|tests/content-viewer/test-cv-comment-author.js|Content-Viewer: Comment Author|The content-viewer user name authors inserted comments (not LocalUser#0)|none"
+    "cv-search|tests/content-viewer/test-cv-search.js|Content-Viewer: Search|Ctrl+F finds + selects a token|none"
+    "cv-notebookbar|tests/content-viewer/test-cv-notebookbar.js|Content-Viewer: Notebookbar|Notebookbar renders in the embed + font-name/size comboboxes populated from the doc|none"
+    "cv-filename-open|tests/content-viewer/test-cv-filename-open.js|Content-Viewer: Tricky Filenames|Open files whose names have spaces/parens/awkward dots|none"
+    "cv-multiopen|tests/content-viewer/test-cv-multiopen.js|Content-Viewer: Multi-Open|Multiple documents per browser session all reach interactive|none"
+    "cv-heading-style|tests/content-viewer/test-cv-heading-style.js|Content-Viewer: Heading Style|Apply Heading 1 via the notebookbar styles iconview|none"
+    "cv-insert-table|tests/content-viewer/test-cv-insert-table.js|Content-Viewer: Insert Table|Insert a table via the notebookbar Insert control|none"
+    "cv-insert-image|tests/content-viewer/test-cv-insert-image.js|Content-Viewer: Insert Image|Paste an image; the Picture context tab appears|none"
+    "cv-chart|tests/content-viewer/test-cv-chart.js|Content-Viewer: Chart Render|A doc with an embedded chart renders in the embed|none"
+    "cv-xlsx-sheet-nav|tests/content-viewer/test-cv-xlsx-sheet-nav.js|Content-Viewer: Calc Sheet Nav|Calc sheet tabs + next/prev sheet navigation|none"
 )
 
 NUM_TESTS=${#TESTS[@]}
@@ -101,6 +123,12 @@ if [ ! -f "$SCRIPT_DIR/$script" ]; then
     echo "skip 0s $slug (no script: $script)" >&2
     exit 0
 fi
+
+# Content-viewer tests target the content-viewer stack (BASE_URL), not the
+# legacy viewer. CONTENT_VIEWER_URL is exported by the parent runner.
+case "$script" in
+    tests/content-viewer/*) export BASE_URL="${CONTENT_VIEWER_URL:-}" ;;
+esac
 
 t_start=$(date +%s)
 status="pass"
