@@ -60,21 +60,35 @@ async function commentAuthors(fr) {
         await sleep(2000);
 
         const fr = editorFrame(page);
-        const urlName = fr ? decodeURIComponent((fr.url().match(/[?&]UserName=([^&]*)/) || [])[1] || '') : '';
+        // URLSearchParams decodes '+' → space (decodeURIComponent does not).
+        const urlName = fr ? (new URLSearchParams(fr.url().split('?')[1] || '').get('UserName') || '') : '';
         check('UserName reached the editor URL', urlName === NAME, 'url="' + urlName + '"');
 
-        // Insert a comment via the real UI: focus the doc, Ctrl+Alt+C, type, commit.
+        // Insert a comment via the real UI: focus the doc, Ctrl+Alt+C, then wait
+        // for the annotation editor to appear (retry — the shortcut can be racy
+        // right after a cold load), type, and commit with Ctrl+Enter.
+        await sleep(3000);
         const el = await page.$('iframe'); const box = await el.boundingBox();
-        await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.5, 400));
-        await sleep(400);
-        await page.keyboard.down('Control'); await page.keyboard.down('Alt');
-        await page.keyboard.press('KeyC');
-        await page.keyboard.up('Alt'); await page.keyboard.up('Control');
-        await sleep(2500);
-        await page.keyboard.type('authored-by-test', { delay: 30 });
-        await sleep(600);
-        await page.keyboard.down('Control'); await page.keyboard.press('Enter'); await page.keyboard.up('Control');
-        await sleep(1800);
+        let appeared = false;
+        for (let attempt = 1; attempt <= 3 && !appeared; attempt++) {
+            await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
+            await sleep(500);
+            await page.keyboard.down('Control'); await page.keyboard.down('Alt');
+            await page.keyboard.press('KeyC');
+            await page.keyboard.up('Alt'); await page.keyboard.up('Control');
+            const d = Date.now() + 8000;
+            while (Date.now() < d && !appeared) {
+                const n = fr ? await fr.evaluate(() => document.querySelectorAll('.cool-annotation').length).catch(() => 0) : 0;
+                if (n > 0) appeared = true; else await sleep(400);
+            }
+        }
+        check('comment editor appeared (Insert Comment)', appeared);
+        if (appeared) {
+            await page.keyboard.type('authored-by-test', { delay: 30 });
+            await sleep(600);
+            await page.keyboard.down('Control'); await page.keyboard.press('Enter'); await page.keyboard.up('Control');
+            await sleep(1800);
+        }
 
         const authors = fr ? await commentAuthors(fr) : [];
         check('a comment was created', authors.length > 0, JSON.stringify(authors));
