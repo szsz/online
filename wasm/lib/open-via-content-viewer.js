@@ -26,6 +26,19 @@ async function openViaContentViewer(browser, base, docPath, opts = {}) {
         timeout: opts.gotoTimeout || 60000,
     });
 
+    // Optionally set the tester's "User name" field before opening, so the
+    // editor session (and comment authorship) carries that name. It's a
+    // controlled React input, so type into it rather than setting .value.
+    if (opts.userName) {
+        // The tester's toolbar (with the "User name" field) renders after the
+        // SPA mounts + asset preload — wait for it rather than querying too early.
+        try {
+            const nameInput = await page.waitForSelector('input[placeholder="User name"]', { timeout: 15000 });
+            await nameInput.click({ clickCount: 3 });
+            await nameInput.type(opts.userName);
+        } catch (e) { /* field absent (non-tester route) — skip */ }
+    }
+
     // The tester's file <input> may be hidden behind an "Open file" button;
     // uploadFile works on hidden inputs directly.
     const input = await page.waitForSelector('input[type=file]', {
