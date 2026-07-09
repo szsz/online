@@ -163,9 +163,19 @@ async function captureSession({ browser, docPath, sessionTag, expectStatus, expe
         if (hits.editor_interactive === undefined && await probeEditorInteractive(page)) {
             await record('editor_interactive', now, 300);
         }
-        // Exit: interactive reached (+1s buffer), OR content verified but overlay
-        // stuck past the grace window (reproduces "waiting for editor").
-        if (hits.editor_interactive !== undefined && now - (navStart + hits.editor_interactive) > 1000) break;
+        // Exit conditions:
+        if (hits.editor_interactive !== undefined) {
+            const sinceI = now - (navStart + hits.editor_interactive);
+            // The doc-type status text (word/sheet/slide count) can populate a
+            // second or two AFTER the editor is interactive (Save-enabled), so
+            // don't bail the instant we're interactive — give content_verified a
+            // bounded settle to be captured. Break once both are in, or after
+            // 10s if the status genuinely never matches (a real failure).
+            if (hits.content_verified !== undefined && sinceI > 1000) break;
+            if (sinceI > 10000) break;
+        }
+        // content verified but the editor never became interactive (overlay
+        // stuck) — reproduces "waiting for editor".
         if (hits.content_verified !== undefined && hits.editor_interactive === undefined
             && now - contentVerifiedAt > INTERACTIVE_GRACE_MS) break;
         await sleep(200);
