@@ -19,6 +19,12 @@
     // before initiateJoin() runs. Without this declaration the free lookup
     // throws ReferenceError under `use strict` and aborts encryption init.
     var wopiSrc = params.get('WOPISrc') || '';
+    // Content-viewer mode (Tresorit content-preview embed): the content viewer
+    // owns save via same-origin reach-in (app.map.save + Module.FS.readFile),
+    // so relay-adapter's own checkpoint save must not fire — with an empty
+    // WOPISrc it would fetch /wasm/ and 404. Detected by localFileId + no
+    // WOPISrc, same discriminator as main.js / wasm-loader.js.
+    var isContentViewer = (!!params.get('localFileId') && !wopiSrc);
     // Latest hot-switch target room (updated by RelaySwitchRoom). Used to
     // gate the late-join switchdoc (0x05 handler) against stale 0x05s from
     // rapid A→B→A switches — see the switchdoc-storm fix there. Distinct
@@ -1091,6 +1097,9 @@
     }
 
     function saveAndUploadCheckpoint() {
+        // Content-viewer mode owns save via app.map.save + Module.FS.readFile;
+        // our checkpoint save would fetch /wasm/ with an empty WOPISrc → 404.
+        if (isContentViewer) return;
         // In relay mode we need the WebSocket open so we can report the
         // new checkpoint hash back to the server (0x07 frame). In
         // single-user mode there is no relay — save still has to go

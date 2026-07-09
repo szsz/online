@@ -73,6 +73,42 @@ function createEmscriptenModule(documentKind, documentDescriptor) {
 				console.error('[snapshot] Deferred load error:', e);
 				Module['removeRunDependency']('snapshot-load-emm');
 			});
+		},
+		// ── Content-viewer document load ──
+		// When embedded by the Tresorit content-preview app (content-viewer
+		// mode), the document is not fetched by Kit via /wasm/<id> (no relay /
+		// no sw-bridge here). Instead content-preview stages the plaintext into
+		// its service worker, served at /local-file/<id>. Fetch it and write it
+		// into the Emscripten FS at the file_path the WASM main() will open
+		// (argv = ['local', file_path], set in main.js). A dedicated run
+		// dependency defers callMain() until the write completes. MEMFS stores
+		// contents JS-side, so this survives the snapshot HEAPU8 overwrite.
+		function() {
+			var g = typeof globalThis !== 'undefined' ? globalThis : self;
+			var cv = g.__coolContentViewer;
+			if (!cv || !cv.localFileId || !cv.filePath) return;
+			var mod = g.Module;
+			mod['addRunDependency']('content-viewer-doc');
+			fetch('/local-file/' + encodeURIComponent(cv.localFileId)).then(function(r) {
+				if (!r.ok) throw new Error('local-file HTTP ' + r.status);
+				return r.arrayBuffer();
+			}).then(function(buf) {
+				var FS = mod.FS;
+				// Ensure parent dirs of file_path exist (idempotent).
+				var parts = cv.filePath.split('/').filter(Boolean);
+				var cur = '';
+				for (var i = 0; i < parts.length - 1; i++) {
+					cur += '/' + parts[i];
+					try { FS.mkdir(cur); } catch (e) { /* already exists */ }
+				}
+				FS.writeFile(cv.filePath, new Uint8Array(buf));
+				console.log('[content-viewer] wrote ' + (buf.byteLength / 1024).toFixed(0) + 'KB to ' + cv.filePath);
+				mod['removeRunDependency']('content-viewer-doc');
+			}).catch(function(e) {
+				console.error('[content-viewer] doc load failed:', e);
+				// Must still drain the dep or callMain() never runs.
+				mod['removeRunDependency']('content-viewer-doc');
+			});
 		}],
 	};
 }
