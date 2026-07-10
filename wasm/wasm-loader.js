@@ -574,6 +574,27 @@
                     if (meta.fingerprint !== BUILD_FINGERPRINT) {
                         return discardStale('stored=' + meta.fingerprint + ' current=' + BUILD_FINGERPRINT);
                     }
+                    // Content-viewer multi-doc gate: restoring the generic
+                    // warmup snapshot and then in-place-loading a DIFFERENT
+                    // document hangs the kit (doc:loaded never fires) — and
+                    // CV mode deliberately has no watchdog reload to recover
+                    // (a reload swaps app.map out from under the host's load
+                    // listener; that's the #264 skip). So in CV mode only
+                    // restore when this page opens the SAME localFileId that
+                    // saved the snapshot (a same-doc reload); any other doc
+                    // cold-loads. Cold CV opens are ~25-45s and always emit
+                    // Document_Loaded, which is what the embedding host needs.
+                    // The snapshot is left in place for same-doc reloads.
+                    if (isContentViewer) {
+                        var cvId = params.get('localFileId') || '';
+                        if ((meta.cvLocalFileId || '') !== cvId) {
+                            mark('snapshot:cv_doc_mismatch',
+                                 'saved=' + (meta.cvLocalFileId || 'none') + ' current=' + cvId + ' — cold load');
+                            logTiming('Snapshot: CV different-doc — cold start');
+                            window.__wasmSnapshotData = null;
+                            return null;
+                        }
+                    }
                     // Carry the saved doctype across to the warm-restore
                     // watchdog: when meta.docType is the legacy warmup-only
                     // (factories warmed but no user doc) and the URL is a
@@ -2079,6 +2100,10 @@
                                 ts: Date.now(),
                                 fingerprint: BUILD_FINGERPRINT,
                                 docType: window.__wasmFirstDocType,
+                                // Content-viewer same-doc restore gate (see the
+                                // restore side): only a reload of THIS doc may
+                                // warm-restore this snapshot in CV mode.
+                                cvLocalFileId: params.get('localFileId') || '',
                             });
                             // Fire the cache.put IMMEDIATELY (truly async,
                             // off-thread). When this was deferred until
