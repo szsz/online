@@ -415,6 +415,30 @@ echo "    overwrote $BR_TOTAL canonical blob(s) with brotli content + Content-En
 # Content-Encoding bit for brotli-overwritten blobs is the only thing
 # that really needs setting, and Step 2 above does that at upload.
 
+# ── Purge the latest-collabora.txt pointer at the FD edge ──────────
+# The FD rule set marks EVERY path Cache-Control: immutable (correct for
+# the per-version folders — they never change), but latest-collabora.txt
+# is a MUTABLE pointer: without a purge the edge serves the first-ever
+# cached value forever and consumers keep building against a stale
+# editor version. Best-effort: missing purge permissions degrade to a
+# warning (consumers can still bypass with a ?ts= cache-buster).
+if command -v az >/dev/null 2>&1; then
+    FD_PROFILE="${AZURE_FD_PROFILE:-wasmeditor}"
+    FD_RG="${AZURE_FD_RG:-Szilveszter-coediting}"
+    FD_EP="${AZURE_FD_ENDPOINT:-}"
+    if [[ -z "$FD_EP" ]]; then
+        FD_EP="$(az afd endpoint list --profile-name "$FD_PROFILE" --resource-group "$FD_RG" \
+            --query '[0].name' -o tsv 2>/dev/null || true)"
+    fi
+    if [[ -n "$FD_EP" ]]; then
+        echo "  Purging /latest-collabora.txt at the FD edge ($FD_EP)..."
+        az afd endpoint purge --profile-name "$FD_PROFILE" --resource-group "$FD_RG" \
+            --endpoint-name "$FD_EP" --content-paths "/latest-collabora.txt" \
+            --no-wait --output none 2>/dev/null \
+            || echo "  WARNING: FD purge failed — latest-collabora.txt may serve stale from the edge" >&2
+    fi
+fi
+
 # ── Smoke test via Front Door ──────────────────────────────────────
 echo "  Smoke test via $EDITOR_FD_URL ..."
 SMOKE_FAILED=0
