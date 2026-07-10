@@ -31,6 +31,26 @@ echo "=== Staging content-viewer ($VDIR) ==="
 rm -rf "$VDIR"; mkdir -p "$VDIR/dist"
 cp "$SCRIPT_DIR/content-viewer-server.js" "$VDIR/server.js"
 cp -r "$CONTENT_VIEWER_DIST_SRC/." "$VDIR/dist/"
+
+# version.json — deploy provenance served at /version.json. The CV test-run
+# table reads it to attribute results to exact content-preview + editor
+# builds. cp commit comes from the dist's source repo (the dir above dist/);
+# the pinned editor version is recovered from the baked bundle (the
+# collabora-<UTC-ts>/ asset prefix is embedded verbatim at build time).
+CP_REPO_DIR="$(dirname "$CONTENT_VIEWER_DIST_SRC")"
+CP_SHA="$(git -C "$CP_REPO_DIR" rev-parse HEAD 2>/dev/null || echo '')"
+CP_BRANCH="$(git -C "$CP_REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+COLLAB_VER="$(grep -rhoE 'collabora-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z' \
+    "$VDIR/dist/assets/"*.js 2>/dev/null | head -1 | sed 's/^collabora-//')"
+cat > "$VDIR/dist/version.json" <<EOF
+{
+  "cp_commit": "$CP_SHA",
+  "cp_branch": "$CP_BRANCH",
+  "collabora_version": "$COLLAB_VER",
+  "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+echo "  version.json: cp=$CP_SHA ($CP_BRANCH) collabora=$COLLAB_VER"
 cat > "$VDIR/package.json" <<'JSON'
 {
   "name": "cool-content-viewer",
