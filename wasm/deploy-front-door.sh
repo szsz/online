@@ -203,7 +203,16 @@ if [[ -f "$EDIR_CONTENT/online.wasm" ]]; then
     done
 fi
 
-# build-info.json
+# build-info.json — the provenance record for this editor build. CI sets
+# GIT_SHA / LO_BUILD_ID in env; manual invocations fall back to the working
+# tree's HEAD and the pinned wasm/LO_BUILD_ID so the record is never empty
+# (the CV test-run table reads these fields).
+if [[ -z "${GIT_SHA:-}" ]]; then
+    GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
+if [[ -z "${LO_BUILD_ID:-}" && -f "$SCRIPT_DIR/LO_BUILD_ID" ]]; then
+    LO_BUILD_ID="$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/LO_BUILD_ID" | grep -v '^[[:space:]]*$' | head -1 | tr -d '[:space:]')"
+fi
 cat > "$EDIR_CONTENT/build-info.json" <<EOF
 {
   "id": "$APP_BUILD_ID",
@@ -250,6 +259,9 @@ cp -r "$EDIR_CONTENT/browser/dist/." "$CV_DIR/"
 if [[ -d "$EDIR_CONTENT/dicts" ]]; then
     cp -r "$EDIR_CONTENT/dicts" "$CV_DIR/dicts"
 fi
+# Provenance for the flat build too (id, git_sha, lo_build_id, fingerprint)
+# — the CV test-run table fetches /collabora-<ver>/build-info.json.
+cp "$EDIR_CONTENT/build-info.json" "$CV_DIR/build-info.json"
 printf '%s' "$CV_VERSION" > "$STAGE/latest-collabora.txt"
 echo "  Staged flat CDN layout: collabora-$CV_VERSION/ (+ latest-collabora.txt)"
 
