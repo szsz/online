@@ -62,6 +62,55 @@ app.use((req, res, next) => {
     next();
 });
 
+// ── Shared-file store (co-edit doc seeding) ──
+// Co-edit through the content viewer needs the doc bytes reachable by
+// EVERY participant: browser A uploads a local file (bytes live only in
+// A's service-worker cache), so a joiner B needs one shared HTTP home to
+// fetch the same bytes from. The relay broker is metadata-only by design
+// (hash + locator URL, never bytes — message-relay.js), so this server
+// parks the bytes instead:
+//
+//   POST /shared-file/<key>   body = raw doc bytes, X-File-Name header
+//   GET  /shared-file/<key>   → the bytes + X-File-Name
+//
+// The creating page POSTs here before opening the editor and advertises
+// the room; the relay checkpoint locator points back at this URL; joiners
+// GET it (same-origin — the SW passes /shared-file through untouched).
+// In-memory with an LRU cap: entries live as long as the process, which
+// exceeds any co-edit session on the single-instance test deployments
+// this server targets. Not durable storage — same contract as the SW's
+// own USER_FILES_CACHE (bounded, best-effort).
+const SHARED_MAX_FILES = 30;                    // LRU entry cap
+const SHARED_MAX_BYTES = 25 * 1024 * 1024;      // per-file cap
+const sharedFiles = new Map();                  // key → { bytes, name, ts }
+const SHARED_KEY_RE = /^[A-Za-z0-9_-]{1,128}$/; // no path tricks
+
+app.post('/shared-file/:key', express.raw({ type: () => true, limit: SHARED_MAX_BYTES }), (req, res) => {
+    const key = req.params.key;
+    if (!SHARED_KEY_RE.test(key)) return res.status(400).send('Bad key');
+    if (!req.body || !req.body.length) return res.status(400).send('Empty body');
+    // Refresh-on-write LRU: delete-then-set moves the key to the end.
+    sharedFiles.delete(key);
+    sharedFiles.set(key, {
+        bytes: req.body,
+        name: String(req.headers['x-file-name'] || ''),
+        ts: Date.now(),
+    });
+    while (sharedFiles.size > SHARED_MAX_FILES) {
+        sharedFiles.delete(sharedFiles.keys().next().value);
+    }
+    res.status(200).json({ ok: true, size: req.body.length });
+});
+
+app.get('/shared-file/:key', (req, res) => {
+    const entry = sharedFiles.get(req.params.key);
+    if (!entry) return res.status(404).send('No such shared file');
+    res.setHeader('Content-Type', 'application/octet-stream');
+    if (entry.name) res.setHeader('X-File-Name', entry.name);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(entry.bytes);
+});
+
 // ── Static assets from dist/ ──
 // The service worker (collabora-sw.js) and hashed /assets/* bundles live
 // here. index:false so directory requests fall through to the SPA handler.

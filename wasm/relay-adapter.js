@@ -25,6 +25,19 @@
     // WOPISrc it would fetch /wasm/ and 404. Detected by localFileId + no
     // WOPISrc, same discriminator as main.js / wasm-loader.js.
     var isContentViewer = (!!params.get('localFileId') && !wopiSrc);
+    // Content-viewer CO-EDIT mode: content-preview adds ?relay=… alongside
+    // ?localFileId=…, so isContentViewer stays true (WOPISrc stays empty —
+    // room identity lives in the relay WS URL, /room/<key>) while
+    // singleUserMode goes false. The doc bytes come from the same-origin
+    // /shared-file/<roomKey> store on content-viewer-server.js: the creator
+    // page POSTs them there before opening the editor, and every joiner's
+    // page GETs them into its own SW cache before boot — so by the time
+    // this adapter runs, /local-file/<localFileId> always serves the doc.
+    var cvLocalFileId = params.get('localFileId') || '';
+    function cvRoomKey() {
+        var m = (relayUrl || '').match(/\/room\/([^/?#]+)/);
+        return m ? m[1] : '';
+    }
     // Latest hot-switch target room (updated by RelaySwitchRoom). Used to
     // gate the late-join switchdoc (0x05 handler) against stale 0x05s from
     // rapid A→B→A switches — see the switchdoc-storm fix there. Distinct
@@ -462,16 +475,26 @@
         // /wasm/<wopiSrc>; `locator` is the URL late joiners will
         // fetch those bytes from. Late joiners just echo back the
         // `hash` they computed.
-        var wasmUrl = window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+        //
+        // Content-viewer co-edit: there is no /wasm/ endpoint. The bytes to
+        // hash are the ones the SW serves at /local-file/<id> (identical to
+        // what preRun wrote into the FS), and the locator late joiners can
+        // actually reach is the content-viewer-server's shared-file store.
+        var wasmUrl = isContentViewer
+            ? window.location.origin + '/local-file/' + encodeURIComponent(cvLocalFileId)
+            : window.location.origin + '/wasm/' + encodeURIComponent(wopiSrc);
+        var checkpointLocator = isContentViewer
+            ? window.location.origin + '/shared-file/' + cvRoomKey()
+            : wasmUrl;
         function sendReady(hash) {
             lastKnownHash = hash || lastKnownHash;
             var payloadObj = {};
             if (hash) payloadObj.hash = hash;
-            if (isFirstClient && hash) payloadObj.locator = wasmUrl;
+            if (isFirstClient && hash) payloadObj.locator = checkpointLocator;
             var readyPayload = Object.keys(payloadObj).length ? JSON.stringify(payloadObj) : '';
             console.log('[relay] Activating — sending join-ready hash=' +
                         (hash ? hash.substring(0, 16) + '…' : 'none') +
-                        (isFirstClient && hash ? ' locator=' + wasmUrl : ''));
+                        (isFirstClient && hash ? ' locator=' + checkpointLocator : ''));
             sendToRelay(0x06, myViewId, readyPayload);
         }
         // Enter replay mode BEFORE sending 0x06 — the relay replays
@@ -511,6 +534,10 @@
                 }
             }
             if (singleUserMode) { proceed(); return; }
+            // Content-viewer co-edit: no viewer-server key API behind this
+            // origin (the SPA fallback would answer /api/keys/* with HTML).
+            // Frames run unencrypted, same as the pre-E2E relay default.
+            if (isContentViewer) { proceed(); return; }
             var keyBaseUrl = getFileStorageUrl(wopiSrc);
             if (!keyBaseUrl) { proceed(); return; }
             var kvUrl = keyBaseUrl.replace(/\/api\/files\/.*/, '/api/keys/current-version');
@@ -1468,6 +1495,51 @@
                         MessageId: 'RelayLateJoinPhase',
                         Values: { phase: 'downloading', msgCount: info.msgCount || 0, seq: info.seq }
                     }), '*'); } catch(e) {}
+
+                    // Content-viewer co-edit late-join: the joiner's page
+                    // already fetched the shared bytes (/shared-file/<room>)
+                    // into its SW BEFORE opening this iframe, and preRun
+                    // wrote them into the FS — the doc is loading from the
+                    // exact bytes the room was seeded with. No download, no
+                    // POST to /wasm/ (there is none), and NO switchdocument
+                    // (_pendingSwitchDoc stays null so the activation poll
+                    // proceeds on coolwsdReady). Just verify our bytes match
+                    // the room checkpoint and mark the join file ready; the
+                    // 0x06/replay flow then brings us current. The CV save
+                    // path never rotates the relay checkpoint (see
+                    // saveAndUploadCheckpoint's isContentViewer guard), so
+                    // the checkpoint hash is immutably the seed bytes' hash
+                    // — a mismatch means the page staged DIFFERENT bytes
+                    // (join link misuse), which is terminal, not retryable.
+                    if (isContentViewer) {
+                        origFetch('/local-file/' + encodeURIComponent(cvLocalFileId))
+                            .then(function(r) {
+                                if (!r.ok) throw new Error('local-file HTTP ' + r.status);
+                                return r.arrayBuffer();
+                            })
+                            .then(function(buf) { return crypto.subtle.digest('SHA-256', buf); })
+                            .then(function(hashBuf) {
+                                joinFileHash = Array.from(new Uint8Array(hashBuf)).map(function(b) {
+                                    return b.toString(16).padStart(2, '0');
+                                }).join('');
+                                if (info.hash && info.hash !== joinFileHash) {
+                                    throw new Error('cv-checkpoint-mismatch: ours=' +
+                                        joinFileHash.substring(0, 16) + '… room=' +
+                                        info.hash.substring(0, 16) + '…');
+                                }
+                                lateJoinFileReady = true;
+                                console.log('[relay] CV late-join: local bytes match room checkpoint (' +
+                                            joinFileHash.substring(0, 16) + '…) — replay only');
+                            })
+                            .catch(function(e) {
+                                console.error('[relay] CV late-join verify FAILED: ' + e.message);
+                                try { parent.postMessage(JSON.stringify({
+                                    MessageId: 'RelayLateJoinFailed',
+                                    Values: { error: e.message }
+                                }), '*'); } catch(_e) {}
+                            });
+                        return;
+                    }
 
                     // Primary: the checkpoint's `locator`. For v2 files
                     // the locator is /api/v2/file/<fileId> which serves
