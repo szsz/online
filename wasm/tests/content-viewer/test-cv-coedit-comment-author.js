@@ -2,18 +2,22 @@
 // session carry the right author and propagate to the peer.
 //
 // A ("Alice CV") creates a co-edit session, B ("Bob CV") joins via the link.
-// A inserts a comment through the real UI (Ctrl+Alt+C → type → Ctrl+Enter).
-// Asserts: on A's side the comment is authored "Alice CV" (the tester name
-// travelled through UserName → author=) in a LIVE co-edit session.
+// A inserts a comment through the real UI: Ctrl+Home, Ctrl+Alt+C, CLICK INTO
+// the comment box, type, Ctrl+Enter. Asserts on BOTH sides: the comment
+// exists, carries A's author name (the commit's uno .uno:InsertAnnotation
+// JSON embeds Author explicitly, so the peer's copy is attributed correctly),
+// carries the typed content, and nothing leaked into the document body.
 //
-// KNOWN GAP (informational check only): the comment does NOT currently
-// propagate to B. The annotation editor commits through a path the relay
-// doesn't carry (no relayed `uno .uno:InsertAnnotation` is emitted — see
-// ai/proposals/proposed/coedit-comment-propagation.md). This is a
-// pre-existing relay-architecture gap shared with the legacy viewer's
-// co-edit, not a content-viewer issue; the B-side arrival check below
-// logs the outcome without failing the suite, and must be HARDENED into
-// a real assertion when the proposal is fixed.
+// History (2026-07-10): originally shipped with the B-side check
+// informational-only, believing comment propagation was a relay gap. The
+// real story: at narrow viewports the editor auto-zooms (150%+), the comment
+// margin vanishes, the annotation parks OFF-VIEWPORT, focus stays on the doc
+// and "comment text" typed blind lands in the BODY — on both sides, via key
+// relay (a divergence-shaped false positive). With a 1920x1080 viewport and
+// a real click into .cool-annotation-textarea, the commit goes through
+// uno .uno:InsertAnnotation (already relayed) and everything propagates,
+// author included. No product change was needed; the relay carried it all
+// along. See ai/proposals/promoted/coedit-comment-propagation.md.
 //
 // Usage: node wasm/tests/content-viewer/test-cv-coedit-comment-author.js [base-url]
 
@@ -28,9 +32,12 @@ const BASE = (process.argv[2] || process.env.BASE_URL
     || 'https://wasm-viewer-test.azurewebsites.net').replace(/\/+$/, '');
 const DOCX = process.env.DOCX || path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 const SHOT_DIR = '/tmp/content-viewer-report/coedit-comment-author';
-const LOAD_BUDGET = parseInt(process.env.LOAD_BUDGET || '180000', 10);
+// 1920x1080 misses the warm-restore path on Azure — cold loads run ~190s.
+const LOAD_BUDGET = parseInt(process.env.LOAD_BUDGET || '300000', 10);
+const PROPAGATE_BUDGET = parseInt(process.env.PROPAGATE_BUDGET || '90000', 10);
 const NAME_A = 'Alice CV';
 const NAME_B = 'Bob CV';
+const VIEWPORT = { width: 1920, height: 1080 };   // comment margin must exist
 
 const T0 = Date.now();
 const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`);
@@ -53,21 +60,32 @@ async function waitInteractive(page, budget) {
     }
     return false;
 }
-async function commentAuthors(page) {
+async function charCount(page) {
+    const fr = editorFrame(page);
+    if (!fr) return -1;
+    return fr.evaluate(() => {
+        const t = document.querySelector('#StateWordCount')?.textContent || '';
+        const m = t.match(/([\d,.]+)\s+character/i);
+        return m ? parseInt(m[1].replace(/[,.]/g, ''), 10) : -1;
+    }).catch(() => -1);
+}
+async function annots(page) {
     const fr = editorFrame(page);
     if (!fr) return [];
-    return fr.evaluate(() => [...document.querySelectorAll('.cool-annotation-content-author')]
-        .map(e => (e.textContent || '').trim()).filter(Boolean)).catch(() => []);
+    return fr.evaluate(() => [...document.querySelectorAll('.cool-annotation')].map(a => ({
+        author: a.querySelector('.cool-annotation-content-author')?.textContent?.trim() || '',
+        content: (a.querySelector('.cool-annotation-content')?.textContent || '').trim(),
+    }))).catch(() => []);
 }
-async function waitComments(page, minCount, budget) {
+async function waitAnnots(page, pred, budget) {
     const d = Date.now() + budget;
-    let authors = [];
+    let last = [];
     while (Date.now() < d) {
-        authors = await commentAuthors(page);
-        if (authors.length >= minCount) return authors;
+        last = await annots(page);
+        if (pred(last)) return last;
         await sleep(1000);
     }
-    return authors;
+    return last;
 }
 
 (async () => {
@@ -76,7 +94,7 @@ async function waitComments(page, minCount, budget) {
     const { browser } = await launch({ headless: 'new' });
     try {
         const A = await openViaContentViewer(browser, BASE, DOCX, {
-            userName: NAME_A, coEdit: true, iframeTimeout: 60000,
+            userName: NAME_A, coEdit: true, iframeTimeout: 60000, viewport: VIEWPORT,
         });
         check('A: editor iframe + join link', !!A.editorFrame && !!A.joinLink);
         check('A: editor interactive', await waitInteractive(A.page, LOAD_BUDGET));
@@ -84,52 +102,87 @@ async function waitComments(page, minCount, budget) {
         const ctxB = await browser.createBrowserContext();
         const pageB = await ctxB.newPage();
         const B = await joinViaContentViewer(browser, A.joinLink, {
-            page: pageB, userName: NAME_B, iframeTimeout: 90000,
+            page: pageB, userName: NAME_B, iframeTimeout: 90000, viewport: VIEWPORT,
         });
         check('B: editor iframe appeared', !!B.editorFrame);
         check('B: editor interactive', await waitInteractive(B.page, LOAD_BUDGET));
         await sleep(4000);   // both sides settled + relay activated
+        const ccA0 = await charCount(A.page);
+        const ccB0 = await charCount(B.page);
 
         // ── A inserts a comment through the real UI ──
         const el = await A.page.$('iframe'); const box = await el.boundingBox();
         const frA = editorFrame(A.page);
-        let appeared = false;
-        for (let attempt = 1; attempt <= 3 && !appeared; attempt++) {
+        let editBox = null;
+        for (let attempt = 1; attempt <= 3 && !editBox; attempt++) {
             await A.page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
+            await sleep(500);
+            await A.page.keyboard.down('Control'); await A.page.keyboard.press('Home'); await A.page.keyboard.up('Control');
             await sleep(500);
             await A.page.keyboard.down('Control'); await A.page.keyboard.down('Alt');
             await A.page.keyboard.press('KeyC');
             await A.page.keyboard.up('Alt'); await A.page.keyboard.up('Control');
             const d = Date.now() + 8000;
-            while (Date.now() < d && !appeared) {
-                const n = frA ? await frA.evaluate(() => document.querySelectorAll('.cool-annotation').length).catch(() => 0) : 0;
-                if (n > 0) appeared = true; else await sleep(400);
+            while (Date.now() < d && !editBox) {
+                const ta = frA ? await frA.$('.cool-annotation-textarea') : null;
+                if (ta) {
+                    const tb = await ta.boundingBox();
+                    if (tb && tb.x > 0 && tb.y > 0) { editBox = tb; break; }
+                }
+                await sleep(400);
             }
         }
-        check('A: comment editor appeared', appeared);
-        if (appeared) {
+        check('A: comment editor appeared ON-SCREEN', !!editBox,
+            editBox ? JSON.stringify(editBox) : 'off-viewport or missing');
+        if (editBox) {
+            // The editor repositions / juggles focus in its first moments —
+            // clicking too early lands on the doc and the typed text leaks
+            // into the body. Settle, then click INTO the contenteditable box
+            // and retry until it actually HOLDS focus before typing.
+            await sleep(2000);
+            let focused = false;
+            for (let t = 0; t < 5 && !focused; t++) {
+                const ta = await frA.$('.cool-annotation-textarea');
+                const tb = ta ? await ta.boundingBox() : null;
+                if (!tb || tb.x <= 0 || tb.y <= 0) { await sleep(800); continue; }
+                await A.page.mouse.click(tb.x + tb.width / 2, tb.y + Math.min(tb.height / 2, 20));
+                await sleep(700);
+                focused = await frA.evaluate(() =>
+                    (document.activeElement?.className || '').toString().includes('cool-annotation-textarea'))
+                    .catch(() => false);
+            }
+            check('A: comment box holds focus', focused);
             await A.page.keyboard.type('coedit-comment', { delay: 30 });
             await sleep(600);
+            const typedIn = frA ? await frA.evaluate(() =>
+                (document.querySelector('.cool-annotation-textarea')?.textContent || '')).catch(() => '') : '';
+            check('A: typed text landed IN the comment box', typedIn.includes('coedit-comment'),
+                '"' + typedIn + '"');
             await A.page.keyboard.down('Control'); await A.page.keyboard.press('Enter'); await A.page.keyboard.up('Control');
         }
 
-        const authorsA = await waitComments(A.page, 1, 20000);
-        check('A: comment created', authorsA.length > 0, JSON.stringify(authorsA));
-        check('A: comment authored "' + NAME_A + '"', authorsA.includes(NAME_A),
-            'authors=' + JSON.stringify(authorsA));
-        check('A: not authored as LocalUser default',
-            !authorsA.some(a => /^LocalUser/.test(a)), JSON.stringify(authorsA));
+        // ── A side: committed with the right author + content ──
+        const aAnnots = await waitAnnots(A.page,
+            l => l.some(a => a.content.includes('coedit-comment')), 20000);
+        check('A: comment committed with content', aAnnots.some(a => a.content.includes('coedit-comment')),
+            JSON.stringify(aAnnots));
+        check('A: authored "' + NAME_A + '"', aAnnots.some(a => a.author === NAME_A),
+            JSON.stringify(aAnnots));
 
-        // ── B-side arrival: KNOWN GAP, informational only (see header) ──
-        const authorsB = await waitComments(B.page, 1, 30000);
-        if (authorsB.length > 0) {
-            log('  (info) B received the comment — the propagation gap may be FIXED;'
-                + ' harden this into a check() and close the proposal. authors='
-                + JSON.stringify(authorsB));
-        } else {
-            log('  (info) B did not receive the comment — known relay gap'
-                + ' (ai/proposals/proposed/coedit-comment-propagation.md)');
-        }
+        // ── B side: propagates WITH A's author (uno JSON embeds Author) ──
+        const bAnnots = await waitAnnots(B.page,
+            l => l.some(a => a.content.includes('coedit-comment')), PROPAGATE_BUDGET);
+        check('B: comment propagated to the peer', bAnnots.some(a => a.content.includes('coedit-comment')),
+            JSON.stringify(bAnnots));
+        check('B: peer copy authored "' + NAME_A + '" (not ' + NAME_B + ')',
+            bAnnots.some(a => a.author === NAME_A && a.content.includes('coedit-comment')),
+            JSON.stringify(bAnnots));
+
+        // ── body-leak tripwire: comment text must not hit the doc body ──
+        const ccA1 = await charCount(A.page);
+        const ccB1 = await charCount(B.page);
+        check('A: no body leak', ccA1 === ccA0, `chars ${ccA0}→${ccA1}`);
+        check('B: no body leak', ccB1 === ccB0, `chars ${ccB0}→${ccB1}`);
 
         try {
             fs.mkdirSync(SHOT_DIR, { recursive: true });
