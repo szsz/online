@@ -1123,10 +1123,98 @@
         return cmd === '.uno:Save' || cmd === '.uno:SaveAs';
     }
 
+    // Content-viewer CO-EDIT save-rotation. The doc lives in the Emscripten
+    // FS (file_path param) and the shared seed bytes live at the same-origin
+    // /shared-file/<roomKey> store — so a save rotates the room checkpoint
+    // by (1) reading the saved bytes from the FS, (2) overwriting
+    // /shared-file/<roomKey> (future joiners' pages stage the SAVED doc, so
+    // their hash always matches the rotated checkpoint), and (3) sending the
+    // standard 0x07 rotation frame so the relay prunes its message log.
+    // Keeps the legacy no-rotate-on-no-op-save invariant: byte-identical
+    // saves must NOT rotate, or unpersisted live edits vanish from the
+    // replay log and late-joiners diverge.
+    //
+    // Known narrow race (documented, unhandled): a joiner whose page fetched
+    // /shared-file just before a rotation lands hash-mismatches its 0x05 and
+    // fails terminally (RelayLateJoinFailed) — re-opening the join link
+    // recovers. The window is the seconds between the page staging bytes and
+    // the adapter's join.
+    function cvSaveAndRotate() {
+        if (!connected) return;
+        sendToKit('save dontTerminateEdit=1 dontSaveIfUnmodified=0');
+        setTimeout(function() {
+            var saveAtSeq = lastSeq;
+            var filePath = params.get('file_path') || '';
+            var mod = globalThis.Module;
+            if (!filePath || !mod || !mod.FS) {
+                console.error('[relay] CV rotation: no file_path/Module.FS');
+                return;
+            }
+            var bytes;
+            try {
+                bytes = mod.FS.readFile(filePath);
+            } catch (e) {
+                console.error('[relay] CV rotation: FS read failed: ' + e.message);
+                return;
+            }
+            crypto.subtle.digest('SHA-256', bytes).then(function(hashBuf) {
+                var hashHex = Array.from(new Uint8Array(hashBuf)).map(function(b) {
+                    return b.toString(16).padStart(2, '0');
+                }).join('');
+                if (lastKnownHash && hashHex === lastKnownHash) {
+                    console.log('[relay] CV save produced unchanged bytes — skipping rotation '
+                        + '(unpersisted live edits stay in the replay log)');
+                    try { parent.postMessage(JSON.stringify({
+                        MessageId: 'SaveComplete',
+                        Values: { hash: hashHex.substring(0, 16), bytes: bytes.length, rotated: false },
+                    }), '*'); } catch (e) {}
+                    return;
+                }
+                var locator = window.location.origin + '/shared-file/' + cvRoomKey();
+                var fsName = filePath.split('/').pop() || 'document';
+                origFetch(locator, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/octet-stream',
+                        'X-File-Name': encodeURIComponent(fsName),
+                    },
+                    body: new Blob([bytes]),
+                }).then(function(r) {
+                    if (!r.ok) throw new Error('shared-file POST ' + r.status);
+                    lastKnownHash = hashHex;
+                    var payload = { hash: hashHex, locator: locator, seq: saveAtSeq };
+                    if (ws && connected) {
+                        var bodyBytes = new TextEncoder().encode(JSON.stringify(payload));
+                        var frame = new Uint8Array(5 + bodyBytes.length);
+                        frame[0] = 0x07;
+                        frame[1] = (myViewId >>> 24) & 0xFF;
+                        frame[2] = (myViewId >>> 16) & 0xFF;
+                        frame[3] = (myViewId >>> 8) & 0xFF;
+                        frame[4] = myViewId & 0xFF;
+                        frame.set(bodyBytes, 5);
+                        ws.send(frame);
+                        console.log('[relay] CV save-rotation 0x07 sent: hash=' + hashHex.substring(0, 16)
+                            + '… atSeq=' + saveAtSeq + ' (' + bytes.length + 'B → ' + locator + ')');
+                    }
+                    try { parent.postMessage(JSON.stringify({
+                        MessageId: 'SaveComplete',
+                        Values: { hash: hashHex.substring(0, 16), bytes: bytes.length, rotated: true },
+                    }), '*'); } catch (e) {}
+                }).catch(function(e) {
+                    console.error('[relay] CV rotation failed: ' + e.message);
+                });
+            });
+        }, 1500);
+    }
+
     function saveAndUploadCheckpoint() {
-        // Content-viewer mode owns save via app.map.save + Module.FS.readFile;
-        // our checkpoint save would fetch /wasm/ with an empty WOPISrc → 404.
-        if (isContentViewer) return;
+        // Content-viewer SINGLE-USER owns save via app.map.save +
+        // Module.FS.readFile in the host (no relay, nothing to rotate).
+        // Content-viewer CO-EDIT rotates through the shared-file store.
+        if (isContentViewer) {
+            if (!singleUserMode) cvSaveAndRotate();
+            return;
+        }
         // In relay mode we need the WebSocket open so we can report the
         // new checkpoint hash back to the server (0x07 frame). In
         // single-user mode there is no relay — save still has to go
