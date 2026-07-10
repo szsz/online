@@ -218,6 +218,10 @@ TESTS=(
     "cv-insert-image|tests/content-viewer/test-cv-insert-image.js|Content-Viewer: Insert Image|Paste an image; the Picture context tab appears|none"
     "cv-chart|tests/content-viewer/test-cv-chart.js|Content-Viewer: Chart Render|A doc with an embedded chart renders in the embed|none"
     "cv-xlsx-sheet-nav|tests/content-viewer/test-cv-xlsx-sheet-nav.js|Content-Viewer: Calc Sheet Nav|Calc sheet chrome + nav control in the embed|none"
+    # ── Content-viewer CO-EDIT suite (relay-backed shared sessions) ──
+    "cv-coedit-typing|tests/content-viewer/test-cv-coedit-typing.js|Content-Viewer Co-Edit: Typing|Two browsers share a doc via the tester's Co-edit checkbox + join link; typing propagates A→B and B→A (relay room, /shared-file seed)|none"
+    "cv-coedit-latejoin|tests/content-viewer/test-cv-coedit-latejoin.js|Content-Viewer Co-Edit: Late Join|A joiner arriving AFTER unsaved edits converges via relay replay, then receives live edits|none"
+    "cv-coedit-comment-author|tests/content-viewer/test-cv-coedit-comment-author.js|Content-Viewer Co-Edit: Comment Author|Comments in a co-edit session carry the tester user name and propagate to the peer|none"
 )
 
 # ── Run tests one by one ───────────────────────────────────────────────
