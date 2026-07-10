@@ -258,6 +258,25 @@ window.L.Map.WOPI = window.L.Handler.extend({
 			}
 
 			this.DocumentLoadedTime = Date.now();
+
+			// Non-WOPI embeds (NotWOPIButIframe / content-viewer): the kit's
+			// viewinfo emission is racy on cold single-user loads (~25% of
+			// opens it never arrives — there is no server userlist), which
+			// held Document_Loaded hostage forever and left the embedding
+			// host stuck on "loading" while the document was fully rendered.
+			// Once the doc itself has loaded, give the remaining conditions
+			// a short grace and then emit regardless — for an embed, a
+			// loaded document IS the loaded app.
+			if (this._map.options.notWopiButIframe && !this._appLoaded) {
+				var that = this;
+				setTimeout(function() {
+					if (that._appLoaded) return;
+					app.console.debug('PostMessage: forcing Document_Loaded — conditions still missing: '
+						+ JSON.stringify(that._appLoadedConditions));
+					that._appLoaded = true;
+					that.sendDocumentLoaded();
+				}, 2000);
+			}
 		}
 		this._appLoadedConditions[e.type] = true;
 		for (var key in this._appLoadedConditions) {
