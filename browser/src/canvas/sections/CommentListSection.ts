@@ -44,6 +44,17 @@ window.L.Map.include({
 
 		var avatar = undefined;
 		var author = this.getViewName(this._docLayer._viewId);
+		if (!author || author === 'null') {
+			// Non-WOPI embeds (content-viewer / NotWOPIButIframe) get no
+			// server userlist in single-user mode, so _viewInfo has no
+			// entry for the own view and the committed comment's Author
+			// JSON came out as "null". Fall back to the UserName URL
+			// param — the same name the session's author= load param
+			// carries, and the name peers see in co-edit because
+			// .uno:InsertAnnotation embeds this Author value.
+			var cp = (window as any).coolParams;
+			author = (cp && cp.get('UserName')) || author || '';
+		}
 		if (author in this._viewInfoByUserName) {
 			avatar = this._viewInfoByUserName[author].userextrainfo.avatar;
 		}
