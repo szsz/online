@@ -53,6 +53,19 @@ async function charCount(page) {
     const m = t.match(/([\d,]+)\s*character/);
     return m ? parseInt(m[1].replace(/,/g, '')) : -1;
 }
+// The statusbar word count can lag Document_Loaded by a few seconds (and a
+// one-shot read can hit a transiently detached frame) — poll, re-resolving
+// the frame each time, instead of failing a healthy open on a racy read.
+async function waitCharCount(page, budget) {
+    const d = Date.now() + budget;
+    let last = -1;
+    while (Date.now() < d) {
+        last = await charCount(page);
+        if (last >= 0) return last;
+        await sleep(500);
+    }
+    return last;
+}
 
 (async () => {
     if (!fs.existsSync(SRC)) { check('source fixture present', false, SRC); process.exit(2); }
@@ -75,8 +88,7 @@ async function charCount(page) {
                 while (Date.now() < d) { if (await interactive(page)) return true; await sleep(500); }
                 return false;
             })();
-            await sleep(1500);
-            const cc = await charCount(page);
+            const cc = await waitCharCount(page, 15000);
             check(`open "${name}"`, ok && cc >= 0, `interactive=${ok} chars=${cc}`);
         } catch (e) {
             check(`open "${name}"`, false, (e.message || String(e)).slice(0, 120));
