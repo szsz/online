@@ -18,6 +18,12 @@
 
 extern int coolwsd_server_socket_fd;
 
+// Display name for the local user, set from JS via wasm_set_user_name
+// before HULLO. LocalStorage::getLocalFileInfo reads this so the document
+// author (Track Changes, comments) matches the cursor label peers see.
+extern const char* user_name;
+extern "C" void wasm_set_user_name(const char* name);
+
 extern "C" void handle_cool_message(const char *string_value);
 
 // Multi-client support: allow remote clients to connect via relay

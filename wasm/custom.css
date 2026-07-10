@@ -1,0 +1,25 @@
+/**
+ * Custom CSS for the WebAssembly version of Collabora Online.
+ * This file is used to hide certain UI elements that are not relevant or functional in the WebAssembly environment.
+ */
+#document-header,
+#file-save325,
+#file-save297,
+#file-save262,
+#save323,
+#save295,
+#save518,
+#document-titlebar .document-title,
+#viewMode,
+#toolbar-row #downloadas,
+#toolbar-row #repair,
+#Help-tab-label,
+#menu-help,
+#menu-downloadas,
+label[for="fontnamecombobox-input-notebookbar"],
+label[for="fontsizecombobox-input-notebookbar"],
+label[for="fontsizecombobox-input-sidebar"],
+label[for="fontnamecombobox-input-context-toolbar"],
+label[for="fontsizecombobox-input-context-toolbar"] {
+	display: none !important;
+}

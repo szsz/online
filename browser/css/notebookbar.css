@@ -733,7 +733,7 @@ label.notebookbar.ui-checkbox-label {
 	text-align: center;
 	line-height: 1.1;
 	padding: 2px 4px;
-	font-family: "Liberation Serif", Georgia, serif;
+	font-family: 'Liberation Serif', Georgia, serif;
 	font-size: 11px;
 	font-weight: 400;
 	color: var(--color-main-text);
@@ -745,7 +745,7 @@ label.notebookbar.ui-checkbox-label {
 [id^='stylesview'] .ui-iconview-entry > span[title='Title'],
 [id^='stylesview'] .ui-iconview-entry > span[title='Subtitle'],
 [id^='stylesview'] .ui-iconview-entry > span[title^='Heading'] {
-	font-family: "Liberation Sans", Arial, sans-serif;
+	font-family: 'Liberation Sans', Arial, sans-serif;
 }
 
 /* Headline styles — Title is the visual peak. */

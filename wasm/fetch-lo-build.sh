@@ -94,7 +94,7 @@ fi
 echo "Extracting to $EXTRACTED …" >&2
 rm -rf "$EXTRACTED"
 mkdir -p "$EXTRACTED"
-tar -I 'zstd -d -T0' -xf "$TARBALL" -C "$EXTRACTED"
+zstd -d -T0 -c "$TARBALL" | tar -xf - -C "$EXTRACTED"
 touch "$EXTRACTED/.complete"
 
 echo "[OK] LO build $LO_BID ready at $EXTRACTED ($(du -sh "$EXTRACTED" | cut -f1))" >&2
