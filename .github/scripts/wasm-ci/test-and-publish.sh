@@ -240,29 +240,31 @@ KNOWN_FLAKE_TESTS=(
     # 2-browser late-join flakes — known iframe-race issue, see
     # ai/proposals/promoted/paste-coedit-jobs2-second-iframe-race.md
     regression-latejoin-prewarm-race
-    regression-latejoin-unsaved
-    regression-latejoin-offline-unsaved
-    regression-first-client-overwrite
+    cv-regression-latejoin-unsaved
+    cv-regression-latejoin-offline-unsaved
+    cv-regression-first-client-overwrite
     # Multi-case copy/paste suite flakes — see ai/tasks/in-progress/
     # copy-paste-master.md Bucket C (Test-infra)
-    regression-rightclick-copypaste
-    regression-select-delete-coedit
-    regression-copy-paste-suite
+    cv-regression-rightclick-copypaste
+    cv-regression-select-delete-coedit
+    cv-regression-copy-paste-suite
     # Hot-switch / snapshot flakes — see ai/proposals/promoted/
     # snapshot-azure-deep-review.md
     snapshot-cross-type
-    regression-xlsx-sheet-nav
+    cv-xlsx-sheet-nav
     # Multi-step user flows that flake under JOBS_SCALE=2
-    formats
-    e2e-upload
-    singleuser
-    pptx-coedit
+    cv-formats
+    cv-e2e-upload
+    cv-singleuser
+    cv-pptx-coedit
     regression-cross-format-matrix
     # SAB context — environmental, see ai/proposals/promoted/
     # runner-env-leaks-ci-into-relay.md
-    regression-sab-context
+    cv-regression-sab-context
     # Transitions iconview — see #193 thread (German tile rendering)
-    regression-pptx-transitions-iconview
+    cv-regression-pptx-transitions-iconview
+    # Content-viewer: passes solo, flakes under JOBS_SCALE=2 (2026-07-11 migration)
+    cv-heading-style
 )
 
 LO_BLOCKED_TESTS=(
@@ -280,7 +282,7 @@ LO_BLOCKED_TESTS=(
     # Ctrl+X TRIPWIRE — intentionally fails until kit .uno:Cut writes
     # to OS clipboard. See ai/proposals/promoted/ctrl-x-isolated-
     # single-user-clipboard.md
-    regression-ctrl-x-cut-restore
+    cv-regression-ctrl-x-cut-restore
     # Writer Area dialog — WASM function-signature mismatch on
     # .uno:FormatArea dispatch via SwDrawShell::ExecDrawDlg
     # (drawdlg.cxx:121). NOT a memory issue — diagnosed 2026-06-07
@@ -290,8 +292,8 @@ LO_BLOCKED_TESTS=(
     # so the bug is in the Writer-specific dispatch / async-dialog
     # adapter. See ai/proposals/proposed/writer-area-dialog-
     # function-signature-mismatch.md.
-    regression-writer-insert-shape-area
-    regression-writer-shape-area-oom
+    cv-regression-writer-insert-shape-area
+    cv-regression-writer-shape-area-oom
     # (regression-writer-header-footer-remove REMOVED 2026-06-21: fixed by
     # libreoffice-core-wasm PR #42 — skip the LOK delete-confirmation dialog so
     # the untick is honoured; now enforced on LO_BUILD_ID ≥ 2026-06-21-84.)
@@ -300,7 +302,15 @@ LO_BLOCKED_TESTS=(
     # i.e. the transition panel's click doesn't emit the expected
     # dialogevents. LO-core (transitions UI event emission), awaiting an LO
     # fix. See ai/tasks/todo/fix-impress-transition-click-no-dialogevents.md.
-    regression-impress-transition-click
+    cv-regression-impress-transition-click
+    # Content-viewer area-dialog OOB/OOM cluster + build-dicts fr gap (2026-07-11
+    # full-suite migration; legacy counterparts fail identically). See
+    # wasm/tests/content-viewer/ACCEPTED-FAILS.txt + ai/proposals/proposed/
+    # build-dicts-nested-dictionaries-subdir.md.
+    cv-regression-impress-area-dialog
+    cv-regression-area-palette
+    cv-regression-writer-header-footer-remove
+    cv-regression-spell-rightclick-suggest
 )
 
 is_in_set() {
