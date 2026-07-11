@@ -1,5 +1,20 @@
 # Full-suite migration to the Tresorit content viewer
 
+> **STATUS 2026-07-11 — COMPLETE.** 84 content-viewer test files
+> (`test-cv-*.js`) now in `run-all-tests.sh`; 76 legacy versions retired
+> (`git rm`). Verified against editor `collabora-2026-07-11T08-39-12Z`
+> (LO 2026-06-27-110): **68 pass + 6 fixed = 74 hard-pass**, 8 accepted-fail
+> (`ACCEPTED-FAILS.txt`: area-dialog OOB/OOM + transition clusters + fr-dict
+> gap — legacy fails identically), 1 flake (`heading-style`, passes solo).
+> NA-in-CV (subject only exists on the legacy viewer → those legacy tests
+> STAY): fonts, samedoc-flicker, hard-refresh(+slow), docswitch-dialogs,
+> room-switch, xlsx-hotswitch, cross-format-matrix, ui-lang-resolve,
+> lang-switcher-click, sidebar-deck-iconview-lang, sidebar. CV co-edit gained
+> save-rotation so the rotation tests port 1:1. Follow-ups filed:
+> build-dicts nested-dir fr bug; content-preview host Save re-arm on rapid
+> same-page re-open.
+
+
 Decision record (2026-07-10, user-approved): every test whose SUBJECT is
 editor behavior migrates to run end-to-end through the content viewer
 (`/collabora-tester` upload; co-edit via the tester's Co-edit checkbox +
