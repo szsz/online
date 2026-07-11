@@ -24,7 +24,9 @@ const __cl = require('../../lib/inject-checklist');
 // 2026-06-07: bumped 14 -> 16 — added pptx-coedit + regression-
 // cross-format-matrix (both flapped between runs under JOBS_SCALE=2:
 // passed in build 051447, failed in 002906 and 095121).
-const KNOWN_FLAKE_BUDGET = 16;
+// 2026-07-11: bumped 16 -> 17 — full-suite content-viewer migration: each
+// migrated legacy flake now has a cv- twin (legacy version retired).
+const KNOWN_FLAKE_BUDGET = 17;
 // 2026-06-06: down from 7→4→2 — LO PR #36 (MAXIMUM_MEMORY=2GB)
 // unblocked Impress Area dialog + 2 spellcheck tests on LO 2026-06-
 // 05-69. 2026-06-07: bump back to 4 — the 2 Writer Area tests
@@ -40,7 +42,9 @@ const KNOWN_FLAKE_BUDGET = 16;
 // 2026-06-15: bump 5→6 — add regression-impress-transition-click (fails
 // deterministically: transition click emits no dialogevents; LO-core,
 // awaiting an LO fix). Drop back when fixed.
-const LO_BLOCKED_BUDGET = 6;
+// 2026-07-11: bumped 6 -> 8 — CV migration: area-dialog OOB/OOM cluster +
+// transition + fr-dict (build-dicts) cv- twins; see ACCEPTED-FAILS.txt.
+const LO_BLOCKED_BUDGET = 8;
 
 const TEST_PUBLISH_SH = path.resolve(__dirname, '..', '..', '..',
     '.github', 'scripts', 'wasm-ci', 'test-and-publish.sh');
