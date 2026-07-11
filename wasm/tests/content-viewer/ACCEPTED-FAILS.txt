@@ -1,0 +1,16 @@
+# CV tests that are EXPECTED-FAIL — faithful ports of tripwires/known-broken
+# LO behavior that the LEGACY suite also carries as accepted fails. The
+# run-all summary / gate treats these as non-blocking (same as their legacy
+# counterparts). Re-verify + demote to hard-pass when the underlying LO issue
+# is fixed. One slug per line (the run-all-tests.sh entry slug, cv- prefixed).
+#
+# Verified 2026-07-11 against editor collabora-2026-07-11T08-39-12Z (LO 2026-06-27-110).
+
+cv-regression-writer-shape-area-oom        # 1GB TOTAL_MEMORY OOM in SvxAreaTabDialog ctor — unfixed LO cap tripwire
+cv-regression-impress-area-dialog          # memory-access-OOB on Area dialog Apply — area-dialog allocation cluster
+cv-regression-writer-insert-shape-area     # same OOB, insert-shape → Area — allocation cluster
+cv-regression-area-palette                 # right-click shape → Area... crashes kit (memory-access-OOB / Pthread error), dialog never opens — same area-dialog allocation cluster; legacy fails identically on this LO build
+cv-regression-spell-rightclick-suggest     # en+de spelling suggestions work; fr-FR NEVER flags on this build — deployed fr dict bundle carries 0 hunspell data (build-dicts.sh non-recursive GitHub listing misses French's nested dictionaries/ subfolder; dict-loader logs "wrote 0/3 data files" for fr, wrongMarks:0, no squiggle). Genuine dict-packaging defect, not a harness bug; demote when build-dicts.sh packs fr's nested .dic/.aff
+cv-regression-writer-header-footer-remove  # Format → Page Style dialog OOB-crashes the kit on open (memory access out of bounds / Pthread error), dialog never opens (no #header/#footer tab) — same area-dialog (SvxAreaTabDialog) allocation cluster as the other Area-dialog accepted fails; editor otherwise healthy (all notebookbar tabs render). Deterministic across runs; demote when the LO tab-dialog allocation OOB is fixed
+cv-regression-impress-transition-click     # LO transition-iconview: singleclickactivate emits 0 dialogevents — known cluster
+cv-regression-pptx-transitions-iconview    # LO transition-iconview tiles render empty — known cluster

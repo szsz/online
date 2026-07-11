@@ -195,36 +195,69 @@ async function getComboboxInputValue(frame) {
             !!(fontEntries && fontEntries.length > 1),
             'entries=' + JSON.stringify(fontEntries));
 
-        // ── Drive the font change through the combobox input (real input) ──
-        log(`--- Changing font to "${TARGET_FONT}" via combobox input ---`);
-        async function typeFontIntoCombobox() {
+        // ── Drive the font change by PICKING the target from the combobox
+        //    dropdown (real user flow) ──────────────────────────────────────
+        // Typing the font name char-by-char is unreliable here: the jsdialog
+        // combobox re-renders its <input> on each keystroke and focus jumps to
+        // the hidden #clipboard-area, so the typed text never survives (input
+        // ends up empty). Opening the dropdown via the arrow button and
+        // clicking the "Liberation Serif" entry is an equally-real user action
+        // that isn't defeated by the re-render — it exercises the same
+        // createFontSelector wiring (the entry click dispatches the font
+        // change; the state-change handler must then reflect it).
+        log(`--- Changing font to "${TARGET_FONT}" via combobox dropdown ---`);
+        async function pickFontFromDropdown() {
+            // The combobox <input> is present (proves the widget rendered).
             const inputRect = await frame.evaluate(() => {
                 const root = document.getElementById('fontnamecombobox');
-                if (!root) return null;
-                const input = root.querySelector('input');
+                const input = root && root.querySelector('input');
                 if (!input) return null;
                 const r = input.getBoundingClientRect();
                 return { x: r.x, y: r.y, w: r.width, h: r.height };
             }).catch(() => null);
-            if (!inputRect || inputRect.w <= 0) return null;
-            const ix = ifBox.x + inputRect.x + inputRect.w / 2;
-            const iy = ifBox.y + inputRect.y + inputRect.h / 2;
-            await page.mouse.click(ix, iy);
-            await sleep(500);
-            await page.mouse.click(ix, iy, { clickCount: 3 });   // select existing value
-            await sleep(300);
-            await page.keyboard.press('Backspace');
-            await sleep(200);
-            await page.keyboard.type(TARGET_FONT, { delay: 60 });
-            await sleep(300);
-            await snap(page, 'typed_font_name');
-            await page.keyboard.press('Enter');
-            log('Pressed Enter to commit font change');
+            if (!inputRect || inputRect.w <= 0) return { inputRect: null };
+
+            // Open the dropdown via the arrow button (real click).
+            const arrowRect = await frame.evaluate(() => {
+                const b = document.querySelector(
+                    '#fontnamecombobox .ui-combobox-button, #listbox-arrow-fontnamecombobox');
+                if (!b) return null;
+                const r = b.getBoundingClientRect();
+                return { x: r.x, y: r.y, w: r.width, h: r.height };
+            }).catch(() => null);
+            if (!arrowRect) return { inputRect };
+            await page.mouse.click(ifBox.x + arrowRect.x + arrowRect.w / 2,
+                ifBox.y + arrowRect.y + arrowRect.h / 2);
+            await sleep(1000);
+            await snap(page, 'dropdown_open');
+
+            // Scroll the target entry into view, then click it.
+            const sels = '#fontnamecombobox-dropdown .ui-combobox-entry, '
+                + '.jsdialog .ui-combobox-entry, [role="option"], .ui-listbox-entry';
+            await frame.evaluate((s, t) => {
+                const m = [...document.querySelectorAll(s)]
+                    .find(e => (e.textContent || '').trim().toLowerCase() === t.toLowerCase());
+                if (m) m.scrollIntoView({ block: 'center' });
+            }, sels, TARGET_FONT);
+            await sleep(400);
+            const entryRect = await frame.evaluate((s, t) => {
+                const m = [...document.querySelectorAll(s)]
+                    .find(e => (e.textContent || '').trim().toLowerCase() === t.toLowerCase());
+                if (!m) return null;
+                const r = m.getBoundingClientRect();
+                return { x: r.x, y: r.y, w: r.width, h: r.height };
+            }, sels, TARGET_FONT).catch(() => null);
+            if (!entryRect || entryRect.w <= 0) return { inputRect, entryFound: false };
+            await page.mouse.click(ifBox.x + entryRect.x + entryRect.w / 2,
+                ifBox.y + entryRect.y + entryRect.h / 2);
+            log(`Clicked "${TARGET_FONT}" entry in dropdown`);
             await sleep(3000);
-            return inputRect;
+            return { inputRect, entryFound: true };
         }
-        const inputRect = await typeFontIntoCombobox();
+        const { inputRect, entryFound } = await pickFontFromDropdown();
         check('#fontnamecombobox input is present', !!inputRect);
+        check(`"${TARGET_FONT}" is selectable in the font dropdown`, entryFound !== false,
+            'entryFound=' + entryFound);
         await snap(page, 'after_font_change');
 
         // ── Verify: the createFontSelector state-change wiring must pick up
@@ -241,12 +274,12 @@ async function getComboboxInputValue(frame) {
         }
         let fontAfter = await pollFont(8000);
 
-        // One retry of the REAL keystroke sequence (jsdialog can re-render
-        // the input mid-typing under load and eat the chain). No internal
-        // API fallback — the keystroke path is the surface under test.
+        // One retry of the REAL dropdown-pick (the jsdialog can re-render the
+        // combobox mid-interaction under load). No internal API fallback — the
+        // dropdown-pick path is the surface under test.
         if (!fontAfter || !fontAfter.toLowerCase().includes(TARGET_FONT.toLowerCase())) {
-            log('  combobox keystroke path did not propagate — retrying the real input sequence once');
-            await typeFontIntoCombobox();
+            log('  combobox dropdown pick did not propagate — retrying the real dropdown pick once');
+            await pickFontFromDropdown();
             fontAfter = await pollFont(8000);
         }
 

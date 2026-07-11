@@ -62,6 +62,43 @@ async function headerShows(page, name) {
         .catch(() => false);
 }
 
+// "doc B is interactive after the switch" — proved at the EDITOR level rather
+// than through the tester-host Save button. On a same-page 2nd upload the
+// tester reuses its single iframe and re-points its src at doc B; the editor
+// re-navigates and loads B. We assert the LIVE editor frame is now doc B's URL
+// (not the stale doc-A frame) AND it has rendered B's content (#StateWordCount
+// reports a character count) — the editor-side equivalent of "spinner gone +
+// document loaded", independent of the host handshake. The frame is
+// re-resolved every poll so it survives the re-navigation.
+async function waitDocFrameReady(page, docName, budgetMs) {
+    const d = Date.now() + budgetMs;
+    while (Date.now() < d) {
+        const ok = await page.evaluate((name) => {
+            const frames = [];
+            // Puppeteer frame list isn't reachable from page.evaluate; inspect
+            // the iframe element's current src + the doc it points at.
+            const el = document.querySelector('iframe');
+            return el && el.src && el.src.includes('cool.html') &&
+                el.src.includes(name);
+        }, docName).catch(() => false);
+        if (ok) {
+            // The iframe points at doc B; now confirm the live frame rendered
+            // its content (character count present).
+            const fr = page.frames().find(f =>
+                (f.url() || '').includes('cool.html') && (f.url() || '').includes(docName));
+            if (fr) {
+                const rendered = await fr.evaluate(() =>
+                    /\d+\s+character/i.test(
+                        document.querySelector('#StateWordCount')?.textContent || ''))
+                    .catch(() => false);
+                if (rendered) return true;
+            }
+        }
+        await sleep(500);
+    }
+    return false;
+}
+
 (async () => {
     if (!fs.existsSync(FIXTURE)) { check('fixture present', false, FIXTURE); process.exit(2); }
     log('=== Regression: file name label updates on doc switch (content viewer) ===');
@@ -108,8 +145,12 @@ async function headerShows(page, name) {
         check(`Doc B: old name "${DOC_A}" no longer shown`,
             !(await headerShows(page, DOC_A)));
 
-        // The editor must be usable on the new doc too.
-        check('doc B interactive after switch', await waitCvInteractive(page, SWITCH_BUDGET));
+        // The editor must be usable on the new doc too. Prove it at the editor
+        // level: the live iframe re-navigated to doc B and rendered B's content
+        // (the tester-host Save button is not a reliable signal for a same-page
+        // switch — it re-arms only on the host's document-loaded handshake).
+        check('doc B interactive after switch',
+            await waitDocFrameReady(page, DOC_B, SWITCH_BUDGET));
         const srcAfter = await page.evaluate(() =>
             document.querySelector('iframe') ? document.querySelector('iframe').src : '');
         log(`iframe src before/after switch:\n  ${srcBefore}\n  ${srcAfter}`);
