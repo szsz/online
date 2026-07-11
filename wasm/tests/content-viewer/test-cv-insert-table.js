@@ -5,6 +5,9 @@
 // and opens the table-size picker (grid). The actual table draws on the tile
 // canvas (no DOM node), so a successful pick is reported via the Table context
 // tab when it fires; the required assertion is that the control + picker work.
+// Also carries the legacy regression's crash subject (LO core blew the wasm
+// heap in SvxAutoFormatData / SwTableAutoFormat copy-ctors during insert):
+// no memory-access-out-of-bounds errors, and the char count is preserved.
 'use strict';
 const fs = require('fs'); const path = require('path');
 const { launch, sleep } = require('../../lib/browser');
