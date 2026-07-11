@@ -131,6 +131,14 @@ for lang in "${LANGS[@]}"; do
 
     if $FORCE_REFETCH; then rm -rf "$src_dir"; fi
 
+    # Re-fetch a cached dir that has no .dic — it's stale/empty (e.g. built
+    # by a pre-2026-07-11 version before the nested-subdir sweep below, which
+    # shipped fr_FR with zero hunspell data → French spellcheck dead).
+    if [[ -d "$src_dir" ]] && ! ls "$src_dir"/*.dic >/dev/null 2>&1; then
+        echo "  Cached $src_dir has no .dic (stale/empty) — re-fetching"
+        rm -rf "$src_dir"
+    fi
+
     if [[ ! -d "$src_dir" ]]; then
         mkdir -p "$src_dir"
         echo "  Listing upstream…"
@@ -139,16 +147,11 @@ for lang in "${LANGS[@]}"; do
             rm -rf "$src_dir"
             continue
         }
-        # Select only the files we care about.
+        # Select the top-level files we care about.
         names="$(echo "$api_json" | api_names \
             | grep -E '\.(dic|aff|xcu|xml)$' \
             | grep -v -E '^(description-|changelog|README|affDescription)' \
             || true)"
-        if [[ -z "$names" ]]; then
-            echo "  WARN: no dict files in $lang (maybe a non-hunspell language?) — skipping"
-            rm -rf "$src_dir"
-            continue
-        fi
         for name in $names; do
             echo "    fetch $name"
             curl -sL --fail -m 60 "$RAW_BASE/$lang/$name" -o "$src_dir/$name" || {
@@ -157,12 +160,43 @@ for lang in "${LANGS[@]}"; do
                 continue 2
             }
         done
+        # Nested-subdir sweep. Some languages (e.g. fr_FR) keep their
+        # .dic/.aff under <lang>/dictionaries/ rather than at the top level,
+        # with dictionaries.xcu referencing them as %origin%/<file> (package
+        # root). The top-level listing misses them, so the bundle shipped
+        # with only the .xcu → empty-of-data (French spellcheck broken until
+        # 2026-07-11). Sweep immediate subdirs for spell .dic/.aff and fetch
+        # them FLAT into src_dir — matches %origin% + the de/en layout, and
+        # dict-loader keys on basename regardless of tar path.
+        subdirs="$(echo "$api_json" | { have jq \
+            && jq -r '.[] | select(.type=="dir") | .name' \
+            || python3 -c 'import json,sys; [print(d["name"]) for d in json.load(sys.stdin) if d["type"]=="dir"]'; } || true)"
+        for sub in $subdirs; do
+            case "$sub" in META-INF|ui|pythonpath|.github|images) continue ;; esac
+            sub_json="$(curl -sL --fail -m 30 "${CURL_AUTH_HEADERS[@]}" "$REPO_API/$lang/$sub" 2>/dev/null)" || continue
+            sub_names="$(echo "$sub_json" | api_names | grep -E '\.(dic|aff)$' || true)"
+            for name in $sub_names; do
+                [[ -e "$src_dir/$name" ]] && continue   # top-level copy wins
+                echo "    fetch $sub/$name (nested → flat)"
+                curl -sL --fail -m 60 "$RAW_BASE/$lang/$sub/$name" -o "$src_dir/$name" || true
+            done
+        done
         # META-INF/manifest.xml is optional but harmless.
         curl -sL --fail -m 30 "$RAW_BASE/$lang/META-INF/manifest.xml" \
             -o "$src_dir/manifest.xml" 2>/dev/null && \
             { mkdir -p "$src_dir/META-INF"; mv "$src_dir/manifest.xml" "$src_dir/META-INF/"; } || true
     else
         echo "  Using cached $src_dir"
+    fi
+
+    # Never ship an empty-of-data bundle: a spell dictionary REQUIRES a .dic.
+    # (Applies to fresh + cached dirs.) A language with none after the
+    # top-level + nested sweep is non-hunspell or moved upstream — skip it
+    # rather than manifest a data-less bundle.
+    if ! ls "$src_dir"/*.dic >/dev/null 2>&1; then
+        echo "  WARN: no .dic in $lang after top-level + nested sweep — skipping (won't ship empty)"
+        rm -rf "$src_dir"
+        continue
     fi
 
     # Derive supported locales from dictionaries.xcu (first 3 Locales nodes).
@@ -193,6 +227,16 @@ echo >> "$MANIFEST_TMP"
 echo ']' >> "$MANIFEST_TMP"
 mv "$MANIFEST_TMP" "$OUT_DIR/manifest.json"
 trap - EXIT
+
+# Regression guard for the nested-subdir bug (2026-07-11): fr_FR nests its
+# .dic/.aff under fr_FR/dictionaries/. If the nested sweep above ever
+# regresses, French silently ships an empty bundle again. Fail loudly when
+# fr_FR was requested + we reached this point online but produced no bundle.
+if printf '%s\n' "${LANGS[@]}" | grep -qx fr_FR && [[ ! -f "$OUT_DIR/fr_FR.tar.gz" ]]; then
+    echo "ERROR: fr_FR was requested but produced no bundle — the nested-dictionaries" >&2
+    echo "       sweep regressed (French .dic/.aff live under fr_FR/dictionaries/)." >&2
+    exit 1
+fi
 
 echo
 echo "=== Done ==="
