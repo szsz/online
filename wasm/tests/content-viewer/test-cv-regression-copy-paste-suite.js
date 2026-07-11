@@ -84,6 +84,10 @@ async function ctrlEnd(page) {
 }
 
 async function writeClipboardText(page, text) {
+    // The Clipboard API rejects writes from a non-focused document; in a
+    // multi-tab test (or when the editor iframe holds focus) the tester
+    // page isn't frontmost. Bring it forward first.
+    try { await page.bringToFront(); } catch (e) {}
     try {
         await page.evaluate(t => navigator.clipboard.writeText(t), text);
     } catch (e) {
@@ -94,6 +98,7 @@ async function writeClipboardText(page, text) {
 }
 
 async function writeClipItems(page, items) {
+    try { await page.bringToFront(); } catch (e) {}
     const writer = target => target.evaluate(async (its) => {
         const blobItems = {};
         for (const k in its) blobItems[k] = new Blob([its[k]], { type: k });
