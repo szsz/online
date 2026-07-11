@@ -72,6 +72,13 @@ async function typeIntoDoc(page, text) {
         check('A: content visible after open', aBase >= 0, 'A=' + aBase);
         check('B: opened the same doc (matching baseline)', bBase === aBase, 'A=' + aBase + ' B=' + bBase);
 
+        // Let B's editor settle before typing — the first c>=0 read fires the
+        // instant the (saved) doc renders, but the editor isn't yet accepting
+        // keyboard input; typing that early on the large doc silently drops the
+        // keys (the observed B=9159 HELLO-never-landed bug). The passing
+        // co-edit tests give the same 3s settle after open.
+        await sleep(3000);
+
         // ── B co-edits: types HELLO; must reach A ──
         await typeIntoDoc(B.page, 'HELLO');   // +5
         const bAfter = await waitCvCharCount(B.page, c => c >= aBase + 5, 30000);

@@ -54,17 +54,18 @@ async function snap(page, name) {
     } catch (e) {}
 }
 
-async function clickIntoDoc(page) {
-    const el = await page.$('iframe');
-    const box = el && await el.boundingBox();
-    if (box) await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
-    await sleep(500);
-}
+// Focus the doc the way the PASSING co-edit tests do: click into the iframe
+// body via its bounding box, then wait 800ms for the click to register focus
+// BEFORE any keyboard input (a shorter settle or an immediate Ctrl+End on a
+// freshly-opened editor loses the keystrokes — that was the harness bug).
+// No Ctrl+End: the new.docx fixture is a single short paragraph, so the click
+// already lands the caret at the end; the reference typeIntoDoc omits it too.
 async function typeAtEnd(page, text) {
     await page.bringToFront().catch(() => {});
-    await clickIntoDoc(page);
-    await page.keyboard.down('Control'); await page.keyboard.press('End'); await page.keyboard.up('Control');
-    await sleep(300);
+    const el = await page.$('iframe');
+    const box = await el.boundingBox();
+    await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
+    await sleep(800);
     await page.keyboard.type(text, { delay: 60 });
     await sleep(1500);
 }
@@ -105,6 +106,13 @@ async function joinFresh(browser, joinLink, userName) {
     const r = await joinViaContentViewer(browser, joinLink, {
         page, userName, iframeTimeout: 90000,
     });
+    // Let the freshly-joined editor settle before the caller reads state /
+    // types. Typing the instant the doc renders (right after the first char
+    // read) silently drops the keys on a just-joined client — that dropped
+    // BETA/GAMMA/DELTA and cascaded into every downstream "got state" check.
+    // The passing test-cv-regression-latejoin-overwrite settles the same 6s.
+    await waitCvInteractive(page, 300000);
+    await sleep(6000);
     return { page: r.page, editorFrame: r.editorFrame, ctx };
 }
 
@@ -123,8 +131,17 @@ async function joinFresh(browser, joinLink, userName) {
         watchRotations(A.page, rotations);
         check('A: editor iframe + join link', !!A.editorFrame && !!A.joinLink);
         check('A: editor interactive', await waitCvInteractive(A.page, LOAD_BUDGET));
-        await sleep(3000);
-        const base = await waitCvCharCount(A.page, c => c >= 0, 60000);
+        // Let the editor settle before the first keystroke: a stable char
+        // count (two equal consecutive reads) means the doc is genuinely
+        // interactive and will accept keyboard input. Typing too early — right
+        // after the first c>=0 read — silently drops the keys (the ALPHA bug).
+        await sleep(6000);
+        let base = -1, prevBase = -2;
+        for (const t0 = Date.now(); Date.now() - t0 < 60000;) {
+            base = await cvCharCount(A.page);
+            if (base > 0 && base === prevBase) break;
+            prevBase = base; await sleep(1000);
+        }
         check('A: char count readable', base >= 0, 'base=' + base);
         await snap(A.page, 'A_initial');
 

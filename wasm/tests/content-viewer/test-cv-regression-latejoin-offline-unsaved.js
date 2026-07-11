@@ -65,15 +65,14 @@ async function stableCount(part, timeoutMs) {
     }
     return prev;
 }
+// Mirror the PASSING co-edit tests: click into the iframe body, then wait
+// 800ms for focus to register BEFORE typing. A shorter settle (or an
+// immediate Ctrl+End on a freshly-opened editor) silently drops the keys.
 async function typeAtEnd(part, text) {
     await part.page.bringToFront().catch(() => {});
     const box = await (await part.page.$('iframe')).boundingBox();
     await part.page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
-    await sleep(400);
-    await part.page.keyboard.down('Control');
-    await part.page.keyboard.press('End');
-    await part.page.keyboard.up('Control');
-    await sleep(300);
+    await sleep(800);
     await part.page.keyboard.type(text, { delay: 40 });
     await sleep(1500);
 }
@@ -88,40 +87,63 @@ async function typeAtEnd(part, text) {
         const bytes = fs.readFileSync(FIXTURE);
         const NAME = 'cv-ljoffline-' + Date.now() + '.docx';
 
-        // A creates the co-edit room; B joins in an isolated context so we
-        // have a live join link. We then close B immediately — we want the
-        // late-join replay path with NO active peers when the REAL joiner
-        // (C) arrives. (openCoEditPair returns after both are interactive;
-        // we reuse only its join link.)
+        // A creates the co-edit room; B joins in an isolated context. B is a
+        // real live peer in the room while A types — this is what durably
+        // commits A's unsaved frames to the relay's message log (a room with a
+        // SINGLE client that types and then leaves can be torn down before the
+        // log is retained, which is exactly the harness bug that made C read
+        // the bare base checkpoint). B is kept alive across A's typing, then
+        // BOTH A and B leave, so when the REAL joiner (C) arrives there are NO
+        // active peers and the relay must serve base checkpoint + message-log
+        // replay — the subject under test. (Same sequence as the passing
+        // test-cv-regression-latejoin-unsaved CASE 2.)
         const pair = await openCoEditPair(browser, BASE, NAME, bytes, {
             userA: 'Offline Alice', userB: 'Seed Bob',
         });
         const A = parts.A = { id: 'A', page: pair.A.page, context: null, dead: false };
-        // Drop the seed B — it only existed to prove the room came up.
-        try { await pair.contextB.close(); } catch (e) {}
+        const B = { id: 'B', page: pair.B.page, context: pair.contextB, dead: false };
         await sleep(3000);
 
         const base = await stableCount(A, CONVERGE_BUDGET);
         check('A loaded doc (char count > 0)', base > 0, `base=${base}`);
 
         // A types UNSAVED content — never clicks Save, so these edits live
-        // only in the relay message log.
+        // only in the relay message log (and in live-peer B's replicated doc).
         log('--- A types UNSAVED_CONTENT_FROM_A (no save) ---');
         await typeAtEnd(A, 'UNSAVED_CONTENT_FROM_A ');
         const aTyped = await stableCount(A, CONVERGE_BUDGET);
         check('A has unsaved edits', aTyped > base, 'aTyped=' + aTyped + ' base=' + base);
         await snap(A, 'A_after_type');
-        await sleep(2000); // let the relay buffer the frames
 
-        // A goes OFFLINE (context close). No save happened.
-        log('--- A closes WITHOUT saving (goes offline) ---');
+        // Confirm live peer B received A's edits — proof the frames are
+        // committed to the room log before anyone leaves.
+        const bSaw = await (async () => {
+            const d = Date.now() + CONVERGE_BUDGET;
+            let c = -1;
+            while (Date.now() < d) {
+                c = await cvCharCount(B.page);
+                if (c > 0 && Math.abs(c - aTyped) <= 5) return c;
+                await sleep(1000);
+            }
+            return c;
+        })();
+        check('live peer B received A\'s unsaved edits (frames in relay log)',
+            Math.abs(bSaw - aTyped) <= 5, 'B=' + bSaw + ' A=' + aTyped);
+        await sleep(2000); // let the relay fully buffer the frames
+
+        // Both A and B go OFFLINE (context close). No save happened.
+        log('--- A and B close WITHOUT saving (go offline) ---');
         A.dead = true;
         try { await A.page.close(); } catch (e) {}
-        await sleep(5000); // let the relay notice the disconnect
+        B.dead = true;
+        try { await B.context.close(); } catch (e) {}
+        await sleep(5000); // let the relay notice the disconnects
 
         // C late-joins with NO active peers: relay serves base checkpoint +
-        // message log. C must replay to A's unsaved char count.
-        log('--- C late-joins (A gone, unsaved edits only in relay) ---');
+        // message log. C must replay to A's unsaved char count. Generous,
+        // frame-re-resolving convergence wait (cvCharCount re-finds the editor
+        // frame every poll — survives the join's iframe navigation).
+        log('--- C late-joins (A+B gone, unsaved edits only in relay) ---');
         const ctxC = await browser.createBrowserContext();
         const pageC = await ctxC.newPage();
         const C = parts.C = { id: 'C', page: pageC, context: ctxC, dead: false };
@@ -129,7 +151,15 @@ async function typeAtEnd(part, text) {
             page: pageC, userName: 'Offline Cara', iframeTimeout: 90000,
         });
         check('C: editor interactive', await waitCvInteractive(pageC, LOAD_BUDGET));
-        const cConverged = await stableCount(C, CONVERGE_BUDGET);
+        let cConverged = -1;
+        {
+            const d = Date.now() + CONVERGE_BUDGET;
+            while (Date.now() < d) {
+                cConverged = await cvCharCount(pageC);
+                if (cConverged > 0 && Math.abs(cConverged - aTyped) <= 5) break;
+                await sleep(1000);
+            }
+        }
         await snap(C, 'C_after_open');
 
         // KEY CHECKS: C sees A's UNSAVED edits (via relay replay), not blank.
