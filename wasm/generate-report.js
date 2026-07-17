@@ -28,6 +28,17 @@ const shotsDir = flag('shots') || '';
 const output  = flag('output') || '';
 const status  = (flag('status') || 'pass').toLowerCase();  // pass | fail
 
+// Content-viewer provenance (exported by the runner). Rendered under the
+// timestamp so every per-test report records which content-preview commit the
+// editor was embedded in — pinned (wasm/CONTENT_VIEWER_COMMIT.txt) vs what was
+// actually deployed at the tested URL.
+const cvPinned   = (process.env.CV_COMMIT_PINNED   || '').slice(0, 7);
+const cvDeployed = (process.env.CV_COMMIT_DEPLOYED || '').slice(0, 7);
+const cvUrl      = process.env.CV_URL || '';
+const cvProvenanceHTML = (cvPinned || cvDeployed)
+    ? `<div class="meta" style="margin-top:-0.5rem">Content viewer · pinned <code>${cvPinned || '&mdash;'}</code> · deployed <code>${cvDeployed || '&mdash;'}</code>${cvUrl ? ` · <a href="${cvUrl}/version.json">version.json</a>` : ''}</div>`
+    : '';
+
 if (!output) {
     console.error('Error: --output is required');
     process.exit(1);
@@ -234,6 +245,7 @@ const html = `<!DOCTYPE html>
   <a class="back" href="index.html">&larr; Back to Summary</a>
   <h1>${name}</h1>
   <div class="meta">${timestamp}</div>
+  ${cvProvenanceHTML}
   <span class="badge">${badgeLabel}</span>
   <div class="desc">${desc}</div>
   <hr class="divider" />

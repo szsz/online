@@ -34,6 +34,15 @@ const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
 const short = sha => (sha || '').slice(0, 10);
 const ghOnline = sha => sha ? `https://github.com/szsz/online/commit/${sha}` : '';
 const ghLo = sha => sha ? `https://github.com/szsz/libreoffice-core-wasm/commit/${sha}` : '';
+const cpCommit = sha => sha ? `https://bitbucket.org/tresorit/content-preview/commits/${sha}` : '';
+// Pinned-vs-deployed verdict for the content-preview commit.
+const cpMatch = (pinned, deployed) => {
+    if (!pinned) return '';
+    if (!deployed) return ' <span style="color:#888">(deployed unknown)</span>';
+    return pinned === deployed
+        ? ' <span style="color:#22863a">&#10003; matches pin</span>'
+        : ' <span style="color:#cb2431">&#10007; differs from pin ' + `<code>${short(pinned)}</code></span>`;
+};
 
 const STYLE = `
 body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#222}
@@ -54,7 +63,9 @@ const failCount = run.results.length - passCount;
 
 const provRows = [
     ['Content-viewer (content-preview) commit',
-        `<code>${esc(short(p.cp_commit))}</code>${p.cp_branch ? ' <small>(' + esc(p.cp_branch) + ')</small>' : ''}`],
+        `${p.cp_commit ? `<a href="${cpCommit(p.cp_commit)}"><code>${esc(short(p.cp_commit))}</code></a>` : '<i>unknown</i>'}` +
+        `${p.cp_branch ? ' <small>(' + esc(p.cp_branch) + ')</small>' : ''}` +
+        `${cpMatch(p.cp_commit_pinned, p.cp_commit)}`],
     ['Editor version (flat CDN build)', `<code>${esc(p.editor_version || '')}</code>`],
     ['Editor (online) commit', p.editor_commit
         ? `<a href="${ghOnline(p.editor_commit)}"><code>${esc(short(p.editor_commit))}</code></a>` : '<i>unknown</i>'],
