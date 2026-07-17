@@ -29,13 +29,18 @@ const { launch, sleep } = require('../../lib/browser');
 const {
     openCoEditPair, joinViaContentViewer, waitCvInteractive, cvCharCount,
 } = require('../../lib/open-via-content-viewer');
+// CONVERGE_BUDGET drives this test's OWN stableCount/convergeTo waiters, so it
+// must widen under contention. LOAD_BUDGET is NOT scaled here — it's passed to
+// the helper's waitCvInteractive, which already applies scaleTimeout internally
+// (scaling here too would double-count).
+const { scaleTimeout } = require('../../lib/test-env');
 
 const BASE = (process.argv[2] || process.env.BASE_URL
     || 'https://wasm-viewer-test.azurewebsites.net').replace(/\/+$/, '');
 const FIXTURE = path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 const SHOT_DIR = '/tmp/content-viewer-report/regression-latejoin-overwrite';
 const LOAD_BUDGET = parseInt(process.env.LOAD_BUDGET || '300000', 10);
-const CONVERGE_BUDGET = parseInt(process.env.CONVERGE_BUDGET || '90000', 10);
+const CONVERGE_BUDGET = scaleTimeout(parseInt(process.env.CONVERGE_BUDGET || '90000', 10));
 
 const T0 = Date.now();
 const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`);

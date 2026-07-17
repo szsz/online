@@ -22,16 +22,25 @@
 
 'use strict';
 
+// scaleTimeout widens every patience timeout by JOBS_SCALE under parallel
+// contention (no-op at JOBS=1). ALL content-viewer tests funnel through this
+// helper, and in CI all ~84 of them hit ONE shared Azure content viewer at
+// once — so the cold-load / interactive waits below are exactly the timeouts
+// that false-fire under load. Scaling them here fixes the whole CV suite's
+// contention flakiness in one place. These are BASE budgets; callers pass raw
+// numbers (no pre-scaling), so scaling at the leaf can't double-count.
+const { scaleTimeout } = require('./test-env');
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function waitForEditorFrame(page, opts = {}) {
     await page.waitForFunction(() => {
         const f = document.querySelector('iframe');
         return !!(f && f.src && f.src.includes('cool.html'));
-    }, { timeout: opts.iframeTimeout || 40000 });
+    }, { timeout: scaleTimeout(opts.iframeTimeout || 40000) });
 
     let editorFrame = null;
-    const deadline = Date.now() + (opts.frameTimeout || 20000);
+    const deadline = Date.now() + scaleTimeout(opts.frameTimeout || 20000);
     while (Date.now() < deadline && !editorFrame) {
         editorFrame = page.frames().find(f => (f.url() || '').includes('cool.html'));
         if (!editorFrame) await sleep(300);
@@ -48,7 +57,7 @@ async function openViaContentViewer(browser, base, docPath, opts = {}) {
 
     await page.goto(`${base}/collabora-tester`, {
         waitUntil: 'domcontentloaded',
-        timeout: opts.gotoTimeout || 60000,
+        timeout: scaleTimeout(opts.gotoTimeout || 60000),
     });
 
     // Optionally set the tester's "User name" field before opening, so the
@@ -58,7 +67,7 @@ async function openViaContentViewer(browser, base, docPath, opts = {}) {
         // The tester's toolbar (with the "User name" field) renders after the
         // SPA mounts + asset preload — wait for it rather than querying too early.
         try {
-            const nameInput = await page.waitForSelector('input[placeholder="User name"]', { timeout: 15000 });
+            const nameInput = await page.waitForSelector('input[placeholder="User name"]', { timeout: scaleTimeout(15000) });
             await nameInput.click({ clickCount: 3 });
             await nameInput.type(opts.userName);
         } catch (e) { /* field absent (non-tester route) — skip */ }
@@ -68,7 +77,7 @@ async function openViaContentViewer(browser, base, docPath, opts = {}) {
     // uploading — the upload handler reads it to decide create-vs-plain.
     if (opts.coEdit) {
         const box = await page.waitForSelector('[data-testid="coedit-checkbox"]', {
-            timeout: opts.inputTimeout || 20000,
+            timeout: scaleTimeout(opts.inputTimeout || 20000),
         });
         await box.click();
     }
@@ -76,7 +85,7 @@ async function openViaContentViewer(browser, base, docPath, opts = {}) {
     // The tester's file <input> may be hidden behind an "Open file" button;
     // uploadFile works on hidden inputs directly.
     const input = await page.waitForSelector('input[type=file]', {
-        timeout: opts.inputTimeout || 20000,
+        timeout: scaleTimeout(opts.inputTimeout || 20000),
     });
     await input.uploadFile(docPath);
 
@@ -88,7 +97,7 @@ async function openViaContentViewer(browser, base, docPath, opts = {}) {
     let joinLink = null;
     if (opts.coEdit) {
         try {
-            const linkEl = await page.waitForSelector('[data-testid="coedit-join-link"]', { timeout: 15000 });
+            const linkEl = await page.waitForSelector('[data-testid="coedit-join-link"]', { timeout: scaleTimeout(15000) });
             joinLink = await linkEl.evaluate(el => el.value);
         } catch (e) { /* caller asserts on null joinLink */ }
     }
@@ -105,7 +114,7 @@ async function joinViaContentViewer(browser, joinLink, opts = {}) {
     if (opts.userName) url += '&user=' + encodeURIComponent(opts.userName);
     await page.goto(url, {
         waitUntil: 'domcontentloaded',
-        timeout: opts.gotoTimeout || 60000,
+        timeout: scaleTimeout(opts.gotoTimeout || 60000),
     });
 
     const editorFrame = await waitForEditorFrame(page, opts);
@@ -152,7 +161,7 @@ async function openBytesViaContentViewer(browser, base, name, bytes, opts = {}) 
 }
 
 async function waitCvInteractive(page, budgetMs = 300000) {
-    const d = Date.now() + budgetMs;
+    const d = Date.now() + scaleTimeout(budgetMs);
     while (Date.now() < d) {
         const ok = await page.evaluate(() => {
             if (document.querySelector('[role="status"][aria-label="Loading"]')) return false;
@@ -181,7 +190,7 @@ async function cvCharCount(page) {
 }
 
 async function waitCvCharCount(page, pred, budgetMs = 60000) {
-    const d = Date.now() + budgetMs;
+    const d = Date.now() + scaleTimeout(budgetMs);
     let last = -1;
     while (Date.now() < d) {
         last = await cvCharCount(page);
