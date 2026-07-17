@@ -81,39 +81,52 @@ function loadEnv(scale) {
     // somewhere. If a future edit accidentally drops the call, the
     // test would resume false-failing under contention without anyone
     // noticing.
+    //
+    // 2026-07-17: the co-edit test migration (task #25) replaced the original
+    // legacy flaky tests with content-viewer ports. Those ports wait through
+    // the shared helper lib/open-via-content-viewer.js (enforced in 5b), so
+    // they don't call scaleTimeout themselves and are NOT listed individually
+    // here — the removed legacy filenames (test-late-join.js,
+    // test-regression-{insert-table,delete-key-coedit,checkpoint-cursor-delete,
+    // calc-impress-edits,checkpoint-timing,paste-coedit,mouse-select-copypaste}.js)
+    // no longer exist. Only tests that drive their OWN patience waits stay here.
+    // Grep matches both `env.scaleTimeout(` and destructured `scaleTimeout(`.
     const SCALED_TESTS = [
-        // Original 9 (iter 38 baseline failures)
-        'test-late-join.js',
-        'test-regression-delete-key-coedit.js',
+        // Legacy tests that survive + drive their own patience waits.
         'test-regression-room-switch.js',
-        'test-regression-insert-table.js',
-        'test-regression-checkpoint-cursor-delete.js',
-        'test-regression-calc-impress-edits.js',
-        'test-regression-checkpoint-timing.js',
         'test-snapshot-cross-type.js',
-        // Focused-suite known flakes (run-focused-tests.sh worker comment)
         'test-snapshot-milestones.js',
-        'test-regression-paste-coedit.js',
-        'test-regression-mouse-select-copypaste.js',
-        // 2026-06-15: hash-deeplink routes its patience waitForFunction
-        // timeouts through env.scaleTimeout (was hardcoded → JOBS=2
-        // timeout-flake). Enforce so it can't silently regress.
         'test-regression-hash-deeplink.js',
+        // Content-viewer tests with their OWN waiters (not the shared helper).
+        'test-cv-singleuser.js',
+        'test-cv-regression-latejoin-overwrite.js',
     ];
     for (const t of SCALED_TESTS) {
         let p = null;
-        for (const sub of ['regression', 'snapshot', 'misc', 'diag']) {
+        for (const sub of ['regression', 'snapshot', 'misc', 'diag', 'content-viewer']) {
             const candidate = path.join(__dirname, '..', sub, t);
             if (fs.existsSync(candidate)) { p = candidate; break; }
         }
         if (!p) {
-            check(`${t}: exists in tests/{regression,snapshot,misc,diag}/`, false, 'not found');
+            check(`${t}: exists in tests/{regression,snapshot,misc,diag,content-viewer}/`, false, 'not found');
             continue;
         }
         const src = fs.readFileSync(p, 'utf8');
-        check(`${t} uses env.scaleTimeout`,
-              /env\.scaleTimeout\(/.test(src),
-              src.match(/env\.scaleTimeout/g)?.length + ' calls');
+        check(`${t} uses scaleTimeout`,
+              /\bscaleTimeout\(/.test(src),
+              src.match(/\bscaleTimeout\(/g)?.length + ' calls');
+    }
+
+    // 5b. The shared content-viewer helper scales ALL its patience timeouts —
+    // this is what makes the ~84 CV tests (which wait through it, not on their
+    // own) contention-safe. Enforce so a refactor can't silently drop it and
+    // resurrect the whole CV suite's JOBS=2 flakiness.
+    {
+        const helper = path.join(__dirname, '..', '..', 'lib', 'open-via-content-viewer.js');
+        const src = fs.readFileSync(helper, 'utf8');
+        check('lib/open-via-content-viewer.js uses scaleTimeout',
+              /\bscaleTimeout\(/.test(src),
+              src.match(/\bscaleTimeout\(/g)?.length + ' calls');
     }
 
     // 6. Parallel runners must export JOBS_SCALE
