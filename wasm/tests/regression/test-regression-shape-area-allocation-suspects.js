@@ -30,6 +30,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const __cl = require('../../lib/inject-checklist');
 
 const T0 = Date.now();
@@ -68,6 +69,28 @@ const SUSPECTS = [
     },
 ];
 
+// The suspect paths were profiled against the LO source that the pinned build
+// (wasm/LO_BUILD_ID) was built from. Asserting them against ANY other checkout
+// is meaningless — e.g. the dev box's tree may sit on a WIP upstream-sync
+// branch where these files have already moved, which would false-fail this
+// tripwire even though the pinned build is unaffected. So only assert when the
+// local tree HEAD == the pinned build's LO commit; skip otherwise (same
+// green-in-CI contract as a missing tree). LO_TRIPWIRE_FORCE=1 overrides.
+function loHead(loRoot) {
+    try { return execSync('git -C "' + loRoot + '" rev-parse HEAD', { encoding: 'utf8' }).trim(); }
+    catch (e) { return ''; }
+}
+function pinnedLoSha() {
+    try {
+        const pin = fs.readFileSync(path.join(__dirname, '..', '..', 'LO_BUILD_ID'), 'utf8')
+            .split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).pop();
+        if (!pin) return '';
+        const url = 'https://coolwasmfiles.z6.web.core.windows.net/lo-builds/' + pin + '/MANIFEST.json';
+        const j = execSync('curl -fsS --max-time 15 "' + url + '"', { encoding: 'utf8' });
+        return (JSON.parse(j).git_sha || '').trim();
+    } catch (e) { return ''; }
+}
+
 (async () => {
     log('=== Regression: shape Area-dialog allocation suspects (tripwire) ===');
     log('LO_ROOT=' + LO_ROOT);
@@ -78,6 +101,24 @@ const SUSPECTS = [
         // Exit 0 so CI stays green; in local dev the path resolves and
         // the real assertions run.
         process.exit(0);
+    }
+
+    // Pin-match gate (unless forced): only the pinned build's source is the
+    // valid reference for these suspect paths.
+    if (process.env.LO_TRIPWIRE_FORCE !== '1') {
+        const head = loHead(LO_ROOT);
+        const pinSha = pinnedLoSha();
+        if (!pinSha) {
+            console.log('skip: could not resolve the pinned LO commit (offline?) — tripwire needs it to know the valid reference');
+            process.exit(0);
+        }
+        if (head !== pinSha) {
+            console.log('skip: local LO tree ' + head.slice(0, 10) + ' != pinned build LO commit '
+                + pinSha.slice(0, 10) + ' — suspect paths only valid against the pinned source'
+                + ' (set LO_TRIPWIRE_FORCE=1 to assert anyway)');
+            process.exit(0);
+        }
+        log('LO tree matches pinned build ' + pinSha.slice(0, 10) + ' — asserting suspects');
     }
 
     for (const s of SUSPECTS) {
