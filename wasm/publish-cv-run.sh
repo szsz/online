@@ -26,6 +26,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONTENT_VIEWER_URL="${CONTENT_VIEWER_URL:-https://wasm-viewer-test.azurewebsites.net}"
+
+# Repo-pinned content-preview commit (wasm/CONTENT_VIEWER_COMMIT.txt). Recorded
+# in the run alongside the deployed cp_commit so the table flags drift between
+# what this tree expects and what was actually tested.
+source "$SCRIPT_DIR/lib/cv-provenance.sh"
+CP_PINNED="$(cv_pinned_commit)"
 EDITOR_CDN_URL="${EDITOR_CDN_URL:-https://wasmeditor-enhhe6gndwb0d2ej.a02.azurefd.net}"
 STATIC_SITE_BASE="${STATIC_SITE_BASE:-https://coolwasmfiles.z6.web.core.windows.net}"
 PUBLISH_ACCOUNT="${PUBLISH_ACCOUNT:-coolwasmfiles}"
@@ -55,7 +61,7 @@ if [[ -n "$LO_BUILD_ID" ]]; then
     LO_SHA="$(curl -fsS --max-time 20 "$STATIC_SITE_BASE/lo-builds/$LO_BUILD_ID/MANIFEST.json" 2>/dev/null \
         | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).git_sha||'')}catch(e){console.log('')}})" || echo '')"
 fi
-echo "  cp=$CP_COMMIT ($CP_BRANCH)  editor=$EDITOR_SHA @ $COLLAB_VER  lo=$LO_SHA @ $LO_BUILD_ID"
+echo "  cp=$CP_COMMIT ($CP_BRANCH) pinned=${CP_PINNED:-none}  editor=$EDITOR_SHA @ $COLLAB_VER  lo=$LO_SHA @ $LO_BUILD_ID"
 
 # ── Test list: content-viewer entries from the canonical runner ─────
 mapfile -t ALL_TESTS < <(awk '
@@ -110,11 +116,12 @@ node -e "
             editor_build_id: process.argv[8],
             lo_build_id: process.argv[9], lo_commit: process.argv[10],
             target_url: process.argv[11],
+            cp_commit_pinned: process.argv[13],
         },
         results: JSON.parse(process.argv[12]),
     }, null, 2));
 " "$WORK/run.json" "$RUN_ID" "$WALL" "$CP_COMMIT" "$CP_BRANCH" "$COLLAB_VER" \
-  "$EDITOR_SHA" "$EDITOR_BUILD_ID" "$LO_BUILD_ID" "$LO_SHA" "$CONTENT_VIEWER_URL" "$RESULTS_JSON"
+  "$EDITOR_SHA" "$EDITOR_BUILD_ID" "$LO_BUILD_ID" "$LO_SHA" "$CONTENT_VIEWER_URL" "$RESULTS_JSON" "$CP_PINNED"
 
 # Seed the rolling table from the currently-published runs.json.
 curl -fsS --max-time 20 "$STATIC_SITE_BASE/cv-runs/runs.json" -o "$WORK/existing-runs.json" 2>/dev/null || echo '[]' > "$WORK/existing-runs.json"

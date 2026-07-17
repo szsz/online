@@ -1,0 +1,18 @@
+# Pinned Tresorit content-preview commit — the content viewer that hosts
+# this online WASM editor (repo: bitbucket.org/tresorit/content-preview).
+#
+# This is the counterpart to wasm/LO_BUILD_ID: LO_BUILD_ID pins the LO core
+# built into online.wasm; this pins the content-viewer SPA the editor is
+# embedded in and tested through. Deploy the content viewer from this commit
+# (deploy-content-viewer-azure.sh) so the version served at CONTENT_VIEWER_URL
+# matches what this online tree was verified against.
+#
+# The full 40-char commit hash is the last non-comment, non-blank line.
+# The deployed viewer surfaces the same value at /version.json (cp_commit).
+#
+# History:
+#   6b2da0b  feature/wasm-coedit-split — "content viewer: co-edit via
+#            relay-backed shared sessions" (co-edit split branch; bugfixes
+#            commit 9fb1058 + co-edit commit 6b2da0b). Deployed to the test
+#            env (wasm-viewer-test) with editor collabora-2026-07-11T19-52-54Z.
+6b2da0b62cd65251629209567c00f6bc4c31fafd

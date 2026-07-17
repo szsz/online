@@ -21,6 +21,16 @@ export CONTENT_VIEWER_URL="${CONTENT_VIEWER_URL:-https://wasm-viewer-test.azurew
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Content-viewer provenance: the repo-pinned content-preview commit
+# (wasm/CONTENT_VIEWER_COMMIT.txt) + the commit actually deployed at
+# CONTENT_VIEWER_URL (/version.json). Surfaced in the summary page and, via
+# these exported vars, on every per-test report generate-report.js writes.
+source "$SCRIPT_DIR/lib/cv-provenance.sh"
+export CV_COMMIT_PINNED="$(cv_pinned_commit)"
+export CV_COMMIT_DEPLOYED="$(cv_deployed_commit "$CONTENT_VIEWER_URL")"
+export CV_URL="$CONTENT_VIEWER_URL"
+echo "Content viewer: pinned=${CV_COMMIT_PINNED:-none} deployed=${CV_COMMIT_DEPLOYED:-unreachable} @ $CONTENT_VIEWER_URL"
+
 # The test scripts (node) write screenshots with paths like
 # '/tmp/static-deploy/public/shots-…' which, on Windows, node resolves
 # to C:\tmp\static-deploy\public\shots-…. On Linux the same literal path
@@ -328,6 +338,7 @@ cat > "$REPORTS_DIR/index.html" <<HTMLEOF
     <span class="pass">Passed: ${PASSED}</span>
     <span class="fail">Failed: ${FAILED}</span>
   </div>
+$(cv_provenance_html "$CV_COMMIT_PINNED" "$CV_COMMIT_DEPLOYED" "$CV_URL")
   <table>
     <thead><tr><th>Status</th><th>Test</th><th>Time</th><th>Description</th></tr></thead>
     <tbody>

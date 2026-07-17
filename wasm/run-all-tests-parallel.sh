@@ -25,6 +25,15 @@ export JOBS_SCALE="${JOBS_SCALE:-$JOBS}"
 # Content-viewer tests (tests/content-viewer/*) run against $CONTENT_VIEWER_URL;
 # the worker sets BASE_URL for them (legacy-viewer tests use $FILE_STORAGE_URL).
 export CONTENT_VIEWER_URL="${CONTENT_VIEWER_URL:-https://wasm-viewer-test.azurewebsites.net}"
+
+# Content-viewer provenance (pinned commit + what's deployed at CONTENT_VIEWER_URL).
+# Exported so each worker's generate-report.js stamps per-test reports too.
+source "$SCRIPT_DIR/lib/cv-provenance.sh"
+export CV_COMMIT_PINNED="$(cv_pinned_commit)"
+export CV_COMMIT_DEPLOYED="$(cv_deployed_commit "$CONTENT_VIEWER_URL")"
+export CV_URL="$CONTENT_VIEWER_URL"
+echo "Content viewer: pinned=${CV_COMMIT_PINNED:-none} deployed=${CV_COMMIT_DEPLOYED:-unreachable} @ $CONTENT_VIEWER_URL"
+
 mkdir -p "$REPORTS_DIR" "$LOG_DIR"
 
 # Parse TESTS array from canonical runner.
@@ -159,6 +168,7 @@ tr.fail td.s,tr.missing td.s{background:#fdd}
 <p class="summary-stat">Wall time: <strong>${TOTAL_WALL}s</strong> (parallel, ${JOBS} jobs).
 Total: ${TOTAL} · Passed: <span class="pass-count">${PASSED}</span> ·
 Failed: <span class="fail-count">${FAILED}</span></p>
+$(cv_provenance_html "$CV_COMMIT_PINNED" "$CV_COMMIT_DEPLOYED" "$CV_URL")
 <table>
 <thead><tr><th>#</th><th>Test</th><th class="s">Status</th><th class="dur">Time (s)</th><th>Description</th></tr></thead>
 <tbody>${ROWS_HTML}</tbody></table>

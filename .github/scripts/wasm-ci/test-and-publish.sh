@@ -38,6 +38,17 @@ ACCT="${AZURE_STORAGE_ACCOUNT:?}"
 SITE="${STATIC_SITE_BASE:?}"
 WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
 
+# Content-preview commit this online build is paired with — the repo pin
+# (wasm/CONTENT_VIEWER_COMMIT.txt), stamped into the published test summary so
+# app-builds/<id>/tests/ records which content viewer the editor belongs in
+# (counterpart to lo_build_id in the build manifest).
+CV_COMMIT=""
+if [[ -f "$WORKSPACE/wasm/lib/cv-provenance.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$WORKSPACE/wasm/lib/cv-provenance.sh"
+    CV_COMMIT="$(cv_pinned_commit)"
+fi
+
 # Phase 2 (Azure smoke) reads the deployed App Service URLs from the
 # prod-deploy env file (~/ENV/online-staging-deploy.env, populated once
 # on the runner host — see .github/scripts/wasm-ci/deploy.sh).
@@ -724,6 +735,7 @@ DUR=$((END_TS - START_TS))
 cat > "$SUMMARY_JSON" <<JSON
 {
   "app_build_id": "$APP_BID",
+  "content_viewer_commit": "$CV_COMMIT",
   "exit_code": $TEST_RC,
   "duration_seconds": $DUR,
   "pass_count_approx": ${PASS_COUNT:-0},
@@ -759,6 +771,7 @@ a{color:#0066cc}
 </style>
 <h1>Tests for online build <code>$APP_BID</code></h1>
 <p>Status: <span class="badge">$STATUS_TEXT</span> · duration ${DUR}s</p>
+$( [[ -n "$CV_COMMIT" ]] && echo "<p class=\"muted\">Content viewer (pinned): <code>${CV_COMMIT:0:7}</code> · <a href=\"https://bitbucket.org/tresorit/content-preview/commits/$CV_COMMIT\">content-preview@$CV_COMMIT</a></p>" )
 <p>
   <span class="stat"><strong>Phase 1 (local, JOBS=$TEST_JOBS):</strong> ${PHASE1_PASS}p / ${PHASE1_REAL_FAIL:-$PHASE1_FAIL}f$( [[ ${PHASE1_FLAKE_FAIL:-0} -gt 0 ]] && echo " · ${PHASE1_FLAKE_FAIL} known-flake" )$( [[ ${PHASE1_BLOCKED_FAIL:-0} -gt 0 ]] && echo " · ${PHASE1_BLOCKED_FAIL} LO-blocked" )</span>
   <span class="stat"><strong>Phase 2 (Azure smoke, JOBS=1):</strong> $( (( PHASE2_RAN )) && echo "${PHASE2_PASS}p / ${PHASE2_FAIL}f" || echo "skipped" )</span>

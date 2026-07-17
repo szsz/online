@@ -35,6 +35,18 @@ SITE="${STATIC_SITE_BASE:?}"
 # defaults to APP_BID (editor was rebuilt in the same run).
 EDITOR_BID="${EDITOR_BUILD_ID:-$APP_BID}"
 
+# Content-preview commit this online build is paired with — the repo pin
+# (wasm/CONTENT_VIEWER_COMMIT.txt). Recorded in the manifest + build card
+# alongside lo_build_id / editor_build_id so every app-build says which
+# content viewer the editor belongs in.
+CV_COMMIT=""
+_CV_LIB="$(cd "$(dirname "$0")/../../.." && pwd)/wasm/lib/cv-provenance.sh"
+if [[ -f "$_CV_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$_CV_LIB"
+    CV_COMMIT="$(cv_pinned_commit)"
+fi
+
 # Source the staging deploy env to discover where deploy-azure.sh staged
 # the three zips (VIEWER_DEPLOY_DIR, RELAY_DEPLOY_DIR, EDITOR_DEPLOY_DIR).
 # This is the same env file the deploy step sourced; the zips it produced
@@ -78,6 +90,7 @@ cat > "$OUT/manifest.json" <<JSON
   "app_build_id": "$APP_BID",
   "editor_build_id": "$EDITOR_BID",
   "lo_build_id": "$LO_BID",
+  "content_viewer_commit": "$CV_COMMIT",
   "git_sha": "${GIT_SHA:-}",
   "git_ref": "${GIT_REF:-}",
   "completed_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
@@ -119,6 +132,7 @@ code.hash{font-size:.85em;color:#666}
 <div class="box">
   <div><span class="k">Git SHA:</span> <code>${GIT_SHA:-?}</code></div>
   <div><span class="k">Git ref:</span> <code>${GIT_REF:-?}</code></div>
+  <div><span class="k">Content viewer:</span> $( [[ -n "$CV_COMMIT" ]] && echo "<a href=\"https://bitbucket.org/tresorit/content-preview/commits/$CV_COMMIT\"><code>${CV_COMMIT:0:7}</code></a> <span class=\"muted\">(content-preview, pinned)</span>" || echo "<code>?</code>" )</div>
   <div><span class="k">Completed (UTC):</span> $(date -u +%Y-%m-%dT%H:%M:%SZ)</div>
 </div>
 
