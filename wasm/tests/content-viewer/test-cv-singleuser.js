@@ -21,6 +21,9 @@ const fs = require('fs');
 const path = require('path');
 const { launch, sleep } = require('../../lib/browser');
 const { openViaContentViewer } = require('../../lib/open-via-content-viewer');
+// Patience timeouts here use the test's OWN waiters (not the scaled helper),
+// so widen them by JOBS_SCALE for the shared-Azure contention in CI.
+const { scaleTimeout } = require('../../lib/test-env');
 
 const BASE = (process.argv[2] || process.env.BASE_URL
     || 'https://wasm-viewer-test.azurewebsites.net').replace(/\/+$/, '');
@@ -28,7 +31,7 @@ const DOCX = process.env.DOCX
     || path.join(__dirname, '..', '..', '..', 'test', 'data', 'new.docx');
 const DL_DIR = '/tmp/cv-downloads';
 const SHOT_DIR = '/tmp/content-viewer-report/singleuser';
-const LOAD_BUDGET = parseInt(process.env.LOAD_BUDGET || '150000', 10);
+const LOAD_BUDGET = scaleTimeout(parseInt(process.env.LOAD_BUDGET || '150000', 10));
 
 const T0 = Date.now();
 const log = m => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`);
@@ -91,7 +94,7 @@ async function focusDoc(page) {
 }
 async function ctrl(page, key) { await page.keyboard.down('Control'); await page.keyboard.press(key); await page.keyboard.up('Control'); await sleep(200); }
 async function ctrlEnd(page) { await page.keyboard.down('Control'); await page.keyboard.press('End'); await page.keyboard.up('Control'); await sleep(150); }
-async function waitCharAtLeast(page, n, ms = 10000) { const d = Date.now() + ms; while (Date.now() < d) { if (await getCharCount(page) >= n) return true; await sleep(200); } return false; }
+async function waitCharAtLeast(page, n, ms = 10000) { const d = Date.now() + scaleTimeout(ms); while (Date.now() < d) { if (await getCharCount(page) >= n) return true; await sleep(200); } return false; }
 async function writeClip(page, text) {
     try { await page.evaluate(t => navigator.clipboard.writeText(t), text); } catch (e) {
         const fr = editorFrame(page); if (fr) await fr.evaluate(t => navigator.clipboard.writeText(t), text).catch(() => {});
@@ -147,7 +150,7 @@ async function writeClip(page, text) {
         check('Save button clickable', clicked);
         // Wait for the downloaded file to appear + settle.
         let dl = null;
-        const dlDeadline = Date.now() + 30000;
+        const dlDeadline = Date.now() + scaleTimeout(30000);
         while (Date.now() < dlDeadline && !dl) {
             const files = fs.readdirSync(DL_DIR).filter(f => /\.docx$/i.test(f) && !f.endsWith('.crdownload'));
             if (files.length) { const f = path.join(DL_DIR, files[0]); if (fs.statSync(f).size > 0) dl = f; }
