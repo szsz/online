@@ -44,7 +44,9 @@ const KNOWN_FLAKE_BUDGET = 17;
 // awaiting an LO fix). Drop back when fixed.
 // 2026-07-11: bumped 6 -> 8 — CV migration: area-dialog OOB/OOM cluster +
 // transition + fr-dict (build-dicts) cv- twins; see ACCEPTED-FAILS.txt.
-const LO_BLOCKED_BUDGET = 8;
+// 2026-07-18: 8 -> 5 — demoted writer-shape-area-oom, -writer-insert-shape-area,
+// -writer-header-footer-remove (fixed by TOTAL_MEMORY=2GB growth-race fix, PR #273).
+const LO_BLOCKED_BUDGET = 5;
 
 const TEST_PUBLISH_SH = path.resolve(__dirname, '..', '..', '..',
     '.github', 'scripts', 'wasm-ci', 'test-and-publish.sh');

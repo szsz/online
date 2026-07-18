@@ -211,7 +211,16 @@ async function clickApplyAndClose(frame, page) {
 // Click the tester's Save button (real click) and wait for a NEW .docx
 // download to land + settle in DL_DIR. Returns { ok, file, ev }.
 async function saveViaTester(page) {
-    const before = new Set(fs.readdirSync(DL_DIR));
+    // Snapshot existing .docx mtimes. The tester re-downloads the SAME filename
+    // (new.docx) on every Save and Chrome overwrites it in place, so a plain
+    // "new filename" check misses the 2nd (Phase 2) save and false-times-out.
+    // Detect a new name OR a same-name overwrite (mtime advanced past snapshot).
+    const beforeMtime = {};
+    for (const f of fs.readdirSync(DL_DIR)) {
+        if (/\.docx$/i.test(f)) {
+            try { beforeMtime[f] = fs.statSync(path.join(DL_DIR, f)).mtimeMs; } catch (_) {}
+        }
+    }
     const h = await page.evaluateHandle(() =>
         [...document.querySelectorAll('button')]
             .find(b => /^save$/i.test((b.textContent || '').trim())));
@@ -221,7 +230,13 @@ async function saveViaTester(page) {
     const deadline = Date.now() + 60000;
     while (Date.now() < deadline) {
         const cand = fs.readdirSync(DL_DIR)
-            .filter(f => /\.docx$/i.test(f) && !f.endsWith('.crdownload') && !before.has(f));
+            .filter(f => /\.docx$/i.test(f) && !f.endsWith('.crdownload'))
+            .filter(f => {
+                try {
+                    return !(f in beforeMtime)
+                        || fs.statSync(path.join(DL_DIR, f)).mtimeMs > beforeMtime[f];
+                } catch (_) { return false; }
+            });
         if (cand.length) {
             const f = path.join(DL_DIR, cand[0]);
             const s1 = fs.statSync(f).size;
@@ -231,7 +246,7 @@ async function saveViaTester(page) {
         }
         await sleep(500);
     }
-    return { ok: false, file: null, ev: 'no new .docx download within 60s' };
+    return { ok: false, file: null, ev: 'no new/updated .docx download within 60s' };
 }
 
 (async () => {

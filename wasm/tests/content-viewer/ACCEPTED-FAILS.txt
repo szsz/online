@@ -6,11 +6,18 @@
 #
 # Verified 2026-07-11 against editor collabora-2026-07-11T08-39-12Z (LO 2026-06-27-110).
 
-cv-regression-writer-shape-area-oom        # 1GB TOTAL_MEMORY OOM in SvxAreaTabDialog ctor — unfixed LO cap tripwire
-cv-regression-impress-area-dialog          # memory-access-OOB on Area dialog Apply — area-dialog allocation cluster
-cv-regression-writer-insert-shape-area     # same OOB, insert-shape → Area — allocation cluster
-cv-regression-area-palette                 # right-click shape → Area... crashes kit (memory-access-OOB / Pthread error), dialog never opens — same area-dialog allocation cluster; legacy fails identically on this LO build
+# DEMOTED 2026-07-18: cv-regression-writer-shape-area-oom + -writer-insert-shape-area
+# FIXED by wasm/Makefile.am TOTAL_MEMORY 1GB→2GB (PR #273) — the crash was the
+# emscripten ALLOW_MEMORY_GROWTH+pthreads growth race, not an LO cap. Both PASS
+# 3/3 against a 2GB editor. Require the deployed content viewer to pin a 2GB
+# editor build.
+cv-regression-impress-area-dialog          # memory-access-OOB on Area dialog Apply — area-dialog allocation cluster (IMPRESS — kept accepted per scope; likely also fixed by the 2GB growth-race fix, verify separately)
+cv-regression-area-palette                 # 2GB fix un-crashes the dialog, but the Colors grid is still EMPTY — share/palette/*.soc not in soffice.data preload (LO-side, CustomTarget_emscripten_fs_image.mk). Separate from the OOB. Demote when palettes ship in soffice.data.
 cv-regression-spell-rightclick-suggest     # UPDATED 2026-07-11: the empty-fr-dict cause is FIXED (build-dicts.sh now packs nested .dic/.aff; French spellcheck active). Remaining failure is a SEPARATE right-click-menu-precision flake affecting ALL langs (en/de/fr identically show the generic edit menu — the right-click isn't landing on the squiggled word). See ai/proposals/proposed/cv-spell-rightclick-menu-precision.md. Demote when the right-click coordinate reliably hits the flagged word.
-cv-regression-writer-header-footer-remove  # Format → Page Style dialog OOB-crashes the kit on open (memory access out of bounds / Pthread error), dialog never opens (no #header/#footer tab) — same area-dialog (SvxAreaTabDialog) allocation cluster as the other Area-dialog accepted fails; editor otherwise healthy (all notebookbar tabs render). Deterministic across runs; demote when the LO tab-dialog allocation OOB is fixed
+# DEMOTED 2026-07-18: cv-regression-writer-header-footer-remove FIXED — the Page
+# Style dialog crash was the same growth-race OOB (fixed by TOTAL_MEMORY=2GB, PR
+# #273); the header actually removes end-to-end (LO PR #42 gate works). Also
+# fixed a test-detection bug (saveViaTester missed the 2nd same-name download).
+# PASSES against a 2GB editor.
 cv-regression-impress-transition-click     # LO transition-iconview: singleclickactivate emits 0 dialogevents — known cluster
 cv-regression-pptx-transitions-iconview    # LO transition-iconview tiles render empty — known cluster
