@@ -294,17 +294,13 @@ LO_BLOCKED_TESTS=(
     # to OS clipboard. See ai/proposals/promoted/ctrl-x-isolated-
     # single-user-clipboard.md
     cv-regression-ctrl-x-cut-restore
-    # Writer Area dialog — WASM function-signature mismatch on
-    # .uno:FormatArea dispatch via SwDrawShell::ExecDrawDlg
-    # (drawdlg.cxx:121). NOT a memory issue — diagnosed 2026-06-07
-    # via console-capture: "Uncaught RuntimeError: function
-    # signature mismatch" at ~48s after the Area click, on a worker
-    # pthread. Impress sibling passes (same SvxAreaTabDialog ctor),
-    # so the bug is in the Writer-specific dispatch / async-dialog
-    # adapter. See ai/proposals/proposed/writer-area-dialog-
-    # function-signature-mismatch.md.
-    cv-regression-writer-insert-shape-area
-    cv-regression-writer-shape-area-oom
+    # (writer-insert-shape-area + writer-shape-area-oom DEMOTED 2026-07-18:
+    # FIXED by wasm/Makefile.am TOTAL_MEMORY 1GB→2GB (PR #273). The crash was
+    # the emscripten ALLOW_MEMORY_GROWTH+pthreads growth race — the Area
+    # dialog's ~200MB spike crossed the 1GB init, memory grew, and a worker
+    # raced on the stale heap view → intermittent OOB. The earlier "function
+    # signature mismatch" was the same bad-pointer symptom. Both PASS 3/3
+    # against a 2GB editor.)
     # (regression-writer-header-footer-remove REMOVED 2026-06-21: fixed by
     # libreoffice-core-wasm PR #42 — skip the LOK delete-confirmation dialog so
     # the untick is honoured; now enforced on LO_BUILD_ID ≥ 2026-06-21-84.)
@@ -320,7 +316,10 @@ LO_BLOCKED_TESTS=(
     # build-dicts-nested-dictionaries-subdir.md.
     cv-regression-impress-area-dialog
     cv-regression-area-palette
-    cv-regression-writer-header-footer-remove
+    # (writer-header-footer-remove DEMOTED 2026-07-18: the Page Style dialog
+    # crash was the same growth-race OOB (fixed by TOTAL_MEMORY=2GB, PR #273);
+    # header removes end-to-end. Also fixed a test-detection bug — the 2nd
+    # same-name Save download was missed. PASSES against a 2GB editor.)
     cv-regression-spell-rightclick-suggest
 )
 
