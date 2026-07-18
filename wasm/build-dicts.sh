@@ -223,10 +223,40 @@ EOF
         "$lang" "$(numfmt --to=iec --suffix= "$size_gz")" "$sha256"
 done
 
+# ── Robust manifest: derive it from the ACTUAL packed bundles in OUT_DIR, not
+# just the languages processed THIS run. A partial run — a subset LANGS, a
+# GitHub API rate-limit, or a one-off manual build — otherwise emits a manifest
+# missing languages whose valid *.tar.gz are already present from a prior run.
+# dict-loader reads only the manifest, so those languages silently vanish: the
+# 2026-07-11 "manual-frdict" editor shipped a 2-entry manifest (fr_FR, de)
+# despite 66 packed bundles, which disabled English spellcheck end-to-end. Each
+# bundle is re-validated (must contain a .dic); empties are dropped. ──
+: > "$MANIFEST_TMP"; echo '[' > "$MANIFEST_TMP"; mf_first=true
+for tgz in "$OUT_DIR"/*.tar.gz; do
+    [[ -e "$tgz" ]] || continue
+    l="$(basename "$tgz" .tar.gz)"
+    if ! tar -tzf "$tgz" 2>/dev/null | grep -q '\.dic$'; then
+        echo "  drop bundle with no .dic: $l"; rm -f "$tgz"; continue
+    fi
+    sz="$(stat -c '%s' "$tgz")"; sh="$(sha256sum "$tgz" | cut -d' ' -f1)"
+    # Locales come from the bundled dictionaries.xcu (best-effort; unused by the
+    # dict-loader critical path, which keys on lang).
+    loc="$(tar -xzOf "$tgz" ./dictionaries.xcu 2>/dev/null || tar -xzOf "$tgz" dictionaries.xcu 2>/dev/null || true)"
+    loc="$(printf '%s' "$loc" | grep -oP 'oor:name="Locales"[^<]*<value>\K[^<]+' | tr '\n' ' ' | tr -s ' ' || true)"
+    $mf_first || echo ',' >> "$MANIFEST_TMP"; mf_first=false
+    cat >> "$MANIFEST_TMP" <<EOF
+  { "lang": "$l",
+    "file": "$l.tar.gz",
+    "locales": "$(echo "$loc" | sed 's/"/\\"/g')",
+    "size": $sz,
+    "sha256": "$sh" }
+EOF
+done
 echo >> "$MANIFEST_TMP"
 echo ']' >> "$MANIFEST_TMP"
 mv "$MANIFEST_TMP" "$OUT_DIR/manifest.json"
 trap - EXIT
+echo "  manifest: $(grep -c '"lang"' "$OUT_DIR/manifest.json") bundles"
 
 # Regression guard for the nested-subdir bug (2026-07-11): fr_FR nests its
 # .dic/.aff under fr_FR/dictionaries/. If the nested sweep above ever
