@@ -11,8 +11,13 @@
 # emscripten ALLOW_MEMORY_GROWTH+pthreads growth race, not an LO cap. Both PASS
 # 3/3 against a 2GB editor. Require the deployed content viewer to pin a 2GB
 # editor build.
+# DEMOTED 2026-07-18: cv-regression-area-palette FIXED — the 2GB fix un-crashes
+# the Area dialog and the palettes DO load (they were already in the soffice.data
+# preload); the failure was purely test-side — the color grid is #coloriconview
+# (not the old #colorset-img), and the "New" colour is #hex_custom-input (the old
+# test read the constant "Active" #hex_preset). Selector + swatch-click + field
+# fixed; PASSES against a 2GB editor.
 cv-regression-impress-area-dialog          # memory-access-OOB on Area dialog Apply — area-dialog allocation cluster (IMPRESS — kept accepted per scope; likely also fixed by the 2GB growth-race fix, verify separately)
-cv-regression-area-palette                 # 2GB fix un-crashes the dialog, but the Colors grid is still EMPTY — share/palette/*.soc not in soffice.data preload (LO-side, CustomTarget_emscripten_fs_image.mk). Separate from the OOB. Demote when palettes ship in soffice.data.
 cv-regression-spell-rightclick-suggest     # UPDATED 2026-07-11: the empty-fr-dict cause is FIXED (build-dicts.sh now packs nested .dic/.aff; French spellcheck active). Remaining failure is a SEPARATE right-click-menu-precision flake affecting ALL langs (en/de/fr identically show the generic edit menu — the right-click isn't landing on the squiggled word). See ai/proposals/proposed/cv-spell-rightclick-menu-precision.md. Demote when the right-click coordinate reliably hits the flagged word.
 # DEMOTED 2026-07-18: cv-regression-writer-header-footer-remove FIXED — the Page
 # Style dialog crash was the same growth-race OOB (fixed by TOTAL_MEMORY=2GB, PR

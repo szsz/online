@@ -192,10 +192,14 @@ const DYNAMIC_RE = /^(custom|theme colors|document colors)$/i;
         if (!area.ok) { process.exit(allPassed ? 0 : 1); }
 
         // Wait for the Colors page (colorset) to render.
+        // The color grid is an iconview (#coloriconview + coloriconview_N cells)
+        // and the palette dropdown is #paletteselector-input — this build's
+        // jsdialog ids (the old #colorset-img canvas id no longer exists).
         let dialogUp = false;
         for (let i = 0; i < 60 && !dialogUp; i++) {
             dialogUp = await frame.evaluate(() =>
-                !!document.querySelector('#colorset-img, [id^="colorset"]')).catch(() => false);
+                !!document.querySelector('#coloriconview, [id^="coloriconview"], #paletteselector-input'))
+                .catch(() => false);
             if (!dialogUp) await sleep(250);
         }
         await sleep(1500);
@@ -226,40 +230,41 @@ const DYNAMIC_RE = /^(custom|theme colors|document colors)$/i;
               builtins.length >= 1, `builtins=${JSON.stringify(builtins.slice(0, 8))}`);
 
         // ── SECONDARY: select a built-in palette + click a swatch; the
-        // "New" colour must change from the shape's original colour. ──
-        const before = await frame.evaluate(() => ({
-            hex: (document.querySelector('#hex_custom-input') || {}).value
-              || (document.querySelector('#hex_preset-input') || {}).value || '',
-            r: (document.querySelector('#R_custom-input') || {}).value || '',
-        }));
+        // "New" colour must change. Snapshot every colour field (the "New"
+        // side is the editable *_custom-input; *_preset-input is the constant
+        // "Active" colour, which must NOT be what we assert on). ──
+        const snapColour = () => frame.evaluate(() => {
+            const v = id => (document.querySelector('#' + id) || {}).value || '';
+            return { hexC: v('hex_custom-input'), hexP: v('hex_preset-input'),
+                     rC: v('R_custom-input'), gC: v('G_custom-input'), bC: v('B_custom-input') };
+        });
+        const before = await snapColour();
         const builtinOpt = opts.find(o => BUILTIN_RE.test(o.t) && !DYNAMIC_RE.test(o.t));
         if (builtinOpt) {
             try { await frame.select('#paletteselector-input', builtinOpt.v); }
             catch (e) { log('frame.select failed: ' + e.message); }
-            // wait for the colorset grid to (re)paint
-            await sleep(1500);
+            await sleep(1500); // colorset grid (re)paints
             await snap(page, 'palette_selected');
-            const box = await frame.evaluate(() => {
-                const el = document.querySelector('#colorset-img');
-                if (!el) return null;
-                const r = el.getBoundingClientRect();
-                return { x: r.left, y: r.top, w: r.width, h: r.height };
-            });
-            if (box && box.w) {
-                // click near top-left of the grid (first palette cell)
-                await page.mouse.click(box.x + 14 + ifr.left, box.y + 14 + ifr.top);
-                await sleep(1200);
+            // Click a colour cell via its element handle (puppeteer scrolls it
+            // into view + clicks its centre — more reliable on the jsdialog
+            // IconView than a computed page-coordinate). Cells 0..N are swatches.
+            let clicked = false;
+            for (const sel of ['#coloriconview_8', '#coloriconview_3', '#coloriconview_0',
+                               '[id^="coloriconview_"]']) {
+                const cell = await frame.$(sel);
+                if (cell) { try { await cell.click(); clicked = true; } catch (_) {} break; }
             }
+            await sleep(1500);
             await snap(page, 'swatch_clicked');
-            const after = await frame.evaluate(() => ({
-                hex: (document.querySelector('#hex_custom-input') || {}).value
-                  || (document.querySelector('#hex_preset-input') || {}).value || '',
-                r: (document.querySelector('#R_custom-input') || {}).value || '',
-            }));
-            log(`New colour before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
-            check('clicking a palette swatch changes the New colour (grid is live)',
-                  (after.hex && after.hex !== before.hex) || (after.r && after.r !== before.r),
-                  `hex ${before.hex}->${after.hex} r ${before.r}->${after.r}`);
+            const after = await snapColour();
+            log(`clicked=${clicked} New before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
+            // A live grid updates the editable "New" (_custom) colour on click.
+            const changed = (after.hexC && after.hexC !== before.hexC)
+                || (after.rC && (after.rC !== before.rC))
+                || (after.gC && after.gC !== before.gC)
+                || (after.bC && after.bC !== before.bC);
+            check('clicking a palette swatch changes the New colour (grid is live)', changed,
+                  `custom hex ${before.hexC}->${after.hexC} rgb ${before.rC},${before.gC},${before.bC}->${after.rC},${after.gC},${after.bC}`);
         } else {
             check('clicking a palette swatch changes the New colour (grid is live)', false,
                   'no built-in palette option to select');

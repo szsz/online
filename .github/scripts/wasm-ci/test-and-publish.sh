@@ -315,7 +315,9 @@ LO_BLOCKED_TESTS=(
     # wasm/tests/content-viewer/ACCEPTED-FAILS.txt + ai/proposals/proposed/
     # build-dicts-nested-dictionaries-subdir.md.
     cv-regression-impress-area-dialog
-    cv-regression-area-palette
+    # (area-palette DEMOTED 2026-07-18: 2GB fix un-crashes the dialog + palettes
+    # load; the failure was test-side — colorset is #coloriconview and the "New"
+    # colour is #hex_custom-input. Selector/click/field fixed. PASSES on 2GB.)
     # (writer-header-footer-remove DEMOTED 2026-07-18: the Page Style dialog
     # crash was the same growth-race OOB (fixed by TOTAL_MEMORY=2GB, PR #273);
     # header removes end-to-end. Also fixed a test-detection bug — the 2nd
