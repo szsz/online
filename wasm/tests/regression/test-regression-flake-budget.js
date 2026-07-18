@@ -44,10 +44,13 @@ const KNOWN_FLAKE_BUDGET = 17;
 // awaiting an LO fix). Drop back when fixed.
 // 2026-07-11: bumped 6 -> 8 — CV migration: area-dialog OOB/OOM cluster +
 // transition + fr-dict (build-dicts) cv- twins; see ACCEPTED-FAILS.txt.
-// 2026-07-18: 8 -> 4 — demoted writer-shape-area-oom, -writer-insert-shape-area,
-// -writer-header-footer-remove (TOTAL_MEMORY=2GB growth-race fix, PR #273) +
-// -area-palette (2GB un-crash + test-side selector/click/field fix).
-const LO_BLOCKED_BUDGET = 4;
+// 2026-07-18: 8 -> 3 — demoted all 5 non-Impress accepted-fails:
+// writer-shape-area-oom, -writer-insert-shape-area, -writer-header-footer-remove
+// (TOTAL_MEMORY=2GB growth-race fix, PR #273), -area-palette (2GB un-crash +
+// test selector/click/field), -spell-rightclick-suggest (full-dict editor).
+// Remaining LO-blocked: ctrl-x-cut-restore, impress-transition-click,
+// impress-area-dialog (Impress, out of scope this round).
+const LO_BLOCKED_BUDGET = 3;
 
 const TEST_PUBLISH_SH = path.resolve(__dirname, '..', '..', '..',
     '.github', 'scripts', 'wasm-ci', 'test-and-publish.sh');

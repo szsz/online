@@ -17,8 +17,15 @@
 # (not the old #colorset-img), and the "New" colour is #hex_custom-input (the old
 # test read the constant "Active" #hex_preset). Selector + swatch-click + field
 # fixed; PASSES against a 2GB editor.
+# DEMOTED 2026-07-18: cv-regression-spell-rightclick-suggest FIXED — NOT LO-core
+# and NOT a right-click-precision issue. The word wasn't flagged because the
+# deployed editor's dict bundle had only fr_FR+de (a hand-built "manual-frdict"
+# editor); with a full 67-dict editor (incl. `en`) the spelling menu appears with
+# real suggestions for en/de/fr and corrections apply. PASSES against a full-dict
+# editor. (Latent dict-loader.js bug noted separately: pickPrimary falls back to
+# manifest[0] when the primary language isn't in the bundle → an en-US browser on
+# a partial bundle preloads fr_FR. Harmless with a full bundle; see proposal.)
 cv-regression-impress-area-dialog          # memory-access-OOB on Area dialog Apply — area-dialog allocation cluster (IMPRESS — kept accepted per scope; likely also fixed by the 2GB growth-race fix, verify separately)
-cv-regression-spell-rightclick-suggest     # UPDATED 2026-07-11: the empty-fr-dict cause is FIXED (build-dicts.sh now packs nested .dic/.aff; French spellcheck active). Remaining failure is a SEPARATE right-click-menu-precision flake affecting ALL langs (en/de/fr identically show the generic edit menu — the right-click isn't landing on the squiggled word). See ai/proposals/proposed/cv-spell-rightclick-menu-precision.md. Demote when the right-click coordinate reliably hits the flagged word.
 # DEMOTED 2026-07-18: cv-regression-writer-header-footer-remove FIXED — the Page
 # Style dialog crash was the same growth-race OOB (fixed by TOTAL_MEMORY=2GB, PR
 # #273); the header actually removes end-to-end (LO PR #42 gate works). Also

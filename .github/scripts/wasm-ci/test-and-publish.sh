@@ -315,6 +315,9 @@ LO_BLOCKED_TESTS=(
     # wasm/tests/content-viewer/ACCEPTED-FAILS.txt + ai/proposals/proposed/
     # build-dicts-nested-dictionaries-subdir.md.
     cv-regression-impress-area-dialog
+    # (spell-rightclick-suggest DEMOTED 2026-07-18: not LO-core — the deployed
+    # test editor only had fr_FR+de dicts (no en). With a full 67-dict editor the
+    # spelling menu + suggestions work for en/de/fr. PASSES on a full-dict editor.)
     # (area-palette DEMOTED 2026-07-18: 2GB fix un-crashes the dialog + palettes
     # load; the failure was test-side — colorset is #coloriconview and the "New"
     # colour is #hex_custom-input. Selector/click/field fixed. PASSES on 2GB.)
@@ -322,7 +325,6 @@ LO_BLOCKED_TESTS=(
     # crash was the same growth-race OOB (fixed by TOTAL_MEMORY=2GB, PR #273);
     # header removes end-to-end. Also fixed a test-detection bug — the 2nd
     # same-name Save download was missed. PASSES against a 2GB editor.)
-    cv-regression-spell-rightclick-suggest
 )
 
 is_in_set() {
