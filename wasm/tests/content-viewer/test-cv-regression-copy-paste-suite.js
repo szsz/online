@@ -438,8 +438,13 @@ const USE_CASES = [
                 if (!(await waitCvInteractive(page2, LOAD_BUDGET))) return {
                     pass: false, ev: 'reopened file never became interactive',
                 };
-                await sleep(2500);
-                const afterReopen = await cvCharCount(page2);
+                // Poll for the reopened doc to render its content. The viewer
+                // flips to loaded before the editor canvas + word count appear
+                // on the slow CI reopen, so a fixed sleep read afterReopen=-1.
+                // Waiting for the count to match beforeSave both waits out the
+                // render and asserts the paste persisted (genuine data-loss
+                // would never reach it and still fail).
+                const afterReopen = await waitCvCharCount(page2, c => c === beforeSave, 45000);
                 await snap(page2, 'after-reopen');
                 return {
                     pass: afterReopen === beforeSave,

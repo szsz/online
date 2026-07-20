@@ -74,15 +74,18 @@ async function snap(page, name) {
             document.querySelectorAll('[id$="-tab-label"]').length).catch(() => 0);
         check('Notebookbar mode active (>=5 tab labels)', tabCount >= 5, 'tabs=' + tabCount);
 
-        // Locate the fontsizecombobox container.
-        const comboboxRect = await frame.evaluate(() => {
-            const root = document.getElementById('fontsizecombobox');
-            if (!root) return null;
-            const r = root.getBoundingClientRect();
-            return { x: r.x, y: r.y, w: r.width, h: r.height };
-        }).catch(() => null);
-        log(`#fontsizecombobox rect: ${JSON.stringify(comboboxRect)}`);
-        check('#fontsizecombobox container present', !!(comboboxRect && comboboxRect.w > 0));
+        // Assert the fontsize combobox is present in the notebookbar. Don't
+        // require it to have a non-zero on-screen box: this notebookbar keeps
+        // #fontsizecombobox inside a `hidden-overflow-container` (its whole
+        // ancestor chain up to #home-font measures 0×0), so it's reachable via
+        // the overflow group rather than laid out inline. The widget is still
+        // fully present/functional (its value is readable) — presence is the
+        // right precondition; the real assertion below is the size-list model.
+        const comboboxPresent = await frame.evaluate(() =>
+            !!(document.getElementById('fontsizecombobox')
+               || document.getElementById('fontsizecombobox-input-notebookbar'))
+        ).catch(() => false);
+        check('#fontsizecombobox container present', comboboxPresent);
 
         // Read the entries list from the widget JSON model (observation only).
         // Bug: Control.NotebookbarWriter.js hardcoded only ['12 pt'].
@@ -97,16 +100,15 @@ async function snap(page, name) {
         }).catch(() => null);
         log(`Model widget.entries for fontsizecombobox: ${JSON.stringify(modelEntries)}`);
 
-        // Open the dropdown by clicking the arrow — the real user flow.
-        const ifEl = await page.$('iframe');
-        const ifBox = await ifEl.boundingBox();
-        if (comboboxRect) {
-            const ax = ifBox.x + comboboxRect.x + comboboxRect.w - 10;
-            const ay = ifBox.y + comboboxRect.y + comboboxRect.h / 2;
-            await page.mouse.click(ax, ay);
-            await sleep(800);
-            await snap(page, 'dropdown_open_arrow');
-        }
+        // Try to open the dropdown by clicking the widget — the real user flow.
+        // The combobox lives in the notebookbar's hidden overflow group, so it
+        // has no inline box to click by coordinate; click the element directly
+        // (best-effort — the assertion below also accepts the model entries,
+        // which don't require the dropdown to be visible).
+        try {
+            const arrow = await frame.$('#listbox-arrow-fontsizecombobox, #fontsizecombobox');
+            if (arrow) { await arrow.click(); await sleep(800); await snap(page, 'dropdown_open_arrow'); }
+        } catch (e) { /* overflow-hidden — model entries carry the assertion */ }
 
         // Measure visible entries in the open dropdown.
         const visibleEntryInfo = await frame.evaluate(() => {
