@@ -33,11 +33,15 @@ async function tableTabVisible(fr){return fr.evaluate(()=>{const e=document.quer
     const fr = efr(page);
     const box = await (await page.$('iframe')).boundingBox();
     await page.mouse.click(box.x+box.width/2, box.y+Math.min(box.height*0.45,360)); await sleep(400);
-    const btn = fr ? await fr.$('#home-insert-table693-button') : null;
+    // The Home-tab insert-table button id carries a jsdialog counter that
+    // shifts between LO builds (was 693, now 697), so match by stable
+    // prefix+suffix rather than a hardcoded number. The `home-` prefix keeps
+    // it distinct from the Insert-tab `insert-insert-table…-button`.
+    const btn = fr ? await fr.$('[id^="home-insert-table"][id$="-button"]') : null;
     check('insert-table control present in the notebookbar', !!btn);
     let cells = 0;
     if (btn) {
-      try { await btn.click(); } catch(e) { await fr.evaluate(()=>document.querySelector('#home-insert-table693-button').click()); }
+      try { await btn.click(); } catch(e) { await fr.evaluate(()=>document.querySelector('[id^="home-insert-table"][id$="-button"]').click()); }
       await sleep(1200);
       // The control opens the table-size grid picker. Count its selectable cells.
       const r = await fr.evaluate(() => {
