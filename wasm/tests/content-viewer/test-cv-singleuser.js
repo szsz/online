@@ -117,10 +117,19 @@ async function writeClip(page, text) {
         log('open writer via /collabora-tester');
         await openViaContentViewer(browser, BASE, DOCX, { page, iframeTimeout: 45000 });
         check('editor became interactive (Save enabled)', await waitInteractive(page, LOAD_BUDGET));
+        // waitInteractive returns on the viewer's loaded-state, which precedes
+        // the editor canvas + #StateWordCount rendering. Poll for the count to
+        // become readable rather than a fixed sleep (fixes the flaky base=-1
+        // race on the slow CI open).
+        const baseReady = await waitCharAtLeast(page, 0, 30000);
+        // Render being readable (word count present) precedes the canvas being
+        // ready to accept keystrokes; give a settle so the first type() lands
+        // (without it the count-readable poll can return ~1s in and the typing
+        // race — keystrokes dropped, count stuck at base — resurfaces).
         await sleep(2500);
         await snap(page, 'opened');
         const base = await getCharCount(page);
-        check('char count readable after open', base >= 0, 'base=' + base);
+        check('char count readable after open', baseReady && base >= 0, 'base=' + base);
 
         // Case 1 — type.
         await focusDoc(page); await ctrlEnd(page);
@@ -165,10 +174,15 @@ async function writeClip(page, text) {
             try { await cdp2.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite'] }); } catch (e) {}
             await openViaContentViewer(browser, BASE, dl, { page: page2, iframeTimeout: 45000 });
             check('re-opened saved file became interactive', await waitInteractive(page2, LOAD_BUDGET));
-            await sleep(2500);
+            // Poll for the reopened doc to actually render its content (the
+            // viewer flips to loaded before the canvas + word count appear on
+            // the slow CI reopen; a fixed sleep read reopened=-1). Reaching the
+            // persisted total both waits out the render AND asserts the edits
+            // survived; a genuine data-loss would never reach it and still fail.
+            const persisted = await waitCharAtLeast(page2, editedCount - 2, 45000);
             const reCount = await getCharCount(page2);
             check('saved file preserved the edits (char count persisted)',
-                reCount >= editedCount - 2, 'edited=' + editedCount + ' reopened=' + reCount);
+                persisted, 'edited=' + editedCount + ' reopened=' + reCount);
             await snap(page2, 'reopened');
             try { await page2.close(); } catch (e) {}
         }
