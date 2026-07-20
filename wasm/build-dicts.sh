@@ -235,7 +235,13 @@ done
 for tgz in "$OUT_DIR"/*.tar.gz; do
     [[ -e "$tgz" ]] || continue
     l="$(basename "$tgz" .tar.gz)"
-    if ! tar -tzf "$tgz" 2>/dev/null | grep -q '\.dic$'; then
+    # Detect a .dic from a CAPTURED listing, not `tar … | grep -q`: under the
+    # `set -o pipefail` in force here, `grep -q` exits on the first match and
+    # closes the pipe, so `tar` dies with SIGPIPE and the pipeline returns
+    # non-zero — which `if !` then reads as "no .dic", spuriously dropping any
+    # bundle whose first .dic sorts EARLY in the archive (e.g. fr_FR lists
+    # ./hyph_fr.dic third). Capturing lets tar finish before grep runs.
+    if ! grep -q '\.dic$' <<<"$(tar -tzf "$tgz" 2>/dev/null || true)"; then
         echo "  drop bundle with no .dic: $l"; rm -f "$tgz"; continue
     fi
     sz="$(stat -c '%s' "$tgz")"; sh="$(sha256sum "$tgz" | cut -d' ' -f1)"
