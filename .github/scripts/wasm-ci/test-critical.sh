@@ -48,6 +48,21 @@ export TEST_TARGET="local-host"
 export EDITOR_DEPLOY_ID="${APP_BUILD_ID:-}"
 export JOBS_SCALE=1
 
+# deploy-smoke (test-deploy-smoke.js) defaults, when SMOKE_URL is unset, to a
+# HARDCODED viewer.atgpartners.info URL — the dev ad-hoc stack, NOT the CI
+# stack this gate just deployed. The gate never set SMOKE_URL, so the smoke
+# silently exercised the wrong environment (and a #file= that isn't staged
+# there), failing with `canvasCount:0` no matter how healthy the CI deploy
+# was. Point it at the CI viewer root: opening the root auto-prewarms
+# __prewarm_blank.docx, whose rendered canvas satisfies the smoke's check.
+export SMOKE_URL="${SMOKE_URL:-${VIEWER_URL%/}/}"
+# A fresh deploy ships a new online.wasm, so the first prewarm pays a cold
+# WASM-compile cost (≈19s warm, more when cold on the loaded runner). Give
+# the smoke headroom over its 90s default — still well under PER_TEST_TIMEOUT,
+# so a genuinely-down editor still fails fast. Only test-deploy-smoke.js reads
+# these, so the other critical tests are unaffected.
+export SMOKE_TIMEOUT_MS="${SMOKE_TIMEOUT_MS:-240000}"
+
 # node_modules + puppeteer must be present before any E2E test (the gate
 # runs before test-local.sh, which used to be the only installer — that's
 # why the deploy smoke hit "Cannot find module 'puppeteer'").
