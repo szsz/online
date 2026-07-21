@@ -98,15 +98,17 @@ jobs:
       lo_build_id:  ${{ steps.ids.outputs.lo_build_id }}
     steps:
       - name: Reclaim workspace ownership
-        # Also reclaim the CI local-deploy tree. The systemd editor-static
-        # service (@online-ci) runs as root and mkdir's /tmp/static-deploy-ci
-        # (its DOCS parent, via editor-static-server.js) as root on start, so
-        # the localadmin runner's deploy-local.sh `mkdir -p "$PUB/..."` later
-        # hits EACCES. Reclaiming it here (before the deploy step) self-heals
-        # that ownership drift on every run.
+        # Reclaim the deploy trees too. The systemd services (@online-ci and the
+        # dev @online) run as root and, on start, mkdir /tmp/static-deploy-ci and
+        # /tmp/static-deploy (their DOCS/PUB parents, via editor-static-server.js)
+        # as root — worst-case right after a host reboot. The localadmin runner
+        # then hits EACCES: deploy-local.sh's `mkdir -p "$PUB/..."`, AND the
+        # critical-gate tests whose default shot dir is /tmp/static-deploy/public
+        # (the latejoin-unsaved gate failure). Reclaim both here (before deploy +
+        # gate) so that ownership drift self-heals every run.
         run: |
           sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
-          sudo chown -R "$(id -u):$(id -g)" /tmp/static-deploy-ci 2>/dev/null || true
+          sudo chown -R "$(id -u):$(id -g)" /tmp/static-deploy-ci /tmp/static-deploy 2>/dev/null || true
 
       - name: Checkout
         uses: actions/checkout@v4
