@@ -59,19 +59,24 @@ async function launch(opts = {}) {
             '--disable-gpu', '--no-first-run', '--no-default-browser-check',
         ],
     };
-    // Retry the launch with backoff. Under JOBS>=2 the runner (≈9 GB RAM)
-    // transiently OOMs when two full (non-headless) Chromes + their 2 GB-heap
-    // WASM editors spawn at the same moment, and Chrome dies at fork with
-    // "Failed to launch the browser process: Code: null". That's a contention
-    // artefact, not a real failure — a short backoff lets the concurrent job
-    // get past its own launch (or free memory) and the retry succeeds. Without
-    // this, ~2-3 tests/run flaked purely on launch timing under parallelism.
+    // Retry the launch with backoff. The runner uses Hyper-V DYNAMIC memory
+    // (hv_balloon, up to 64 GB) — RAM is not fixed, but the balloon inflates
+    // with latency. When JOBS>=2 spawns two full (non-headless) Chromes plus
+    // their 2 GB-heap WASM editors at the same moment, demand can outpace the
+    // balloon and Chrome dies at fork with "Failed to launch the browser
+    // process: Code: null". That's a transient allocation artefact, not a real
+    // failure: backing off lets the balloon catch up (and the concurrent job
+    // get past its own launch), and the retry succeeds.
+    //
+    // Budget generously — an earlier 4×(3/6/9s) ≈ 18 s window still lost tests
+    // to this, so give the balloon up to ~45 s before declaring the launch dead.
     let browser, lastErr;
-    for (let attempt = 1; attempt <= 4; attempt++) {
+    const LAUNCH_ATTEMPTS = 6;
+    for (let attempt = 1; attempt <= LAUNCH_ATTEMPTS; attempt++) {
         try { browser = await puppeteer.launch(launchOpts); break; }
         catch (e) {
             lastErr = e;
-            if (attempt < 4) await sleep(3000 * attempt);
+            if (attempt < LAUNCH_ATTEMPTS) await sleep(Math.min(15000, 3000 * attempt));
         }
     }
     if (!browser) throw lastErr;
