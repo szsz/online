@@ -14,8 +14,12 @@
 
 const fs = require('fs');
 const path = require('path');
-const { launch, sleep } = require('../../lib/browser');
+const { launch, sleep: _rawSleep } = require('../../lib/browser');
+const { scaleTimeout } = require('../../lib/test-env');
 const { openViaContentViewer, joinViaContentViewer } = require('../../lib/open-via-content-viewer');
+// Scale patience waits by JOBS_SCALE (co-edit relay/propagation waits race
+// under JOBS=2 contention). No perf-budget assertions here, so it's safe.
+const sleep = ms => _rawSleep(scaleTimeout(ms));
 
 const BASE = (process.argv[2] || process.env.BASE_URL
     || 'https://wasm-viewer-test.azurewebsites.net').replace(/\/+$/, '');
@@ -65,10 +69,16 @@ async function waitCharCount(page, pred, budget) {
     return last;
 }
 async function typeIntoDoc(page, text) {
+    // LO creates its hidden keyboard-input element (#clipboard-area) AFTER the
+    // canvas + word count are ready. Typing before it exists focuses <body> and
+    // the keystrokes are silently dropped (the co-edit typing race: count stays
+    // at base). Wait for it to exist — then the click focuses it and input lands.
+    const fr = editorFrame(page);
+    if (fr) { try { await fr.waitForSelector('#clipboard-area', { timeout: scaleTimeout(45000) }); } catch (e) {} }
     const el = await page.$('iframe');
     const box = await el.boundingBox();
     await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
-    await sleep(800);
+    await sleep(1200);
     await page.keyboard.type(text, { delay: 60 });
 }
 

@@ -36,11 +36,15 @@
 
 const fs = require('fs');
 const path = require('path');
-const { launch, sleep } = require('../../lib/browser');
+const { launch, sleep: _rawSleep } = require('../../lib/browser');
+const { scaleTimeout } = require('../../lib/test-env');
 const {
     openViaContentViewer, joinViaContentViewer,
     waitCvInteractive, cvEditorFrame, cvCharCount, waitCvCharCount,
 } = require('../../lib/open-via-content-viewer');
+// Scale patience waits by JOBS_SCALE (relay/checkpoint waits race under JOBS=2
+// contention). No perf-budget assertions here, so it's safe.
+const sleep = ms => _rawSleep(scaleTimeout(ms));
 
 const BASE = (process.argv[2] || process.env.BASE_URL
     || 'https://wasm-viewer-test.azurewebsites.net').replace(/\/+$/, '');
@@ -67,7 +71,15 @@ async function focusDoc(page) {
     await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
     await sleep(500);
 }
-async function typeIntoDoc(page, text) { await focusDoc(page); await page.keyboard.type(text, { delay: 80 }); }
+async function typeIntoDoc(page, text) {
+    // Wait for LO's hidden keyboard-input element (#clipboard-area) to exist
+    // before typing — it's created after the canvas/word-count, and typing
+    // before then focuses <body> and drops the keystrokes (count stays at base).
+    const fr = cvEditorFrame(page);
+    if (fr) { try { await fr.waitForSelector('#clipboard-area', { timeout: scaleTimeout(45000) }); } catch (e) {} }
+    await focusDoc(page);
+    await page.keyboard.type(text, { delay: 80 });
+}
 async function ctrl(page, key) { await page.keyboard.down('Control'); await page.keyboard.press(key); await page.keyboard.up('Control'); await sleep(300); }
 async function clickSave(page) {
     const h = await page.evaluateHandle(() =>
