@@ -3,6 +3,7 @@
 'use strict';
 const fs = require('fs'); const path = require('path');
 const { launch, sleep } = require('../../lib/browser');
+const { scaleTimeout } = require('../../lib/test-env');
 const { openViaContentViewer } = require('../../lib/open-via-content-viewer');
 const BASE = (process.argv[2] || process.env.BASE_URL || 'https://wasm-viewer-test.azurewebsites.net').replace(/\/+$/, '');
 const DOCX = path.join(__dirname, '..', '..', '..', 'test', 'data', 'chart-test.docx');
@@ -20,9 +21,19 @@ async function waitI(p,b){const d=Date.now()+b;while(Date.now()<d){if(await inte
     const page = await browser.newPage();
     await openViaContentViewer(browser, BASE, DOCX, { page, iframeTimeout: 45000 });
     check('chart doc became interactive', await waitI(page, LOAD_BUDGET));
-    await sleep(2500);
+    // Poll for the status bar to populate: #StateWordCount appears only once the
+    // canvas has rendered the doc, which lags the viewer's "interactive" state —
+    // a fixed sleep read it empty (status=""). Same render-timing fix as the
+    // other CV tests.
+    let st = '';
+    const stDeadline = Date.now() + scaleTimeout(30000);
+    while (Date.now() < stDeadline) {
+      const fr0 = efr(page);
+      st = fr0 ? await fr0.evaluate(()=>document.querySelector('#StateWordCount')?.textContent||'').catch(()=>'') : '';
+      if (/character/i.test(st)) break;
+      await sleep(500);
+    }
     const fr = efr(page);
-    const st = fr ? await fr.evaluate(()=>document.querySelector('#StateWordCount')?.textContent||'').catch(()=>'') : '';
     check('chart doc loaded (status bar populated)', /character/i.test(st), 'status="'+st+'"');
     const canvas = fr ? await fr.evaluate(()=>document.querySelectorAll('canvas').length>0).catch(()=>false) : false;
     check('editor canvas rendered', canvas);
