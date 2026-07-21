@@ -65,18 +65,24 @@ async function snap(page, name) {
     try { fs.mkdirSync(SHOT_DIR, { recursive: true });
         await page.screenshot({ path: SHOT_DIR + '/' + String(++snapN).padStart(2, '0') + '_' + name + '.png' }); } catch (e) {}
 }
+// #clipboard-area (LO's hidden keyboard input) exists before a click actually
+// routes focus to it: early in a co-edit session the first click leaves
+// activeElement on <body> and keystrokes are dropped (count stays at base).
+// Retry the focus click until #clipboard-area IS the active element. UI-driven.
 async function focusDoc(page) {
-    const el = await page.$('iframe');
-    const box = await el.boundingBox();
-    await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
-    await sleep(500);
-}
-async function typeIntoDoc(page, text) {
-    // Wait for LO's hidden keyboard-input element (#clipboard-area) to exist
-    // before typing — it's created after the canvas/word-count, and typing
-    // before then focuses <body> and drops the keystrokes (count stays at base).
     const fr = cvEditorFrame(page);
     if (fr) { try { await fr.waitForSelector('#clipboard-area', { timeout: scaleTimeout(45000) }); } catch (e) {} }
+    const box = await (await page.$('iframe')).boundingBox();
+    const focused = async () => !!fr && await fr.evaluate(() =>
+        document.activeElement && document.activeElement.id === 'clipboard-area').catch(() => false);
+    const deadline = Date.now() + scaleTimeout(20000);
+    do {
+        await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
+        await sleep(500);
+    } while (!(await focused()) && Date.now() < deadline);
+    return focused();
+}
+async function typeIntoDoc(page, text) {
     await focusDoc(page);
     await page.keyboard.type(text, { delay: 80 });
 }

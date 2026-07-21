@@ -68,17 +68,27 @@ async function waitCharCount(page, pred, budget) {
     }
     return last;
 }
-async function typeIntoDoc(page, text) {
-    // LO creates its hidden keyboard-input element (#clipboard-area) AFTER the
-    // canvas + word count are ready. Typing before it exists focuses <body> and
-    // the keystrokes are silently dropped (the co-edit typing race: count stays
-    // at base). Wait for it to exist — then the click focuses it and input lands.
+// Focus the doc for typing. #clipboard-area (LO's hidden keyboard input) exists
+// well before a click actually routes focus to it: early in a co-edit session
+// the first click leaves activeElement on <body>, so the keystrokes are dropped
+// (the "typed X, count stayed at base" race). Retry the focus click until
+// #clipboard-area IS the active element, then type. UI-driven (real clicks); no
+// evaluate() focus hacks.
+async function focusDocForTyping(page) {
     const fr = editorFrame(page);
     if (fr) { try { await fr.waitForSelector('#clipboard-area', { timeout: scaleTimeout(45000) }); } catch (e) {} }
-    const el = await page.$('iframe');
-    const box = await el.boundingBox();
-    await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
-    await sleep(1200);
+    const box = await (await page.$('iframe')).boundingBox();
+    const focused = async () => !!fr && await fr.evaluate(() =>
+        document.activeElement && document.activeElement.id === 'clipboard-area').catch(() => false);
+    const deadline = Date.now() + scaleTimeout(20000);
+    do {
+        await page.mouse.click(box.x + box.width / 2, box.y + Math.min(box.height * 0.45, 360));
+        await sleep(800);
+    } while (!(await focused()) && Date.now() < deadline);
+    return focused();
+}
+async function typeIntoDoc(page, text) {
+    await focusDocForTyping(page);
     await page.keyboard.type(text, { delay: 60 });
 }
 
