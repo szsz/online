@@ -48,7 +48,7 @@ async function launch(opts = {}) {
         } catch (e) { await sleep(200); }
     }
 
-    const browser = await puppeteer.launch({
+    const launchOpts = {
         headless: false,
         protocolTimeout: opts.protocolTimeout || 600000,
         env: { ...process.env, DISPLAY: `:${display}` },
@@ -58,7 +58,23 @@ async function launch(opts = {}) {
             `--window-size=${width},${height}`,
             '--disable-gpu', '--no-first-run', '--no-default-browser-check',
         ],
-    });
+    };
+    // Retry the launch with backoff. Under JOBS>=2 the runner (≈9 GB RAM)
+    // transiently OOMs when two full (non-headless) Chromes + their 2 GB-heap
+    // WASM editors spawn at the same moment, and Chrome dies at fork with
+    // "Failed to launch the browser process: Code: null". That's a contention
+    // artefact, not a real failure — a short backoff lets the concurrent job
+    // get past its own launch (or free memory) and the retry succeeds. Without
+    // this, ~2-3 tests/run flaked purely on launch timing under parallelism.
+    let browser, lastErr;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+        try { browser = await puppeteer.launch(launchOpts); break; }
+        catch (e) {
+            lastErr = e;
+            if (attempt < 4) await sleep(3000 * attempt);
+        }
+    }
+    if (!browser) throw lastErr;
 
     // Auto-accept all blocking dialogs (confirm / alert / prompt /
     // beforeunload). A concrete case: the viewer's SaveConflict handler
