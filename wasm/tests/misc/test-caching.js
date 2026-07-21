@@ -41,9 +41,15 @@ async function snap(page, name) {
 const httpHead = headUrl;
 const httpGet = fetchUrl;
 
+// EDITOR_DEPLOY_ID may legitimately be EMPTY: that's the viewer's documented
+// flat-editor mode (viewer-server.js — no VIEWER_CONFIG_FILE / EDITOR_DEPLOY_ID,
+// so it iframes legacy non-prefixed URLs). Both on-box stacks (@online and
+// @online-ci) run that way; only the Azure App Service viewers pin a per-deploy
+// id. Accept the empty value instead of throwing — the caller picks the asset
+// base accordingly.
 async function getDeployId() {
     const r = await httpGet(VIEWER + '/config.js');
-    const m = r.body.toString().match(/"EDITOR_DEPLOY_ID"\s*:\s*"([^"]+)"/);
+    const m = r.body.toString().match(/"EDITOR_DEPLOY_ID"\s*:\s*"([^"]*)"/);
     if (!m) throw new Error('EDITOR_DEPLOY_ID not in /config.js');
     return m[1];
 }
@@ -93,8 +99,13 @@ async function getDocInfo(frame) {
 
     // Discover the editor build the viewer pins to.
     const deployId = await getDeployId();
-    const deployBase = `${EDITOR}/${deployId}`;
-    log(`Viewer pins EDITOR_DEPLOY_ID=${deployId}`);
+    // Per-deploy mode: assets at $EDITOR/<id>/... ; flat-editor mode (empty id):
+    // assets at $EDITOR/... . Every assertion below (brotli, immutable headers,
+    // no-cache HTML, cold-vs-warm, format switch) applies to both layouts.
+    const deployBase = deployId ? `${EDITOR}/${deployId}` : EDITOR;
+    log(deployId
+        ? `Viewer pins EDITOR_DEPLOY_ID=${deployId}`
+        : 'Viewer in flat-editor mode (empty EDITOR_DEPLOY_ID) — using non-prefixed asset base');
 
     const { browser, cleanup } = await launch();
 
